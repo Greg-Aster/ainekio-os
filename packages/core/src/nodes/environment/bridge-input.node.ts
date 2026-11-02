@@ -177,7 +177,7 @@ export const environmentBridgeInputNode = defineNode({
   },
   description: 'Complete read-only Ainekio Environment Bridge source. Every observation, body-status, gateway, session, and diagnostic output is always available; workflows choose data by connecting only the ports they need.',
   presentation: {
-    defaultExpanded: true,
+    defaultExpanded: false,
     badges: [
       { label: 'Read only', tone: 'info' },
       { label: 'No prompt', tone: 'neutral' },

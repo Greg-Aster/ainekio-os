@@ -1,14 +1,10 @@
 /**
  * Daydreamer Agent — Core Logic
  *
- * A lighter version of the dreamer that can run outside sleep hours using
- * a cognitive graph workflow that:
- * 1. Curates a small sample of weighted memories (5 instead of 15)
- * 2. Generates short, whimsical daydream narratives
- * 3. Saves to inner dialogue only (never surfaces to main chat)
- * 4. No continuation dreams or learnings extraction
- *
- * Triggered probabilistically during idle periods (see trigger-manager.ts).
+ * The Work Coordinator owns admission. The editable graph curates memories,
+ * generates a brief daydream, and persists it to episodic memory and inner
+ * dialogue. Graph-configured output delivery continues through its existing
+ * owners after this finite generation pass returns.
  */
 
 import { randomUUID } from 'node:crypto';
@@ -103,7 +99,11 @@ export function evaluateDaydreamerGraph(
   graph: SvelteFlowGraph,
   graphResult: GraphExecutionState,
 ): DaydreamerGraphEvaluation {
-  if (graphResult.status !== 'completed') {
+  // Output delivery can outlive this finite graph pass. The executor records
+  // endTime only when the pass finishes; suspended graph work stays unfinished.
+  const deliveryPending = graphResult.status === 'waiting'
+    && graphResult.endTime !== undefined && !graphResult.pending?.length;
+  if (graphResult.status !== 'completed' && !deliveryPending) {
     const failure = getFirstFailedNode(graphResult);
     throw new Error(
       failure

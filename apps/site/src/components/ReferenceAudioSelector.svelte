@@ -2,17 +2,13 @@
   /**
    * ReferenceAudioSelector
    * UI for selecting voice samples to use as reference audio
-   * For GPT-SoVITS: Allows setting specific samples as the active reference
    */
 
   import { onMount } from 'svelte';
   import { apiFetch, apiUrl } from '../lib/client/api-config';
 
-  export let provider: 'piper' | 'sovits' | 'gpt-sovits' | 'rvc' = 'gpt-sovits';
-  export let speakerId: string = 'default';
   export let minQuality: number = 0.8;
   export let onSelectionChange: (selectedIds: string[]) => void = () => {};
-  export let onReferenceSet: (sampleId: string) => void = () => {};
 
   interface VoiceSample {
     id: string;
@@ -23,11 +19,6 @@
     quality: number;
   }
 
-  interface CurrentReference {
-    sampleId: string | null;
-    referencePath: string | null;
-    transcript: string | null;
-  }
 
   let samples: VoiceSample[] = [];
   let selectedIds: Set<string> = new Set();
@@ -37,15 +28,10 @@
   let avgQuality = 0;
   let playingId: string | null = null;
   let audioElement: HTMLAudioElement | null = null;
-  let currentReference: CurrentReference | null = null;
-  let settingReference = false;
-  let testingVoice = false;
 
   onMount(() => {
     loadSamples();
-    if (provider === 'gpt-sovits' || provider === 'sovits') {
-      loadCurrentReference();
-    }
+
   });
 
   async function loadSamples() {
@@ -53,12 +39,12 @@
     error = '';
     try {
       const response = await apiFetch(
-        `/api/sovits-training?action=available-samples&provider=${provider}&minQuality=${minQuality}&limit=1000`
+        '/api/voice-training?action=samples&limit=1000'
       );
       if (!response.ok) throw new Error('Failed to load samples');
 
       const data = await response.json();
-      samples = data.samples || [];
+      samples = (data.samples || []).filter((sample: VoiceSample) => sample.quality >= minQuality);
 
       // Calculate stats
       totalDuration = samples.reduce((sum, s) => sum + s.duration, 0);
@@ -70,93 +56,6 @@
       console.error('[ReferenceAudioSelector] Error loading samples:', err);
     } finally {
       loading = false;
-    }
-  }
-
-  async function loadCurrentReference() {
-    try {
-      const response = await apiFetch(
-        `/api/sovits-training?action=current-reference&provider=gpt-sovits&speakerId=${speakerId}`
-      );
-      if (response.ok) {
-        currentReference = await response.json();
-      }
-    } catch (err) {
-      console.error('[ReferenceAudioSelector] Error loading current reference:', err);
-    }
-  }
-
-  async function setAsReference(sampleId: string, event: Event) {
-    event.stopPropagation();
-    settingReference = true;
-    error = '';
-
-    try {
-      const response = await apiFetch('/api/sovits-training', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          action: 'set-reference',
-          provider: 'gpt-sovits',
-          speakerId,
-          sampleId,
-        }),
-      });
-
-      if (!response.ok) {
-        const data = await response.json();
-        throw new Error(data.error || 'Failed to set reference');
-      }
-
-      // Reload current reference
-      await loadCurrentReference();
-      onReferenceSet(sampleId);
-    } catch (err) {
-      error = String(err);
-      console.error('[ReferenceAudioSelector] Error setting reference:', err);
-    } finally {
-      settingReference = false;
-    }
-  }
-
-  async function testVoiceWithSample(sampleId: string, event: Event) {
-    event.stopPropagation();
-    testingVoice = true;
-    error = '';
-
-    try {
-      // First set this sample as the reference
-      await setAsReference(sampleId, event);
-
-      // Then trigger a voice test via TTS API
-      const testText = 'Testing voice with this reference sample.';
-      const response = await apiFetch('/api/tts', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          text: testText,
-          provider: 'gpt-sovits',
-        }),
-      });
-
-      if (!response.ok) {
-        throw new Error('Failed to generate test audio');
-      }
-
-      // Play the generated audio
-      const audioBlob = await response.blob();
-      const audioUrl = URL.createObjectURL(audioBlob);
-      const audio = new Audio(audioUrl);
-      audio.play();
-
-      audio.onended = () => {
-        URL.revokeObjectURL(audioUrl);
-      };
-    } catch (err) {
-      error = String(err);
-      console.error('[ReferenceAudioSelector] Error testing voice:', err);
-    } finally {
-      testingVoice = false;
     }
   }
 
@@ -258,34 +157,11 @@
 
 <div class="bg-gray-900 dark:bg-gray-900 rounded-lg p-6 text-white">
   <div class="mb-6">
-    <h3 class="m-0 mb-2 text-xl text-white">Select Reference Audio Samples</h3>
+    <h3 class="m-0 mb-2 text-xl text-white">Select Training Audio Samples</h3>
     <p class="m-0 text-sm text-gray-400 opacity-80">
-      {#if provider === 'gpt-sovits' || provider === 'sovits'}
-        GPT-SoVITS voice cloning - Select a sample and click "🎯 Set Reference" to use it, then "🔊 Test" to hear your cloned voice
-      {:else}
-        Select samples for voice training (more is better)
-      {/if}
+      Select samples for RVC voice training.
     </p>
   </div>
-
-  <!-- Current Reference Display for GPT-SoVITS -->
-  {#if (provider === 'gpt-sovits' || provider === 'sovits') && currentReference?.sampleId}
-    <div class="bg-blue-900/50 border border-blue-700 rounded-lg p-4 mb-6">
-      <div class="flex items-center gap-2 text-[0.95rem]">
-        <span class="text-xl">🎯</span>
-        <strong>Active Reference:</strong>
-        <span class="text-blue-300 font-mono bg-black/20 px-2 py-0.5 rounded">{currentReference.sampleId}</span>
-      </div>
-      {#if currentReference.transcript}
-        <div class="mt-2 italic text-gray-400 text-sm">"{currentReference.transcript}"</div>
-      {/if}
-    </div>
-  {:else if (provider === 'gpt-sovits' || provider === 'sovits')}
-    <div class="bg-yellow-900/30 border border-yellow-700/50 rounded-lg p-4 mb-6 flex items-center gap-2">
-      <span class="text-xl">⚠️</span>
-      <span>No reference set. Select a sample below and click "🎯 Set Reference"</span>
-    </div>
-  {/if}
 
   {#if loading}
     <div class="p-8 text-center">Loading samples...</div>
@@ -367,24 +243,7 @@
                 {playingId === sample.id ? '⏸️' : '▶️'}
               </button>
 
-              {#if provider === 'gpt-sovits' || provider === 'sovits'}
-                <button
-                  class="p-1.5 border rounded-md w-9 h-9 flex items-center justify-center cursor-pointer text-sm transition-all disabled:opacity-50 disabled:cursor-not-allowed hover:scale-110 {currentReference?.sampleId === sample.id ? 'bg-green-500 border-green-500 shadow-[0_0_8px_rgba(34,197,94,0.4)]' : 'bg-green-900/50 border-green-700 hover:bg-green-800/50'}"
-                  on:click={(e) => setAsReference(sample.id, e)}
-                  disabled={settingReference}
-                  title="Set as active reference for voice cloning"
-                >
-                  {currentReference?.sampleId === sample.id ? '✓' : '🎯'}
-                </button>
-                <button
-                  class="p-1.5 bg-blue-900/50 border border-blue-700 rounded-md w-9 h-9 flex items-center justify-center cursor-pointer text-sm transition-all hover:bg-blue-800/50 hover:scale-110 disabled:opacity-50 disabled:cursor-not-allowed"
-                  on:click={(e) => testVoiceWithSample(sample.id, e)}
-                  disabled={testingVoice}
-                  title="Test voice with this sample"
-                >
-                  {testingVoice ? '...' : '🔊'}
-                </button>
-              {/if}
+
             </div>
 
             <div class="w-20 h-1.5 bg-gray-800 rounded overflow-hidden ml-4 md:hidden">

@@ -1,9 +1,10 @@
 import { getAgentCatalogSnapshot } from '../../agent-catalog.js'
 import { agentTaskType } from '../../queue/agent-work-catalog.js'
 import { openExecutionStore } from '../../durable-execution/storage.js'
-import { projectAutonomyActivityOutcomes } from './autonomy-activity-history.node.js'
+import { autonomyActivityLimitSchema, autonomyActivityHistoryLimit, readRobotAutonomyActivity } from './autonomy-activity-history.node.js'
 import { readActivationAssessments } from '../../active-operator/activation-history.js'
 import { getOperatorMode } from '../../active-operator/mode-controller.js'
+import { readRobotOperatorBodyConnection } from '../../robot-operator.js'
 import { getQueueManager } from '../../queue/unified-queue-manager.js'
 import { defineNode } from '../types.js'
 import {
@@ -29,6 +30,7 @@ export const robotAutonomyTaskCatalogNode = defineNode({
   inputs: [],
   outputs: [
     { name: 'activationState', type: 'object' },
+    { name: 'memoryHints', type: 'object', description: 'Memory selection recorded by the previous assessment.' },
     { name: 'tasks', type: 'array', description: 'Configured tasks that are currently executable, with their Agent Catalog descriptions' },
     { name: 'taskIds', type: 'array', description: 'Identifiers of the currently available tasks' },
     { name: 'unavailableTaskIds', type: 'array', description: 'Configured tasks that are missing, disabled, or not executable' },
@@ -36,8 +38,12 @@ export const robotAutonomyTaskCatalogNode = defineNode({
   ],
   properties: {
     taskIds: [...DEFAULT_ROBOT_AUTONOMY_TASK_IDS],
+    limit: 10,
+    includeActivityHistory: true,
   },
   propertySchemas: {
+    limit: autonomyActivityLimitSchema,
+    includeActivityHistory: { type: 'boolean', label: 'Include Activity History', default: true, description: 'Whether recorded autonomous activity was selected.' },
     taskIds: {
       type: 'multiselect',
       default: [...DEFAULT_ROBOT_AUTONOMY_TASK_IDS],
@@ -59,7 +65,7 @@ export const robotAutonomyTaskCatalogNode = defineNode({
         tasks.push({
           id,
           name: 'Robot Autonomy Executor',
-          description: 'Executes an already-chosen physical or sensing objective through the Environment workflow, including finite actions and ongoing visual tracking. It can acquire a target from an image, configure object search, select or release a visual target, and observe tracking updates while stationary. It may also use an advertised action or generate an off-script movement. Results return through the existing task workflow; it does not decide which autonomy agent is needed.',
+          description: 'Executes an already-chosen intention through the Environment workflow, including conversation, delegated computer tool use, physical actions, sensing and ongoing visual tracking. It can acquire a target from an image, configure object search, select or release a visual target, and observe tracking updates while stationary. It may also use an advertised action or generate an off-script movement. Results return through the existing task workflow; it does not decide which autonomy agent is needed.',
           kind: 'environment-executor',
           handler: 'environment.observation',
           taskType: 'environment_observation',
@@ -87,22 +93,21 @@ export const robotAutonomyTaskCatalogNode = defineNode({
     }
 
     const previous = context.username ? (await readActivationAssessments(context.username, 1))[0] ?? null : null
-    const manager = getQueueManager()
-    const work = [...manager.getAllTasks(), ...manager.getHistory()].filter(item => item.username === context.username
-      && tasks.some(task => item.input.agentId === task.id || item.metadata?.selectedAgent === task.id))
-    const store = context.username ? openExecutionStore(context.username) : null
-    let activity
-    try {
-      const records = work.map(item => ({ taskId: item.id,
-        capabilityId: String(item.metadata?.selectedAgent ?? item.input.agentId ?? item.handler),
-        handler: item.handler, state: item.state, createdAt: item.createdAt, completedAt: item.completedAt,
-        executionIds: item.graphExecutions ?? (item.durable && item.durable.scope !== 'independent' ? [item.durable.executionId] : []),
-        result: item.result, error: item.error,
-      }))
-      activity = store ? projectAutonomyActivityOutcomes(records, store) : records
-    } finally { store?.close() }
+    let activity: Awaited<ReturnType<typeof readRobotAutonomyActivity>> = []
+    if (properties?.includeActivityHistory !== false && context.username) {
+      const manager = getQueueManager()
+      const work = [...manager.getAllTasks(), ...manager.getHistory()].filter(item => item.username === context.username
+        && tasks.some(task => item.input.agentId === task.id || item.metadata?.selectedAgent === task.id))
+      const store = openExecutionStore(context.username)
+      try {
+        activity = await readRobotAutonomyActivity(store, context.username, work,
+          autonomyActivityHistoryLimit(properties?.limit), tasks.map(task => task.id))
+      } finally { store.close() }
+    }
+    const mode = getOperatorMode()
     const activationState = {
-      mode: getOperatorMode(), assessedAt: new Date().toISOString(), previous,
+      mode, assessedAt: new Date().toISOString(), previous,
+      bodyConnection: readRobotOperatorBodyConnection(context.robotOperatorContext?.sessionId),
       localTime: new Date().toString(), timeZone: Intl.DateTimeFormat().resolvedOptions().timeZone,
       operations: tasks.map(task => ({
         id: task.id, name: task.name, description: task.description, kind: task.kind, activation: previous?.levels[task.id]?.activation ?? 0, activationThreshold: 100,
@@ -112,6 +117,7 @@ export const robotAutonomyTaskCatalogNode = defineNode({
     }
     return {
       activationState,
+      memoryHints: mode === 'full' && previous?.memoryRequest ? { needsMemory: true, ...previous.memoryRequest } : { needsMemory: false },
       tasks,
       taskIds: tasks.map(task => task.id),
       unavailableTaskIds,

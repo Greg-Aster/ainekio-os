@@ -1,4 +1,4 @@
-import type { EnvironmentObservation, EnvironmentNormalizedBox } from './types.js';
+import type { EnvironmentObservation, EnvironmentNormalizedBox, EnvironmentVisualFrame } from './types.js';
 
 export type PersonIdentityEstimate =
   | { trackId: string; state: 'unknown' }
@@ -21,6 +21,21 @@ export interface EnvironmentPerception {
   summary: string;
   objects: Array<{ label: string; score?: number; box?: EnvironmentNormalizedBox; trackId?: string; identity?: PersonIdentityEstimate }>;
   uncertainties: string[];
+}
+
+/** Model-visible frame provenance and recognition; pixels remain image content parts. */
+export function projectEnvironmentVisualFrame(frame: EnvironmentVisualFrame) {
+  return {
+    id: frame.id, timestamp: frame.timestamp, source: frame.source,
+    mimeType: frame.mimeType, width: frame.width, height: frame.height,
+    cameraFrame: frame.metadata ? {
+      robotId: frame.metadata.robotId, gatewayInstance: frame.metadata.gatewayInstance,
+      epoch: frame.metadata.epoch, counter: frame.metadata.counter,
+    } : undefined,
+    actionId: frame.metadata?.actionId,
+    correlationId: frame.metadata?.correlationId,
+    recognition: frame.metadata?.recognition,
+  };
 }
 
 /** Associate recognition with supplied image bytes by full camera identity. */

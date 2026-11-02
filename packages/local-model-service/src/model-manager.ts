@@ -143,7 +143,7 @@ export class ModelManager extends EventEmitter {
    *
    * We force CPU-only mode (gpu: false) because:
    * 1. Embeddings are fast enough on CPU for our use case
-   * 2. GPU memory should be reserved for the main LLM (vLLM/Ollama)
+   * 2. GPU memory should be reserved for the main LLM (llama.cpp/Ollama)
    * 3. This allows embeddings to run in parallel with GPU inference
    * 4. Avoids CUDA out-of-memory errors when GPU is busy
    */

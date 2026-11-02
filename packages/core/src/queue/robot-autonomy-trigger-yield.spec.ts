@@ -9,16 +9,17 @@ const root = fs.mkdtempSync(path.join(os.tmpdir(), 'metahuman-controller-yield-'
 process.env.METAHUMAN_ROOT = root;
 fs.mkdirSync(path.join(root, 'etc'));
 fs.writeFileSync(path.join(root, 'etc', 'agents.json'), JSON.stringify({
-  agents: { 'robot-autonomy-controller': { enabled: true } },
+  agents: { 'robot-autonomy-controller': { enabled: true }, 'robot-status': { enabled: true } },
 }));
 const { eventBus } = await import('../infrastructure/event-bus/client.js');
 eventBus.disconnect();
 const { setAuditEnabled } = await import('../audit.js');
 setAuditEnabled(false);
 const username = 'controller-fixture';
+let capturedContext: any
 let returnedState: GraphExecutionState = { status: 'waiting', nodes: new Map(), startTime: Date.now() };
 const runtime = await import('../graph-runtime.js');
-mock.module('../graph-runtime.js', { namedExports: { ...runtime, runGraph: async () => returnedState } });
+mock.module('../graph-runtime.js', { namedExports: { ...runtime, runGraph: async (options: any) => { capturedContext = options.context; return returnedState } } });
 const users = await import('../users.js');
 mock.module('../users.js', { namedExports: { ...users,
   getUserByUsername: () => ({ id: username, username, role: 'owner' }) } });
@@ -51,5 +52,18 @@ test('Controller still reports actual failures and missing completed decisions',
   returnedState = { ...returnedState, status: 'completed', error: undefined };
   await assert.rejects(invoke, /requires exactly one robot_autonomy_controller_parser/);
 });
+
+test('Robot Status receives delegated camera evidence and originating intention', async () => {
+  const frame = { id: 'frame-43', metadata: { recognition: { objects: [{ label: 'person' }] } } }
+  const plannerDecision = { observed: 'frame-43', instruction: 'Update status', reason: 'New evidence' }
+  returnedState = { status: 'completed', nodes: new Map([['writer', { status: 'completed', outputs: { persisted: true } } as any]]), startTime: Date.now() }
+  await executeRobotAutonomyTriggerWork({ id: 'status-fixture', username, source: 'user', handler: 'workflow.robot-status',
+    input: { agentId: 'robot-status', sessionId: 'body-fixture', plannerDecision,
+      robotOperatorContext: { frames: [frame], currentVisualEvidence: true } },
+  } as never, { signal: new AbortController().signal } as never)
+  assert.deepEqual(capturedContext.robotOperatorContext.frames, [frame])
+  assert.deepEqual(capturedContext.robotOperatorContext.plannerDecision, plannerDecision)
+  assert.equal(capturedContext.robotOperatorContext.sessionId, 'body-fixture')
+})
 
 test.after(() => { mock.restoreAll(); fs.rmSync(root, { recursive: true, force: true }); });

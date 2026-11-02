@@ -183,7 +183,7 @@ const behavior = { kind: 'behavior', target: 'the distinctive object described b
   motion: { type: 'move', direction: 'forward', continuous: true, durationMs: 1000, speed: 60, forward: 80, turn: 20 },
   candidateLabels: ['cup'], identifyEveryFrames: 3, steering: { label: 'cup', gain: 100 } }
 const program = { steps: [behavior, { kind: 'action', action: { type: 'robotCommand', command: 'wave' } }] }
-const route = {"needsResponse": false, "needsAction": true, "taskContext": ["environment", "vision"], "conversationContext": []}
+const route = {"needsGoalReview": false, "needsToolUse": false, "taskPlanner": "specialist", "needsResponse": false, "needsAction": true, "taskContext": ["environment", "vision"], "conversationContext": []}
 
 function fixture(sessionId: string, automaticInterpretation = true, suppliedObservation?: EnvironmentObservation) {
   const timestamp = new Date().toISOString()
@@ -1148,7 +1148,7 @@ test('acquisition evidence re-enters the existing task workflow and selects its 
       assert.ok(read)
       const readWork = manager.getTask(String(read.requestId))!
       recordEnvironmentVisualReadResult({ ...read, type: 'environment.visual.result', visual: image })
-      await deliverDurableWorkReceipt(readWork, async input => manager.enqueue(input))
+      await deliverDurableWorkReceipt(readWork, manager)
       await f.run(started.executionId)
       const identification = manager.getAllTasks().find(task => task.handler === 'environment.identify'
         && task.durable?.executionId === started.executionId && task.state === 'queued')!

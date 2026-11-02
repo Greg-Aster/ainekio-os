@@ -2,6 +2,8 @@ import assert from 'node:assert/strict'
 import test from 'node:test'
 
 import { executeAgentTrigger } from './agent-trigger.node.js'
+import { buildAgentFollowOnTaskInput } from '../../queue/work-submission.js'
+import { UnifiedQueueManager } from '../../queue/unified-queue-manager.js'
 
 const context = {
   username: 'test-user',
@@ -10,25 +12,27 @@ const context = {
 
 test('Agent Trigger admits the exact seed through the canonical follow-on contract', async () => {
   const submissions: Record<string, any>[] = []
+  const seed = 'Original reflection. ' + 'x'.repeat(12_100) + ' Complete final evidence. 🤖'
+  const manager = new UnifiedQueueManager()
   const result = await executeAgentTrigger(
-    { seed: 'A persisted reflection worth extending.' },
+    { seed },
     context,
     { agentName: 'train-of-thought', sourceAgent: 'reflector', probability: 1 },
     {
       random: () => 0.99,
       submit: async input => {
         submissions.push(input)
-        return { id: 'task-follow-on' } as any
+        return manager.enqueue(buildAgentFollowOnTaskInput(input))
       },
     },
   )
 
   assert.equal(result.admitted, true)
-  assert.equal(result.taskId, 'task-follow-on')
+  assert.equal(manager.getTask(result.taskId)?.input.seed, seed)
   assert.equal(submissions.length, 1)
   assert.equal(submissions[0].agentId, 'train-of-thought')
   assert.equal(submissions[0].username, 'test-user')
-  assert.equal(submissions[0].seed, 'A persisted reflection worth extending.')
+  assert.equal(submissions[0].seed, seed)
   assert.equal(submissions[0].sourceAgent, 'reflector')
   assert.match(submissions[0].executionId, /^reflector:[a-f0-9]{32}$/)
   assert.equal(

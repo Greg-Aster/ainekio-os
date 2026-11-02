@@ -220,7 +220,6 @@ function extractSlotIndex(handleName: string, isOutput: boolean): number {
  * Convert Svelte Flow graph to legacy format for execution
  */
 export function convertToLegacyFormat(sfGraph: SvelteFlowGraph): CognitiveGraph {
-  console.log(`${LOG_PREFIX} Converting Svelte Flow graph to legacy format: ${sfGraph.name} (${sfGraph.nodes.length} nodes, ${sfGraph.edges.length} edges)`);
   
   // Convert nodes
   const nodes: CognitiveGraphNode[] = sfGraph.nodes.map((node) => {
@@ -266,12 +265,9 @@ export function convertToLegacyFormat(sfGraph: SvelteFlowGraph): CognitiveGraph 
  */
 export function normalizeForExecution(graph: unknown): CognitiveGraph {
   const g = graph as any;
-  console.log(`${LOG_PREFIX} Normalizing graph for execution: ${g?.name || 'unnamed'}`);
   if (isSvelteFlowFormat(graph)) {
-    console.log(`${LOG_PREFIX} Detected Svelte Flow format, converting to legacy`);
     return convertToLegacyFormat(graph as SvelteFlowGraph);
   }
-  console.log(`${LOG_PREFIX} Already in legacy format`);
   return g as CognitiveGraph;
 }
 
@@ -418,7 +414,6 @@ function validateRegisteredNodeContracts(graph: any, errors: string[]): void {
  * Validate a Svelte Flow graph structure
  */
 export function validateSvelteFlowGraph(graph: any): SvelteFlowGraph {
-  console.log(`${LOG_PREFIX} Validating Svelte Flow graph: ${graph?.name || 'unnamed'}`);
   const errors: string[] = [];
 
   if (!graph || typeof graph !== 'object' || Array.isArray(graph)) {
@@ -668,7 +663,6 @@ export function validateSvelteFlowGraph(graph: any): SvelteFlowGraph {
  * Validate a cognitive graph structure
  */
 export function validateCognitiveGraph(graph: any): CognitiveGraph {
-  console.log(`${LOG_PREFIX} Validating cognitive graph: ${graph?.name || 'unnamed'}`);
   const errors: string[] = [];
 
   // Required metadata

@@ -1,10 +1,8 @@
 <script lang="ts">
-  import { onMount, onDestroy, setContext } from 'svelte';
-  import { writable } from 'svelte/store';
-  import { graphEditorHref, statusStore, statusRefreshTrigger, nodeEditorMode, rightSidebarOpen as rightSidebarStore, userDisplayNameStore } from '../stores/navigation';
-  import { clearSecurityPolicy, fetchSecurityPolicy, policyStore, isOwner, isReadOnly } from '../stores/security-policy';
+  import { onMount } from 'svelte';
+  import { graphEditorHref, statusStore, statusRefreshTrigger, nodeEditorMode, rightSidebarOpen as rightSidebarStore, currentUserStore, userDisplayNameStore } from '../stores/navigation';
+  import { clearSecurityPolicy, fetchSecurityPolicy, policyStore, isOwner } from '../stores/security-policy';
   import { apiFetch, apiUrl } from '../lib/client/api-config';
-  import UserMenu from './UserMenu.svelte';
   import HeadlessClaimBanner from './HeadlessClaimBanner.svelte';
   // FlowEditorLayout is loaded dynamically to avoid bundling @xyflow/svelte in client
   type FlowEditorLayoutComponentType = typeof import('./flow-editor/FlowEditorLayout.svelte').default;
@@ -24,12 +22,8 @@
   let resizeStartX = 0;
   let resizeStartWidth = 0;
 
-  // Create a store for leftSidebarOpen and expose it via context
-  const leftSidebarStore = writable(false);
-  setContext('leftSidebarOpen', leftSidebarStore);
-
-  // Sync store with local variable
-  $: leftSidebarStore.set(leftSidebarOpen);
+  let resizeUserSelect = '';
+  let resizeCursor = '';
 
   interface ModeDefinition {
     id: 'dual' | 'agent' | 'emulation' | 'environment';
@@ -38,8 +32,8 @@
     guidance: string[];
   }
 
-  let cognitiveMode: ModeDefinition | null = null;
   let cognitiveModes: ModeDefinition[] = [];
+  $: cognitiveMode = $policyStore ? cognitiveModes.find(mode => mode.id === $policyStore.mode) ?? null : null;
   let modeMenuOpen = false;
   let modeLoading = false;
   let modeError = '';
@@ -48,35 +42,18 @@
   // System status and allowed modes
   let systemStatus: any = null;
   let allowedModes: string[] = [];
-  let disabledModes: string[] = [];
 
-  // User authentication state
-  interface User {
-    id: string;
-    username: string;
-    role: 'owner' | 'guest' | 'anonymous';
-    metadata?: {
-      displayName?: string;
-      sourceProfile?: string;
-      activeProfile?: string;
-    };
-  }
-  let currentUser: User | null = null;
-
-  // Get display name for user (handles guest profiles)
-  $: displayUsername = currentUser?.role === 'anonymous' && currentUser?.metadata?.sourceProfile
-    ? `Guest: ${currentUser.metadata.sourceProfile}`
-    : currentUser?.metadata?.displayName || currentUser?.username || 'Anonymous';
-  // Sync to store for use in chat cards
-  $: userDisplayNameStore.set(displayUsername);
+  // AuthGate owns session restoration; the layout consumes its result.
+  $: currentUser = $currentUserStore;
+  $: displayUsername = $userDisplayNameStore;
   let userMenuOpen = false;
   let userMenuAnchor: HTMLElement | null = null;
 
   // Persona name and icon state
-  let personaName = 'MetaHuman OS';
-  let personaIcon: string | null = null;
+  $: personaName = $statusStore?.identity?.name || 'MetaHuman OS';
+  $: personaIcon = $statusStore?.identity?.icon || null;
   let personaIconError = false;
-  let personaLoading = true;
+  $: if (personaIcon) personaIconError = false;
 
   type ModeVisual = {
     icon: string;
@@ -128,28 +105,20 @@
   function updateScreenSize() {
     if (typeof window !== 'undefined') {
       isMobile = window.innerWidth < 768;
+      if (isMobile) stopRightSidebarResize();
     }
   }
 
-  async function loadPersonaName(bustCache = false) {
+  async function loadStatus(bustCache = false) {
     try {
       // Add timestamp to bust server-side cache when explicitly requested
       const cacheBust = bustCache ? `?_t=${Date.now()}` : '';
       const res = await apiFetch(`/api/status${cacheBust}`, { cache: 'no-store' });
-      if (!res.ok) throw new Error(`Failed to load persona (status ${res.status})`);
+      if (!res.ok) throw new Error(`Failed to load portal status (status ${res.status})`);
       const data = await res.json();
       statusStore.set(data);  // Store the response for other components to use
-      if (data?.identity?.name) {
-        personaName = data.identity.name;
-      }
-      if (data?.identity?.icon) {
-        personaIcon = data.identity.icon;
-      }
     } catch (error) {
-      console.warn('Failed to load persona name:', error);
-      // Keep default "MetaHuman OS"
-    } finally {
-      personaLoading = false;
+      console.warn('Failed to load portal status:', error);
     }
   }
 
@@ -160,8 +129,6 @@
       if (!res.ok) throw new Error(`Failed to load cognitive mode (status ${res.status})`);
       const data = await res.json();
       cognitiveModes = Array.isArray(data?.modes) ? data.modes : [];
-      const current = cognitiveModes.find(mode => mode.id === data?.mode);
-      cognitiveMode = current ?? null;
       modeError = '';
     } catch (error) {
       modeError = (error as Error).message;
@@ -213,26 +180,9 @@
       if (data.success) {
         systemStatus = data;
         allowedModes = data.allowedModes || [];
-        disabledModes = data.disabledModes || [];
       }
     } catch (error) {
       console.error('[ChatLayout] Failed to fetch system status:', error);
-    }
-  }
-
-  async function fetchCurrentUser() {
-    try {
-      const response = await apiFetch('/api/auth/me');
-      const data = await response.json();
-
-      if (data.success && data.user) {
-        currentUser = data.user;
-      } else {
-        currentUser = null;
-      }
-    } catch (err) {
-      console.error('[ChatLayout] Failed to fetch user:', err);
-      currentUser = null;
     }
   }
 
@@ -240,6 +190,8 @@
     try {
       await apiFetch('/api/auth/logout', { method: 'POST' });
       clearSecurityPolicy();
+      currentUserStore.set(null);
+      statusStore.set(null);
       window.location.href = '/';
     } catch (err) {
       console.error('[ChatLayout] Logout failed:', err);
@@ -262,7 +214,7 @@
     }
   };
 
-  // Load sidebar preferences from localStorage and ensure core agents are running
+  // Restore layout preferences and load the authenticated portal state
   onMount(() => {
     updateScreenSize();
 
@@ -301,20 +253,15 @@
     window.addEventListener('resize', setVH);
     window.addEventListener('orientationchange', setVH);
 
-    // NOTE: Automatic warmup removed - models are warmed individually when assigned
-    // This prevents duplicate warmup requests and race conditions with Ollama
-
-    void loadPersonaName();
+    void loadStatus();
     void loadCognitiveModeState();
     void fetchSystemStatus();
-    void fetchCurrentUser();
-    void fetchSecurityPolicy();
     document.addEventListener('click', handleGlobalClick, true);
 
 
     const handleVisibility = () => {
       if (!document.hidden) {
-        void loadPersonaName();
+        void loadStatus();
         void fetchSecurityPolicy();
       }
     };
@@ -328,18 +275,13 @@
       document.removeEventListener('click', handleGlobalClick, true);
       document.removeEventListener('visibilitychange', handleVisibility);
       window.removeEventListener('focus', handleVisibility);
+      stopRightSidebarResize();
     };
-  });
-
-  onDestroy(() => {
-    if (typeof document !== 'undefined') {
-      document.removeEventListener('click', handleGlobalClick, true);
-    }
   });
 
   // Watch for refresh trigger changes - bust cache on manual refresh
   $: if ($statusRefreshTrigger > 0) {
-    void loadPersonaName(true);  // Always bust cache on manual refresh
+    void loadStatus(true);  // Always bust cache on manual refresh
     void loadCognitiveModeState();
   }
 
@@ -365,6 +307,7 @@
   }
 
   function toggleRightSidebar() {
+    stopRightSidebarResize();
     rightSidebarStore.update(v => !v);
     // localStorage persistence handled by store subscription in navigation.ts
   }
@@ -372,6 +315,9 @@
   // Right sidebar resize handlers
   function startRightSidebarResize(e: MouseEvent | TouchEvent) {
     if (isMobile) return; // Disable resize on mobile
+    stopRightSidebarResize();
+    resizeUserSelect = document.body.style.userSelect;
+    resizeCursor = document.body.style.cursor;
     isResizingRightSidebar = true;
     resizeStartX = 'touches' in e ? e.touches[0].clientX : e.clientX;
     resizeStartWidth = rightSidebarWidth;
@@ -385,6 +331,8 @@
     document.addEventListener('mouseup', stopRightSidebarResize);
     document.addEventListener('touchmove', handleRightSidebarResize);
     document.addEventListener('touchend', stopRightSidebarResize);
+    document.addEventListener('touchcancel', stopRightSidebarResize);
+    window.addEventListener('blur', stopRightSidebarResize);
   }
 
   function handleRightSidebarResize(e: MouseEvent | TouchEvent) {
@@ -398,16 +346,29 @@
   }
 
   function stopRightSidebarResize() {
+    if (!isResizingRightSidebar) return;
     isResizingRightSidebar = false;
-    document.body.style.userSelect = '';
-    document.body.style.cursor = '';
+    document.body.style.userSelect = resizeUserSelect;
+    document.body.style.cursor = resizeCursor;
 
     // Remove global listeners
     document.removeEventListener('mousemove', handleRightSidebarResize);
     document.removeEventListener('mouseup', stopRightSidebarResize);
     document.removeEventListener('touchmove', handleRightSidebarResize);
     document.removeEventListener('touchend', stopRightSidebarResize);
+    document.removeEventListener('touchcancel', stopRightSidebarResize);
+    window.removeEventListener('blur', stopRightSidebarResize);
+    saveRightSidebarWidth();
+  }
 
+  function resizeRightSidebarWithKeyboard(e: KeyboardEvent) {
+    if (e.key !== 'ArrowLeft' && e.key !== 'ArrowRight') return;
+    e.preventDefault();
+    rightSidebarWidth = Math.max(200, Math.min(600, rightSidebarWidth + (e.key === 'ArrowLeft' ? 20 : -20)));
+    saveRightSidebarWidth();
+  }
+
+  function saveRightSidebarWidth() {
     // Save preference to localStorage
     try {
       localStorage.setItem('mh-right-sidebar-width', String(rightSidebarWidth));
@@ -627,6 +588,8 @@
   <div class="flex flex-1 overflow-hidden relative">
     <!-- Left Sidebar -->
     <aside
+      inert={!leftSidebarOpen}
+      aria-hidden={!leftSidebarOpen}
       class="flex flex-col border-r border-gray-200 dark:border-gray-800 bg-gray-50 dark:bg-gray-900 overflow-hidden transition-all duration-300 ease-in-out {leftSidebarOpen ? 'w-[280px]' : 'w-0 border-0'} max-md:fixed max-md:left-0 max-md:top-[57px] max-md:bottom-0 max-md:z-30 max-md:shadow-lg"
     >
       <div class="flex flex-col w-[280px] h-full overflow-y-auto overflow-x-hidden">
@@ -665,13 +628,12 @@
         aria-valuemax="600"
         aria-valuenow={rightSidebarWidth}
         tabindex="0"
-        on:keydown={(e) => {
-          if (e.key === 'ArrowLeft') { rightSidebarWidth = Math.min(600, rightSidebarWidth + 20); }
-          if (e.key === 'ArrowRight') { rightSidebarWidth = Math.max(200, rightSidebarWidth - 20); }
-        }}
+        on:keydown={resizeRightSidebarWithKeyboard}
       ></div>
     {/if}
     <aside
+      inert={!rightSidebarOpen}
+      aria-hidden={!rightSidebarOpen}
       class="flex flex-col border-l border-gray-200 dark:border-gray-800 bg-gray-50 dark:bg-gray-900 overflow-hidden transition-all duration-300 ease-in-out max-md:fixed max-md:right-0 max-md:top-[57px] max-md:bottom-0 max-md:z-30 max-md:shadow-lg {rightSidebarOpen ? '' : 'w-0 border-0'}"
       style={rightSidebarOpen && !isMobile ? `width: ${rightSidebarWidth}px` : rightSidebarOpen ? 'width: 280px' : ''}
     >

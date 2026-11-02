@@ -185,15 +185,6 @@ export async function fetchRemoteModels(
         });
       }
 
-      // Extract currently loaded vLLM model if available
-      if (data.available?.vllm?.running && data.available?.vllm?.model) {
-        models.push({
-          id: `remote-vllm-${data.available.vllm.model}`,
-          model: data.available.vllm.model,
-          provider: 'remote-vllm',
-        });
-      }
-
       // Try to get ALL available Ollama models (not just loaded)
       try {
         const ollamaModelsRes = await fetch(`${baseUrl}/api/ollama/models`, {
@@ -234,8 +225,8 @@ export async function fetchRemoteModels(
           const registryData = await registryResponse.json();
           if (registryData.availableModels) {
             for (const model of registryData.availableModels) {
-              // Only add local backend models (ollama/vllm) - not cloud providers
-              if (model.provider === 'ollama' || model.provider === 'vllm') {
+              // Only add local backend models (ollama) - not cloud providers
+              if (model.provider === 'ollama') {
                 const existing = models.find(m => m.model === model.model);
                 if (!existing) {
                   models.push({

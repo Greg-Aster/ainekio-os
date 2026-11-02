@@ -137,8 +137,10 @@ test('authentication owns recovery selection across startup, profile switches an
       assert.equal(manager.getNextExecutable(), null)
       assert.equal(manager.getTask(oldWork[0].id)?.state, 'queued')
       assert.equal(manager.getTask(oldWork[1].id)?.state, 'queued')
-      const autonomous = manager.enqueue({ type: 'generic', handler: 'graph.signal', username: users[0].username, input: {} })
-      assert.equal(manager.claim(autonomous.id), null, 'A newly delivered continuation cannot bypass logout')
+      const continuation = stores[0].dispatches(records[0].executionId).find(effect => effect.kind === 'graph_resume')!
+      assert.ok(continuation, 'The existing recovery owner recorded the continuation')
+      const autonomous = manager.enqueue(executionWorkInput(stores[0], continuation))
+      assert.equal(manager.claim(autonomous.id), null, 'A durable continuation cannot bypass logout')
     })
 
     await t.test('a locked profile is not selected; canonical locking and session expiry revoke readiness', async () => {
@@ -309,7 +311,7 @@ test('result evidence is retained while only prior-runtime continuations require
   for (const entry of [old, current]) {
     manager.complete(entry.task.id, true, { observed: true })
     const task = manager.getTask(entry.task.id)!
-    await deliverDurableWorkReceipt(task, async input => manager.enqueue(input))
+    await deliverDurableWorkReceipt(task, manager)
     const store = openExecutionStore(task.username)
     try {
       assert.equal(store.events(entry.record.executionId).filter(event => event.kind === 'work_result').length, 1)
@@ -436,7 +438,7 @@ test('opening a pre-upgrade execution preserves its identity and does not mark i
   const filename = path.join(root, 'legacy.sqlite')
   let store = new ExecutionStore(filename)
   const saved = store.create('profile-a', definition)
-  store.db.exec('ALTER TABLE executions DROP COLUMN origin_runtime_id')
+  store.db.exec('ALTER TABLE executions DROP COLUMN origin_runtime_id; PRAGMA user_version=0')
   store.close()
   store = new ExecutionStore(filename, undefined, 'new-runtime')
   try {

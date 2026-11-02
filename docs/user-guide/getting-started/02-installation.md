@@ -19,7 +19,7 @@ optional services you choose.
 
 Optional:
 
-- Ollama, vLLM, the local-model service, or a configured remote model backend
+- llama.cpp, Ollama, the local-model service, or a configured remote model backend
 - Python environments required by particular training or voice providers
 - An NVIDIA GPU for supported local training or larger local inference
 - `cloudflared` for the maintained tunnel workflow

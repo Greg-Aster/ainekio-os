@@ -5,6 +5,7 @@ import { ROOT } from '../../path-builder.js'
 import { TerminalProcess } from '../process.js'
 import { terminalJobs } from '../paths.js'
 import { formatProviderDisplay, terminalHeading } from '../presentation.js'
+import { runCodexModelTurn } from './codex-app-server.js'
 import {
   buildBigBrotherCLIInvocation, parseBigBrotherTerminalEvent, providerLabel,
   type BigBrotherSessionResult, type ParsedBigBrotherEvent, type TerminalBigBrotherProvider,
@@ -29,6 +30,7 @@ export async function runProvider(
   let failure: string | undefined
   let timer: NodeJS.Timeout | undefined
   let cancellation: Promise<void> | undefined
+  let modelTurnCompleted = false
   const cleanup = async () => {
     if (owned) await owned.stop()
     fs.rmSync(invocation.tempDir, { recursive: true, force: true })
@@ -63,7 +65,7 @@ export async function runProvider(
     signal.addEventListener('abort', cancel, { once: true })
     if (signal.aborted) cancel()
     child.stdin.on('error', error => { failure ||= error.message; cancel() })
-    child.stdin.end(invocation.stdin)
+    if (!invocation.appServer) child.stdin.end(invocation.stdin)
     if (invocation.timeout > 0) timer = setTimeout(() => { failure = `Timed out after ${invocation.timeout}ms`; cancel() }, invocation.timeout)
 
     const consume = async (line: string) => {
@@ -75,7 +77,15 @@ export async function runProvider(
       if (parsed.displayLines.length) await display(formatProviderDisplay(providerLabel(provider), parsed.displayLines))
       observe(parsed)
     }
-    const stdoutTask = (async () => {
+    const stdoutTask = invocation.appServer ? runCodexModelTurn(child, options.modelRequest!, invocation.appServer,
+      options.workingDirectory || ROOT, async parsed => {
+        if (parsed.displayLines.length) await display(formatProviderDisplay(providerLabel(provider), parsed.displayLines))
+        observe(parsed)
+      }).then(async output => {
+        finalText = output
+        modelTurnCompleted = true
+        await owned!.stop()
+      }) : (async () => {
       const decoder = new StringDecoder('utf8')
       let buffered = ''
       for await (const chunk of child.stdout) {
@@ -99,7 +109,7 @@ export async function runProvider(
       }
     })()
     const output = Promise.all([stdoutTask, stderrTask])
-    output.catch(error => { failure = error.message; cancel() })
+    output.catch(error => { failure ||= error.message; cancel() })
     const result = await exit
     await output
     if (cancellation) await cancellation
@@ -108,11 +118,11 @@ export async function runProvider(
       if (fs.statSync(invocation.resultFile).size > MAX_RESULT) throw new Error('Big Brother response exceeds 4 MiB')
       finalText = fs.readFileSync(invocation.resultFile, 'utf8').trim() || finalText
     }
-    failure ||= result.error?.message || (result.code !== 0 ? stderr.trim() || `Provider exited with code ${result.code}` : undefined)
+    failure ||= result.error?.message || (!modelTurnCompleted && result.code !== 0 ? stderr.trim() || `Provider exited with code ${result.code}` : undefined)
     return { success: !failure, output: finalText, error: failure, executionTime: Date.now() - started,
       metadata: { provider, exitCode: result.code } }
   } catch (error) {
-    return { success: false, output: finalText, error: (error as Error).message,
+    return { success: false, output: finalText, error: failure || (error as Error).message,
       executionTime: Date.now() - started, metadata: { provider } }
   } finally {
     clearTimeout(timer)

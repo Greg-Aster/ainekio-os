@@ -427,10 +427,6 @@ export function getProfilePaths(username: string) {
     voiceDataset: path.join(profileRoot, 'out', 'voice-training', 'dataset'),
     voiceConfig: path.join(profileRoot, 'etc', 'voice.json'),
 
-    // GPT-SoVITS reference audio (profile-specific)
-    sovitsReference: path.join(profileRoot, 'out', 'voices', 'sovits'),
-    sovitsModels: path.join(profileRoot, 'out', 'voices', 'sovits-models'),
-
     // RVC voice models (profile-specific)
     rvcReference: path.join(profileRoot, 'out', 'voices', 'rvc'),
     rvcModels: path.join(profileRoot, 'out', 'voices', 'rvc-models'),

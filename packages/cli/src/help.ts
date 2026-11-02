@@ -32,14 +32,12 @@ Agents and models:
   terminal <cmd>     Start, stop, inspect, or view a Terminal agent session
   big-brother <cmd>   Inspect or stop the Big Brother session
   ollama <command>    Manage the Ollama backend
-  vllm <command>      Manage the vLLM backend
   backend <command>   Inspect or switch the active backend
 
 Audio and voice:
   voice <command>         Inspect samples and export training data
   voice-server <command>  Manage shared Kokoro/Whisper services
   kokoro <command>        Manage Kokoro
-  sovits <command>        Manage GPT-SoVITS
   rvc <command>           Manage RVC
 
 Context:

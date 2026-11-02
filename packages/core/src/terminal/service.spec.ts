@@ -1,20 +1,41 @@
 import assert from 'node:assert/strict'
 import { spawn } from 'node:child_process'
 import fs from 'node:fs'
+import http from 'node:http'
 import os from 'node:os'
 import path from 'node:path'
 import test from 'node:test'
 import { fileURLToPath } from 'node:url'
 import { setTimeout as delay } from 'node:timers/promises'
+import * as pty from 'node-pty'
 
 const repo = fileURLToPath(new URL('../../../../', import.meta.url))
 const root = fs.mkdtempSync(path.join(os.tmpdir(), 'mh-terminal-service-'))
 process.env.METAHUMAN_ROOT = root
 fs.mkdirSync(path.join(root, 'etc'), { recursive: true })
+fs.writeFileSync(path.join(root, 'codex-calls.jsonl'), '')
 fs.writeFileSync(path.join(root, 'etc', 'agents.json'), JSON.stringify({ agents: {} }))
 const executable = path.join(root, 'provider.cjs')
 fs.writeFileSync(executable, `#!/usr/bin/env node
 let prompt = '';
+if (process.argv.includes('app-server')) {
+  const messages=[];
+  require('readline').createInterface({input:process.stdin}).on('line', line=>{
+    const message=JSON.parse(line);messages.push(message);
+    const reply = result => console.log(JSON.stringify({id:message.id,result}));
+    if(message.method==='initialize') reply({userAgent:'fixture'});
+    if(message.method==='thread/start') reply({thread:{id:'fixture-native-thread'}});
+    if(message.method==='thread/inject_items') reply({});
+    if(message.method==='turn/start') {
+      require('fs').appendFileSync(${JSON.stringify(path.join(root, 'codex-calls.jsonl'))}, JSON.stringify({args:process.argv.slice(2),messages})+'\\n');
+      reply({turn:{id:'native-turn',status:'inProgress',items:[]}});
+      const item={type:'agentMessage',id:'native-answer',phase:'final_answer',text:'{"reply":"native model result"}'};
+      console.log(JSON.stringify({method:'item/agentMessage/delta',params:{threadId:'fixture-native-thread',turnId:'native-turn',itemId:item.id,delta:item.text}}));
+      console.log(JSON.stringify({method:'item/completed',params:{threadId:'fixture-native-thread',turnId:'native-turn',item}}));
+      console.log(JSON.stringify({method:'turn/completed',params:{threadId:'fixture-native-thread',turn:{id:'native-turn',status:'completed',items:[item]}}}));
+    }
+  });
+} else {
 process.stdin.setEncoding('utf8');
 process.stdin.on('data', data => prompt += data);
 process.stdin.on('end', () => {
@@ -30,11 +51,13 @@ process.stdin.on('end', () => {
   console.log(JSON.stringify({type:'assistant',message:{content:[{type:'text',text:'fixture response'}]}}));
   if (prompt.includes('wait')) setInterval(() => {}, 1000);
 });
+}
 `, { mode: 0o700 })
 const desktopBin = path.join(root, 'desktop-bin')
 fs.mkdirSync(desktopBin)
 fs.writeFileSync(path.join(desktopBin, 'x-terminal-emulator'), `#!/usr/bin/env node
 require('fs').appendFileSync(${JSON.stringify(path.join(root, 'desktop-calls.jsonl'))}, JSON.stringify(process.argv.slice(2))+'\\n');
+process.on('SIGUSR1', () => { process.stderr.write('fixture desktop failed\\n'); process.exit(23); });
 setInterval(() => {}, 1000);
 `, { mode: 0o700 })
 fs.writeFileSync(path.join(root, 'etc', 'tool-executor.json'), JSON.stringify({ backends: {
@@ -72,6 +95,11 @@ async function launch() {
   await eventually(async () => (await client.getTerminalState()).status === 'running')
 }
 async function waitForExit() { await eventually(() => service?.exitCode !== null || service?.signalCode !== null) }
+function terminalAudit(event: string, sessionId: string) {
+  const directory = path.join(root, 'logs', 'audit')
+  return fs.readdirSync(directory).flatMap(file => fs.readFileSync(path.join(directory, file), 'utf8').trim().split('\n'))
+    .map(line => JSON.parse(line)).filter(entry => entry.event === event && entry.details?.sessionId === sessionId)
+}
 
 test.after(async () => {
   try { await client.stopTerminalService() } finally {
@@ -109,19 +137,52 @@ test('private service retains sessions across stream disconnects and preserves s
   assert.deepEqual((await client.getTerminalState()).sessions, [])
 })
 
-test('provider reservation is atomic, UI disconnect does not cancel, close does cancel', async () => {
+test('provider calls overlap with independent results and targeted cancellation', async () => {
   const work = client.executeInBigBrotherSession('claude-code', 'wait')
   await eventually(async () => (await client.getBigBrotherSessionState()).processRunning)
+  const first = (await client.getBigBrotherSessionState()).id!
   const visibility = await client.terminalRequest('/events')
   visibility.destroy()
-  await assert.rejects(client.executeInBigBrotherSession('codex', 'second'), /already has an active execution/)
+  const second = await client.executeInBigBrotherSession('codex', 'second')
+  assert.equal(second.success, true, second.error)
+  assert.equal(second.output, 'diagnostic fixture result')
+  assert.equal((await client.getBigBrotherSessionState()).id, first)
   assert.equal((await client.getBigBrotherSessionState()).processRunning, true)
+  const third = client.executeInBigBrotherSession('claude-code', 'wait-third')
+  await eventually(async () => (await client.getTerminalState()).sessions.filter(s => s.phase === 'running').length === 2)
+  await client.terminalCall('/close', { id: first })
+  assert.equal((await client.getBigBrotherSessionState()).processRunning, true, 'closing one call does not cancel its sibling')
   await client.stopBigBrotherSession()
   const result = await work
   assert.equal(result.success, false)
   assert.match(result.error || '', /closed/)
+  assert.equal((await third).success, false)
   assert.deepEqual((await client.getTerminalState()).sessions, [])
   assert.deepEqual(fs.readdirSync(terminalReceipts), [])
+})
+
+test('graph messages retain native roles through the private terminal service and return final JSON', async () => {
+  const chunks: string[] = []
+  const result = await client.executeInBigBrotherSession('codex', '', {
+    modelRequest: { messages: [
+      { role: 'system', content: 'Original graph instructions' },
+      { role: 'user', content: 'Previous request' },
+      { role: 'assistant', content: 'Previous reply' },
+      { role: 'user', content: 'Current request' },
+    ], contextWindow: 872000 }, enableThinking: false, onChunk: text => chunks.push(text),
+  })
+  assert.equal(result.success, true, result.error)
+  assert.deepEqual(JSON.parse(result.output), { reply: 'native model result' })
+  assert.ok(chunks.join('').includes('native model result'))
+  const call = JSON.parse(fs.readFileSync(path.join(root, 'codex-calls.jsonl'), 'utf8').trim().split('\n').at(-1)!)
+  assert.equal(call.args[0], 'app-server')
+  assert.ok(call.args.includes('model_context_window=872000'))
+  assert.equal(call.messages.find((message: any) => message.method === 'thread/start').params.baseInstructions, 'Original graph instructions')
+  assert.deepEqual(call.messages.find((message: any) => message.method === 'thread/inject_items').params.items.map((item: any) => item.role), ['user', 'assistant', 'user'])
+  assert.deepEqual(call.messages.at(-1).params.input, [])
+  assert.equal(call.messages.at(-1).params.effort, 'none')
+  assert.deepEqual(fs.readdirSync(terminalReceipts), [])
+  await client.stopBigBrotherSession()
 })
 
 test('stream authentication is revoked after logout without terminating the shell', async () => {
@@ -227,6 +288,7 @@ test('Big Brother starts the canonical service on demand and works again after a
 test('diagnostic node opens one desktop, queues reports, resumes the exact thread and keeps chat separate', async t => {
   await launch()
   t.after(async () => { await client.stopTerminalService(); await waitForExit() })
+  const previousCalls = fs.readFileSync(path.join(root, 'codex-calls.jsonl'), 'utf8').trim().split('\n').filter(Boolean).length
   const { bigBrotherNode } = await import('../nodes/utility/big-brother.node.js')
   const first = await bigBrotherNode.execute({ data: { error: 'first diagnostic' }, data2: false },
     { username: 'fixture', userMessage: 'fixture request',
@@ -239,7 +301,7 @@ test('diagnostic node opens one desktop, queues reports, resumes the exact threa
     const session = (await client.getTerminalState()).sessions.find(s => s.id === first.sessionId)
     return session?.phase === 'completed' && session.diagnostic?.submissionId === second.submissionId && session.diagnostic.pending === 0
   })
-  const calls = fs.readFileSync(path.join(root, 'codex-calls.jsonl'), 'utf8').trim().split('\n').map(line => JSON.parse(line))
+  const calls = fs.readFileSync(path.join(root, 'codex-calls.jsonl'), 'utf8').trim().split('\n').slice(previousCalls).map(line => JSON.parse(line))
   assert.equal(calls.length, 2)
   assert.match(calls[0].prompt, /"data2": false/)
   assert.match(calls[0].prompt, /"label": "User Input"/)
@@ -296,6 +358,11 @@ test('diagnostic failures remain visible, new reports resume, and closing cancel
   const failed = (await client.getTerminalState()).sessions.find(s => s.id === first.sessionId)!
   assert.match(failed.error || '', /code 1/)
   const second = await client.submitBigBrotherDiagnostic({ ...request, data: 'hold-diagnostic' })
+  await eventually(async () => (await client.getTerminalState()).sessions.find(s => s.id === first.sessionId)?.phase === 'running')
+  const ordinary = await client.executeInBigBrotherSession('claude-code', 'complete')
+  assert.equal(ordinary.success, true, 'model calls do not wait for an independent diagnostic thread')
+  await client.stopBigBrotherSession()
+  assert.equal((await client.getTerminalState()).sessions.find(s => s.id === first.sessionId)?.phase, 'running')
   const pending = await client.submitBigBrotherDiagnostic({ ...request, data: 'pending-diagnostic' })
   assert.equal(second.sessionId, first.sessionId)
   await client.terminalCall('/close', { id: first.sessionId })
@@ -345,4 +412,146 @@ test('closing the tool terminal settles its waiting caller and cancels owned wor
   const result = await work
   assert.equal(result.success, false)
   assert.match(result.error || '', /closed/)
+})
+
+test('native terminal viewer keeps tool work alive across ordinary model calls and closes its own work', async t => {
+  await launch()
+  const work = client.executeBigBrotherTool({ prompt: 'fixture tool', data: 'hold-diagnostic', reasoning: true, toolTaskId: 'native-viewer' })
+  await eventually(async () => (await client.getTerminalState()).sessions.some(s => s.title === 'Big Brother Tools' && s.phase === 'running'))
+  const session = (await client.getTerminalState()).sessions.find(s => s.title === 'Big Brother Tools')!
+  const viewer = pty.spawn(path.join(repo, 'bin', 'mh'), ['terminal', 'view', session.id], {
+    cwd: repo, env: env as Record<string, string>, cols: 100, rows: 30, name: 'xterm-256color',
+  })
+  let output = ''
+  let viewerExit: number | undefined
+  viewer.onData(chunk => { output += chunk })
+  viewer.onExit(({ exitCode }) => { viewerExit = exitCode })
+  t.after(async () => {
+    if (viewerExit === undefined) viewer.kill('SIGTERM')
+    await client.stopTerminalService()
+    await work
+    await waitForExit()
+  })
+  await eventually(() => output.includes('Big Brother · Codex diagnostics') || viewerExit !== undefined)
+  assert.equal(viewerExit, undefined, output)
+  for (let iteration = 0; iteration < 3; iteration++) {
+    const replies = await Promise.all([
+      client.executeInBigBrotherSession('claude-code', 'complete'),
+      client.executeInBigBrotherSession('claude-code', 'complete'),
+    ])
+    assert.ok(replies.every(reply => reply.success))
+    await client.stopBigBrotherSession()
+    assert.equal((await client.getTerminalState()).sessions.find(s => s.id === session.id)?.phase, 'running', output)
+  }
+  assert.equal(viewerExit, undefined, output)
+  assert.equal((await client.getTerminalState()).sessions.find(s => s.id === session.id)?.phase, 'running', output)
+  viewer.write('\x04')
+  const result = await work
+  assert.equal(result.success, false)
+  assert.match(result.error || '', /diagnostic terminal closed/)
+  await eventually(() => viewerExit !== undefined)
+  await eventually(async () => !(await client.getTerminalState()).sessions.some(s => s.id === session.id))
+  assert.deepEqual(fs.readdirSync(terminalReceipts), [])
+  const closures = terminalAudit('big_brother_terminal_view_closed', session.id)
+  assert.equal(closures.length, 1)
+  assert.equal(closures[0].details.cause, 'input_closed')
+  assert.equal(closures[0].details.viewerPid > 0, true)
+})
+
+test('desktop failure preserves its actual exit evidence after tool session removal', async t => {
+  await launch()
+  t.after(async () => { await client.stopTerminalService(); await waitForExit() })
+  for (const signal of ['SIGUSR1', 'SIGTERM'] as const) {
+    const taskId = 'desktop-exit-' + signal
+    const work = client.executeBigBrotherTool({ prompt: 'fixture tool', data: 'hold-diagnostic', reasoning: true, toolTaskId: taskId })
+    await eventually(async () => (await client.getTerminalState()).sessions.some(s => s.title === 'Big Brother Tools' && s.phase === 'running'))
+    const session = (await client.getTerminalState()).sessions.find(s => s.title === 'Big Brother Tools')!
+    await eventually(() => fs.readFileSync(path.join(root, 'codex-calls.jsonl'), 'utf8').includes(taskId))
+    const desktopPid = fs.readdirSync(terminalReceipts).map(file => Number(path.basename(file, '.json')))
+      .find(pid => fs.existsSync('/proc/' + pid + '/cmdline') && fs.readFileSync('/proc/' + pid + '/cmdline', 'utf8').includes(path.join(desktopBin, 'x-terminal-emulator')))
+    assert.ok(desktopPid)
+    process.kill(desktopPid, signal)
+    const result = await work
+    assert.equal(result.success, false)
+    assert.match(result.error || '', /diagnostic terminal closed/)
+    await eventually(async () => !(await client.getTerminalState()).sessions.some(s => s.id === session.id))
+    const exits = terminalAudit('big_brother_desktop_exited', session.id)
+    assert.equal(exits.length, 1)
+    assert.equal(exits[0].details.taskId, taskId)
+    assert.equal(exits[0].details.ownerClosing, false)
+    assert.equal(exits[0].details.exitCode, signal === 'SIGUSR1' ? 23 : null)
+    assert.equal(exits[0].details.signal, signal === 'SIGTERM' ? 'SIGTERM' : null)
+    if (signal === 'SIGUSR1') assert.match(exits[0].details.stderr, /fixture desktop failed/)
+    assert.deepEqual(fs.readdirSync(terminalReceipts), [])
+  }
+})
+
+test('viewer reports signal, stream failure and stream end without changing its close request', async () => {
+  fs.mkdirSync(path.dirname(terminalSocket), { recursive: true })
+  for (const cause of ['signal', 'viewer_error', 'stream_ended'] as const) {
+    const id = 'viewer-' + cause
+    let stream: http.ServerResponse | undefined
+    let closes = 0
+    const server = http.createServer((req, res) => {
+      if (req.url?.startsWith('/events')) {
+        stream = res
+        res.writeHead(200, { 'Content-Type': 'text/event-stream' })
+        res.write('data: ' + JSON.stringify({ type: 'state', state: {
+          status: 'running', sessions: [{ id, phase: 'running', diagnostic: { pending: 0 } }],
+        } }) + '\n\n')
+      } else if (req.url === '/close') {
+        closes++
+        res.writeHead(200, { 'Content-Type': 'application/json' })
+        res.end('{"success":true}')
+      } else {
+        res.writeHead(404)
+        res.end()
+      }
+    })
+    await new Promise<void>(resolve => server.listen(terminalSocket, resolve))
+    const viewer = spawn(process.execPath, ['--import', 'tsx', path.join(repo, 'packages/cli/src/entry.ts'), 'terminal', 'view', id], {
+      cwd: repo, env, stdio: ['pipe', 'pipe', 'pipe'],
+    })
+    let output = ''
+    viewer.stdout.on('data', chunk => { output += chunk })
+    viewer.stderr.on('data', chunk => { output += chunk })
+    try {
+      await eventually(() => output.includes('running · 0 queued') || viewer.exitCode !== null)
+      assert.equal(viewer.exitCode, null, output)
+      if (cause === 'signal') viewer.kill('SIGHUP')
+      else if (cause === 'viewer_error') stream!.destroy()
+      else stream!.end()
+      await eventually(() => viewer.exitCode !== null)
+      assert.equal(closes, 1, output)
+      const entries = terminalAudit('big_brother_terminal_view_closed', id)
+      assert.equal(entries.length, 1)
+      assert.equal(entries[0].details.cause, cause)
+      if (cause === 'signal') assert.equal(entries[0].details.signal, 'SIGHUP')
+      if (cause === 'viewer_error') {
+        assert.equal(entries[0].details.errorCode, 'ECONNRESET')
+        assert.ok(entries[0].details.error)
+      }
+    } finally {
+      if (viewer.exitCode === null && viewer.signalCode === null) viewer.kill('SIGTERM')
+      server.closeAllConnections()
+      await new Promise<void>(resolve => server.close(() => resolve()))
+    }
+  }
+})
+
+test('tool caller disconnection retains the abort cause and cleans up only its session', async t => {
+  await launch()
+  t.after(async () => { await client.stopTerminalService(); await waitForExit() })
+  const abort = new AbortController()
+  const work = client.executeBigBrotherTool({ prompt: 'fixture tool', data: 'hold-diagnostic', reasoning: true, toolTaskId: 'caller-disconnect' }, abort.signal)
+  await eventually(async () => (await client.getTerminalState()).sessions.some(s => s.title === 'Big Brother Tools' && s.phase === 'running'))
+  const session = (await client.getTerminalState()).sessions.find(s => s.title === 'Big Brother Tools')!
+  abort.abort(new Error('fixture caller cancelled'))
+  await assert.rejects(work, /aborted|cancelled/)
+  await eventually(async () => !(await client.getTerminalState()).sessions.some(s => s.id === session.id))
+  const cancellations = terminalAudit('big_brother_tool_request_cancelled', session.id)
+  assert.equal(cancellations.length, 1)
+  assert.equal(cancellations[0].details.taskId, 'caller-disconnect')
+  assert.equal(cancellations[0].details.reason, 'Terminal request disconnected')
+  assert.deepEqual(fs.readdirSync(terminalReceipts), [])
 })

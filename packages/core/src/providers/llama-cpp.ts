@@ -117,6 +117,13 @@ export async function getLlamaCppAdapters(config: LlamaCppConfig, signal?: Abort
   return requestJson(config.endpoint, `/lora-adapters?model=${encodeURIComponent(config.model)}`, { signal })
 }
 
+/** Serving identity for explicit training review; never starts or configures a server. */
+export async function getLlamaCppProperties(config: LlamaCppConfig, signal?: AbortSignal): Promise<{
+  model_path: string; model_alias: string; chat_template: string; default_generation_settings: unknown
+}> {
+  return requestJson(config.endpoint, `/props?model=${encodeURIComponent(config.model)}`, { signal })
+}
+
 export async function callLlamaCpp(
   config: LlamaCppConfig,
   messages: ProviderMessage[],

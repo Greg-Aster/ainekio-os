@@ -53,6 +53,8 @@ interface SessionStore {
 }
 
 let ownedRuntimeId: string | undefined;
+const selectionListeners = new Set<() => void>();
+const selectionNotificationOrigin = generateUUID();
 
 /** Called by the Coordinator's existing startup owner, never by a background worker. */
 export function beginAuthenticatedRuntime(): void {
@@ -132,9 +134,14 @@ export async function restoreAuthenticatedSession(sessionId: string, userId: str
 
 /** Wake existing background owners after a committed selection change; never expose cookies. */
 export function onAuthenticatedSessionChange(listener: () => void): () => void {
-  return eventBus.subscribe(event => {
-    if (event.event === 'session.selection_changed') listener();
+  selectionListeners.add(listener);
+  const unsubscribe = eventBus.subscribe(event => {
+    // Local changes are delivered at commit; the bus carries changes from
+    // other processes without delivering our own notification a second time.
+    if (event.event === 'session.selection_changed'
+      && !event.requestId?.startsWith(`${selectionNotificationOrigin}:`)) listener();
   });
+  return () => { selectionListeners.delete(listener); unsubscribe(); };
 }
 
 /** Locking a profile clears readiness without deleting sessions or saved work. */
@@ -238,7 +245,15 @@ function mutateSessions<T>(mutate: (store: SessionStore) => T): T {
     selectionChanged = selectedBefore !== store.runtime?.sessionId;
     return result;
   }).immediate();
-  if (selectionChanged) eventBus.emit('core', 'session.selection_changed');
+  if (selectionChanged) {
+    for (const listener of selectionListeners) {
+      try { listener(); }
+      catch (error) { console.error('[sessions] Selection listener failed:', error); }
+    }
+    eventBus.emit('core', 'session.selection_changed', undefined, {
+      requestId: `${selectionNotificationOrigin}:${generateUUID()}`,
+    });
+  }
   return result;
 }
 

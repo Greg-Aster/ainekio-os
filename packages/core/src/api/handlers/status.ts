@@ -31,7 +31,6 @@ import path from 'node:path';
 interface BackendAvailability {
   llamaCpp: { available: boolean; running: boolean; active: boolean; model?: string };
   ollama: { available: boolean; running: boolean; active: boolean; model?: string };
-  vllm: { available: boolean; running: boolean; active: boolean; model?: string };
   runpod: { available: boolean; configured: boolean; active: boolean };
   bigBrother: { available: boolean; enabled: boolean; provider?: string };
   remoteServer: { available: boolean; configured: boolean; serverUrl?: string };
@@ -275,11 +274,11 @@ export async function handleGetStatus(req: UnifiedRequest): Promise<UnifiedRespo
     // Check ALL backends, not just the resolved one - user may have models configured
     // for different providers and should be able to use them if those backends are running
     const availableBackends = await detectAvailableBackends();
+    if (availableBackends.llamaCpp.running) {
+      availableProviders.add('llama-cpp');
+    }
     if (availableBackends.ollama.running) {
       availableProviders.add('ollama');
-    }
-    if (availableBackends.vllm.running) {
-      availableProviders.add('vllm');
     }
     // Remote providers are always "available" (RunPod, OpenAI, etc.)
     // The actual API call will fail if credentials are wrong, but they're selectable
@@ -420,8 +419,6 @@ export async function handleGetStatus(req: UnifiedRequest): Promise<UnifiedRespo
       // Set specific backend status
       if (backendStatus.resolvedBackend === 'ollama') {
         systemHealth.ollama = backendStatus.running ? 'connected' : 'disconnected';
-      } else if (backendStatus.resolvedBackend === 'vllm') {
-        systemHealth.vllm = backendStatus.running ? 'connected' : 'disconnected';
       } else if (backendStatus.resolvedBackend === 'remote') {
         systemHealth.remote = 'connected';
         systemHealth.remoteProvider = backendStatus.remoteProvider;
@@ -476,12 +473,6 @@ export async function handleGetStatus(req: UnifiedRequest): Promise<UnifiedRespo
           running: availableBackends.ollama.running,
           active: activeBackendType === 'ollama',
           model: availableBackends.ollama.model,
-        },
-        vllm: {
-          available: availableBackends.vllm.installed,
-          running: availableBackends.vllm.running,
-          active: activeBackendType === 'vllm',
-          model: availableBackends.vllm.model,
         },
         runpod: {
           available: runpodStatus.available,

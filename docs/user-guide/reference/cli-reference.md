@@ -107,22 +107,13 @@ Commands:
 - `chat MODEL`
 - `ask MODEL "text"`
 
-### `./bin/mh vllm COMMAND`
-vLLM server control.
-
-Commands:
-- `status`
-- `start [--model NAME] [--gpu-util VALUE]`
-- `stop`
-- `restart`
-
 ### `./bin/mh backend COMMAND`
 Switch between active backends.
 
 Commands:
 - `status`
 - `start`
-- `switch <ollama|vllm>`
+- `switch <ollama|llama-cpp>`
 - `detect`
 
 ## Indexing
@@ -160,20 +151,6 @@ Commands:
 - `install`
 - `train [--name MODEL] [--epochs N] [--save-every N] [--batch-size N] [--device auto|cpu|cuda]`
 - `status [--name MODEL]`
-- `uninstall`
-
-### `./bin/mh sovits COMMAND`
-GPT-SoVITS server management.
-
-Commands:
-- `install`
-- `start [--port PORT]`
-- `stop`
-- `restart [--port PORT]`
-- `status`
-- `logs [--tail N]`
-- `download-models`
-- `test [text]`
 - `uninstall`
 
 ### `./bin/mh kokoro COMMAND`

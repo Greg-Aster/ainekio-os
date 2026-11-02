@@ -2,7 +2,6 @@
   "enabled": true,
   "model": "qwen3-embedding-0.6b",
   "provider": "local-models",
-  "preloadAtStartup": true,
   "description": "Unified embedding model for semantic memory search (node-llama-cpp - works on desktop and mobile)",
   "localModels": {
     "endpoint": "http://127.0.0.1:4324",

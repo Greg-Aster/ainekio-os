@@ -19,6 +19,7 @@ export const DEFAULT_ROBOT_AUTONOMY_TASK_IDS = [
   'inner-curiosity',
   'train-of-thought',
   'desire-agent',
+  'sleep-workflow',
   'mood',
 ] as const
 

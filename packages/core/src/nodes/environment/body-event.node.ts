@@ -1,9 +1,8 @@
 import { bodyEventContextSchema, bodyEventDecisionSchema, environmentEventRequestSchema } from './body-event.schemas.js'
 import { defineNode, NodeInputValidationError } from '../types.js'
 import { readRobotStatusLive } from '../../robot-status-live.js'
-import { loadRobotStatus } from '../../robot-status.js'
+import { loadRobotStatus, projectRobotStatusContext } from '../../robot-status.js'
 import { loadBufferForUser } from '../../conversation-buffer.js'
-import { projectRobotStatusContext } from './helpers.js'
 
 export const bodyEventContextNode = defineNode({
   ...bodyEventContextSchema,
@@ -54,16 +53,17 @@ export const environmentEventRequestNode = defineNode({
   ...environmentEventRequestSchema,
   async execute(inputs, context) {
     const decision = context.bodyEventDecision
-    const cleared = { autonomy: false, robotObserver: null, memories: [], sourceObservationAt: '', responseMetadata: {} }
+    const cleared = { selectedContext: null, autonomy: false, robotObserver: null, memories: [], sourceObservationAt: '', responseMetadata: {} }
     // A later user turn retains its own authority rather than inheriting a previous event intention.
     if (inputs.message) return { ...cleared, message: inputs.message, plannerDecision: null }
     if (inputs.plannerDecision) return {
-      message: inputs.plannerDecision.instruction, plannerDecision: inputs.plannerDecision, autonomy: true,
+      selectedContext: inputs.selectedContext, message: inputs.plannerDecision.instruction, plannerDecision: inputs.plannerDecision, autonomy: true,
       robotObserver: inputs.robotObserver, memories: inputs.memories ?? [],
       sourceObservationAt: inputs.sourceObservationAt, responseMetadata: inputs.responseMetadata ?? {},
     }
     if (!decision) return { ...cleared, message: '', plannerDecision: null }
-    return { ...cleared, message: decision.instruction, plannerDecision: {
+    return { ...cleared, autonomy: true, sourceObservationAt: decision.sourceObservationAt,
+      message: decision.instruction, plannerDecision: {
       instruction: decision.instruction, reason: decision.reason,
       event: decision.event, source: 'body-event-trigger', sourceObservationAt: decision.sourceObservationAt,
     } }

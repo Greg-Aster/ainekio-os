@@ -1,110 +1,12 @@
 import assert from 'node:assert/strict'
 import test from 'node:test'
-
-import {
-  DEFAULT_GRAPH_SCHEDULER,
-  setAuditEnabled,
-  type GraphExecutionState,
-  type SvelteFlowGraph,
-} from '@metahuman/core'
-import {
-  evaluateReflectorGraph,
-  parseReflectorArgs,
-  runReflector,
-  type ReflectorDependencies,
-} from './core.js'
+import { setAuditEnabled } from '@metahuman/core'
+import { evaluateReflectorGraph, parseReflectorArgs, runReflector, type ReflectorDependencies } from './core.js'
 import agent, { meta } from './index.js'
+import { graph, graphState, nodeIds } from './core.fixture.js'
 
 setAuditEnabled(false)
-
 const NOW = '2026-08-29T18:00:00.000Z'
-const nodeIds = {
-  reflection_memory_sampler: 'memory-editable-id',
-  reflection_prompt: 'prompt-editable-id',
-  reflector_llm: 'model-editable-id',
-  reflection_buffer: 'reflection-buffer-editable-id',
-  reasoning_buffer: 'reasoning-buffer-editable-id',
-  reflection_memory: 'reflection-memory-editable-id',
-  tts: 'tts-editable-id',
-} as const
-
-const graph = {
-  version: '1.0',
-  format: 'svelte-flow',
-  name: 'Reflector contract fixture',
-  cognitiveMode: 'agent',
-  scheduler: { ...DEFAULT_GRAPH_SCHEDULER },
-  nodes: [
-    ...Object.entries(nodeIds)
-      .filter(([name]) => !['reflection_buffer', 'reasoning_buffer', 'reflection_memory'].includes(name))
-      .map(([nodeType, id]) => ({
-        id,
-        type: 'cognitiveNode',
-        position: { x: 0, y: 0 },
-        data: { label: nodeType, nodeType, properties: {} },
-      })),
-    {
-      id: nodeIds.reflection_memory,
-      type: 'cognitiveNode', position: { x: 0, y: 0 },
-      data: { label: 'reflection-memory', nodeType: 'inner_dialogue_saver', properties: { roles: ['reflection'] } },
-    },
-    {
-      id: nodeIds.reflection_buffer,
-      type: 'cognitiveNode',
-      position: { x: 0, y: 0 },
-      data: { label: 'reflection', nodeType: 'inner_dialogue_buffer', properties: { role: 'reflection' } },
-    },
-    {
-      id: nodeIds.reasoning_buffer,
-      type: 'cognitiveNode',
-      position: { x: 0, y: 0 },
-      data: { label: 'reasoning', nodeType: 'inner_dialogue_buffer', properties: { role: 'reasoning' } },
-    },
-  ],
-  edges: [],
-} as SvelteFlowGraph
-
-const successfulOutputs: Record<string, Record<string, any>> = {
-  [nodeIds.reflection_memory_sampler]: {
-    ready: true,
-    count: 4,
-    candidateCount: 20,
-    failedCount: 1,
-  },
-  [nodeIds.reflection_prompt]: { ready: true, personaApplied: true },
-  [nodeIds.reflector_llm]: { response: 'A new reflection.' },
-  [nodeIds.reflection_buffer]: {
-    saved: true,
-    persisted: true,
-    text: 'A new reflection.',
-  },
-  [nodeIds.reflection_memory]: {
-    saved: true,
-    eventId: 'evt-reflection',
-    eventPath: 'memory/episodic/reflection.json',
-  },
-  [nodeIds.reasoning_buffer]: { saved: true, persisted: true, text: 'Reasoning.' },
-  [nodeIds.tts]: { queued: true, itemId: 'tts-item' },
-}
-
-function graphState(
-  overrides: Record<string, Record<string, any>> = {},
-  status: GraphExecutionState['status'] = 'completed',
-): GraphExecutionState {
-  const outputs = { ...successfulOutputs, ...overrides }
-  return {
-    nodes: new Map(Object.values(nodeIds).map(id => [id, {
-      nodeId: id,
-      status: 'completed',
-      startTime: 0,
-      endTime: 1,
-      outputs: outputs[id],
-    }])),
-    startTime: 0,
-    endTime: 1,
-    status,
-  } as GraphExecutionState
-}
 
 function dependencies(
   overrides: Partial<ReflectorDependencies> = {},
@@ -201,6 +103,42 @@ test('Reflector propagates graph, model, and persistence failures', () => {
     }), { username: 'test-user', executionId: 'task-1' }),
     /disk full/,
   )
+})
+
+test('Reflector reports saved generation independently of outstanding speech delivery', () => {
+  const waiting = graphState({}, 'waiting')
+  const identity = { username: 'test-user', executionId: 'task-1' }
+  assert.deepEqual(evaluateReflectorGraph(graph, waiting, identity),
+    evaluateReflectorGraph(graph, graphState(), identity))
+  assert.equal(waiting.status, 'waiting', 'Evaluation cannot settle an outstanding delivery')
+  assert.throws(() => evaluateReflectorGraph(graph, graphState({
+    [nodeIds.reflection_buffer]: { saved: false, persisted: false, error: 'disk full' },
+  }, 'waiting'), identity), /disk full/)
+  assert.throws(() => evaluateReflectorGraph(graph, graphState({
+    [nodeIds.reflection_memory]: { saved: false },
+  }, 'waiting'), identity), /did not confirm long-term memory capture/)
+})
+
+test('Reflector never reports interrupted or unfinished generation as saved output', () => {
+  const identity = { username: 'test-user', executionId: 'task-1' }
+  for (const status of ['pending', 'running', 'failed'] as const) {
+    assert.throws(() => evaluateReflectorGraph(graph, graphState({}, status), identity), /did not complete/)
+  }
+  const cancelled = graphState({}, 'failed')
+  cancelled.nodes.set(nodeIds.reflector_llm, {
+    nodeId: nodeIds.reflector_llm, status: 'failed',
+    error: new DOMException('Graph execution cancelled', 'AbortError'),
+  })
+  assert.throws(() => evaluateReflectorGraph(graph, cancelled, identity), /Graph execution cancelled/)
+  const unfinished = graphState({}, 'waiting')
+  delete unfinished.endTime
+  assert.throws(() => evaluateReflectorGraph(graph, unfinished, identity), /did not complete/)
+  const suspended = graphState({}, 'waiting')
+  suspended.pending = [{ value: { reason: 'awaiting input' } }]
+  assert.throws(() => evaluateReflectorGraph(graph, suspended, identity), /did not complete/)
+  const pendingModel = graphState({}, 'waiting')
+  pendingModel.nodes.get(nodeIds.reflector_llm)!.status = 'running'
+  assert.throws(() => evaluateReflectorGraph(graph, pendingModel, identity), /reflector_llm ended with status running/)
 })
 
 test('Reflector resolves real identity and forwards stable retry and cancellation context', async () => {

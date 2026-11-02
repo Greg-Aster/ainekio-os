@@ -123,8 +123,7 @@
         "label": "Memory Router",
         "nodeType": "memory_router",
         "properties": {
-          "topK": 8,
-          "threshold": 0.5
+          "topK": 8
         }
       },
       "width": 220,

@@ -22,7 +22,6 @@ interface TrainingMetrics {
     transcript: string;
   }>;
   providers: {
-    sovits: { samples: number; hasReference: boolean };
     rvc: { samples: number; hasTrained: boolean };
   };
 }
@@ -49,50 +48,12 @@ export async function handleGetVoiceStatus(req: UnifiedRequest): Promise<Unified
       totalDuration: 0,
       recentSamples: [],
       providers: {
-        sovits: { samples: 0, hasReference: false },
         rvc: { samples: 0, hasTrained: false },
       },
     };
 
     if (user.isAuthenticated) {
       const profilePaths = getProfilePaths(username);
-
-      // Check SoVITS samples
-      const sovitsDir = path.join(profilePaths.root, 'out/voices/sovits/default');
-      if (fs.existsSync(sovitsDir)) {
-        const files = fs.readdirSync(sovitsDir).filter(f => f.endsWith('.wav'));
-        trainingMetrics.providers.sovits.samples = files.length;
-        trainingMetrics.providers.sovits.hasReference = files.some(f => f.startsWith('reference'));
-
-        // Get sample details
-        const samples = files
-          .filter(f => !f.includes('backup'))
-          .map(f => {
-            try {
-              const fullPath = path.join(sovitsDir, f);
-              const stats = fs.statSync(fullPath);
-              const txtPath = fullPath.replace('.wav', '.txt');
-              let transcript = '';
-              if (fs.existsSync(txtPath)) {
-                transcript = fs.readFileSync(txtPath, 'utf-8').trim();
-              }
-              return {
-                filename: f,
-                size: stats.size,
-                created: stats.birthtime.toISOString(),
-                transcript: transcript.substring(0, 50),
-              };
-            } catch {
-              return null;
-            }
-          })
-          .filter((s): s is NonNullable<typeof s> => s !== null)
-          .sort((a, b) => new Date(b.created).getTime() - new Date(a.created).getTime())
-          .slice(0, 5);
-
-        trainingMetrics.recentSamples = samples;
-        trainingMetrics.totalSamples += files.length;
-      }
 
       // Check RVC samples
       const rvcSamplesDir = path.join(profilePaths.root, 'out/voices/rvc-samples/default');

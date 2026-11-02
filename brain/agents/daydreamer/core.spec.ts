@@ -1,63 +1,11 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
-
-import {
-  DEFAULT_GRAPH_SCHEDULER,
-  type GraphExecutionState,
-  type SvelteFlowGraph,
-} from '@metahuman/core';
-import {
-  evaluateDaydreamerGraph,
-  normalizeTriggerProfile,
-} from './core.js';
+import { setAuditEnabled } from '@metahuman/core';
+import { evaluateDaydreamerGraph, normalizeTriggerProfile } from './core.js';
 import agent, { meta, run } from './index.js';
+import { graph, graphState, nodeIds } from './core.fixture.js';
 
-const nodeIds = {
-  dreamer_memory_curator: 'curator-arbitrary-id',
-  daydreamer_generator: 'generator-arbitrary-id',
-  dreamer_dream_saver: 'saver-arbitrary-id',
-  inner_dialogue_buffer: 'buffer-arbitrary-id',
-} as const;
-
-const graph = {
-  version: '1.0',
-  format: 'svelte-flow',
-  name: 'Daydreamer contract fixture',
-  cognitiveMode: 'agent',
-  scheduler: { ...DEFAULT_GRAPH_SCHEDULER },
-  nodes: Object.entries(nodeIds).map(([nodeType, id]) => ({
-    id,
-    type: 'cognitiveNode',
-    position: { x: 0, y: 0 },
-    data: { label: nodeType, nodeType, properties: {} },
-  })),
-  edges: [],
-} as SvelteFlowGraph;
-
-const successfulOutputs: Record<keyof typeof nodeIds, Record<string, any>> = {
-  dreamer_memory_curator: { count: 5, avgAgeDays: 12 },
-  daydreamer_generator: { daydream: 'A grounded test daydream with enough content.' },
-  dreamer_dream_saver: { saved: true, eventId: 'evt-daydream' },
-  inner_dialogue_buffer: { saved: true, persisted: true },
-};
-
-function graphState(
-  overrides: Partial<typeof successfulOutputs> = {},
-  status: GraphExecutionState['status'] = 'completed',
-): GraphExecutionState {
-  const outputs = { ...successfulOutputs, ...overrides };
-  const nodes = new Map(
-    Object.entries(nodeIds).map(([nodeType, id]) => [id, {
-      nodeId: id,
-      status: 'completed',
-      startTime: 0,
-      endTime: 1,
-      inputs: {},
-      outputs: outputs[nodeType as keyof typeof successfulOutputs],
-    }]),
-  );
-  return { nodes, startTime: 0, endTime: 1, status } as GraphExecutionState;
-}
+setAuditEnabled(false);
 
 test('system scheduler identity resolves through the active authenticated user', () => {
   assert.equal(normalizeTriggerProfile(undefined), null);
@@ -123,4 +71,31 @@ test('failed graph execution is surfaced to the coordinator', () => {
     () => evaluateDaydreamerGraph(graph, failed),
     /generator-arbitrary-id: model unavailable/,
   );
+});
+
+test('saved daydreams succeed while their asynchronous output delivery remains outstanding', () => {
+  const waiting = graphState({}, 'waiting');
+  assert.deepEqual(evaluateDaydreamerGraph(graph, waiting), {
+    daydreamsGenerated: 1,
+    memoriesCurated: 5,
+    avgAgeDays: 12,
+  });
+  assert.equal(waiting.status, 'waiting', 'Evaluation must not settle the durable delivery');
+  assert.throws(
+    () => evaluateDaydreamerGraph(graph, graphState({ dreamer_dream_saver: { saved: false, error: 'disk full' } }, 'waiting')),
+    /Episodic daydream persistence failed: disk full/,
+  );
+  assert.throws(
+    () => evaluateDaydreamerGraph(graph, graphState({ inner_dialogue_buffer: { saved: false, error: 'buffer unavailable' } }, 'waiting')),
+    /Inner-dialogue persistence failed: buffer unavailable/,
+  );
+});
+
+test('an unfinished graph pass or event wait cannot be reported as a generated daydream', () => {
+  const unfinished = graphState({}, 'waiting');
+  delete unfinished.endTime;
+  assert.throws(() => evaluateDaydreamerGraph(graph, unfinished), /graph did not complete/);
+  const suspended = graphState({}, 'waiting');
+  suspended.pending = [{ value: { reason: 'awaiting input' } }];
+  assert.throws(() => evaluateDaydreamerGraph(graph, suspended), /graph did not complete/);
 });

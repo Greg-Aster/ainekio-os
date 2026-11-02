@@ -277,3 +277,65 @@ for (const [name, initialFrames] of [['generatePlanStream', 5], ['runDesireStrea
     assert.equal(getEventListeners(abort.signal, 'abort').length, 0);
   });
 }
+
+
+test('task reconnect delivers output arriving during replay before exactly one terminal event', async () => {
+  for (const state of ['completed', 'failed', 'cancelled', 'expired']) {
+    const events = new EventEmitter();
+    const task = { id: 'replay-task', state: 'leased', username: user.username,
+      error: { message: 'Original failure' }, cancellationReason: 'Original cancellation' };
+    const manager = { getTask: () => task, getAllTasks: () => [task],
+      getOutput: () => ['original prefix', 'original continuation'],
+      addEventListener: (fn: (...args: any[]) => void) => events.on('queue', fn),
+      removeEventListener: (fn: (...args: any[]) => void) => events.off('queue', fn) };
+    const owner = load('./unified-queue.ts', ['handleQueueTaskStream', 'terminalStreamEvent', 'sse', 'taskStatus', 'canReadTask'], {
+      getQueueManager: () => manager,
+      setTimeout() { throw new Error('Already pending output must not wait'); },
+    });
+    const response = await owner.handleQueueTaskStream({ user, params: { id: task.id } });
+    const iterator = response.stream[Symbol.asyncIterator]();
+    assert.equal((await iterator.next()).value, 'original prefix');
+    events.emit('queue', { type: 'task_output', taskId: task.id, details: { chunk: 'last live output' } });
+    task.state = state;
+    events.emit('queue', { type: `task_${state}`, taskId: task.id });
+    assert.equal((await iterator.next()).value, 'original continuation');
+    assert.equal((await iterator.next()).value, 'last live output');
+    const terminal = parse((await iterator.next()).value);
+    assert.equal(terminal.type, state === 'completed' ? 'queued_task_completed' : 'error');
+    assert.equal((await iterator.next()).done, true);
+    assert.equal(events.listenerCount('queue'), 0);
+  }
+});
+
+test('continuous robot telemetry cannot starve readiness updates in the monitor stream', async () => {
+  const io = fileIO();
+  const events = new EventEmitter();
+  const timers = new Map<number, { at: number; callback: () => void }>();
+  let now = 0, id = 0, revision = 0, reads = 0;
+  const subscribe = (callback: () => void) => { events.on('update', callback); return () => events.off('update', callback); };
+  const owner = load('./monitor-stream.ts', ['handleMonitorStream', 'streamMonitorUpdates', 'sse'], {
+    fs: io.fs, path, streamResponse, systemPaths: { logs: '/fixture/logs', run: '/fixture/run', root: '/fixture' },
+    getAgentMonitorSnapshot: () => { reads++; return { revision }; },
+    subscribeEnvironmentBridgeState: subscribe, subscribeEnvironmentBridgeDiagnostics: subscribe,
+    setTimeout: (callback: () => void, delay: number) => { timers.set(++id, {at: now + delay, callback}); return id; },
+    clearTimeout: (timer: number) => timers.delete(timer),
+  });
+  const abort = new AbortController();
+  const response = await owner.handleMonitorStream({ signal: abort.signal });
+  const iterator = response.stream[Symbol.asyncIterator]();
+  await iterator.next(); await iterator.next();
+  try {
+    // Advance virtual time while telemetry keeps arriving faster than UI sampling.
+    for (now = 0; now < 1000; now += 10) {
+      revision++; events.emit('update');
+      for (const [timer, value] of timers) if (value.at <= now) { timers.delete(timer); value.callback(); }
+    }
+    assert.ok(reads > 1, 'A moving robot must publish changed readiness without waiting for telemetry to become idle');
+    assert.ok(parse((await iterator.next()).value).revision > 0);
+  } finally {
+    abort.abort();
+    while (!(await iterator.next()).done) { /* drain already delivered snapshots */ }
+  }
+  assert.equal(timers.size, 0);
+  assert.equal(events.listenerCount('update'), 0);
+});

@@ -7,6 +7,7 @@
 import fs from 'fs';
 import path from 'path';
 import { spawn, ChildProcess } from 'child_process';
+import { setTimeout as delay } from 'node:timers/promises';
 import { systemPaths } from './path-builder.js';
 import {
   activateTunnelExposure,
@@ -179,27 +180,24 @@ export function startTunnel(): boolean {
 /**
  * Stop the Cloudflare tunnel
  */
-export function stopTunnel(): boolean {
+export async function stopTunnel(): Promise<boolean> {
   try {
-    if (tunnelProcess && !tunnelProcess.killed) {
-      tunnelProcess.kill();
-      tunnelProcess = null;
-    }
-
-    // Also kill process from PID file
-    if (fs.existsSync(TUNNEL_PID_FILE)) {
-      const pid = parseInt(fs.readFileSync(TUNNEL_PID_FILE, 'utf8').trim());
-      if (isOwnedTunnelProcess(pid)) {
-        try {
-          process.kill(pid, 'SIGTERM');
-          console.log(`[cloudflare] Stopped tunnel (PID ${pid})`);
-        } catch (error) {
-          console.error(`[cloudflare] Failed to kill process ${pid}:`, error);
-        }
+    const pid = fs.existsSync(TUNNEL_PID_FILE)
+      ? Number(fs.readFileSync(TUNNEL_PID_FILE, 'utf8').trim()) : tunnelProcess?.pid;
+    if (pid && isOwnedTunnelProcess(pid)) {
+      for (const signal of ['SIGTERM', 'SIGKILL'] as const) {
+        try { process.kill(pid, signal); }
+        catch (error) { if ((error as NodeJS.ErrnoException).code !== 'ESRCH') throw error; }
+        const deadline = Date.now() + 5000;
+        while (isOwnedTunnelProcess(pid) && Date.now() < deadline) await delay(25);
+        if (!isOwnedTunnelProcess(pid)) break;
       }
+      if (isOwnedTunnelProcess(pid)) throw new Error(`Tunnel process ${pid} has not stopped`);
+    }
+    if (fs.existsSync(TUNNEL_PID_FILE) && Number(fs.readFileSync(TUNNEL_PID_FILE, 'utf8').trim()) === pid) {
       fs.unlinkSync(TUNNEL_PID_FILE);
     }
-
+    if (tunnelProcess?.pid === pid) tunnelProcess = null;
     deactivateTunnelExposure();
     return true;
   } catch (error) {
@@ -211,8 +209,8 @@ export function stopTunnel(): boolean {
 /**
  * Restart the tunnel
  */
-export function restartTunnel(): boolean {
-  stopTunnel();
+export async function restartTunnel(): Promise<boolean> {
+  if (!await stopTunnel()) return false;
   return startTunnel();
 }
 
@@ -265,11 +263,12 @@ export function syncTunnelExposure(enabled: boolean): TunnelExposureState {
  * Auto-start tunnel if enabled in config
  * Called by the full-system background-service launcher
  */
-export function autoStartTunnel(): void {
+export function autoStartTunnel(): boolean {
   const config = loadCloudflareConfig();
 
   if (config.enabled && config.autoStart) {
     console.log('[cloudflare] Auto-starting tunnel...');
-    startTunnel();
+    return startTunnel();
   }
+  return true;
 }

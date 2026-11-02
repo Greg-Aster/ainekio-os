@@ -41,6 +41,16 @@ conversation pair or rerun preprocessing over reviewed inputs. Reviews retain
 their author, timestamp and purpose. This input is not automatic approval of raw
 memories and does not change the specialist 0.8B training path.
 
+`companion-examples.ts` builds a reviewed example set using the current graph
+prompts, the existing Persona Formatter and Context Builder, and the supplied
+persona without editing it. Its 108 training and 36 evaluation examples cover
+recent personal facts, speaker attribution, corrected assumptions, invited
+company, requested quiet and startup greetings. Subjects and biographies are
+synthetic; subject groups remain separate across the two splits. These examples
+enter the same reviewed-dataset launcher and artifact/serving review as other
+personalization runs. The set does not establish live companion behavior or
+authorize role assignment by itself.
+
 Remote workers install the uploaded `docker/runpod-trainer/requirements.txt`
 into the template's existing training environment before checking its imports
 and CUDA. Older templates therefore receive the same pinned dependency contract
@@ -87,6 +97,28 @@ Training produces a candidate and an artifact evaluation receipt. Failed quality
 gates remain visible; workers never replace the active adapter or advance the
 training base. Core verifies weights, tokenizer, config and reload-evaluation
 checksums before candidate review. Serving validation and activation are separate.
+
+The serving targets are `llama-cpp` (the default) and `ollama`. LoRA training for
+llama.cpp exports the saved adapter as `adapter.gguf` in F16, using the run's exact
+cached native base revision with llama.cpp's converter. This is an adapter, not
+a merged model; base-model quantization does not quantize the adapter. Full
+fine-tuning and Ollama export a merged `model.gguf` in the selected quantization.
+Both retain the native weights/tokenizer and independent reload evaluation.
+
+For llama.cpp serving review, an operator loads the exact artifact through the
+existing service lifecycle before choosing Prepare in Training History. LoRA
+review uses the profile's selected Persona llama.cpp model/endpoint and requires
+that service to list the exact `adapter.gguf` path. It compares the unadapted
+baseline with scale 1 of that adapter; a full-model candidate uses its run label
+as the served alias. Preparation does not start a server, load an adapter or
+change roles. Model Settings still owns explicit registration and assignment.
+The persisted review binds the artifact checksum, endpoint, model, template and
+request adapter. Historical target labels remain readable as evidence but do
+not become supported launch or serving options.
+Role assignment validates the saved accepted artifact and serving configuration
+without network discovery or loading weights. The actual inference request checks
+the current serving identity with caller cancellation. Older reviews without a
+saved serving configuration need a fresh comparison through the same review flow.
 
 Run `python3 -m unittest discover -s docker/runpod-trainer -p 'test_*.py'` for the
 CPU contract checks. To run the isolated optimizer/reload checks, set

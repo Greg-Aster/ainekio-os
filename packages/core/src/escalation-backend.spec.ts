@@ -169,8 +169,8 @@ test('selected provider routes to Big Brother or local independently of the reti
         assert.equal(result.model, enabled ? 'gpt-6-luna' : 'local-qwen');
         assert.equal(result.content, enabled ? 'codex' : 'Local reply');
         if (enabled) {
-          assert.ok(receivedPrompt.includes(JSON.stringify(schema)), 'CLI must receive the workflow schema including its allowed routing values');
-          assert.match(receivedPrompt, /without Markdown fences/);
+          assert.ok(receivedOptions?.modelRequest?.responseInstructions?.includes(JSON.stringify(schema)), 'Codex must receive the workflow schema including its allowed routing values');
+          assert.match(receivedOptions?.modelRequest?.responseInstructions || '', /without Markdown fences/);
         }
       }
     });
@@ -192,10 +192,39 @@ test('Big Brother preserves JSON-only requests without changing plain-text reque
   } }, 'fixture');
   await withUserContext({ userId: 'fixture', username: 'fixture', role: 'owner' }, async () => {
     await callProvider('big-brother', [{ role: 'user', content: 'Hi' }], { format: 'json' });
-    assert.match(receivedPrompt, /Return only the final JSON value/);
+    assert.equal(receivedPrompt, '');
+    assert.match(receivedOptions?.modelRequest?.responseInstructions || '', /Return only the final JSON value/);
     await callProvider('big-brother', [{ role: 'user', content: 'Hi' }], {});
-    assert.equal(receivedPrompt, '[User]: Hi');
+    assert.equal(receivedPrompt, '');
+    assert.deepEqual(receivedOptions?.modelRequest, { messages: [{ role: 'user', content: 'Hi' }] });
   });
+});
+
+test('Codex graph calls retain native message roles, image positions and the unchanged response contract', async () => {
+  const { saveUserConfig } = await import('./config.js');
+  const { withUserContext } = await import('./context.js');
+  const { callProvider } = await import('./providers/bridge.js');
+  installFixtureBackends();
+  saveUserConfig('operator.json', { bigBrotherMode: { provider: 'codex' } }, 'native-fixture');
+  const messages: import('./providers/types.js').ProviderMessage[] = [
+    { role: 'system', content: 'Supplied graph instructions.' },
+    { role: 'user', content: 'Previous request.' },
+    { role: 'assistant', content: 'Recorded reply.' },
+    { role: 'user', content: [{ type: 'text', text: 'Current frame.' },
+      { type: 'image_url', image_url: { url: 'data:image/png;base64,YQ==', detail: 'high' } }] },
+  ];
+  const schema = { type: 'object', properties: { selected: { type: 'string' } } };
+  await withUserContext({ userId: 'native-fixture', username: 'native-fixture', role: 'owner' }, async () => {
+    await callProvider('big-brother', messages, { jsonSchema: schema, enableThinking: false, contextWindow: 872000 });
+  });
+  assert.equal(receivedPrompt, '');
+  assert.deepEqual(receivedOptions?.modelRequest?.messages, messages);
+  assert.equal(receivedOptions?.modelRequest?.responseInstructions,
+    'Return only the final JSON value, without Markdown fences or surrounding commentary.'
+    + '\nThe final response must conform to this JSON Schema:\n' + JSON.stringify(schema));
+  assert.equal(receivedOptions?.images, undefined, 'Images remain attached to their original message');
+  assert.equal(receivedOptions?.enableThinking, false);
+  assert.equal(receivedOptions?.modelRequest?.contextWindow, 872000);
 });
 
 test('status-widget assignments route Persona to Big Brother and preserve independent specialist adapters', async () => {
@@ -203,7 +232,6 @@ test('status-widget assignments route Persona to Big Brother and preserve indepe
   const { withUserContext } = await import('./context.js');
   const { callLLM } = await import('./model-router.js');
   const { handleAssignModelRole, handleGetModelRegistry } = await import('./api/handlers/model-registry.js');
-  const { handleWarmupModel } = await import('./api/handlers/warmup-model.js');
   const { resolveModelForCognitiveMode } = await import('./model-resolver.js');
   installFixtureBackends();
   const requests: any[] = [];
@@ -250,9 +278,8 @@ test('status-widget assignments route Persona to Big Brother and preserve indepe
       const selected = resolveModelForCognitiveMode('environment', 'persona', 'fixture');
       assert.equal(selected.provider, 'big-brother');
       assert.equal(selected.model, 'fixture-sol');
-      const warm = await handleWarmupModel({ user, body: { role: 'persona', cognitiveMode: 'environment' } } as any);
-      assert.equal(warm.status, 200);
-      assert.equal(calls.length, 0, 'Assignment warmup cannot open a CLI conversation');
+      assert.equal(calls.length, 0, 'Role assignment must not invoke the selected provider');
+      assert.equal(requests.length, 0, 'Inventory and assignment must not generate warmup inference');
       for (const role of ['orchestrator', 'persona', 'environmentActionSelector'] as const) {
         const result = await callLLM({ role, cognitiveMode: 'environment', userId: 'fixture', messages: [{ role: 'user', content: 'Fixture request' }] });
         assert.equal(result.provider, role === 'persona' ? 'big-brother' : 'llama-cpp');

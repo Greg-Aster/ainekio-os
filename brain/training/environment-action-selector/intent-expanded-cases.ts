@@ -17,6 +17,7 @@ function family(suite: string, texts: string[], task: string[], conversation: st
   response = true, action = false, split: CaseSplit = 'development', requirements?: IntentRequirements) {
   const item = addCase('intent', suite, texts, [], output(task, conversation, response, action), {}, split)
   item.contextRequirements = requirements
+  if (['request-visual-condition', 'request-goals'].includes(suite)) item.expected.needsGoalReview = true
   if (suite === 'request-photo') item.expected.taskPlanner = 'vision'
   if (optionalResponseSuites.has(suite)) allowResponseChoice(item)
   return item
@@ -179,5 +180,6 @@ for (let a = 0; a < actions.length; a++) for (let b = 0; b < responses.length; b
   ], taskContext, conversationContext, true, true, split)
   // The photo clause is a visual operation, not a request to read an old image.
   if (a === 4) item.expected.taskPlanner = 'vision'
+  if (a === 9 || a === 14) item.expected.needsGoalReview = true
 }
 if (trainingPairs !== 125 || evaluationPairs !== 30) throw new Error('Compositional partition changed')

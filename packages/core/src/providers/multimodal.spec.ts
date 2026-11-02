@@ -8,7 +8,6 @@ import {
   normalizeOllamaChatResponse,
   resolveOllamaThinkingMode,
 } from '../ollama.js';
-import { buildVLLMChatMessages } from '../vllm.js';
 import { environmentImageInputNode } from '../nodes/environment/image-input.node.js';
 import { environmentContextBuilderNode } from '../nodes/environment/context-builder.node.js';
 import { resolveModelForCognitiveMode } from '../model-resolver.js';
@@ -58,7 +57,6 @@ assert.deepEqual(buildOllamaChatMessages(messages, policy), [{
   content: 'Describe the attached frame.',
   images: ['/9j/2Q=='],
 }]);
-assert.deepEqual(buildVLLMChatMessages(messages), messages);
 
 const capturedOllamaRequest = buildOllamaChatRequest(
   'selected-image-model',

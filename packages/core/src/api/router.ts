@@ -175,7 +175,6 @@ import { handleGetRunpodConfig } from './handlers/runpod-config.js';
 import { handleValidateRunpodKey } from './handlers/runpod-validate.js';
 import { handleSemanticTurn } from './handlers/semantic-turn.js';
 import { handleGetTrainingModels } from './handlers/training-models.js';
-import { handleWarmupModel } from './handlers/warmup-model.js';
 import { handleGetVoiceModels } from './handlers/voice-models.js';
 import { handleGetTrainingHistory, handleReviewTrainingCandidate } from './handlers/training-history.js';
 import { handleGetMemoryContent, handlePutMemoryContent } from './handlers/memory-content.js';
@@ -198,8 +197,6 @@ import { handleGetLlmBackendConfig, handleSetLlmBackendConfig } from './handlers
 import { handleGetLlmBackendStatus } from './handlers/llm-backend-status.js';
 import { handleSwitchLlmBackend } from './handlers/llm-backend-switch.js';
 import { handleOllamaControl } from './handlers/llm-backend-ollama.js';
-import { handleVllmControl } from './handlers/llm-backend-vllm.js';
-import { handleGetVllmLoras, handleUpdateVllmLoras } from './handlers/vllm-loras.js';
 import { handleGetOllamaLoras, handleCreateOllamaLora } from './handlers/ollama-loras.js';
 import { handleLlmChat } from './handlers/llm-proxy.js';
 import { handleGetFineTuneModels } from './handlers/fine-tune-models.js';
@@ -284,10 +281,8 @@ import { handleTemplateWatch } from './handlers/template-watch.js';
 import { handleGetAstroServers, handlePostAstroServers } from './handlers/astro-servers.js';
 import {
   handleGetRvcTraining,
-  handleGetSovitsTraining,
   handleGetVoiceTraining,
   handlePostRvcTraining,
-  handlePostSovitsTraining,
   handlePostVoiceTraining,
 } from './handlers/voice-training-routes.js';
 import { handleVoiceProfileUpload } from './handlers/audio-uploads.js';
@@ -302,7 +297,7 @@ import {
 } from './handlers/big-brother-terminal.js';
 import { handleGetNodePipeline, handleSetNodePipeline } from './handlers/node-pipeline.js';
 import { handleDecryptProfilePath, handleEncryptProfilePath } from './handlers/profile-encryption.js';
-import { handleKokoroServer, handleKittenServer, handleSovitsServer } from './handlers/tts-service-routes.js';
+import { handleKokoroServer } from './handlers/tts-service-routes.js';
 import { handleWhisperServer } from './handlers/whisper-server.js';
 import { handleBufferStream } from './handlers/buffer-stream.js';
 import { handleMonitorStream } from './handlers/monitor-stream.js';
@@ -457,10 +452,7 @@ const routes: RouteDefinition[] = [
   { method: 'POST', pattern: '/api/profile-path/encrypt', handler: handleEncryptProfilePath, requiresAuth: true },
   { method: 'POST', pattern: '/api/profile-path/decrypt', handler: handleDecryptProfilePath, requiresAuth: true },
   { method: 'GET', pattern: '/api/kokoro-server', handler: handleKokoroServer },
-  { method: 'GET', pattern: '/api/kitten-server', handler: handleKittenServer },
-  { method: 'POST', pattern: '/api/kitten-server', handler: handleKittenServer, requiresAuth: true },
   { method: 'POST', pattern: '/api/kokoro-server', handler: handleKokoroServer, requiresAuth: true },
-  { method: ['GET', 'POST'], pattern: '/api/sovits-server', handler: handleSovitsServer, requiresAuth: true, guard: 'owner' },
   { method: ['GET', 'POST'], pattern: '/api/whisper-server', handler: handleWhisperServer, requiresAuth: true },
   { method: 'GET', pattern: '/api/buffer-stream', handler: handleBufferStream },
   { method: 'GET', pattern: '/api/monitor/stream', handler: handleMonitorStream, requiresAuth: true, guard: 'owner' },
@@ -678,8 +670,6 @@ const routes: RouteDefinition[] = [
   { method: 'POST', pattern: '/api/tts-queue-interrupt', handler: handleTtsQueueInterrupt, requiresAuth: true },
   { method: 'GET', pattern: '/api/rvc-training', handler: handleGetRvcTraining, requiresAuth: true, guard: 'owner' },
   { method: 'POST', pattern: '/api/rvc-training', handler: handlePostRvcTraining, requiresAuth: true, guard: 'owner' },
-  { method: 'GET', pattern: '/api/sovits-training', handler: handleGetSovitsTraining, requiresAuth: true, guard: 'owner' },
-  { method: 'POST', pattern: '/api/sovits-training', handler: handlePostSovitsTraining, requiresAuth: true, guard: 'owner' },
 
   // Profiles
   { method: 'GET', pattern: '/api/profiles/visibility', handler: handleGetProfileVisibility, requiresAuth: true },
@@ -837,9 +827,6 @@ const routes: RouteDefinition[] = [
   // Training Models
   { method: 'GET', pattern: '/api/training-models', handler: handleGetTrainingModels },
 
-  // Warmup Model
-  { method: 'POST', pattern: '/api/warmup-model', handler: handleWarmupModel, requiresAuth: true },
-
   // Voice Models
   { method: 'GET', pattern: '/api/voice-models', handler: handleGetVoiceModels },
 
@@ -905,17 +892,12 @@ const routes: RouteDefinition[] = [
   { method: 'GET', pattern: '/api/llm-backend/status', handler: handleGetLlmBackendStatus },
   { method: 'POST', pattern: '/api/llm-backend/switch', handler: handleSwitchLlmBackend, requiresAuth: true, guard: 'owner' },
   { method: 'POST', pattern: '/api/llm-backend/ollama', handler: handleOllamaControl, requiresAuth: true, guard: 'owner' },
-  { method: 'POST', pattern: '/api/llm-backend/vllm', handler: handleVllmControl, requiresAuth: true, guard: 'owner' },
-
-  // vLLM LoRA adapters
-  { method: 'GET', pattern: '/api/vllm/loras', handler: handleGetVllmLoras, requiresAuth: true },
-  { method: 'PUT', pattern: '/api/vllm/loras', handler: handleUpdateVllmLoras, requiresAuth: true, guard: 'owner' },
 
   // Ollama packages supported LoRAs as normal derived models.
   { method: 'GET', pattern: '/api/ollama/loras', handler: handleGetOllamaLoras, requiresAuth: true },
   { method: 'PUT', pattern: '/api/ollama/loras', handler: handleCreateOllamaLora, requiresAuth: true, guard: 'owner' },
 
-  // LLM Proxy - allows remote clients to use this server's LLM (Ollama or vLLM)
+  // LLM Proxy - allows remote clients to use this server's LLM (Ollama or llama.cpp)
   { method: 'POST', pattern: '/api/llm/chat', handler: handleLlmChat, requiresAuth: true },
   // Model Registry - authenticated users can manage their own model preferences
   { method: 'GET', pattern: '/api/model-registry', handler: handleGetModelRegistry, requiresAuth: true },

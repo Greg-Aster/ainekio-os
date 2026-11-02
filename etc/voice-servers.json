@@ -9,12 +9,6 @@
       "device": "auto",
       "langCode": "a"
     },
-    "kitten": {
-      "enabled": true,
-      "startOnSystemBoot": true,
-      "port": 9884,
-      "device": "cpu"
-    },
     "whisper": {
       "enabled": true,
       "startOnSystemBoot": true,

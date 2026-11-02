@@ -18,12 +18,11 @@ export { getStandingPersonaGoals } from './persona-summary';
 export * from './memory';
 export {
   readEnvironmentTrainingBank, readEnvironmentTrainingReviews,
-  readFreestyleTrainingBank, readFreestyleTrainingReviews,
-  reviewEnvironmentTrainingCandidate, reviewFreestyleTrainingCandidate,
+  reviewEnvironmentTrainingCandidate,
   readEnvironmentTrainingProposal, saveEnvironmentTrainingProposal,
   readEnvironmentTrainingEvidenceForProfile,
 } from './environment-training-bank';
-export type { EnvironmentTrainingCandidate, FreestyleTrainingCandidate,
+export type { EnvironmentTrainingCandidate,
   EnvironmentTrainingReview, EnvironmentTrainingProposal } from './environment-training-bank';
 export * from './memory-content-filter';  // Content mode filtering for agent reflections
 export * from './persona-learning';
@@ -32,9 +31,8 @@ export * from './psychoanalyzer-config';
 export * from './goal-review';  // Phase 4: Weekly goal reviews
 export * from './system-operator';  // Phase 5: System operator maintenance skills
 export * from './voice';  // Phase 5: Live voice loop foundation
-// Note: memory-validation and memory-cleanup are internal utilities, not exported
+// Note: memory-validation is an internal utility, not exported
 export * from './memory-metrics-cache';
-export * from './recent-tools-cache';
 export * from './function-memory';
 export * from './curiosity-questions';
 export * from './audit';
@@ -51,8 +49,6 @@ export type {
   EnvironmentSelectorValidationResult,
 } from './nodes/environment/helpers.js';
 export * from './ollama';
-export * from './vllm';
-export * from './vllm-lora';
 export * from './ollama-lora';
 export * from './llm-backend';
 export * from './local-model-service-manager';
@@ -72,7 +68,6 @@ export * from './vector-index';
 // Embeddings - exclude isEmbeddingServiceAvailable (conflicts with model-router)
 export {
   EmbeddingServiceError,
-  preloadEmbeddingModel,
   embedText,
   cosineSimilarity,
   getEmbeddingDimensions,
@@ -161,7 +156,6 @@ export {
 export { parseThinkingBlocks } from './nodes/output/thinking-stripper.node.js';
 export * from './stt';
 export * from './voice-training';
-export * from './audio-manager';
 export * from './autonomy';
 export * from './environment-interface';
 // Cognitive mode - primary source for canWriteMemory
@@ -189,12 +183,8 @@ export type {
 export {
   canWriteMemory as memoryPolicyCanWriteMemory,
   shouldCaptureTool,
-  contextDepth,
-  getSearchDepth,
-  getContextCharLimit,
   conversationVisibility,
   hasCapability,
-  getToolHistoryLimit,
   redactSensitiveData,
   filterToolOutputs,
   canViewMemoryType,
@@ -202,7 +192,6 @@ export {
 } from './memory-policy.js';
 export * from './trust-coupling';
 export * from './path-resolver';
-export * from './context-window';
 export {
   loadBufferForUser,
   type CanonicalBufferMode,
@@ -232,10 +221,7 @@ export {
   type ResponsePipelineResult,
 } from './api/handlers/response-pipeline.js';
 
-export * from './fs-glob';
 export * from './progress-tracker';
-export * from './state';
-export * from './context-builder';
 export * from './curiosity-memory-sampling.js';
 
 export * from './training-schema.js';
@@ -257,7 +243,8 @@ export type { CuratedMemoryScanOutcome } from './nodes/curator/curated-store.js'
 
 export * from './system-activity';
 export * from './robot-operator';
-export * from './training-cleanup';
+export { readActivationAssessments } from './active-operator/activation-history.js';
+export type { ActivationAssessment } from './active-operator/activation.js';
 
 // Persona session manager - rename Session and getSessionStats to avoid conflicts
 export type {
@@ -463,7 +450,6 @@ export {
   resetQueueManager,
   ExecutionEngine,
   TriggerManager,
-  RemoteDispatcher,
   // Types (renamed to avoid conflicts)
   type ResourceLaneId,
   type WorkState,
@@ -477,8 +463,6 @@ export {
   type QueuedTask,
   type LaneConfig,
   type ResourceLane,
-  type RemoteTaskHandle,
-  type RemoteResult,
   type QueueConfig,
   type QueueState,
   type QueueEvent,
@@ -497,6 +481,7 @@ export {
   type DesireAgentSubmission,
   // Persistence
   loadQueueState,
+  readActiveQueueItems,
   persistQueueState,
   shouldRestoreState,
   getQueueStateDir,

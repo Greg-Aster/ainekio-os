@@ -3,6 +3,7 @@ import path from 'node:path'
 import { getProfilePaths } from './paths.js'
 import { openExecutionStore } from './durable-execution/storage.js'
 import type { ExecutionStatus } from './durable-execution/types.js'
+import type { EnvironmentVisualFrame } from './environment-interface/types.js'
 import { projectDesireAwareness, type DesireAwareness } from './agency/lifecycle-policy.js'
 
 const ROBOT_STATUS_FILE = 'robot-status.json'
@@ -55,6 +56,15 @@ export interface RobotStatusSituation {
   userContext: string
   uncertainties: string[]
 }
+
+export const ROBOT_STATUS_PROSE_FIELDS = [
+  'situationalSummary', 'environmentDescription', 'userContext', 'uncertainties',
+] as const
+export type RobotStatusSituationEvidence = Partial<Record<typeof ROBOT_STATUS_PROSE_FIELDS[number], {
+  recordedAt: string
+  sourceUpdatedAt: RobotStatusSnapshot['sourceUpdatedAt']
+  visualFrames?: Array<Pick<EnvironmentVisualFrame, 'id' | 'timestamp'>>
+}>>
 
 export interface RobotStatusTaskDecision {
   outcome: string
@@ -120,6 +130,7 @@ export interface RobotStatusHistoryEntry {
 }
 
 export interface RobotStatusSnapshot {
+  visualFrames?: Array<ReturnType<typeof import('./environment-interface/perception.js').projectEnvironmentVisualFrame>>
   latestVisualObservation?: import('./visual-observation.js').VisualObservationRecord
   projection?: { executionId: string; effectId: string }
   version: 1
@@ -135,14 +146,18 @@ export interface RobotStatusSnapshot {
   lastAction: RobotStatusAction | null
   lastBodyAction?: RobotStatusAction | null
   task: RobotStatusTask | null
+  parkedGoals: RobotStatusTask[]
   agency: {
     activeDesires: RobotStatusDesireSummary[]
   }
   situation: RobotStatusSituation
+  situationEvidence?: RobotStatusSituationEvidence
   history: RobotStatusHistoryEntry[]
 }
 
 export interface RobotStatusSourceFacts {
+  situationEvidence?: RobotStatusSituationEvidence
+  visualFrames?: Array<ReturnType<typeof import('./environment-interface/perception.js').projectEnvironmentVisualFrame>>
   latestVisualObservation?: import('./visual-observation.js').VisualObservationRecord
   generatedAt?: string
   projection?: { executionId: string; effectId: string }
@@ -242,7 +257,13 @@ function mergeBody(previous: RobotStatusBody | null, value: unknown): RobotStatu
     telemetryAt: telemetry.telemetryAt,
     telemetry: telemetry.telemetry,
     battery: previous.battery.observedAt > current.battery.observedAt ? previous.battery : current.battery,
-    motion: previous.motion.observedAt > current.motion.observedAt ? previous.motion : current.motion,
+    // Availability comes from the observation; activity comes from telemetry.
+    // Carried activity must not inherit a newer observation's timestamp.
+    motion: {
+      available: observation.motion.available,
+      activity: telemetry.motion.activity,
+      observedAt: telemetry.telemetryAt,
+    },
   }
 }
 
@@ -254,7 +275,7 @@ function normalizeAction(value: unknown): RobotStatusAction | null {
     actionId,
     type: cleanText(value.type, 80),
     command: cleanText(value.command, 160),
-    description: cleanText(value.description, 300),
+    description: typeof value.description === 'string' ? value.description : '',
     status: cleanText(value.status, 80),
     message: cleanText(value.message, 500),
     completedAt: cleanText(value.completedAt, 80),
@@ -278,7 +299,7 @@ function normalizeTaskAction(value: unknown): RobotStatusTaskAction | null {
     ...(optionalText(value.command, 160) ? { command: optionalText(value.command, 160) } : {}),
     ...(optionalText(value.direction, 80) ? { direction: optionalText(value.direction, 80) } : {}),
     ...(optionalText(value.target, 200) ? { target: optionalText(value.target, 200) } : {}),
-    ...(optionalText(value.description, 500) ? { description: optionalText(value.description, 500) } : {}),
+    ...(typeof value.description === 'string' ? { description: value.description } : {}),
   }
 }
 
@@ -383,6 +404,77 @@ export function parseRobotStatusSituation(value: unknown, allowEmpty = false): R
   }
 }
 
+/** Shared model projection: keep recorded interpretation separate from live observations. */
+export function projectRobotStatusContext(value: unknown, includeAgencyPurpose = true): Record<string, unknown> | null {
+  if (!isRecord(value)) return null
+  const body = isRecord(value.body) ? value.body : null
+  const lastAction = isRecord(value.lastAction) ? value.lastAction : null
+  const situation = isRecord(value.situation) ? value.situation : null
+  const agency = isRecord(value.agency) ? value.agency : null
+  const task = isRecord(value.task) ? value.task : null
+  return {
+    ...(value.live ? { live: value.live } : {}),
+    version: value.version,
+    projection: value.projection,
+    updatedAt: value.updatedAt,
+    sourceUpdatedAt: value.sourceUpdatedAt,
+    visualFrames: value.visualFrames,
+    ...(value.history !== undefined ? { history: value.history } : {}),
+    lastBodyAction: value.lastBodyAction ?? null,
+    ...(value.latestVisualObservation ? { latestVisualObservation: value.latestVisualObservation } : {}),
+    body: body
+      ? {
+          sessionId: body.sessionId,
+          identity: body.identity ?? (isRecord(body.state) ? body.state.body : null) ?? null,
+          environmentId: body.environmentId,
+          connectionStatus: body.connectionStatus,
+          observationAt: body.observationAt,
+          telemetryAt: body.telemetryAt,
+          battery: body.battery,
+          motion: body.motion,
+        }
+      : null,
+    lastAction: lastAction
+      ? lastAction
+      : null,
+    task: task
+      ? {
+          objectiveId: task.objectiveId,
+          executionId: task.executionId,
+          executionStatus: task.executionStatus,
+          completionCriteria: task.completionCriteria,
+          objective: task.objective,
+          instruction: task.instruction,
+          source: task.source,
+          decision: task.decision,
+          selectedAction: task.selectedAction,
+          actionId: task.actionId,
+          actionStatus: task.actionStatus,
+          feedback: task.feedback,
+          baselineFrame: task.baselineFrame,
+          updatedAt: task.updatedAt,
+        }
+      : null,
+    parkedGoals: value.parkedGoals ?? [],
+    // Goals are projected from durable execution at read time. The prose was
+    // authored against the saved snapshot, not the live evidence beside it.
+    situation: situation ? { currentGoal: situation.currentGoal, currentIntent: situation.currentIntent } : null,
+    recordedSituation: situation || isRecord(value.recordedSituation) ? {
+      ...Object.fromEntries(ROBOT_STATUS_PROSE_FIELDS.map(field => [field,
+        (isRecord(value.recordedSituation) ? value.recordedSituation : situation)?.[field]])),
+      evidence: Object.fromEntries(ROBOT_STATUS_PROSE_FIELDS.map(field => [field,
+        (isRecord(value.recordedSituation) && isRecord(value.recordedSituation.evidence)
+          ? value.recordedSituation.evidence[field] : (value.situationEvidence as RobotStatusSituationEvidence | undefined)?.[field]) ?? null])),
+    } : null,
+
+    agency: agency
+      ? { ...(includeAgencyPurpose ? { purpose: 'Pending work for Desire Agent; never a body instruction or permission to act.' } : {}),
+          activeDesires: projectDesireAwareness(agency.activeDesires) }
+      : null,
+  }
+}
+
+
 export function robotStatusPath(username: string): string {
   return path.join(getProfilePaths(username).state, ROBOT_STATUS_FILE)
 }
@@ -394,7 +486,10 @@ function readRobotStatusSnapshot(username: string): RobotStatusSnapshot | null {
   if (parsed.version !== 1 || !parsed.updatedAt || !parsed.situation) {
     throw new Error(`Invalid Robot Status snapshot for ${username}`)
   }
-  return parsed
+  // Older snapshots could date retained telemetry activity from an observation.
+  return { ...parsed, body: parsed.body ? { ...parsed.body,
+    motion: { ...parsed.body.motion, observedAt: cleanText(parsed.body.telemetryAt, 80) },
+  } : parsed.body }
 }
 
 export function loadRobotStatus(username: string): RobotStatusSnapshot | null {
@@ -402,8 +497,10 @@ export function loadRobotStatus(username: string): RobotStatusSnapshot | null {
   if (!parsed) return null
   const store = openExecutionStore(username)
   try {
-    const task = normalizeTask(store.projectedTask(username))
-    return { ...parsed, agency: { activeDesires: projectDesireAwareness(parsed.agency?.activeDesires) }, task,
+    const projection = store.projectedTasks(username)
+    const task = normalizeTask(projection.currentTask)
+    const parkedGoals = projection.parkedGoals.map(normalizeTask).filter((goal): goal is RobotStatusTask => goal !== null)
+    return { ...parsed, agency: { activeDesires: projectDesireAwareness(parsed.agency?.activeDesires) }, task, parkedGoals,
       situation: { ...parsed.situation, currentGoal: currentGoal(task),
         currentIntent: currentGoal(task) ? task!.decision.reason : '' } }
   } finally { store.close() }
@@ -420,18 +517,18 @@ function previousHistoryEntry(snapshot: RobotStatusSnapshot): RobotStatusHistory
     updatedAt: snapshot.updatedAt,
     situationalSummary: cleanText(snapshot.situation.situationalSummary, 500),
     currentGoal: cleanText(snapshot.situation.currentGoal, 300),
-    currentIntent: cleanText(snapshot.situation.currentIntent || snapshot.task?.decision.reason, 300),
+    currentIntent: cleanText(snapshot.situation.currentIntent, 300),
     lastActionStatus: cleanText(snapshot.lastAction?.status, 80),
   }
 }
 
 export function buildRobotStatusProjection(
   previous: RobotStatusSnapshot | null,
-  currentTask: RobotStatusTask | null,
+  tasks: { currentTask: RobotStatusTask | null; parkedGoals: RobotStatusTask[] },
   situation: RobotStatusSituation,
   sources: RobotStatusSourceFacts,
 ): RobotStatusSnapshot {
-  const task = normalizeTask(currentTask)
+  const task = normalizeTask(tasks.currentTask)
   const now = sources.generatedAt ?? new Date().toISOString()
   const history = previous
     ? [...previous.history, previousHistoryEntry(previous)].slice(-ROBOT_STATUS_HISTORY_LIMIT)
@@ -450,8 +547,17 @@ export function buildRobotStatusProjection(
   const latestVisualObservation = visualObservations[0]
   const retainLastAction = previous?.lastAction && previous.sourceUpdatedAt.robotHistory > sources.sourceUpdatedAt.robotHistory
   const lastAction = retainLastAction ? previous.lastAction : normalizeAction(sources.lastAction)
-  const lastBodyAction = lastAction && ['robotCommand', 'move', 'stop', 'robotMotionPlan'].includes(lastAction.type)
+  const lastBodyAction = lastAction && ['robotCommand', 'move', 'stop', 'requestMotion'].includes(lastAction.type)
     ? lastAction : previous?.lastBodyAction ?? null
+  const situationEvidence: RobotStatusSituationEvidence = {}
+  for (const field of ROBOT_STATUS_PROSE_FIELDS) {
+    const supplied = sources.situationEvidence?.[field]
+    const retained = previous?.situationEvidence?.[field]
+    if (supplied) situationEvidence[field] = supplied
+    else if (retained && JSON.stringify(situation[field]) === JSON.stringify(previous?.situation[field])) {
+      situationEvidence[field] = retained
+    }
+  }
   const snapshot: RobotStatusSnapshot = {
     projection: sources.projection ?? previous?.projection,
     version: 1,
@@ -464,11 +570,14 @@ export function buildRobotStatusProjection(
       agency: cleanText(sources.sourceUpdatedAt.agency, 80),
     },
     body,
+    visualFrames: sources.visualFrames ?? [],
     ...(latestVisualObservation ? { latestVisualObservation } : {}),
     lastAction,
     lastBodyAction,
     task,
+    parkedGoals: tasks.parkedGoals.map(normalizeTask).filter((goal): goal is RobotStatusTask => goal !== null),
     agency: { activeDesires: projectDesireAwareness(sources.activeDesires) },
+    situationEvidence,
     situation: parseRobotStatusSituation({ ...situation, currentGoal: currentGoal(task),
       currentIntent: currentGoal(task) ? task!.decision.reason : '' }, true),
     history,
@@ -481,7 +590,7 @@ export function saveRobotStatus(username: string, situation: RobotStatusSituatio
   try { return store.db.transaction(() => {
   const previous = readRobotStatusSnapshot(username)
   if (sources.projection && previous?.projection?.effectId === sources.projection.effectId) return previous
-  const snapshot = buildRobotStatusProjection(previous, store.projectedTask(username), situation, sources)
+  const snapshot = buildRobotStatusProjection(previous, store.projectedTasks(username), situation, sources)
   const filePath = robotStatusPath(username)
   fs.mkdirSync(path.dirname(filePath), { recursive: true })
   const temporary = `${filePath}.${process.pid}.tmp`

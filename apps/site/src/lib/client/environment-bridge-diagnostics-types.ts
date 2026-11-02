@@ -67,4 +67,14 @@ export interface EnvironmentBridgeDiagnosticsSession {
 export interface EnvironmentBridgeDiagnosticsSnapshot {
   updatedAt: string
   sessions: EnvironmentBridgeDiagnosticsSession[]
+  connections: Array<{
+    endpoint: string
+    sessionId?: string
+    gatewayInstance?: string
+    robotId?: string
+    connected: boolean
+    active: boolean
+    ready?: boolean
+    error?: string
+  }>
 }

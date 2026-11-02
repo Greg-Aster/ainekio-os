@@ -7,7 +7,7 @@ import {
   type EnvironmentActionType,
 } from '../../environment-interface/index.js';
 
-const ACTION_OPTIONS: EnvironmentActionType[] = ['move', 'look', 'jump', 'interact', 'stop', 'captureImage', 'robotCommand', 'faceExpression', 'robotMotionPlan', 'inspect', 'visualApproach', 'sendText'];
+const ACTION_OPTIONS: EnvironmentActionType[] = ['move', 'look', 'jump', 'interact', 'stop', 'captureImage', 'robotCommand', 'requestMotion', 'faceExpression', 'inspect', 'visualApproach', 'sendText'];
 const BODY_ACTIONS = new Set<EnvironmentActionType>(ACTION_OPTIONS.filter(action => action !== 'sendText'));
 type SendStatus = 'coordinated_for_adapter' | 'waiting_for_adapter' | 'bridge_disabled' | 'no_actions' | 'partial' | 'rejected';
 
@@ -30,7 +30,6 @@ export const environmentSendActionNode = defineNode({
   inputs: [
     { name: 'action', type: 'object', optional: true, description: 'Single action to enqueue' },
     { name: 'actions', type: 'array', optional: true, description: 'Actions to enqueue' },
-    { name: 'generatedActions', type: 'array', optional: true, description: 'Validated actions from Movement Generator' },
     { name: 'sessionId', type: 'string', optional: true, description: 'Target environment session' },
     { name: 'instruction', type: 'string', optional: true, description: 'Current resolved instruction' },
     { name: 'userInstruction', type: 'string', optional: true, description: 'Current human-authored instruction, when present' },
@@ -87,7 +86,6 @@ export const environmentSendActionNode = defineNode({
   async execute(inputs, context, properties) {
     const requestedActions = [
       ...(Array.isArray(inputs.actions) ? inputs.actions : []),
-      ...(Array.isArray(inputs.generatedActions) ? inputs.generatedActions : []),
       ...(inputs.action ? [inputs.action] : []),
     ];
     const hasStop = requestedActions.some(action => action && typeof action === 'object' && action.type === 'stop');

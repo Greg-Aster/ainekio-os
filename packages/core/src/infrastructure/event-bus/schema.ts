@@ -15,10 +15,10 @@ export type EventSource =
   | 'whisper'
   | 'kokoro'
   | 'rvc'
-  | 'sovits'
+
   | 'piper'
   | 'ollama'
-  | 'vllm'
+
   | 'interpreter'
   | 'big-brother'
   | 'audit'
@@ -133,14 +133,6 @@ export const EventTypes = {
   OLLAMA_MODEL_LOADED: 'ollama.model.loaded',
   OLLAMA_MODEL_UNLOADED: 'ollama.model.unloaded',
 
-  // vLLM events
-  VLLM_CHAT_STARTED: 'vllm.chat.started',
-  VLLM_CHAT_COMPLETED: 'vllm.chat.completed',
-  VLLM_CHAT_FAILED: 'vllm.chat.failed',
-  VLLM_SERVER_STARTED: 'vllm.server.started',
-  VLLM_SERVER_STOPPED: 'vllm.server.stopped',
-  VLLM_MODEL_LOADED: 'vllm.model.loaded',
-
   // Whisper STT events
   WHISPER_TRANSCRIBE_STARTED: 'whisper.transcribe.started',
   WHISPER_TRANSCRIBE_COMPLETED: 'whisper.transcribe.completed',
@@ -159,11 +151,6 @@ export const EventTypes = {
   RVC_CONVERT_STARTED: 'rvc.convert.started',
   RVC_CONVERT_COMPLETED: 'rvc.convert.completed',
   RVC_CONVERT_FAILED: 'rvc.convert.failed',
-
-  // GPT-SoVITS events
-  SOVITS_SYNTHESIZE_STARTED: 'sovits.synthesize.started',
-  SOVITS_SYNTHESIZE_COMPLETED: 'sovits.synthesize.completed',
-  SOVITS_SYNTHESIZE_FAILED: 'sovits.synthesize.failed',
 } as const;
 
 /**

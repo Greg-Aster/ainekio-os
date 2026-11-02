@@ -3,21 +3,10 @@ import path from 'node:path';
 import type { UnifiedHandler } from '../types.js';
 import { systemPaths } from '../../path-builder.js';
 import {
-  autoExportBestSamples,
-  copyToReference,
-  deleteReference,
-  getAvailableSamples,
-  getTrainingReadiness,
-  listReferenceSamples,
-  validateReferenceAudio,
-  type VoiceProvider,
-} from '../../audio-manager.js';
-import {
   copyToRVC,
   deleteRVCSample,
   deleteVoiceSample,
   exportTrainingDataset,
-  getCurrentSoVITSReference,
   getReferenceSamples,
   getRVCTrainingReadiness,
   getRVCTrainingStatus,
@@ -26,16 +15,10 @@ import {
   listRVCSamples,
   listVoiceSamples,
   purgeVoiceTrainingData,
-  setSoVITSReferenceSample,
   setVoiceTrainingEnabled,
   startRVCTraining,
 } from '../../voice-training.js';
 
-function normalizeProvider(provider?: string | null): VoiceProvider {
-  if (!provider) return 'gpt-sovits';
-  if (provider === 'sovits' || provider === 'kokoro' || provider === 'rvc') return 'gpt-sovits';
-  return provider as VoiceProvider;
-}
 
 export const handleGetVoiceTraining: UnifiedHandler = async (req) => {
   const action = req.query?.action || 'progress';
@@ -251,178 +234,5 @@ export const handlePostRvcTraining: UnifiedHandler = async (req) => {
   } catch (error) {
     console.error('[api/rvc-training] post error:', error);
     return { status: 500, data: { error: String(error) } };
-  }
-};
-
-export const handleGetSovitsTraining: UnifiedHandler = async (req) => {
-  try {
-    const action = req.query?.action;
-    const provider = normalizeProvider(req.query?.provider);
-    const speakerId = req.query?.speakerId || 'default';
-    const minQuality = parseFloat(req.query?.minQuality || '0.7');
-    const limit = parseInt(req.query?.limit || '100', 10);
-
-    if (action === 'available-samples') {
-      return { status: 200, data: { samples: getAvailableSamples(provider, minQuality, limit) } };
-    }
-
-    if (action === 'current-reference') {
-      if (provider !== 'gpt-sovits') {
-        return { status: 400, data: { error: 'Current reference is only available for GPT-SoVITS' } };
-      }
-      return { status: 200, data: getCurrentSoVITSReference(speakerId) };
-    }
-
-    if (action === 'reference-samples') {
-      return { status: 200, data: { samples: listReferenceSamples(provider, speakerId) } };
-    }
-
-    if (action === 'training-readiness') {
-      return { status: 200, data: getTrainingReadiness(provider, speakerId) };
-    }
-
-    if (action === 'validate-audio') {
-      const filePath = req.query?.filePath;
-      if (!filePath) {
-        return { status: 400, data: { error: 'filePath parameter required' } };
-      }
-      return { status: 200, data: validateReferenceAudio(filePath, provider) };
-    }
-
-    return {
-      status: 400,
-      data: { error: 'Invalid action. Use: available-samples, reference-samples, training-readiness, validate-audio' },
-    };
-  } catch (error) {
-    console.error('[api/sovits-training] get error:', error);
-    return { status: 500, data: { error: String(error) } };
-  }
-};
-
-export const handlePostSovitsTraining: UnifiedHandler = async (req) => {
-  try {
-    const {
-      action,
-      provider: providerRaw = 'gpt-sovits',
-      speakerId = 'default',
-      sampleIds,
-      sampleId,
-      minQuality = 0.8,
-    } = req.body ?? {};
-    const provider = normalizeProvider(providerRaw);
-
-    if (action === 'copy-samples') {
-      if (!Array.isArray(sampleIds)) {
-        return { status: 400, data: { error: 'sampleIds array required' } };
-      }
-
-      const copiedCount = copyToReference(sampleIds, provider, speakerId);
-      if (provider === 'gpt-sovits' && copiedCount > 0) {
-        try {
-          setSoVITSReferenceSample(speakerId, sampleIds[sampleIds.length - 1]);
-        } catch (error) {
-          console.error('[api/sovits-training] Failed to update reference sample:', error);
-        }
-      }
-
-      return {
-        status: 200,
-        data: {
-          success: true,
-          message: `Copied ${copiedCount} samples to ${provider} reference directory`,
-          copiedCount,
-        },
-      };
-    }
-
-    if (action === 'auto-export') {
-      const selectionMethod = req.body?.selectionMethod || 'quality';
-      const targetDuration = req.body?.targetDuration;
-      const maxSamples = req.body?.maxSamples;
-
-      const outputDir = autoExportBestSamples(provider, speakerId, {
-        selectionMethod,
-        targetDuration,
-        maxSamples,
-        minQuality,
-      });
-
-      if (provider === 'gpt-sovits') {
-        try {
-          setSoVITSReferenceSample(speakerId);
-        } catch (error) {
-          console.error('[api/sovits-training] Failed to update reference sample after auto-export:', error);
-        }
-      }
-
-      return {
-        status: 200,
-        data: {
-          success: true,
-          message: `Exported best samples to ${provider} directory (${selectionMethod} selection)`,
-          outputDir,
-          selectionMethod,
-          targetDuration,
-          maxSamples,
-        },
-      };
-    }
-
-    if (action === 'delete-reference') {
-      if (!sampleId) {
-        return { status: 400, data: { error: 'sampleId required' } };
-      }
-      deleteReference(provider, speakerId, sampleId);
-      return {
-        status: 200,
-        data: {
-          success: true,
-          message: `Deleted reference audio: ${sampleId}`,
-        },
-      };
-    }
-
-    if (action === 'set-reference') {
-      if (provider !== 'gpt-sovits') {
-        return { status: 400, data: { error: 'Reference management is only supported for GPT-SoVITS' } };
-      }
-      if (!sampleId) {
-        return { status: 400, data: { error: 'sampleId required' } };
-      }
-
-      const result = setSoVITSReferenceSample(speakerId, sampleId);
-      return {
-        status: 200,
-        data: {
-          success: true,
-          message: `Reference audio set to ${sampleId}`,
-          referencePath: result.referencePath,
-        },
-      };
-    }
-
-    if (action === 'set-reference-latest') {
-      if (provider !== 'gpt-sovits') {
-        return { status: 400, data: { error: 'Reference management is only supported for GPT-SoVITS' } };
-      }
-
-      const result = setSoVITSReferenceSample(speakerId);
-      return {
-        status: 200,
-        data: {
-          success: true,
-          message: 'Reference audio updated to latest sample',
-          referencePath: result.referencePath,
-        },
-      };
-    }
-
-    return {
-      status: 400,
-      data: { error: 'Invalid action. Use: copy-samples, auto-export, delete-reference' },
-    };
-  } catch (error) {
-    console.error('[api/sovits-training] post error:', error);
-    return { status: 500, data: { error: String(error), success: false } };
   }
 };

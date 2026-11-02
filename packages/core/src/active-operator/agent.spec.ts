@@ -16,10 +16,10 @@ test('Active Operator has one persistent agent identity, with existing child own
     const brainDir = path.join(root, 'brain');
     const agentsDir = path.join(brainDir, 'agents');
     fs.mkdirSync(path.join(agentsDir, 'active-operator'), { recursive: true });
-    fs.writeFileSync(path.join(agentsDir, 'active-operator/index.ts'), 'export {};');
+    fs.writeFileSync(path.join(agentsDir, 'active-operator/cli.ts'), 'export {};');
     const servicesConfigPath = path.join(root, 'services.json');
     const config = defaultAgentCatalogEntry('robot-operator', 'service');
-    assert.equal(config.agentPath, 'active-operator/index.ts');
+    assert.equal(config.agentPath, 'active-operator/cli.ts');
     fs.writeFileSync(servicesConfigPath, JSON.stringify({ services: { 'robot-operator': config } }));
     const triggerPath = path.join(root, 'agents.json');
     const childIds = Object.values(AGENT_CATALOG_DEFINITIONS)
@@ -32,7 +32,7 @@ test('Active Operator has one persistent agent identity, with existing child own
     const operator = snapshot.agents.find(agent => agent.id === 'robot-operator')!;
     assert.equal(operator.displayName, 'Active Operator');
     assert.equal(operator.sourceAgentId, 'active-operator');
-    assert.equal(operator.sourcePath, 'agents/active-operator/index.ts');
+    assert.equal(operator.sourcePath, 'agents/active-operator/cli.ts');
     assert.equal(operator.sourceReady, true);
     assert.equal(operator.lifecycle, 'service');
     assert.equal(operator.canRun, true);
@@ -50,7 +50,7 @@ test('Active Operator has one persistent agent identity, with existing child own
     assert.equal(descriptor.startable, true);
     assert.equal(descriptor.bootEligible, true);
     assert.ok(descriptor.variables.some(variable => variable.key === 'robotAutonomyControllerGraph'));
-    assert.equal(resolveAgentExecutablePath(operator.id), path.join(ROOT, 'brain/agents/active-operator/index.ts'));
+    assert.equal(resolveAgentExecutablePath(operator.id), path.join(ROOT, 'brain/agents/active-operator/cli.ts'));
     assert.equal(fs.existsSync(path.join(ROOT, 'brain/services/robot-operator.ts')), false);
   } finally {
     fs.rmSync(root, { recursive: true, force: true });

@@ -17,6 +17,7 @@ import {
 import { loadTrustCoupling, getMappedTrustLevel } from '../../trust-coupling.js';
 import { setTrustLevel } from '../../identity.js';
 import { audit } from '../../audit.js';
+import { startAssignedModelServices } from '../../llm-backend.js';
 
 /**
  * GET /api/cognitive-mode - Get current cognitive mode
@@ -123,5 +124,6 @@ export async function handleSetCognitiveMode(req: UnifiedRequest): Promise<Unifi
     }
   );
 
+  await startAssignedModelServices(req.user.username);
   return successResponse(result);
 }

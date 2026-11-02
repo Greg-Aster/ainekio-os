@@ -9,7 +9,6 @@ export const DEFAULT_CURIOSITY_SAMPLE_SIZE = 5
 export const DEFAULT_CURIOSITY_DECAY_DAYS = 14
 export const DEFAULT_CURIOSITY_CANDIDATE_LIMIT = 250
 export const DEFAULT_CURIOSITY_MEMORY_BYTES = 256_000
-export const DEFAULT_CURIOSITY_MEMORY_CHARS = 4_000
 export const MAX_CURIOSITY_SAMPLE_SIZE = 20
 export const MAX_CURIOSITY_CANDIDATE_LIMIT = 1_000
 
@@ -35,6 +34,9 @@ export interface CuriosityMemoryEvidence {
   timestamp: string
   type: string
   content: string
+  role?: string
+  source?: string
+  cognitiveMode?: string
 }
 
 export interface CuriosityMemorySamplingDiagnostics {
@@ -44,7 +46,6 @@ export interface CuriosityMemorySamplingDiagnostics {
   skippedOversize: number
   skippedGenerated: number
   skippedEmpty: number
-  truncatedContent: number
 }
 
 export interface CuriosityMemorySample {
@@ -58,7 +59,6 @@ export interface CuriosityMemorySamplingOptions {
   decayDays?: number
   candidateLimit?: number
   maxFileBytes?: number
-  maxContentChars?: number
   now?: number
   random?: () => number
 }
@@ -176,7 +176,6 @@ export async function sampleCuriosityMemories(
   if (candidateLimit < sampleSize) throw new Error('candidateLimit must be at least sampleSize')
   const decayDays = positiveNumber(options.decayDays, DEFAULT_CURIOSITY_DECAY_DAYS, 'decayDays')
   const maxFileBytes = positiveInteger(options.maxFileBytes, DEFAULT_CURIOSITY_MEMORY_BYTES, 10_000_000, 'maxFileBytes')
-  const maxContentChars = positiveInteger(options.maxContentChars, DEFAULT_CURIOSITY_MEMORY_CHARS, 50_000, 'maxContentChars')
   const now = options.now ?? Date.now()
   if (!Number.isFinite(now) || now < 0) throw new Error('now must be a non-negative timestamp')
 
@@ -190,7 +189,6 @@ export async function sampleCuriosityMemories(
     skippedOversize: 0,
     skippedGenerated: 0,
     skippedEmpty: 0,
-    truncatedContent: 0,
   }
   const candidates: CuriosityMemoryEvidence[] = []
   const files = await collectNewestJsonFiles(resolved.path, candidateLimit)
@@ -229,23 +227,26 @@ export async function sampleCuriosityMemories(
       diagnostics.skippedGenerated += 1
       continue
     }
-    const content = typeof memory.content === 'string' ? memory.content.trim() : ''
+    const content = typeof memory.content === 'string' ? memory.content : ''
     const timestamp = typeof memory.timestamp === 'string' ? memory.timestamp : ''
-    if (!content || !timestamp || Number.isNaN(Date.parse(timestamp))) {
+    if (!content.trim() || !timestamp || Number.isNaN(Date.parse(timestamp))) {
       diagnostics.skippedEmpty += 1
       continue
     }
-    const boundedContent = content.slice(0, maxContentChars)
-    if (boundedContent.length < content.length) diagnostics.truncatedContent += 1
     const id = typeof memory.id === 'string' && memory.id.trim()
       ? memory.id.trim()
       : path.basename(file, '.json')
+    const metadata = memory.metadata && typeof memory.metadata === 'object' && !Array.isArray(memory.metadata)
+      ? memory.metadata as Record<string, unknown> : {}
     candidates.push({
       __memoryId: id,
       id,
       timestamp: new Date(timestamp).toISOString(),
       type,
-      content: boundedContent,
+      content,
+      ...(typeof metadata.role === 'string' ? { role: metadata.role } : {}),
+      ...(typeof metadata.source === 'string' ? { source: metadata.source } : {}),
+      ...(typeof metadata.cognitiveMode === 'string' ? { cognitiveMode: metadata.cognitiveMode } : {}),
     })
   }
 

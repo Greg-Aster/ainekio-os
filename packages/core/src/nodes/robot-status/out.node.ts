@@ -12,6 +12,7 @@ import {
   type RobotStatusSnapshot,
   type RobotStatusTask,
   type RobotStatusTaskAction,
+  type RobotStatusSituationEvidence,
 } from '../../robot-status.js'
 import { defineNode, type NodeExecutionContext } from '../types.js'
 import { randomUUID } from 'node:crypto'
@@ -32,7 +33,7 @@ function taskAction(value: unknown): RobotStatusTaskAction | null {
   const type = cleanText(value.type, 80)
   if (!type) return null
   const metadata = isRecord(value.metadata) ? value.metadata : null
-  const description = cleanText(metadata?.motionSummary, 500)
+  const description = typeof value.description === 'string' ? value.description : cleanText(metadata?.motionSummary, 500)
   return {
     type,
     ...(cleanText(value.command, 160) ? { command: cleanText(value.command, 160) } : {}),
@@ -123,7 +124,7 @@ function bodyFromObservation(
     motion: {
       available: motionAvailable,
       activity: previousBody?.motion.activity ?? '',
-      observedAt: observation.timestamp,
+      observedAt: previousBody?.motion.observedAt ?? '',
     },
     state,
     telemetry: previousBody?.telemetry ?? {},
@@ -265,19 +266,18 @@ export function projectRobotStatus(inputs: Record<string, unknown>, context: Nod
   const response = cleanText(inputs.response, 1_000)
   const visualObservation = inputs.visualObservation as import('../../visual-observation.js').VisualObservationRecord | null | undefined
   const userInstruction = cleanText(inputs.userInstruction, 500)
-  const semanticSummary = cleanText(visualObservation?.summary, 1_000)
+  const reportedEnvironment = cleanText(visualObservation?.summary, 1_000)
     || cleanText(decision?.observationSummary, 1_000)
+  const reportedSummary = reportedEnvironment
     || response
     || cleanText(decision?.reason, 1_000)
     || cleanText((inputs.terminalFeedback as Record<string, unknown> | undefined)?.message, 500)
     || userInstruction
-    || previous?.situation.situationalSummary
-    || ''
+  const semanticSummary = reportedSummary || previous?.situation.situationalSummary || ''
   const previousSituation = previous?.situation
   const nextSituation = {
     situationalSummary: semanticSummary,
-    environmentDescription: cleanText(visualObservation?.summary, 1_000)
-      || cleanText(decision?.observationSummary, 1_000)
+    environmentDescription: reportedEnvironment
       || previousSituation?.environmentDescription
       || semanticSummary,
     currentGoal: task?.decision.objectiveComplete === true || task?.decision.outcome === 'abandon'
@@ -311,8 +311,25 @@ export function projectRobotStatus(inputs: Record<string, unknown>, context: Nod
     task,
     activeDesires: previous?.agency.activeDesires ?? [],
   }
-  context.graphExecution!.dispatch({ kind: 'robot_status', payload: { situation, sources } })
-  const status = buildRobotStatusProjection(previous, task ?? context.graphExecution!.task(), situation, sources)
+  // Only an actual new semantic input renews its field's provenance. A receipt
+  // can update the summary without making retained user facts or uncertainties new.
+  const situationEvidence: RobotStatusSituationEvidence = {}
+  const suppliedSummary = Boolean(reportedSummary)
+  for (const field of [
+    ...(suppliedSummary ? ['situationalSummary'] as const : []),
+    ...(reportedEnvironment || (!previousSituation?.environmentDescription && suppliedSummary) ? ['environmentDescription'] as const : []),
+    ...(userInstruction ? ['userContext'] as const : []),
+  ]) situationEvidence[field] = {
+    recordedAt: now,
+    sourceUpdatedAt: sources.sourceUpdatedAt,
+    visualFrames: visualObservation?.frames ?? [],
+  }
+  const attributedSources = { ...sources, situationEvidence }
+  context.graphExecution!.dispatch({ kind: 'robot_status', payload: { situation, sources: attributedSources } })
+  const status = buildRobotStatusProjection(previous, {
+    currentTask: task ?? context.graphExecution!.task(),
+    parkedGoals: (previous?.parkedGoals ?? []).filter(goal => goal.executionId !== context.graphExecution!.executionId),
+  }, situation, attributedSources)
   return {
     status,
     context: status,

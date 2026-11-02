@@ -69,13 +69,15 @@ export async function stopTerminalService(): Promise<void> {
 }
 export async function getBigBrotherSessionState() {
   const state = await getTerminalState()
-  const session = state.sessions.find(item => item.kind === 'provider' && !item.diagnostic)
+  const sessions = state.sessions.filter(item => item.kind === 'provider' && !item.diagnostic)
+  const session = sessions.find(item => item.phase === 'running') ?? sessions.at(-1)
   return { sessionOpen: !!session, processRunning: session?.phase === 'running', provider: session?.provider,
     phase: session?.phase || 'stopped', error: session?.error, id: session?.id }
 }
 export async function stopBigBrotherSession(): Promise<void> {
-  const state = await getBigBrotherSessionState()
-  if (state.id) await terminalCall('/close', { id: state.id })
+  const state = await getTerminalState()
+  await Promise.all(state.sessions.filter(item => item.kind === 'provider' && !item.diagnostic)
+    .map(item => terminalCall('/close', { id: item.id })))
 }
 
 export async function submitBigBrotherDiagnostic(request: DiagnosticRequest): Promise<DiagnosticReceipt> {

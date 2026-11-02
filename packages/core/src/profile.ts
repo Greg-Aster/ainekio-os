@@ -659,16 +659,6 @@ async function createDefaultConfigs(profileRoot: string, _username: string): Pro
         f0Method: 'rmvpe',
         device: 'cuda',
       },
-      sovits: {
-        serverUrl: 'http://127.0.0.1:9880',
-        referenceAudioDir: path.join(profileRoot, 'out', 'voices', 'sovits'),
-        speakerId: 'default',
-        temperature: 0.6,
-        speed: 1,
-        outputFormat: 'wav',
-        timeout: 30000,
-        autoFallbackToPiper: true,
-      },
     },
     stt: {
       provider: 'whisper',
@@ -1055,7 +1045,6 @@ async function createDefaultConfigs(profileRoot: string, _username: string): Pro
     enabled: true,
     model: 'nomic-embed-text',
     provider: 'ollama',
-    preloadAtStartup: true,
     description: 'Embedding model configuration for semantic memory search',
   };
 
@@ -1200,7 +1189,6 @@ async function ensureProfileDirectories(profileRoot: string): Promise<void> {
     path.join(profileRoot, 'state', 'agency', 'plans'),
     path.join(profileRoot, 'state', 'agency', 'reviews'),
     path.join(profileRoot, 'state', 'curiosity'),
-    path.join(profileRoot, 'state', 'recent-tools'),
     // Config directory
     path.join(profileRoot, 'etc'),
     // Training data directory

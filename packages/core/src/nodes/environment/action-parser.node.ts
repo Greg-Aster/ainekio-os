@@ -19,7 +19,7 @@ const PHYSICAL_MOTION_ACTIONS = new Set([
   'look',
   'jump',
   'robotCommand',
-  'robotMotionPlan',
+  'requestMotion',
   'inspect',
   'visualApproach',
 ]);
@@ -198,19 +198,14 @@ export const environmentActionParserNode = defineNode({
       : validation.value;
     const visualObservation = visualObservationOutput(validated.visualObservation, inputs.frames);
     const phases = validated.program?.steps ?? [];
-    const generated = phases.find(step => step.kind === 'generatedMotion');
     const parsed = { ...validated,
       actions: phases.flatMap(step => step.kind === 'action' ? [step.action] : step.kind === 'behavior' && step.motion !== null ? [step.motion] : []),
-      movementRequest: generated?.kind === 'generatedMotion' ? { description: generated.description, motionClass: 'body_local' as const } : null,
     };
-    const motionClass = normalizedEnvironmentMotionClass(parsed.taskDecision?.motionClass)
-      ?? (parsed.movementRequest ? 'body_local' : null);
-    const connectedSession = Boolean(sessionId || observation?.sessionId);
+    const motionClass = normalizedEnvironmentMotionClass(parsed.taskDecision?.motionClass);
     const unsupportedCommand = unsupportedRobotCommand(
       parsed.actions,
       observation?.capabilities?.robotCommands?.filter(command => !observation.capabilities.locomotion?.commands.includes(command)),
     );
-    const movementSupported = observation?.capabilities?.actions?.includes('robotMotionPlan') === true;
     const unavailableAction = parsed.actions.find(action => !actionIsAdvertised(action, observation));
     const unavailableExpression = parsed.actions.find(action => !expressionIsAdvertised(action, observation));
     const supportedParsedActions = parsed.actions.filter(action => (
@@ -250,26 +245,14 @@ export const environmentActionParserNode = defineNode({
       admissionBlockedReason = 'expression_unavailable';
     }
     const admissionBlocked = Boolean(admissionBlockedReason);
-    const requiresGeneratedMovement = !admissionBlocked
-      && Boolean(parsed.movementRequest);
-    const movementRequest = requiresGeneratedMovement && movementSupported
-      ? {
-          ...parsed.movementRequest!,
-          motionClass: 'body_local' as const,
-        }
-      : null;
-    const movementError = (admissionBlockedReason === 'expression_unavailable' ? 'The selected expression is not in the advertised expression library.' : motionAdmissionMessage(admissionBlockedReason))
-      || (requiresGeneratedMovement && !connectedSession
-        ? 'The requested robot movement cannot run because no robot session is connected.'
-        : requiresGeneratedMovement && !movementSupported
-          ? 'Off-script movement is unavailable because this robot does not advertise robotMotionPlan.'
-          : '');
+    const movementError = admissionBlockedReason === 'expression_unavailable'
+      ? 'The selected expression is not in the advertised expression library.' : motionAdmissionMessage(admissionBlockedReason);
     // A response coupled to a rejected action cannot be presented as a
     // truthful result. The transport error remains available through error
     // and actionAdmission; this node does not replace model speech with a
     // hard-coded conversational message.
     const response = admissionBlocked ? '' : parsed.response || '';
-    const valid = !admissionBlocked && Boolean(parsed.program) && (!requiresGeneratedMovement || Boolean(movementRequest));
+    const valid = !admissionBlocked && Boolean(parsed.program);
     const actionAdmission = supportedParsedActions.some(isPhysicalMotionAction) || admissionBlocked
       ? {
           kind: 'environment_action_admission',

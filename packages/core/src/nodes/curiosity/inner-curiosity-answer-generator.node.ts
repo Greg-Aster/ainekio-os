@@ -2,6 +2,7 @@ import { reasoningProperty } from '../llm/model-router.schema.js';
 import { callLLM, type RouterMessage } from '../../model-router.js';
 import { renderPromptTemplate } from '../prompt-template.js';
 import { defineNode, type NodeDefinition, type NodeExecutionContext } from '../types.js';
+import { innerCuriosityMemoryContext } from './inner-curiosity-memory-context.js';
 
 const DEFAULT_SYSTEM_PROMPT = `You are {{personaName}} privately contemplating a self-directed question. Answer from the supplied memories. Be thoughtful, exploratory, and explicit about uncertainty or missing evidence.`;
 
@@ -9,6 +10,8 @@ const DEFAULT_USER_PROMPT = `Question: {{question}}
 
 Recent experiences:
 {{memoriesText}}{{searchContext}}
+
+Autonomy task context, when supplied: {{taskBrief}}
 
 What grounded insights or patterns emerge?`;
 
@@ -48,19 +51,6 @@ function boundedNumber(
   return selected;
 }
 
-function memoryText(value: unknown, label: string, maximumPerItem?: number): string {
-  if (!Array.isArray(value)) throw new Error(`${label} must be an array`);
-  return value.map((item, index) => {
-    if (!item || typeof item !== 'object' || Array.isArray(item)) {
-      throw new Error(`${label} item ${index + 1} must be an object`);
-    }
-    const record = item as Record<string, unknown>;
-    const content = typeof record.content === 'string' ? record.content : record.text;
-    const text = requiredText(content, `${label} item ${index + 1}`);
-    return `${index + 1}. ${maximumPerItem ? text.slice(0, maximumPerItem) : text}`;
-  }).join('\n');
-}
-
 export async function executeInnerCuriosityAnswerGenerator(
   inputs: Record<string, unknown>,
   context: NodeExecutionContext,
@@ -70,13 +60,13 @@ export async function executeInnerCuriosityAnswerGenerator(
   throwIfAborted(context);
   const question = requiredText(inputs.question, 'Inner Curiosity answer question');
   const personaName = requiredText(inputs.personaName, 'Inner Curiosity answer personaName');
-  const memoriesText = memoryText(inputs.memories, 'Inner Curiosity memories');
+  const memoriesText = innerCuriosityMemoryContext(inputs.memories, 'Inner Curiosity memories');
   const searchResults = Array.isArray(inputs.searchResults) ? inputs.searchResults : [];
   const relatedText = searchResults.length > 0
-    ? memoryText(searchResults, 'Inner Curiosity search results', 500)
+    ? innerCuriosityMemoryContext(searchResults, 'Inner Curiosity search results')
     : '';
   const searchContext = relatedText ? `\n\nRelevant indexed memories:\n${relatedText}` : '';
-  const values = { personaName, question, memoriesText, searchContext };
+  const values = { personaName, question, memoriesText, searchContext, taskBrief: inputs.taskBrief || '' };
   const messages: RouterMessage[] = [
     {
       role: 'system',
@@ -117,6 +107,7 @@ export const InnerCuriosityAnswerGeneratorNode: NodeDefinition = defineNode({
   name: 'Answer Inner Curiosity Question',
   category: 'curiosity',
   inputs: [
+    { name: 'taskBrief', type: 'string', optional: true, description: 'Purpose and observations supplied by the delegating autonomy decision' },
     { name: 'question', type: 'string' },
     { name: 'personaName', type: 'string' },
     { name: 'memories', type: 'array' },
@@ -152,7 +143,7 @@ export const InnerCuriosityAnswerGeneratorNode: NodeDefinition = defineNode({
       type: 'text_multiline',
       default: DEFAULT_USER_PROMPT,
       label: 'User Prompt',
-      description: 'Supports {{personaName}}, {{question}}, {{memoriesText}}, and {{searchContext}}.',
+      description: 'Supports {{personaName}}, {{question}}, {{memoriesText}}, {{searchContext}}, and {{taskBrief}}.',
       rows: 8,
     },
   },

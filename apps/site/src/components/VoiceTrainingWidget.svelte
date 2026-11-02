@@ -4,7 +4,7 @@
   import ReferenceAudioSelector from './ReferenceAudioSelector.svelte';
   import { apiFetch } from '../lib/client/api-config';
 
-  export let provider: 'piper' | 'sovits' | 'rvc' | 'kokoro' = 'rvc';
+  export let provider: 'piper' | 'rvc' | 'kokoro' = 'rvc';
 
   interface TrainingReadiness {
     ready: boolean;
@@ -83,15 +83,11 @@
     trainingStatus = null;
     logs = [];
 
-    if (provider !== 'rvc' && provider !== 'sovits') return;
+    if (provider !== 'rvc') return;
 
     try {
-      if (provider === 'rvc') {
-        readiness = await requestJson('/api/rvc-training?action=training-readiness&speakerId=default');
-        await refreshRvcStatus();
-      } else {
-        readiness = await requestJson('/api/sovits-training?action=training-readiness&provider=gpt-sovits&speakerId=default');
-      }
+      readiness = await requestJson('/api/rvc-training?action=training-readiness&speakerId=default');
+      await refreshRvcStatus();
     } catch (cause) {
       error = cause instanceof Error ? cause.message : String(cause);
     }
@@ -120,13 +116,12 @@
     busy = true;
     error = '';
     try {
-      const endpoint = provider === 'rvc' ? '/api/rvc-training' : '/api/sovits-training';
+      const endpoint = '/api/rvc-training';
       const data = await requestJson(endpoint, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
           action: 'copy-samples',
-          provider: provider === 'sovits' ? 'gpt-sovits' : provider,
           speakerId: 'default',
           sampleIds: selectedSampleIds,
         }),
@@ -144,18 +139,17 @@
     busy = true;
     error = '';
     try {
-      const endpoint = provider === 'rvc' ? '/api/rvc-training' : '/api/sovits-training';
+      const endpoint = '/api/rvc-training';
       const data = await requestJson(endpoint, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
           action: 'auto-export',
-          provider: provider === 'sovits' ? 'gpt-sovits' : provider,
           speakerId: 'default',
-          minQuality: provider === 'rvc' ? 0.7 : 0.8,
+          minQuality: 0.7,
           selectionMethod: 'quality',
-          targetDuration: provider === 'rvc' ? 900 : 10,
-          maxSamples: provider === 'rvc' ? 200 : 5,
+          targetDuration: 900,
+          maxSamples: 200,
         }),
       });
       notice = data.message || 'Best samples exported';
@@ -226,15 +220,13 @@
     </div>
   {:else}
     <DirectVoiceRecorder
-      provider="gpt-sovits"
-      speakerId="default"
       onRecordingComplete={() => void refresh()}
     />
 
     <div class="card space-y-4 p-5">
       <div class="flex flex-wrap items-start justify-between gap-3">
         <div>
-          <h4 class="m-0 text-lg font-medium">{provider === 'rvc' ? 'RVC dataset' : 'GPT-SoVITS reference audio'}</h4>
+          <h4 class="m-0 text-lg font-medium">RVC dataset</h4>
           {#if readiness}
             <p class="mt-1 text-sm text-gray-500 dark:text-gray-400">
               {readiness.samples?.total || 0} eligible samples · {formatDuration(readiness.samples?.duration || 0)}
@@ -250,9 +242,7 @@
       {/if}
 
       <ReferenceAudioSelector
-        provider={provider === 'sovits' ? 'gpt-sovits' : 'rvc'}
-        speakerId="default"
-        minQuality={provider === 'rvc' ? 0.7 : 0.8}
+        minQuality={0.7}
         onSelectionChange={(ids) => selectedSampleIds = ids}
       />
 

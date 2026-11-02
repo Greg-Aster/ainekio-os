@@ -1,0 +1,9 @@
+<script is:inline>
+  (() => {
+    let theme = window.matchMedia('(prefers-color-scheme: dark)').matches ? 'dark' : 'light';
+    try {
+      theme = localStorage.getItem('metahuman-theme') || theme;
+    } catch {}
+    document.documentElement.classList.toggle('dark', theme === 'dark');
+  })();
+</script>

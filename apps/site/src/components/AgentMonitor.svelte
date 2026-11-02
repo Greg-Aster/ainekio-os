@@ -291,7 +291,7 @@
     }
   }
 
-  async function connectBody(agent: string, settings: Record<string, string | number>) {
+  async function connectBody(agent: string, settings: Record<string, string | number | boolean>) {
     connectingBody = true;
     try {
       for (const [key, value] of Object.entries(settings)) {
@@ -485,8 +485,8 @@
 
     <div class="min-h-0 flex-1 overflow-y-auto pr-1">
       <BodyConnectionSelector
-        agents={startableAgents}
-        activeAgentId={runningAgents.find(agent => agent.name === 'environment-bridge-local' || agent.name === 'environment-bridge-remote')?.name || ''}
+        agents={Object.values(agentData).map(panel => ({ id: panel.agentId, variables: panel.variables }))}
+        connections={agentData['environment-bridge']?.diagnostics?.connections || []}
         busy={connectingBody || Boolean(startingAgent) || Boolean(controllingAgent) || Boolean(savingField)}
         onConnect={connectBody}
       />
@@ -637,7 +637,7 @@
               </div>
             {/if}
 
-            {#if (selectedAgent.agentId === 'environment-bridge-local' || selectedAgent.agentId === 'environment-bridge-remote') && selectedAgent.diagnostics}
+            {#if selectedAgent.agentId === 'environment-bridge' && selectedAgent.diagnostics}
               <EnvironmentBridgeDiagnostics diagnostics={selectedAgent.diagnostics} />
             {/if}
 

@@ -58,7 +58,8 @@ const SYSTEM_UTILITY_WORKFLOWS = new Set([
 export function workflowGroupId(name: string): WorkflowGroupId {
   const normalizedName = name.trim().toLowerCase()
 
-  if (normalizedName.startsWith('boredom-') || normalizedName.startsWith('robot-')) {
+  if (normalizedName === 'body-event-trigger-mode'
+    || normalizedName.startsWith('boredom-') || normalizedName.startsWith('robot-')) {
     return 'robot-autonomy'
   }
   if (normalizedName.startsWith('desire-')) return 'desires-agency'

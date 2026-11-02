@@ -4,6 +4,7 @@ import LeftSidebar from '../components/LeftSidebar.svelte';
 import RightSidebar from '../components/RightSidebar.svelte';
 import CenterContent from '../components/CenterContent.svelte';
 import ThemeToggle from '../components/ThemeToggle.astro';
+import ThemeInit from '../components/ThemeInit.astro';
 import AuthGate from '../components/AuthGate.svelte';
 import BackendConnectionStatus from '../components/BackendConnectionStatus.svelte';
 import '../styles/tailwind.css';
@@ -17,43 +18,7 @@ import '../styles/chat-animations.css';
     <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover" />
     <title>MetaHuman OS</title>
     <link rel="icon" type="image/svg+xml" href="/favicon.svg" />
-    <script is:inline>
-      // Theme initialization (same as Base.astro)
-      const theme = (() => {
-        if (typeof localStorage !== 'undefined' && localStorage.getItem('theme')) {
-          return localStorage.getItem('theme');
-        }
-        if (window.matchMedia('(prefers-color-scheme: dark)').matches) {
-          return 'dark';
-        }
-        return 'light';
-      })();
-
-      if (theme === 'dark') {
-        document.documentElement.classList.add('dark');
-      } else {
-        document.documentElement.classList.remove('dark');
-      }
-    </script>
-
-    <!-- PERFORMANCE FIX: Bootstrap critical data before component hydration -->
-    <!-- This pre-fetches status data so it's ready when components hydrate -->
-    <!-- UNIFIED ARCHITECTURE: Both React Native and web use same fetch API -->
-    <script>
-      import { apiFetch, getApiBaseUrl, isHostedUi, isMobileApp } from '../lib/client/api-config';
-      if (!isMobileApp() && (!isHostedUi() || getApiBaseUrl())) {
-        // Web only: fetch critical status data immediately
-        apiFetch('/api/status', { cache: 'no-store' })
-          .then(res => res.json())
-          .then(data => {
-            (window as any).__MH_BOOTSTRAP_STATUS__ = data;
-            console.log('[bootstrap] Status data pre-fetched');
-          })
-          .catch(err => {
-            console.error('[bootstrap] Failed to pre-fetch status:', err);
-          });
-      }
-    </script>
+    <ThemeInit />
   </head>
   <body>
     <BackendConnectionStatus client:only="svelte" />

@@ -1,4 +1,5 @@
 import assert from 'node:assert/strict'
+import { parseContext } from '../../context-serialization.js'
 import test, { after, mock } from 'node:test'
 
 const live = {
@@ -58,7 +59,7 @@ test('goal review exposes the originating request separately from the selected o
     instruction: 'Review the supplied execution.', execution, observation,
   }, {} as never, {})
   assert.equal(result.valid, true)
-  const envelope = JSON.parse(result.messages[1].content)
+  const envelope = parseContext(result.messages[1].content)
   assert.deepEqual(envelope.originatingInstruction, { content: 'Please rest.', source: 'user' })
   assert.deepEqual(envelope.execution, execution)
   assert.deepEqual(envelope.robotStimulus.capabilities.robotCommandDescriptions,
@@ -82,7 +83,7 @@ for (const owner of ['robotAutonomyControllerContextNode', 'robotAutonomyPlanner
         meta: { dialogueSource: source, correlationId: source, tags: ['inner-curiosity'] } }],
     }, {} as never, {})
     assert.equal(result.messages[0].content, instruction)
-    const envelope = JSON.parse(result.messages[1].content)
+    const envelope = parseContext(result.messages[1].content)
     assert.equal(envelope.robotOperatorContext.activePersona, persona)
     const entries = envelope.robotOperatorContext.recentNarrativeContext.entries
     assert.equal(entries[0].content, spoken)

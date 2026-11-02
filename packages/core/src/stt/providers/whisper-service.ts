@@ -4,6 +4,7 @@
  */
 
 import { spawn } from 'node:child_process';
+import { randomUUID } from 'node:crypto';
 import fs from 'node:fs';
 import path from 'node:path';
 import { ROOT } from '../../path-builder.js';
@@ -44,7 +45,7 @@ export class WhisperService {
   /**
    * Transcribe audio buffer to text
    */
-  async transcribe(audioBuffer: Buffer, audioFormat: 'wav' | 'webm' | 'mp3' = 'wav'): Promise<string> {
+  async transcribe(audioBuffer: Buffer, audioFormat: 'wav' | 'webm' | 'mp3' = 'wav', hotwords?: string): Promise<string> {
     const requestId = generateRequestId();
     const startTime = Date.now();
 
@@ -62,9 +63,9 @@ export class WhisperService {
 
       // Use server mode if configured and enabled
       if (this.config.server.useServer) {
-        result = await this.transcribeViaServer(audioBuffer, audioFormat);
+        result = await this.transcribeViaServer(audioBuffer, audioFormat, hotwords);
       } else {
-        result = await this.transcribeViaCLI(audioBuffer, audioFormat);
+        result = await this.transcribeViaCLI(audioBuffer, audioFormat, hotwords);
       }
 
       const duration = Date.now() - startTime;
@@ -123,7 +124,7 @@ export class WhisperService {
   /**
    * Transcribe via FastAPI server (preferred method)
    */
-  private async transcribeViaServer(audioBuffer: Buffer, audioFormat: string): Promise<TranscriptionResult> {
+  private async transcribeViaServer(audioBuffer: Buffer, audioFormat: string, hotwords?: string): Promise<TranscriptionResult> {
     const serverUrl = getVoiceServiceUrl('whisper');
 
     // Ensure server is ready (auto-start if needed)
@@ -156,6 +157,7 @@ export class WhisperService {
       type: `audio/${audioFormat}`
     });
     formData.append('file', file);
+    if (hotwords) formData.append('hotwords', hotwords);
 
     // Make HTTP request to server with timeout
     const TRANSCRIBE_TIMEOUT_MS = 25000; // 25 seconds server-side timeout
@@ -194,7 +196,7 @@ export class WhisperService {
   /**
    * Transcribe via direct Python CLI (fallback method)
    */
-  private async transcribeViaCLI(audioBuffer: Buffer, audioFormat: string): Promise<TranscriptionResult> {
+  private async transcribeViaCLI(audioBuffer: Buffer, audioFormat: string, hotwords?: string): Promise<TranscriptionResult> {
     const venvPython = path.join(ROOT, 'venv', 'bin', 'python3');
     if (!fs.existsSync(venvPython)) {
       throw new Error('Python venv not found. Cannot use CLI mode.');
@@ -203,10 +205,9 @@ export class WhisperService {
     // Save audio buffer to temp file
     const cacheDir = path.join(ROOT, 'out', 'voice-cache');
     fs.mkdirSync(cacheDir, { recursive: true });
-    const tempAudioFile = path.join(cacheDir, `stt_${Date.now()}.${audioFormat}`);
-    fs.writeFileSync(tempAudioFile, audioBuffer);
-
+    const tempAudioFile = path.join(cacheDir, `stt_${randomUUID()}.${audioFormat}`);
     try {
+      fs.writeFileSync(tempAudioFile, audioBuffer);
       // Adjust compute type for GPU
       let computeType = this.config.computeType;
       if (this.config.device === 'cuda' && computeType === 'int8') {
@@ -219,8 +220,9 @@ from faster_whisper import WhisperModel
 import sys
 import json
 
-model = WhisperModel('${this.config.model}', device='${this.config.device}', compute_type='${computeType}')
-segments, info = model.transcribe(r'${tempAudioFile.replace(/\\/g, '\\\\')}', language='${this.config.language}')
+model_name, device, compute_type, audio_file, language, hotwords = sys.argv[1:]
+model = WhisperModel(model_name, device=device, compute_type=compute_type)
+segments, info = model.transcribe(audio_file, language=language, hotwords=hotwords or None)
 
 result = {
   'text': ' '.join([segment.text.strip() for segment in segments]),
@@ -232,7 +234,8 @@ print(json.dumps(result))
 `;
 
       const result = await new Promise<string>((resolve, reject) => {
-        const proc = spawn(venvPython, ['-c', pythonScript], {
+        const proc = spawn(venvPython, ['-c', pythonScript, this.config.model, this.config.device, computeType,
+          tempAudioFile, this.config.language, hotwords ?? ''], {
           cwd: ROOT,
           stdio: ['pipe', 'pipe', 'pipe'],
         });
@@ -261,21 +264,11 @@ print(json.dumps(result))
         });
       });
 
-      // Parse result
-      const parsed = JSON.parse(result) as TranscriptionResult;
-
-      // Clean up temp file
+      return JSON.parse(result) as TranscriptionResult;
+    } finally {
       try {
         fs.unlinkSync(tempAudioFile);
       } catch {}
-
-      return parsed;
-    } catch (error) {
-      // Clean up temp file on error
-      try {
-        fs.unlinkSync(tempAudioFile);
-      } catch {}
-      throw error;
     }
   }
 

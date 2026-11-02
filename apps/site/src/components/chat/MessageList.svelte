@@ -82,7 +82,6 @@
       message={msg}
       index={originalIndex}
       isSelected={selectedMessageIndex === originalIndex}
-      {mode}
       on:messageClick={forwardMessageClick}
       on:deleteMessage={forwardDeleteMessage}
       on:validateMessage={forwardValidateMessage}

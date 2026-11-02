@@ -9,6 +9,7 @@
  * NEVER fall back to system config for existing users.
  */
 
+import { startAssignedModelServices } from '../../llm-backend.js';
 import type { UnifiedRequest, UnifiedResponse } from '../types.js';
 import { successResponse } from '../types.js';
 import { assertTrainingModelApproved } from '../../adapters.js';
@@ -21,10 +22,6 @@ import {
   storageClient,
   getBackendStatus,
   detectAvailableBackends,
-  discoverVllmLoraAdapters,
-  getVllmLoraConfig,
-  enableVllmLoraAdapter,
-  getVLLMLoadedLoras,
   listLocalModelArtifacts,
   ollama,
 } from '../../index.js';
@@ -427,36 +424,7 @@ export async function handleGetModelRegistry(req: UnifiedRequest): Promise<Unifi
     const activeBackend = backendStatus.backend;
     const resolvedBackend = backendStatus.resolvedBackend;
     const availableBackends = await detectAvailableBackends();
-    const isVLLMRunning = availableBackends.vllm.running;
     const isOllamaRunning = availableBackends.ollama.running;
-
-    // vllm.active represents the backend's one loaded/configured model. Overlay
-    // its runtime identity for display without replacing the user's persisted
-    // roles, capabilities, or options.
-    if (activeBackend === 'vllm') {
-      const backendConfig = loadBackendConfig()
-      const configuredModel = backendStatus.model
-        || backendConfig.vllm.servedModelName
-        || backendConfig.vllm.model
-      const activeVllmModel = availableModels.find(model => model.id === 'vllm.active')
-      if (activeVllmModel && configuredModel) {
-        activeVllmModel.model = configuredModel
-        activeVllmModel.description = `Active vLLM backend model: ${configuredModel}`
-      }
-    }
-
-    // Inventory retains registered deployments. Role assignments are resolved
-    // separately; applying the preferred backend here hides resident specialists.
-    if (activeBackend === 'llama-cpp') {
-      availableModels = collapseModelInventory(availableModels.map(model => {
-        const resolved = resolveModelById(model.id, user.username, model.provider !== 'llama-cpp');
-        return resolved.provider === 'llama-cpp'
-          ? { ...model, provider: resolved.provider, model: resolved.model, capabilities: resolved.capabilities,
-              options: resolved.options, adapters: resolved.adapters, baseModel: resolved.baseModel || null,
-              description: model.description || `Configured llama.cpp model: ${resolved.model}` }
-          : model;
-      }));
-    }
 
     // Runtime discovery feeds the existing registry UI; it does not become a
     // second configuration source. A discovered model is persisted only when
@@ -497,23 +465,13 @@ export async function handleGetModelRegistry(req: UnifiedRequest): Promise<Unifi
       }
     }
 
-    // Local model info - ONLY for vLLM since it runs ONE model at a time
-    // Ollama doesn't need this since users can select any model
+    // Active externally managed llama.cpp deployment.
     let localModel: {
       id: string;
       name: string;
-      provider: 'ollama' | 'vllm' | 'llama-cpp';
+      provider: 'ollama' | 'llama-cpp';
       locked: boolean;
     } | null = null;
-
-    if (activeBackend === 'vllm' && isVLLMRunning && backendStatus.model) {
-      localModel = {
-        id: 'vllm.active',
-        name: backendStatus.model,
-        provider: 'vllm',
-        locked: true
-      };
-    }
 
     // Registered llama.cpp deployments remain selectable independently of server state.
     const cloudProviderSet = new Set(['runpod_serverless', 'huggingface', 'openai', 'openrouter', 'remote-server']);
@@ -522,40 +480,6 @@ export async function handleGetModelRegistry(req: UnifiedRequest): Promise<Unifi
       const cli = configuredBigBrotherModel(user.username);
       availableModels.push({ ...cli, id: BIG_BROTHER_MODEL_ID, capabilities: cli.capabilities ?? [],
         baseModel: null, metadata: cli.metadata ?? {}, source: 'runtime-discovery' });
-    }
-
-    // Discover vLLM LoRA adapters for the user
-    let vllmLoras: Array<{
-      id: string;
-      name: string;
-      path: string;
-      createdAt: string;
-      loaded: boolean;
-      valid: boolean;
-    }> = [];
-
-    if (activeBackend === 'vllm' && isVLLMRunning) {
-      try {
-        const profilePaths = getProfilePaths(user.username);
-        const adapters = await discoverVllmLoraAdapters(profilePaths.out);
-
-        // Get currently loaded LoRAs
-        let loadedLoras: string[] = [];
-        try {
-          loadedLoras = await getVLLMLoadedLoras();
-        } catch { /* vLLM might not be running */ }
-
-        vllmLoras = adapters.map(a => ({
-          id: `vllm-lora.${a.name}`,
-          name: a.name,
-          path: a.path,
-          createdAt: a.createdAt,
-          loaded: loadedLoras.includes(a.name),
-          valid: a.valid,
-        }));
-      } catch (error) {
-        console.warn('[model-registry] Failed to discover vLLM LoRAs:', error);
-      }
     }
 
     const llamaConfig = loadBackendConfig().llamaCpp;
@@ -575,12 +499,7 @@ export async function handleGetModelRegistry(req: UnifiedRequest): Promise<Unifi
     }
 
     const modelCategories = {
-      local: [...llamaModels, ...(activeBackend === 'vllm' && isVLLMRunning
-        ? [{ id: 'vllm.active', model: backendStatus.model || 'unknown', provider: 'vllm', locked: true }]
-        : activeBackend !== 'llama-cpp' && isOllamaRunning
-          ? installedOllamaModels
-          : []), ...availableModels.filter(model => model.provider === 'local-models')],
-      lora: vllmLoras,  // vLLM LoRA adapters
+      local: [...llamaModels, ...(activeBackend !== 'llama-cpp' && isOllamaRunning ? installedOllamaModels : []), ...availableModels.filter(model => model.provider === 'local-models')],
       remote: availableModels.filter(m => cloudProviderSet.has(m.provider)),
       bigBrother: availableModels.filter(m => bigBrotherProviders.has(m.provider))
     };
@@ -686,54 +605,6 @@ export async function handleAssignModelRole(req: UnifiedRequest): Promise<Unifie
         registry.models[modelId] = { provider: 'llama-cpp', model: config.model,
           roles: role ? [role] : [], capabilities: config.capabilities, adapters: [],
           description: 'Configured llama.cpp model', options: { ...config, lora: [] } };
-      } else if (modelId.startsWith('vllm.')) {
-        // vLLM model - runtime discovery
-        const backendConfig = loadBackendConfig();
-        registry.models[modelId] = {
-          provider: 'vllm',
-          model: backendConfig.vllm?.model || 'unknown',
-          roles: role ? [role] : [],
-          capabilities: [],
-          adapters: [],
-          description: `vLLM backend model`,
-          options: {},
-          metadata: { source: 'vllm-backend', locked: true }
-        };
-      } else if (modelId.startsWith('vllm-lora.')) {
-        // vLLM LoRA adapter - runtime discovery
-        const adapterName = modelId.replace(/^vllm-lora\./, '');
-        const backendConfig = loadBackendConfig();
-        registry.models[modelId] = {
-          provider: 'vllm',  // Use vllm provider, LoRA name is the model
-          model: adapterName,  // vLLM routes to LoRA based on model name
-          baseModel: backendConfig.vllm?.model,
-          roles: role ? [role] : [],
-          capabilities: [],
-          adapters: [],
-          description: `vLLM LoRA adapter: ${adapterName}`,
-          options: {},
-          metadata: { source: 'vllm-lora-discovery', isLora: true }
-        };
-      } else if (modelId.startsWith('lora.')) {
-        // LoRA adapter - runtime discovery
-        const adapterName = modelId.replace(/^lora\./, '');
-        const backendConfig = loadBackendConfig();
-        const useVllm = backendConfig.activeBackend === 'vllm';
-        const baseModel = useVllm
-          ? backendConfig.vllm?.model
-          : backendConfig.ollama?.defaultModel;
-
-        registry.models[modelId] = {
-          provider: useVllm ? 'vllm' : 'ollama',
-          model: adapterName,
-          baseModel: baseModel,
-          roles: role ? [role] : [],
-          capabilities: [],
-          adapters: [],
-          description: `LoRA adapter: ${adapterName}`,
-          options: {},
-          metadata: { source: 'lora-discovery' }
-        };
       } else if (modelId.startsWith('ollama.')) {
         // Ollama model - runtime discovery
         const inferredName = modelId.replace(/^ollama\./, '');
@@ -750,11 +621,11 @@ export async function handleAssignModelRole(req: UnifiedRequest): Promise<Unifie
         };
       } else if (modelId.startsWith('remote-server:')) {
         // Remote server model - runtime discovery from connected remote server
-        // ID format: remote-server:remote-ollama-modelname or remote-server:remote-vllm-modelname
+        // ID format: remote-server:remote-ollama-modelname
         const remoteId = modelId.replace(/^remote-server:/, '');
         // Extract model name: remote-ollama-qwen3.5:9b -> qwen3.5:9b
-        const modelName = remoteId.replace(/^remote-(ollama|vllm)-/, '');
-        const remoteProvider = remoteId.startsWith('remote-ollama') ? 'remote-ollama' : 'remote-vllm';
+        const modelName = remoteId.replace(/^remote-ollama-/, '');
+        const remoteProvider = 'remote-ollama';
 
         registry.models[modelId] = {
           provider: 'remote-server',
@@ -779,7 +650,8 @@ export async function handleAssignModelRole(req: UnifiedRequest): Promise<Unifie
 
     // Ensure role list includes this role
     const entry = registry.models[modelId];
-    const trainingCandidate = await assertTrainingModelApproved(user.username, entry.provider, entry.model);
+    const trainingCandidate = await assertTrainingModelApproved(user.username, entry.provider, entry.model,
+      { endpoint: entry.options.endpoint, lora: entry.options.lora }, 'assignment');
     if (trainingCandidate) {
       entry.metadata = { ...entry.metadata, trainingRunLabel: trainingCandidate.runLabel,
         trainingActivatedAt: new Date().toISOString() };
@@ -803,26 +675,8 @@ export async function handleAssignModelRole(req: UnifiedRequest): Promise<Unifie
 
     writeModelRegistry(user.username, registry);
 
-    // Handle vLLM LoRA - enable adapter and check if restart needed
-    let needsRestart = false;
-    if (modelId.startsWith('vllm-lora.')) {
-      const loraName = modelId.replace('vllm-lora.', '');
-      const profilePaths = getProfilePaths(user.username);
 
-      // Enable the adapter in user's LoRA config
-      const wasAdded = enableVllmLoraAdapter(profilePaths.etc, loraName, user.username);
-
-      // Check if LoRA is currently loaded in vLLM
-      if (wasAdded) {
-        try {
-          const loadedLoras = await getVLLMLoadedLoras();
-          needsRestart = !loadedLoras.includes(loraName);
-        } catch {
-          // vLLM might not be running - restart will be needed when it starts
-          needsRestart = true;
-        }
-      }
-    }
+    if (isModelRole(role)) await startAssignedModelServices(user.username, [role]);
 
     await audit({
       category: 'data_change',
@@ -835,15 +689,13 @@ export async function handleAssignModelRole(req: UnifiedRequest): Promise<Unifie
         role,
         modelId,
         cognitiveMode: cognitiveMode || 'default',
-        profilePath: resolveModelsPath(user.username),
-        needsRestart
+        profilePath: resolveModelsPath(user.username)
       }
     });
 
     return successResponse({
       success: true,
       message: `Role ${role} assigned to model ${modelId}`,
-      needsRestart,
       registry: {
         availableModels: Object.keys(registry.models || {}),
         roleAssignments: registry.defaults,

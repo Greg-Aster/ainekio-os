@@ -79,7 +79,6 @@ const HIGH_RISK_READ_PATTERNS = [
   '/api/training-config',
   '/api/voice-training',
   '/api/rvc-training',
-  '/api/sovits-training',
   '/api/profiles/list',
   '/api/trust',
   '/api/audit',

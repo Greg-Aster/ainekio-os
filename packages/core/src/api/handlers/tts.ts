@@ -8,16 +8,7 @@ import type { UnifiedRequest, UnifiedResponse } from '../types.js';
 import { successResponse, errorResponse, badRequestResponse } from '../types.js';
 import { generateSpeech, generateMultiVoiceSpeech, getTTSStatus } from '../../index.js';
 
-type TTSProvider = 'piper' | 'gpt-sovits' | 'rvc' | 'kokoro' | 'kitten';
-
-/**
- * Normalize provider name (UI sends "sovits", backend uses "gpt-sovits")
- */
-function normalizeProvider(provider?: string): TTSProvider | undefined {
-  if (!provider) return undefined;
-  if (provider === 'sovits') return 'gpt-sovits';
-  return provider as TTSProvider;
-}
+type TTSProvider = 'piper' | 'rvc' | 'kokoro';
 
 /**
  * POST /api/tts - Generate speech from text
@@ -30,17 +21,15 @@ export async function handleTtsGenerate(req: UnifiedRequest): Promise<UnifiedRes
   }
 
   try {
-    const normalizedProvider = normalizeProvider(provider);
+    const selectedProvider = provider as TTSProvider | undefined;
     let audioBuffer: Buffer;
 
     // Check if multi-voice mode is requested (for Mutant Super Intelligence)
     if (models && Array.isArray(models) && models.length > 0) {
-      // generateMultiVoiceSpeech only supports piper, gpt-sovits, rvc (not kokoro)
-      if (normalizedProvider === 'kitten') return badRequestResponse('Kitten does not support the multi-voice effect');
-      const multiProvider = normalizedProvider === 'kokoro' ? 'piper' : normalizedProvider;
+      const multiProvider = selectedProvider === 'kokoro' ? 'piper' : selectedProvider;
       audioBuffer = await generateMultiVoiceSpeech(text, models, {
         speakingRate,
-        provider: multiProvider as 'piper' | 'gpt-sovits' | 'rvc' | undefined,
+        provider: multiProvider as 'piper' | 'rvc' | undefined,
       });
     } else {
       // Single voice generation
@@ -49,7 +38,7 @@ export async function handleTtsGenerate(req: UnifiedRequest): Promise<UnifiedRes
         speakingRate: speakingRate || speed,
         pitchShift,
         langCode,
-        provider: normalizedProvider,
+        provider: selectedProvider,
         username: req.user.username,
         signal: req.signal,
       });

@@ -20,15 +20,21 @@ For each maintained file in the requested scope, record the applicable findings
 below. Small owner groups may share one record; do not duplicate unchanged
 inventory details or create boilerplate records for unrelated files.
 
-- Purpose: what the file owns.
+- Purpose: the responsibility it owns and the real callers/entrypoints that use it.
 - Layer: core engine, interface, CLI, agent, service, training, script, test, or doc.
 - Imports: whether dependency direction follows the blueprint.
 - Exports: whether public exports are intentional and stable.
-- Data access: path/profile/storage APIs used, and any hardcoded runtime paths.
+- Data lifecycle: producer, persisted facts, actual consumers, and the transition
+  that releases temporary state; distinguish required evidence from duplicate copies.
+- Data access: path/profile/storage APIs used, hardcoded runtime paths, and whether
+  active work reads unrelated history or decodes unused payloads.
 - Side effects: filesystem, child process, network, model, or shell behavior.
 - Security/privacy: auth checks, secret handling, path traversal risk, user data exposure.
-- Size/complexity: split candidates and owner boundaries.
-- Tests: existing coverage and minimum acceptance test for future edits.
+- Complexity: duplicate responsibilities, unnecessary mechanisms and coupling;
+  file length alone does not justify splitting an owner into more abstractions.
+- Tests: whether they reproduce the user-visible defect across the actual owner
+  boundary, whether assertions preserve a known bug, and whether maintained scripts
+  run them. Include lifecycle/repeated-operation evidence when relevant.
 - Disposition: keep, move, split, merge, delete, or defer.
 
 ## Audit Output
@@ -49,6 +55,12 @@ Use one record per file or small owner group. Each record should include:
 - Test gap:
 - Recommended action:
 ```
+
+For a proposed repair, identify the earliest faulty transition and the simpler
+surviving design. Distinguish correction from a compensating mechanism: a cleanup
+query, retry, filter or new flag can leave the original producer defective. Record
+the expected removal set and the behavior that would detect recurrence. Do not
+infer that passing compilation or an existing test suite establishes that behavior.
 
 ## Execution Rules
 

@@ -26,7 +26,7 @@
     { value: 'short', label: 'Short-term (1-3 months)', icon: '🎯' },
     { value: 'mid', label: 'Mid-term (3-12 months)', icon: '📈' },
     { value: 'long', label: 'Long-term (1+ years)', icon: '🌟' },
-  ];
+  ] as const;
 
   function addGoal() {
     if (!currentGoal.title.trim()) {

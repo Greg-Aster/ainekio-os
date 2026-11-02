@@ -39,10 +39,10 @@
 
   interface Operation {
     id: string; name: string; description: string; activation: number;
-    lastAssessment: { assessedAt: string; reason: string; instruction: string } | null;
+    lastAssessment: { assessedAt: string; reason: string; instruction: string; mode?: string } | null;
     recordedActivity: { id: string; state: string; createdAt: string; completedAt?: string; result?: { executions?: { executionId: string; status: string }[] } }[];
   }
-  interface Assessment { assessedAt: string; levels: Record<string, { activation: number }> }
+  interface Assessment { assessedAt: string; mode: string; assessmentReason?: string; levels: Record<string, { activation: number }> }
   interface OperatorStatus {
     operations: Operation[];
     assessments: Assessment[];
@@ -148,7 +148,7 @@
       <div class="border-b border-gray-200 p-3 dark:border-gray-800">
         <div class="font-semibold text-gray-900 dark:text-gray-100">Active Operator</div>
         <div class="mt-1 text-xs text-gray-500 dark:text-gray-400">
-          Semi Auto requests operations updated to 100%. Full Auto requests the highest returned activation, even below 100%. Reactive is dormant. Levels are selected by the model; requested work and completed results are recorded separately.
+          Semi Auto requests operations updated to 100%. Full Auto requests the highest positive returned activation, even below 100%. Reactive is dormant. Levels are selected by the model; requested work and completed results are recorded separately.
         </div>
       </div>
       {#if !status.robotOperator.runtime}
@@ -157,6 +157,14 @@
         <div class="border-b border-gray-200 p-3 text-xs text-gray-500 dark:border-gray-800 dark:text-gray-400">
           <span class="font-medium text-gray-800 dark:text-gray-200">{status.robotOperator.runtime.lifecycle}</span>
           · {status.robotOperator.runtime.reason}
+        </div>
+      {/if}
+      {#if status.assessments[0]?.assessmentReason}
+        <div class="border-b border-gray-200 p-3 dark:border-gray-800">
+          <div class="text-xs text-gray-500 dark:text-gray-400">
+            Latest assessment · {status.assessments[0].mode} · {localTime(status.assessments[0].assessedAt)}
+          </div>
+          <p class="mt-1 whitespace-pre-wrap">{status.assessments[0].assessmentReason}</p>
         </div>
       {/if}
       <div class="grid gap-3 p-3 md:grid-cols-2">
@@ -181,7 +189,7 @@
             {#if operation.lastAssessment}
               <details class="mt-2 text-xs text-gray-500 dark:text-gray-400">
                 <summary>Assessment and activity</summary>
-                <p class="mt-2">{localTime(operation.lastAssessment.assessedAt)}</p>
+                <p class="mt-2">{localTime(operation.lastAssessment.assessedAt)} · {operation.lastAssessment.mode ?? 'Mode not recorded'}</p>
                 <p class="mt-1 whitespace-pre-wrap">{operation.lastAssessment.instruction}</p>
                 {#each operation.recordedActivity as activity}
                   <p class="mt-1">Admission: {activity.state} · {localTime(activity.completedAt || activity.createdAt)}</p>

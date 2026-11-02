@@ -88,7 +88,7 @@ test('diagnostic invocation selects full access, high reasoning and the exact re
   } finally { await fs.rm(invocation.tempDir, { recursive: true, force: true }) }
 })
 
-test('per-call reasoning requests high while unchecked and absent retain configured effort', async () => {
+test('ordinary per-call reasoning requests high or none; absent retains configured effort', async () => {
   const { saveUserConfig } = await import('../../config.js')
   saveUserConfig('operator.json', { bigBrotherMode: {
     provider: 'codex', model: 'gpt-6-luna', reasoningEffort: 'medium',
@@ -97,7 +97,53 @@ test('per-call reasoning requests high while unchecked and absent retain configu
     const invocation = buildBigBrotherCLIInvocation('codex', 'Hello', { username: 'reasoning-fixture', enableThinking })
     try {
       const overrides = invocation.args.filter(arg => arg.startsWith('model_reasoning_effort='))
-      assert.deepEqual(overrides, [`model_reasoning_effort="${enableThinking === true ? 'high' : 'medium'}"`])
+      assert.deepEqual(overrides, [`model_reasoning_effort="${enableThinking === true ? 'high' : enableThinking === false ? 'none' : 'medium'}"`])
     } finally { await fs.rm(invocation.tempDir, { recursive: true, force: true }) }
   }
+})
+
+test('native model transport keeps the selected model and leaves diagnostic context settings untouched', async () => {
+  const { saveUserConfig } = await import('../../config.js')
+  saveUserConfig('operator.json', { bigBrotherMode: { provider: 'codex', model: 'selected-model', reasoningEffort: 'medium' } }, 'native-choice')
+  const native = buildBigBrotherCLIInvocation('codex', '', { username: 'native-choice', enableThinking: false,
+    modelRequest: { messages: [{ role: 'system', content: 'Supplied instruction' }, { role: 'user', content: 'Supplied input' }] } })
+  const diagnostic = buildBigBrotherCLIInvocation('codex', 'Existing diagnostic request', {
+    username: 'native-choice', diagnostic: { reasoning: false }, enableThinking: false,
+  })
+  try {
+    assert.equal(native.appServer?.model, 'selected-model')
+    assert.equal(native.appServer?.reasoning, 'none')
+    assert.equal(native.args[0], 'app-server')
+    assert.equal(native.args.includes('--json'), false)
+    assert.equal(native.args.includes('--color'), false)
+    assert.equal(native.timeout, 0, 'Model execution has no imposed elapsed-time cutoff')
+    assert.equal(diagnostic.args[0], 'exec')
+    assert.equal(diagnostic.appServer, undefined)
+    assert.equal(diagnostic.stdin, 'Existing diagnostic request')
+    assert.ok(diagnostic.args.includes('model_reasoning_effort="medium"'))
+    assert.equal(diagnostic.args.some(arg => /project_doc_max_bytes|memories\.|skills\.|developer_instructions/.test(arg)), false)
+  } finally {
+    await fs.rm(native.tempDir, { recursive: true, force: true })
+    await fs.rm(diagnostic.tempDir, { recursive: true, force: true })
+  }
+})
+
+test('native model context capacity overrides only when the graph supplies its configured value', async () => {
+  const configPath = path.join(root, 'etc', 'tool-executor.json')
+  const original = await fs.readFile(configPath, 'utf8')
+  const config = JSON.parse(original)
+  config.backends.codex.args.push('-c', 'model_context_window=64000')
+  await fs.writeFile(configPath, JSON.stringify(config))
+  try {
+    for (const contextWindow of [undefined, 872000]) {
+      const invocation = buildBigBrotherCLIInvocation('codex', '', {
+        modelRequest: { messages: [{ role: 'user', content: 'Supplied input' }],
+          ...(contextWindow !== undefined ? { contextWindow } : {}) },
+      })
+      try {
+        assert.deepEqual(invocation.args.filter(argument => argument.startsWith('model_context_window=')),
+          [`model_context_window=${contextWindow ?? 64000}`])
+      } finally { await fs.rm(invocation.tempDir, { recursive: true, force: true }) }
+    }
+  } finally { await fs.writeFile(configPath, original) }
 })

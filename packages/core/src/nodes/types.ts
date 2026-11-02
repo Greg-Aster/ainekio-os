@@ -344,15 +344,15 @@ export function materializeNodeProperties(
 // ============================================================================
 
 export const categoryColors: Record<NodeCategory, { color: string; bgColor: string }> = {
-  input: { color: '#4ade80', bgColor: '#166534' },      // Green
+  input: { color: '#60a5fa', bgColor: '#1e3a8a' },      // Blue
   router: { color: '#fbbf24', bgColor: '#92400e' },     // Amber
-  context: { color: '#60a5fa', bgColor: '#1e3a8a' },    // Blue
+  context: { color: '#22d3ee', bgColor: '#155e75' },    // Cyan
   environment: { color: '#2dd4bf', bgColor: '#115e59' }, // Teal
   operator: { color: '#a78bfa', bgColor: '#5b21b6' },   // Purple
-  chat: { color: '#f472b6', bgColor: '#9f1239' },       // Pink
-  model: { color: '#fb923c', bgColor: '#9a3412' },      // Orange
-  skill: { color: '#34d399', bgColor: '#065f46' },      // Emerald
-  output: { color: '#ef4444', bgColor: '#991b1b' },     // Red
+  chat: { color: '#ef4444', bgColor: '#991b1b' },       // Red
+  model: { color: '#ef4444', bgColor: '#991b1b' },      // Red
+  skill: { color: '#fb923c', bgColor: '#9a3412' },      // Orange
+  output: { color: '#4ade80', bgColor: '#166534' },     // Green
   control_flow: { color: '#818cf8', bgColor: '#4338ca' }, // Indigo
   memory: { color: '#c084fc', bgColor: '#7e22ce' },     // Violet
   utility: { color: '#94a3b8', bgColor: '#475569' },    // Slate
@@ -369,6 +369,22 @@ export const categoryColors: Record<NodeCategory, { color: string; bgColor: stri
   cognitive: { color: '#38bdf8', bgColor: '#0c4a6e' },  // Sky Blue (reasoning, planning)
   'active-operator': { color: '#8b5cf6', bgColor: '#4c1d95' }, // Violet (autonomous operation)
 };
+
+/** Functional styling for shared nodes whose catalog category names a domain. */
+export function getNodeFunctionalCategory(node: { id: string; category: NodeCategory; execution?: { modelOutput?: string } }) {
+  const functionalCategories: Record<string, NodeCategory> = {
+    environment_bridge_input: 'input', environment_image_input: 'input', environment_result_wait: 'input',
+    robot_status: 'input', environment_conversation_result: 'input',
+    persona_loader: 'input', body_event_context: 'context', environment_context_builder: 'context',
+    environment_send_action: 'output', environment_conversation_delivery: 'output',
+    environment_conversation: 'model', workflow_call: 'control_flow',
+  };
+  return node.execution?.modelOutput ? 'model' : functionalCategories[node.id] ?? node.category;
+}
+
+export function getNodeColors(node: { id: string; category: NodeCategory; execution?: { modelOutput?: string } }) {
+  return categoryColors[getNodeFunctionalCategory(node)];
+}
 
 // ============================================================================
 // UTILITY FUNCTIONS
@@ -400,7 +416,7 @@ export function defineNode(
     execution?: Partial<NodeExecutionPolicy>;
   }
 ): NodeDefinition {
-  const colors = categoryColors[definition.category];
+  const colors = getNodeColors(definition);
   const requiredInputs = definition.execution?.requiredInputs
     ?? definition.inputs.filter(input => !input.optional).map(input => input.name);
   return {

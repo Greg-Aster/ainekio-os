@@ -1,4 +1,5 @@
 <script lang="ts">
+  import type { EditorNode as Node } from '../../lib/client/flow-editor/template-converter';
   import { onMount, onDestroy } from 'svelte';
   import { readServerEvents } from '../../lib/client/sse';
 
@@ -12,7 +13,7 @@
   import ExecutionPanel from './ExecutionPanel.svelte';
   import { apiFetch } from '../../lib/client/api-config';
   import type { SvelteFlowGraph } from '../../lib/client/flow-editor/template-converter';
-  import type { Edge, Node } from '@xyflow/svelte';
+  import type { Edge } from '@xyflow/svelte';
   import {
     enrichGraphWithSchemas,
     loadSchemas,
@@ -386,7 +387,7 @@
       case 'node_start':
         // Mark this node as running
         flowEditorRef.setNodeExecutionState(data.nodeId, 'running');
-        if (selectedNode?.id === data.nodeId) {
+        if (selectedNode && selectedNode.id === data.nodeId) {
           selectedNode = { ...selectedNode, data: { ...selectedNode.data, executionState: 'running' } };
         }
         break;
@@ -394,14 +395,14 @@
       case 'node_complete':
         // Mark this node as completed
         flowEditorRef.setNodeExecutionState(data.nodeId, 'completed');
-        if (selectedNode?.id === data.nodeId) {
+        if (selectedNode && selectedNode.id === data.nodeId) {
           selectedNode = { ...selectedNode, data: { ...selectedNode.data, executionState: 'completed' } };
         }
         break;
 
       case 'node_skip':
         flowEditorRef.setNodeExecutionState(data.nodeId, 'skipped', data.reason);
-        if (selectedNode?.id === data.nodeId) {
+        if (selectedNode && selectedNode.id === data.nodeId) {
           selectedNode = {
             ...selectedNode,
             data: {
@@ -416,7 +417,7 @@
       case 'node_error':
         // Mark this node as failed
         flowEditorRef.setNodeExecutionState(data.nodeId, 'failed');
-        if (selectedNode?.id === data.nodeId) {
+        if (selectedNode && selectedNode.id === data.nodeId) {
           selectedNode = { ...selectedNode, data: { ...selectedNode.data, executionState: 'failed' } };
         }
         break;

@@ -3,7 +3,6 @@ import type { EnvironmentObservation, EnvironmentVisualFrame } from './types.js'
 const MAX_DIAGNOSTIC_EVENTS = 40;
 const MAX_IMAGE_BYTES = 256 * 1024;
 const MAX_AUDIO_BYTES = 512 * 1024;
-const MAX_EVENT_MESSAGE_LENGTH = 240;
 
 export interface EnvironmentBridgeDiagnosticEvent {
   timestamp: string;
@@ -83,7 +82,33 @@ export interface EnvironmentBridgeMovementPlanDiagnostics {
   updatedAt: string;
 }
 
+export interface EnvironmentBodyConnection {
+  endpoint: string;
+  sessionId?: string;
+  gatewayInstance?: string;
+  robotId?: string;
+  connected: boolean;
+  active: boolean;
+  ready?: boolean;
+  error?: string;
+}
+
+let connections: EnvironmentBodyConnection[] = [];
+
+export function recordEnvironmentBodyConnections(value: unknown): EnvironmentBridgeDiagnosticsSnapshot {
+  if (!Array.isArray(value) || value.some(item => !item || typeof item.endpoint !== 'string'
+    || typeof item.connected !== 'boolean' || typeof item.active !== 'boolean')) {
+    throw new Error('Invalid bridge connection availability');
+  }
+  connections = value.map(item => ({ endpoint: item.endpoint, connected: item.connected, active: item.active, ready: item.ready === true,
+    ...Object.fromEntries(['sessionId', 'gatewayInstance', 'robotId', 'error']
+      .filter(key => typeof item[key] === 'string').map(key => [key, item[key]])) }));
+  notify();
+  return getEnvironmentBridgeDiagnosticsSnapshot();
+}
+
 export interface EnvironmentBridgeDiagnosticsSnapshot {
+  connections?: EnvironmentBodyConnection[];
   updatedAt: string;
   sessions: EnvironmentBridgeDiagnosticsSession[];
 }
@@ -173,11 +198,11 @@ function boundedEvents(
     if (!event || typeof event.kind !== 'string' || !event.kind.trim()) return [];
     return [{
       timestamp: typeof event.timestamp === 'string' ? event.timestamp : nowIso(),
-      kind: event.kind.trim().slice(0, 80),
+      kind: event.kind.trim(),
       bytes: boundedInteger(event.bytes) || undefined,
-      status: typeof event.status === 'string' ? event.status.slice(0, 80) : undefined,
+      status: typeof event.status === 'string' ? event.status : undefined,
       message: typeof event.message === 'string'
-        ? event.message.slice(0, MAX_EVENT_MESSAGE_LENGTH)
+        ? event.message
         : undefined,
     }];
   });
@@ -187,11 +212,11 @@ function boundedEvents(
 export function recordEnvironmentBridgeTelemetry(
   update: EnvironmentBridgeTelemetryUpdate,
 ): EnvironmentBridgeDiagnosticsSnapshot {
-  const sessionId = update.sessionId.trim().slice(0, 160);
+  const sessionId = update.sessionId.trim();
   if (!sessionId) throw new Error('Environment bridge telemetry requires a sessionId');
   const timestamp = typeof update.timestamp === 'string' ? update.timestamp : nowIso();
   const current = sessions.get(sessionId) ?? emptySession(sessionId, timestamp);
-  const intervalMs = Math.max(1, boundedInteger(update.intervalMs, 60_000));
+  const intervalMs = Math.max(1, boundedInteger(update.intervalMs));
   const inboundBytes = boundedInteger(update.inboundBytes);
   const outboundBytes = boundedInteger(update.outboundBytes);
   const microphoneLevel = update.microphoneLevel === undefined
@@ -201,7 +226,7 @@ export function recordEnvironmentBridgeTelemetry(
   const next: EnvironmentBridgeDiagnosticsSession = {
     ...current,
     robotId: typeof update.robotId === 'string' && update.robotId.trim()
-      ? update.robotId.trim().slice(0, 160)
+      ? update.robotId.trim()
       : current.robotId,
     updatedAt: timestamp,
     transport: {
@@ -209,8 +234,12 @@ export function recordEnvironmentBridgeTelemetry(
       outboundBytes: current.transport.outboundBytes + outboundBytes,
       inboundMessages: current.transport.inboundMessages + boundedInteger(update.inboundMessages),
       outboundMessages: current.transport.outboundMessages + boundedInteger(update.outboundMessages),
-      inboundBytesPerSecond: Math.round((inboundBytes * 1000) / intervalMs),
-      outboundBytesPerSecond: Math.round((outboundBytes * 1000) / intervalMs),
+      inboundBytesPerSecond: update.inboundBytes === undefined
+        ? current.transport.inboundBytesPerSecond
+        : Math.round((inboundBytes * 1000) / intervalMs),
+      outboundBytesPerSecond: update.outboundBytes === undefined
+        ? current.transport.outboundBytesPerSecond
+        : Math.round((outboundBytes * 1000) / intervalMs),
     },
     media: {
       imageFrames: current.media.imageFrames + boundedInteger(update.imageFrames),
@@ -221,12 +250,12 @@ export function recordEnvironmentBridgeTelemetry(
     microphoneLevel,
     pendingAudioUtterances: update.pendingAudioUtterances === undefined
       ? current.pendingAudioUtterances
-      : boundedInteger(update.pendingAudioUtterances, 2),
+      : boundedInteger(update.pendingAudioUtterances),
     lastTranscriptionStatus: typeof update.transcriptionStatus === 'string'
-      ? update.transcriptionStatus.slice(0, 80)
+      ? update.transcriptionStatus
       : current.lastTranscriptionStatus,
     lastTranscript: typeof update.transcript === 'string'
-      ? update.transcript.slice(0, 4096)
+      ? update.transcript
       : current.lastTranscript,
     recognition: update.recognition ?? current.recognition,
     robotStatus: update.robotStatus && typeof update.robotStatus === 'object'
@@ -242,25 +271,25 @@ export function recordEnvironmentBridgeTelemetry(
     movementPlan: update.movementPlan && typeof update.movementPlan === 'object'
       ? {
           actionId: typeof update.movementPlan.actionId === 'string'
-            ? update.movementPlan.actionId.slice(0, 160)
+            ? update.movementPlan.actionId
             : current.movementPlan?.actionId,
           sequence: update.movementPlan.sequence === undefined
             ? current.movementPlan?.sequence
             : boundedInteger(update.movementPlan.sequence),
           status: typeof update.movementPlan.status === 'string'
-            ? update.movementPlan.status.slice(0, 80)
+            ? update.movementPlan.status
             : current.movementPlan?.status || 'unknown',
           frameCount: update.movementPlan.frameCount === undefined
             ? current.movementPlan?.frameCount
-            : boundedInteger(update.movementPlan.frameCount, 32),
+            : boundedInteger(update.movementPlan.frameCount),
           durationMs: update.movementPlan.durationMs === undefined
             ? current.movementPlan?.durationMs
-            : boundedInteger(update.movementPlan.durationMs, 10_000),
+            : boundedInteger(update.movementPlan.durationMs),
           activeFrame: update.movementPlan.activeFrame === undefined
             ? current.movementPlan?.activeFrame
-            : boundedInteger(update.movementPlan.activeFrame, 32),
+            : boundedInteger(update.movementPlan.activeFrame),
           message: typeof update.movementPlan.message === 'string'
-            ? update.movementPlan.message.slice(0, MAX_EVENT_MESSAGE_LENGTH)
+            ? update.movementPlan.message
             : undefined,
           updatedAt: typeof update.movementPlan.updatedAt === 'string'
             ? update.movementPlan.updatedAt
@@ -336,12 +365,12 @@ export function storeEnvironmentBridgeDiagnosticAudio(
   const timestamp = metadata.timestamp ?? nowIso();
   const current = sessions.get(sessionId) ?? emptySession(sessionId, timestamp);
   const latestAudio: EnvironmentBridgeDiagnosticAudio = {
-    utteranceId: utteranceId.slice(0, 160),
+    utteranceId: utteranceId,
     timestamp,
     bytes: audio.length,
     durationMs: metadata.durationMs === undefined
       ? undefined
-      : boundedInteger(metadata.durationMs, 15_000),
+      : boundedInteger(metadata.durationMs),
     wakeTriggered: metadata.wakeTriggered,
     truncated: metadata.truncated,
     available: true,
@@ -380,7 +409,7 @@ export function getEnvironmentBridgeDiagnosticsSnapshot(): EnvironmentBridgeDiag
       recentEvents: session.recentEvents.map(event => ({ ...event })),
     }))
     .sort((a, b) => Date.parse(b.updatedAt) - Date.parse(a.updatedAt));
-  return { updatedAt: values[0]?.updatedAt ?? nowIso(), sessions: values };
+  return { updatedAt: values[0]?.updatedAt ?? nowIso(), sessions: values, connections: connections.map(value => ({ ...value })) };
 }
 
 export function subscribeEnvironmentBridgeDiagnostics(callback: () => void): () => void {
@@ -389,6 +418,7 @@ export function subscribeEnvironmentBridgeDiagnostics(callback: () => void): () 
 }
 
 export function resetEnvironmentBridgeDiagnosticsForTests(): void {
+  connections = [];
   sessions.clear();
   media.clear();
   subscribers.clear();

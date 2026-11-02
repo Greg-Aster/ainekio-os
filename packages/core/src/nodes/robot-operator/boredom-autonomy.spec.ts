@@ -1,3 +1,4 @@
+import { parseContext } from '../../context-serialization.js';
 import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import os from 'node:os';
@@ -199,7 +200,7 @@ function modelInputEnvelope(result: any): any {
   const text = modelInputText(result.messages[1])
   const objectStart = text.indexOf('{')
   assert.ok(objectStart >= 0, 'model input must contain one structured context envelope')
-  return JSON.parse(text.slice(objectStart))
+  return parseContext(text.slice(objectStart))
 }
 
 test('autonomy decision inputs preserve available sight, capability meanings and the selected specialist brief', async () => {
@@ -539,6 +540,7 @@ test('Robot Operator context preserves canonical combined history without adding
         meta: {
           isInnerDialogue: true,
           originalRole: 'reflection',
+          idempotencyKey: 'retained-inner-observation',
           tags: ['idle-thought', 'inner'],
         },
       },
@@ -549,7 +551,7 @@ test('Robot Operator context preserves canonical combined history without adding
     innerHistory: [{
       role: 'reflection',
       content: 'Oldest admitted observation.',
-      meta: { tags: ['idle-thought', 'inner'] },
+      meta: { idempotencyKey: 'retained-inner-observation', tags: ['idle-thought', 'inner'] },
     }],
   }, {}, {});
 
@@ -582,6 +584,59 @@ test('Robot Operator context preserves canonical combined history without adding
   assert.doesNotMatch(serialized, /image captured/);
 });
 
+test('Controller history merge retains the seven inner records outside the separate three-entry window', async () => {
+  const inner = Array.from({ length: 10 }, (_, index) => ({
+    role: 'reflection', content: `Retained thought ${index}`, timestamp: 1000 + index,
+    meta: { idempotencyKey: `inner-record-${index}`, executionId: `thought-execution-${index}`,
+      source: 'autonomy', dialogueSource: index === 4 ? 'reflector' : 'robot-autonomy-controller' },
+  }));
+  const conversation = Array.from({ length: 8 }, (_, index) => ({
+    role: index % 2 ? 'assistant' : 'user', content: `Conversation entry ${index}`, timestamp: 2000 + index,
+  }));
+  const inputs = {
+    instruction: 'Fixture policy unchanged.', availableTasks: [],
+    conversationHistory: [...inner.map(entry => ({ ...entry, role: 'system',
+      content: `[Inner thought - ${entry.role}]: ${entry.content}`,
+      meta: { ...entry.meta, isInnerDialogue: true, originalRole: entry.role } })), ...conversation],
+    innerHistory: inner.slice(-3),
+  };
+  const original = structuredClone(inputs);
+  assert.equal(inputs.conversationHistory.length, 18);
+  const result = await robotAutonomyControllerContextNode.execute(inputs, {}, {});
+  assert.equal(result.context.recentContextCount, 18, 'Only the three copies of the same stored entries are reconciled');
+  assert.equal(result.context.innerContextCount, 10);
+  for (const source of inner) {
+    const entries = result.context.recentContext.filter((entry: any) => entry.context?.idempotencyKey === source.meta.idempotencyKey);
+    assert.equal(entries.length, 1, source.meta.idempotencyKey);
+    assert.equal(entries[0].timestamp, source.timestamp);
+    assert.equal(entries[0].context.executionId, source.meta.executionId);
+    assert.equal(entries[0].context.dialogueSource, source.meta.dialogueSource);
+    assert.ok(entries[0].content.includes(source.content));
+  }
+  assert.deepEqual(result.context.recentContext.filter((entry: any) => !entry.context?.isInnerDialogue), conversation);
+  assert.deepEqual(inputs, original, 'Selected source records are unchanged');
+});
+
+test('Controller history merge preserves equal text from distinct or unattributed inner records', async () => {
+  const text = 'The same words are separate recorded evidence.';
+  const result = await robotAutonomyControllerContextNode.execute({
+    instruction: 'Fixture policy unchanged.', availableTasks: [],
+    conversationHistory: [
+      { role: 'system', content: text, timestamp: 1000,
+        meta: { isInnerDialogue: true, originalRole: 'reflection', idempotencyKey: 'first-record' } },
+      { role: 'system', content: text, timestamp: 2000, meta: { isInnerDialogue: true, originalRole: 'reflection' } },
+    ],
+    innerHistory: [
+      { role: 'reflection', content: text, timestamp: 3000, meta: { idempotencyKey: 'second-record' } },
+      { role: 'reflection', content: text, timestamp: 2000 },
+    ],
+  }, {}, {});
+  assert.equal(result.context.innerContextCount, 4, 'Matching words or timestamps do not establish shared record identity');
+  assert.deepEqual(result.context.recentContext.map((entry: any) => entry.timestamp), [1000, 2000, 3000, 2000]);
+  assert.deepEqual(result.context.recentContext.map((entry: any) => entry.context.idempotencyKey),
+    ['first-record', undefined, 'second-record', undefined]);
+});
+
 test('Robot Autonomy planner context carries trigger, semantic memory and delegated memory once', async () => {
   const observation: any = robotObservation();
   observation.metadata.autonomousStimulus = 'boredom-reflection';
@@ -592,7 +647,7 @@ test('Robot Autonomy planner context carries trigger, semantic memory and delega
     wave: 'perform a waving gesture',
     stop: 'stop the current body motion',
   };
-  observation.capabilities.actions.push('robotMotionPlan');
+  observation.capabilities.actions.push('requestMotion');
   observation.capabilities.motionClasses = ['body_local'];
   observation.metadata.robotOperatorDecision = {
     observed: 'The recent context connects the striped ball with playful movement.',
@@ -900,6 +955,9 @@ test('Robot Autonomy Controller receives contextual daytime tasks from the canon
   const reflector = catalog.tasks.find((task: any) => task.id === 'reflector');
   assert.match(reflector?.description ?? '', /reflection/i);
   assert.equal(reflector?.handler, 'agent.reflector');
+  const desire = catalog.tasks.find((task: any) => task.id === 'desire-agent');
+  assert.equal(desire?.description, 'Creates new desires from attributed evidence, reviews and nurtures existing desires, plans approved work, executes it, and reviews outcomes.');
+  assert.equal(desire?.handler, 'agent.desire-generator');
 });
 
 test('Robot Autonomy Controller context combines unfinished work, buffers, bridge state, persona, desires, and task meanings', async () => {
@@ -985,6 +1043,19 @@ test('Robot Autonomy Controller context combines unfinished work, buffers, bridg
   assert.match(encoded, /prior-observer/);
   assert.doesNotMatch(encoded, /UNRELATED_DUPLICATE_GATEWAY_STATE/);
 
+});
+
+test('Robot Autonomy Controller context distinguishes checked-empty desires from an absent source', async () => {
+  const base = { instruction: 'Assess the supplied context.', availableTasks: [] };
+  const checked = await robotAutonomyControllerContextNode.execute({ ...base, activeDesires: [] }, {}, {});
+  const checkedContext = JSON.parse(checked.messages[1].content).robotOperatorContext;
+  assert.deepEqual(checkedContext.activeDesires.entries, []);
+  assert.equal(checkedContext.activeDesires.provenance, 'canonical_agency_storage');
+  assert.equal(checked.context.activeDesireCount, 0);
+
+  const absent = await robotAutonomyControllerContextNode.execute(base, {}, {});
+  const absentContext = JSON.parse(absent.messages[1].content).robotOperatorContext;
+  assert.equal(Object.hasOwn(absentContext, 'activeDesires'), false);
 });
 
 test('Robot Goal Review context includes current active desires with its other decision inputs', async () => {
@@ -1092,9 +1163,86 @@ test('Boredom Reflection delegates sampled memory once through the same planner 
   assert.equal(result.status, 'prepared');
   assert.equal(result.queued, false);
   assert.deepEqual(result.invocation.context.robotOperatorContext.memories, [
-    'A bright leaf once prompted a playful bow.',
-    'A familiar melody made the room feel calm.',
+    { content: 'A bright leaf once prompted a playful bow.' },
+    { content: 'A bright leaf once prompted a playful bow.' },
+    { content: 'A familiar melody made the room feel calm.' },
   ]);
+});
+
+test('Robot Operator handoff preserves complete intentions and selected attributed memories through serialization', async () => {
+  const observation: any = robotObservation();
+  const decision = {
+    observed: `Observed evidence:\n${'Retained source detail. '.repeat(70)}\nFinal observation.`,
+    instruction: `Investigate the current situation.\n\n${'Preserve the selected purpose. '.repeat(70)}\nFinal condition.`,
+    reason: `Recorded reason:\n${'The evidence leaves this unresolved. '.repeat(50)}\nFinal reason.`,
+  };
+  const memories = Array.from({ length: 6 }, (_, index) => ({
+    id: `selected-memory-${index}`,
+    content: index < 2 ? 'The same words with distinct recorded authors.'
+      : `Complete memory ${index}:\n${'Retained memory detail. '.repeat(90)}\nEnd of memory.`,
+    role: index % 2 ? 'assistant' : 'user',
+    source: index % 2 ? 'autonomy' : 'conversation',
+    timestamp: `2026-10-25T12:0${index}:00.000Z`,
+    type: 'conversation',
+    cognitiveMode: 'environment',
+    executionId: `source-execution-${index}`,
+    correlationId: `source-correlation-${index}`,
+  }));
+  const parsed = await robotOperatorDecisionParserNode.execute({ response: JSON.stringify(decision) }, {});
+  assert.deepEqual(parsed.decision, decision);
+  const prepared = await robotOperatorEnvironmentDispatchNode.execute({
+    decision: parsed.decision, memories, observation, robotObserver: observation.metadata.robotObserver,
+  }, { username: 'owner', operatorMode: 'full' }, { graph: 'environment' });
+  assert.equal(prepared.status, 'prepared');
+  const context = JSON.parse(JSON.stringify(prepared.invocation.context));
+  const received = await robotOperatorInputNode.execute({}, context);
+  for (const field of ['observed', 'instruction', 'reason'] as const) {
+    assert.equal(received.plannerDecision[field], decision[field], `${field} must survive the real dispatch/input handoff`);
+  }
+  assert.equal(received.plannerInstruction, decision.instruction);
+  assert.deepEqual(received.memories, memories);
+  assert.equal(received.inputSource, 'autonomy');
+  assert.equal(received.responseMetadata.correlationId, observation.metadata.robotObserver.cycleId);
+  assert.equal(prepared.innerEntry.content, `Intention: ${decision.instruction}\n\nReason: ${decision.reason}\n\nObservation: ${decision.observed}`);
+  assert.deepEqual(prepared.innerEntry.meta.plannerDecision, received.plannerDecision);
+  const { environmentContextBuilderNode } = await import('../environment/context-builder.node.js');
+  const retrievedMemories = memories.map(memory => ({ ...memory, id: `retrieved-${memory.id}` }));
+  for (const purpose of ['task', 'conversation']) {
+    const rendered = await environmentContextBuilderNode.execute({
+      plannerDecision: received.plannerDecision, delegatedMemories: received.memories,
+      robotObserver: received.robotObserver, memories: retrievedMemories,
+      routingAnalysis: { needsResponse: true, needsAction: false, taskContext: ['memory'], conversationContext: ['memory'] },
+    }, {}, { purpose });
+    const envelope = parseContext(rendered.messages[1].content);
+    assert.deepEqual(envelope.plannerDecision, received.plannerDecision);
+    assert.deepEqual(envelope.delegatedMemories, memories);
+    assert.deepEqual(envelope.memories, retrievedMemories);
+    assert.equal(envelope.currentInstruction, decision.instruction);
+  }
+});
+
+test('Robot Operator input preserves directly delegated records without changing trigger attribution', async () => {
+  const decision = { observed: ' Recorded\nobservation. ', instruction: ' Recorded\ninstruction. ',
+    reason: ' Recorded\nreason. ', decidedAt: '2026-10-25T12:00:00.000Z' };
+  const memories = [{ id: 'record-one', content: ' First\nrecord. ', role: 'user' },
+    { id: 'record-two', content: ' First\nrecord. ', role: 'assistant' }, ' Legacy\ntext memory. '];
+  const robotObserver = { cycleId: 'human-trigger', step: 1, triggerSource: 'user',
+    graph: 'boredom-reflection', requestedBy: 'boredom-reflection' };
+  const frames = [{ id: 'retained-frame', timestamp: decision.decidedAt, dataUrl: 'fixture-frame',
+    metadata: { robotId: 'fixture', epoch: 2, counter: 4 } }];
+  const received = await robotOperatorInputNode.execute({}, { robotOperatorContext: {
+    robotObserver, plannerDecision: decision, memories, frames, currentVisualEvidence: true,
+  } });
+  assert.deepEqual(received.plannerDecision, decision);
+  assert.deepEqual(received.memories, memories);
+  assert.deepEqual(received.frames, frames);
+  assert.equal(received.currentVisualEvidence, true);
+  assert.equal(received.inputSource, 'user');
+  assert.deepEqual(received.responseMetadata, {});
+  const context = await robotAutonomyPlannerContextNode.execute({ instruction: 'Fixture instruction.',
+    observation: robotObservation(), plannerDecision: received.plannerDecision }, {}, {});
+  const envelope = JSON.parse(context.messages[1].content);
+  assert.deepEqual(envelope.plannerDecision, { provenance: 'boredom_planner_decision', ...decision });
 });
 
 test('Robot Operator dispatch does not reapply trigger mode after the graph decides to delegate', async () => {
@@ -1278,3 +1426,66 @@ test('Goal Review correlates narrative by real identity and preserves unrelated 
       messages.slice(executionId ? 2 : 0).map(entry => [entry.role, entry.timestamp]));
   }
 });
+
+test('autonomy receives image-bound face estimates separately from a different live frame', async () => {
+  const recognition = { robotId: 'p4', gatewayInstance: 'gateway', epoch: 3, frameCounter: 43,
+    observedAt: '2026-10-24T01:46:41Z', backend: 'ultralytics+sface',
+    objects: [{ label: 'person', score: 0.9, identity: { state: 'face_match', name: 'Greg', similarity: 0.82 } }] }
+  const frame = { ...robotObservation().visual, metadata: {
+    robotId: 'p4', gatewayInstance: 'gateway', epoch: 3, counter: 43, recognition,
+  } }
+  for (const build of [robotAutonomyControllerContextNode, robotAutonomyPlannerContextNode]) {
+    const result = await build.execute({ instruction: 'Fixture instructions.', observation: robotObservation(),
+      robotStatus: { live: { recognition: { sourceFrame: { robotId: 'p4', gatewayInstance: 'gateway', epoch: 3, counter: 44 }, objects: [] } } },
+      currentVisualEvidence: true, frames: [frame],
+      images: [{ type: 'image_url', image_url: { url: frame.dataUrl } }],
+    }, {})
+    const envelope = modelInputEnvelope(result)
+    assert.deepEqual(envelope.robotStimulus.visualEvidence.frames[0].recognition, recognition)
+    assert.equal(envelope.robotOperatorContext.robotStatus.state.live.recognition.imageAssociation, 'different_frame')
+    assert.deepEqual(result.frames, [frame])
+    assert.ok(result.messages[1].content.some((part: any) => part.image_url?.url === frame.dataUrl))
+  }
+})
+
+test('Full assessment separates dated operation decisions from current capabilities and retains inner execution attribution', async () => {
+  const historical = { operationId: 'boredom-movement', activation: 0, reason: 'Earlier feedback was below calibration.',
+    instruction: 'Do not move during that earlier operation.', assessedAt: '2026-10-26T09:53:22Z' }
+  const activity = { correlationId: 'original-decision', instruction: historical.instruction, reason: historical.reason,
+    createdAt: historical.assessedAt, state: 'completed' }
+  const input = {
+    instruction: 'Fixture policy unchanged.', fullInstruction: 'Fixture full policy unchanged.',
+    activationState: { mode: 'full', operations: [{ id: 'boredom-movement', name: 'Movement', activation: 0,
+      activationThreshold: 100, lastAssessment: historical, recordedActivity: [activity] }] },
+    observation: { ...robotObservation(), state: { body: { authenticated: true },
+      feedback: { observedAt: '2026-10-26T12:14:41Z', usable: true, below_calibration_mask: 0 } } },
+    innerHistory: [
+      { role: 'reflection', content: historical.instruction, timestamp: 1000,
+        meta: { source: 'autonomy', executionId: 'original-decision', cycleId: 'cycle-a', operationId: 'boredom-movement',
+          idempotencyKey: 'original-entry', sourceObservationAt: historical.assessedAt } },
+      { role: 'reflection', content: historical.instruction, timestamp: 2000,
+        meta: { source: 'autonomy', executionId: 'different-decision', idempotencyKey: 'different-entry' } },
+    ],
+  }
+  const result = await robotAutonomyControllerContextNode.execute(input, {}, {})
+  const envelope = modelInputEnvelope(result)
+  assert.equal(result.messages[0].content, input.fullInstruction)
+  const semi = await robotAutonomyControllerContextNode.execute({ ...input,
+    activationState: { ...input.activationState, mode: 'semi' },
+  }, {}, {})
+  assert.equal(semi.messages[0].content, input.instruction, 'Semi keeps its exact graph-owned instruction')
+  assert.deepEqual(envelope.robotStimulus.state.feedback, input.observation.state.feedback)
+  const operation = envelope.activeOperator.operations[0]
+  assert.equal(operation.activation, 0)
+  assert.equal(Object.hasOwn(operation, 'lastAssessment'), false, 'Prior instructions are not attached to a current capability')
+  assert.equal(Object.hasOwn(operation, 'recordedActivity'), false)
+  assert.deepEqual(envelope.activeOperator.history, [{ operationId: 'boredom-movement', lastAssessment: historical, recordedActivity: [activity] }])
+  const narrative = envelope.robotOperatorContext.recentNarrativeContext.entries
+  assert.equal(narrative.length, 2, 'Equal words from separate decisions remain separate evidence')
+  assert.equal(narrative[0].context.executionId, 'original-decision')
+  assert.equal(narrative[0].context.idempotencyKey, 'original-entry')
+  assert.equal(narrative[0].context.sourceObservationAt, historical.assessedAt)
+  assert.equal(narrative[0].context.operationId, 'boredom-movement')
+  assert.equal(narrative[1].context.executionId, 'different-decision')
+  assert.deepEqual(narrative.map((entry: any) => entry.timestamp), [1000, 2000])
+})

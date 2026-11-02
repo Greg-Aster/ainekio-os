@@ -1,3 +1,4 @@
+import type { Priority } from '../queue/types.js'
 import type { RobotStatusTask } from '../robot-status.js'
 
 /** Durable execution identity is independent of conversation, jobs and body actions. */
@@ -9,7 +10,7 @@ export interface ExecutionDefinition {
   nodeVersions: Record<string, string>
 }
 
-export type ExecutionStatus = 'running' | 'waiting' | 'completed' | 'failed' | 'cancelled'
+export type ExecutionStatus = 'running' | 'waiting' | 'idle' | 'completed' | 'failed' | 'cancelled'
 
 export interface ExecutionObjective extends RobotStatusTask {
   objectiveId: string
@@ -36,6 +37,7 @@ export interface ExecutionRecord {
   username: string
   /** Coordinator lifetime in which this execution was originally admitted. */
   originRuntimeId?: string
+  priority?: Priority
   definition: ExecutionDefinition
   status: ExecutionStatus
   waitingReason?: string

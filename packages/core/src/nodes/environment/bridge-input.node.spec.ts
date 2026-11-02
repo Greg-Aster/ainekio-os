@@ -185,7 +185,7 @@ test('Environment Bridge Input always exposes complete Ainekio observation and b
   assert.equal(environmentBridgeInputNode.propertySchemas?.observationFields, undefined);
   assert.equal(environmentBridgeInputNode.propertySchemas?.dataOutputs, undefined);
   assert.equal(environmentBridgeInputNode.outputs.some(output => output.enabledBy), false);
-  assert.equal(environmentBridgeInputNode.presentation?.defaultExpanded, true);
+  assert.equal(environmentBridgeInputNode.presentation?.defaultExpanded, false);
   assert.deepEqual(
     environmentBridgeInputNode.outputs
       .filter(output => output.primary)

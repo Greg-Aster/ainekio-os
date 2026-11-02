@@ -167,7 +167,7 @@ test('fresh contrast evaluation requests stay outside the fit and source variant
 })
 
 test('goal training preserves source attribution using the existing user and autonomy contracts', async () => {
-  const rows = (await recordsPromise).filter(record => record.metadata.suite.startsWith('goal-'))
+  const rows = (await recordsPromise).filter(record => record.metadata.specialist === 'task' && record.metadata.suite.startsWith('goal-'))
   assert.ok(rows.length > 0)
   assert.deepEqual([...new Set(rows.map(row => row.metadata.developmentFold))].sort(), [0, 1, 2, 3])
   const autonomy = await loadGraphProperties('autonomy')
@@ -301,7 +301,8 @@ test('intent sees only the incoming message and task receives the selected runti
   for (const record of records) {
     assert.doesNotMatch(`${record.system}\n${record.user}`, /profiles\/|persona\/|greggles|Ainekio/)
     if (record.metadata.specialist === 'intent') {
-      assert.ok(record.user.startsWith(record.metadata.inputSource === 'autonomy'
+      if (record.metadata.outputContract === 'autonomy-context') assert.equal(JSON.parse(record.user).trigger.triggerSource, 'autonomy')
+      else assert.ok(record.user.startsWith(record.metadata.inputSource === 'autonomy'
         ? 'Internal planner intention: ' : 'Current user message: '))
       assert.ok(!record.user.includes('currentEnvironment'))
       assert.ok(ROUTE_FIELDS.every(key => key === 'taskContext' || key === 'conversationContext'
@@ -347,14 +348,16 @@ test('fresh intent evaluation is separate from development and the old regressio
   const evaluation = await buildDevelopmentRecords(EVALUATION_CASES)
   const regression = await buildDevelopmentRecords(REGRESSION_CASES)
   const intent = (records: typeof development) => records.filter(record => record.metadata.specialist === 'intent'
+    && record.metadata.outputContract !== 'autonomy-context'
     && !record.metadata.suite.startsWith('speech-program-') && !record.metadata.suite.startsWith('planner-boundary-'))
   const previousIntent = (records: typeof development) => intent(records).filter(record =>
-    !/^intent-(development|evaluation)-memory-/.test(record.metadata.sourceCaseId))
+    !/^intent-(development|evaluation)-memory-/.test(record.metadata.sourceCaseId)
+      && !record.metadata.suite.startsWith('goal-routing-'))
   assert.equal(previousIntent(development).length, 1280, 'Previous Intent development families remain intact')
   assert.equal(previousIntent(evaluation).length, 253, 'Previous Intent evaluation families remain intact')
-  assert.equal(intent(development).length, 1387)
-  assert.equal(new Set(intent(development).map(record => record.user)).size, 1387)
-  assert.equal(intent(evaluation).length, 311)
+  assert.equal(intent(development).length, 1432)
+  assert.equal(new Set(intent(development).map(record => record.user)).size, 1432)
+  assert.equal(intent(evaluation).length, 333)
   assert.equal(intent(regression).length, 46)
   const liveVisionFailure = intent(regression).find(record => record.user === 'Current user message: What can you see in front of you right now?')!
   assert.ok(liveVisionFailure)
@@ -589,5 +592,52 @@ test('vision evaluation stays outside fitting and the observed chair failure rem
     for (const id of new Set(rows.map(row => row.metadata.sourceCaseId))) {
       assert.equal(new Set(rows.filter(row => row.metadata.sourceCaseId === id).map(row => row.metadata.developmentFold)).size, 1)
     }
+  }
+})
+
+
+test('autonomy context selection reuses the graph prompt and preserves source/fold separation', async () => {
+  const development = (await recordsPromise).filter(record => record.metadata.outputContract === 'autonomy-context')
+  const evaluation = (await buildDevelopmentRecords(EVALUATION_CASES)).filter(record => record.metadata.outputContract === 'autonomy-context')
+  assert.equal(development.length, 256)
+  assert.equal(evaluation.length, 128)
+  const seen = new Set(development.map(record => record.user))
+  assert.ok(evaluation.every(record => !seen.has(record.user)))
+  assert.deepEqual(validateDevelopmentRecords(development, DEVELOPMENT_CASES.filter(source => source.outputContract === 'autonomy-context')), [])
+  for (const row of [...development, ...evaluation]) {
+    assert.equal(row.metadata.inputSource, 'autonomy')
+    assert.match(row.system, /Use taskContext to select information relevant to the autonomous assessment/)
+    const input = JSON.parse(row.user), output = JSON.parse(row.output)
+    assert.equal(output.needsAction, false)
+    assert.equal(output.needsResponse, false)
+    assert.ok(!output.taskContext.includes('vision'), 'Camera availability alone does not require an image')
+    assert.equal(output.taskContext.includes('memory'), input.previousMemoryRequest !== null)
+    assert.equal(output.memoryQuery, input.previousMemoryRequest?.memoryQuery)
+  }
+})
+
+test('autonomy context targets vary with recorded operation state instead of using a fixed list per mode', async () => {
+  const records = (await recordsPromise).filter(record => record.metadata.outputContract === 'autonomy-context')
+  for (const mode of ['semi', 'full']) {
+    const selections = new Set(records.filter(record => JSON.parse(record.user).mode === mode)
+      .map(record => JSON.stringify(JSON.parse(record.output).taskContext.filter((source: string) => source !== 'memory'))))
+    assert.ok(selections.size >= 4, `${mode} context selection covers distinct assessment situations`)
+  }
+})
+
+test('equivalent Semi and Full context requests do not teach mode alone to exclude motivation', async () => {
+  const records = (await recordsPromise).filter(record => record.metadata.outputContract === 'autonomy-context')
+  const pairs = new Map<string, typeof records>()
+  for (const record of records) {
+    const input = JSON.parse(record.user)
+    delete input.mode
+    delete input.trigger.cycleId
+    const key = JSON.stringify(input)
+    pairs.set(key, [...(pairs.get(key) ?? []), record])
+  }
+  for (const pair of pairs.values()) {
+    assert.equal(pair.length, 2, 'Both modes share the same evidence, catalog and fold')
+    assert.equal(pair[0]!.metadata.developmentFold, pair[1]!.metadata.developmentFold)
+    assert.deepEqual(JSON.parse(pair[0]!.output).taskContext, JSON.parse(pair[1]!.output).taskContext)
   }
 })

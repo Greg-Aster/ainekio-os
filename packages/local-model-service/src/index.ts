@@ -14,6 +14,7 @@ import {
   saveConfig,
   setConfigPath,
   getAvailableModels,
+  resolveModelsDirectory,
   EMBEDDING_MODELS,
   LLM_MODELS,
   type LocalModelServiceConfig
@@ -68,7 +69,7 @@ let modelManager: ModelManager | null = null;
 /**
  * Create and configure the Fastify server
  */
-function createServer(): FastifyInstance {
+function createServer(modelsDir: string): FastifyInstance {
   const app = Fastify({
     logger: {
       level: process.env.LOG_LEVEL || 'info'
@@ -171,8 +172,7 @@ function createServer(): FastifyInstance {
 
   // List available models
   app.get('/models', async () => {
-    const config = loadConfig();
-    return getAvailableModels(config.modelsDir);
+    return getAvailableModels(modelsDir);
   });
 
   // Get loaded models status (silent logging - polled frequently)
@@ -299,16 +299,12 @@ export async function startLocalModelService(options: {
   host?: string;
   modelsDir: string;
   configPath?: string;
-  preloadEmbeddings?: boolean;
-  preloadLLM?: boolean;
 }): Promise<FastifyInstance> {
   const {
     port = 4324,
     host = '127.0.0.1',
     modelsDir,
-    configPath,
-    preloadEmbeddings,
-    preloadLLM
+    configPath
   } = options;
 
   // Set config path if provided
@@ -321,28 +317,11 @@ export async function startLocalModelService(options: {
   console.log(`[local-models] Models directory: ${modelsDir}`);
 
   // Create server
-  server = createServer();
+  server = createServer(modelsDir);
 
   // Start server
   await server.listen({ port, host });
   console.log(`[local-models] Service started on http://${host}:${port}`);
-
-  // Preload models if configured
-  const config = loadConfig();
-
-  if (preloadEmbeddings ?? config.embeddings.preloadAtStartup) {
-    console.log(`[local-models] Preloading embedding model: ${config.embeddings.model}`);
-    modelManager.loadEmbedder(config.embeddings.model).catch(err => {
-      console.error('[local-models] Failed to preload embedding model:', err);
-    });
-  }
-
-  if (preloadLLM ?? config.llm.preloadAtStartup) {
-    console.log(`[local-models] Preloading LLM model: ${config.llm.model}`);
-    modelManager.loadGenerator(config.llm.model).catch(err => {
-      console.error('[local-models] Failed to preload LLM model:', err);
-    });
-  }
 
   return server;
 }
@@ -374,7 +353,7 @@ export function getManager(): ModelManager | null {
 if (import.meta.url === `file://${process.argv[1]}`) {
   const port = parseInt(process.env.PORT || '4324', 10);
   const host = process.env.HOST || '127.0.0.1';
-  const modelsDir = process.env.MODELS_DIR || './models';
+  const modelsDir = resolveModelsDirectory();
   const configPath = process.env.CONFIG_PATH;
 
   startLocalModelService({

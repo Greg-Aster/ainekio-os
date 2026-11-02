@@ -329,7 +329,8 @@ export async function runRemoteTraining(opts: RunRemoteTrainingOptions): Promise
     const result = job ? specialistRemoteReceipt(JSON.parse(receipt.stdout), { baseModel: cfg.base_model,
       configSha256: await sha256File(opts.CONFIG_FILE), samples: opts.samples_used })
       : parseTrainingCandidateResult(JSON.parse(receipt.stdout), manifest.datasetId, cfg.base_model)
-    if (cfg.gguf_conversion?.enabled && !result.artifacts['model.gguf']) throw new Error('Requested GGUF was not produced')
+    const ggufName = cfg.gguf_conversion?.artifact === 'adapter' ? 'adapter.gguf' : 'model.gguf'
+    if (cfg.gguf_conversion?.enabled && !result.artifacts[ggufName]) throw new Error('Requested GGUF was not produced')
     for (const [name, expected] of Object.entries(result.artifacts)) {
       const localFile = path.join(opts.FINAL_ADAPTER_DIR, name)
       requireCommand(await ssh(connection, 'cat ' + quoteShell(remoteRoot + '/candidate/' + name), {
@@ -340,7 +341,7 @@ export async function runRemoteTraining(opts: RunRemoteTrainingOptions): Promise
     // Publish the candidate receipt only after every declared file is verified.
     safeWriteJSON(path.join(opts.FINAL_ADAPTER_DIR, 'training-result.json'), result)
     summary.training_success = true
-    if (result.artifacts['model.gguf']) summary.gguf_path = path.join(opts.FINAL_ADAPTER_DIR, 'model.gguf')
+    if (result.artifacts[ggufName]) summary.gguf_path = path.join(opts.FINAL_ADAPTER_DIR, ggufName)
     saveSummary()
     tracker.completeStage('adapter_download')
   } catch (error) {

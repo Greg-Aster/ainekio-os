@@ -166,7 +166,6 @@ function parseSamplingDiagnostics(value: unknown): CuriosityMemorySample['diagno
     'skippedOversize',
     'skippedGenerated',
     'skippedEmpty',
-    'truncatedContent',
   ] as const;
   for (const field of fields) {
     if (!Number.isSafeInteger(record[field]) || Number(record[field]) < 0) {
@@ -180,7 +179,6 @@ function parseSamplingDiagnostics(value: unknown): CuriosityMemorySample['diagno
     skippedOversize: Number(record.skippedOversize),
     skippedGenerated: Number(record.skippedGenerated),
     skippedEmpty: Number(record.skippedEmpty),
-    truncatedContent: Number(record.truncatedContent),
   };
 }
 

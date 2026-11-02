@@ -222,7 +222,7 @@ let personaTab: 'editor' | 'memory' | 'generator' = 'editor'
 let memoryTab: 'episodic' | 'reflections' | 'tasks' | 'curated' | 'ai-ingestor' | 'audio' | 'dreams' | 'curiosity' | 'functions' | 'environment-training' = 'episodic'
 let voiceTab: 'training' | 'settings' = 'training'
 let trainingTab: 'wizard' | 'automatic' | 'datasets' | 'monitor' = 'wizard'
-let currentVoiceProvider: 'piper' | 'sovits' | 'rvc' = 'rvc'
+let currentVoiceProvider: 'piper' | 'rvc' = 'rvc'
 
 
 // Expansion and lazily loaded memory-content state

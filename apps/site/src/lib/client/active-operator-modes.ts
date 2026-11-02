@@ -20,14 +20,14 @@ export const AUTONOMY_MODES: AutonomyModeDefinition[] = [
     id: 'semi',
     label: 'Semi-autonomous',
     badge: 'S',
-    description: 'After the configured inactivity interval, Active Operator assesses operations and requests those updated to 100% activation.',
+    description: 'Active Operator periodically assesses context and requests operations updated to 100% activation, including during conversation.',
     buttonClass: 'semi',
   },
   {
     id: 'full',
     label: 'Fully autonomous',
     badge: 'F',
-    description: 'Active Operator requests the highest returned activation, even below 100%.',
+    description: 'Active Operator develops self-directed intentions and requests the highest positive returned activation, even below 100%.',
     buttonClass: 'full',
   },
 ];

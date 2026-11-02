@@ -19,7 +19,7 @@ import type { AgentCatalogItem } from './agent-catalog.js';
 import { AGENT_CATALOG_DEFINITIONS, getAgentCatalogDefinition, type AgentCatalogDefinition } from './agent-catalog-definitions.js';
 
 function monitorKind(definition: AgentCatalogDefinition): AgentKind {
-  if (definition.id === 'environment-bridge-local' || definition.id === 'environment-bridge-remote') return 'connection';
+  if (definition.id === 'environment-bridge') return 'connection';
   if (definition.lifecycle === 'service') return 'service';
   if (definition.id === 'audio-organizer') return 'one-shot';
   if (definition.defaultTrigger?.type === 'manual') return 'manual';
@@ -36,7 +36,7 @@ export const DESCRIPTORS: Record<string, Omit<AgentDescriptor, 'variables'>> = O
     kind: monitorKind(definition),
     startable: true,
     bootEligible: definition.lifecycle === 'service',
-    dependencyNotes: (definition.id === 'environment-bridge-local' || definition.id === 'environment-bridge-remote')
+    dependencyNotes: (definition.id === 'environment-bridge')
       ? ['Requires internal and adapter tokens plus a WebSocket adapter URL.']
       : definition.id === 'audio-organizer'
         ? ['Finite audio processing runs through the Work Coordinator only when explicitly requested.']
@@ -52,6 +52,9 @@ export const SERVICE_LIFECYCLE_FIELDS = new Set([
   'interval',
   'inactivityThreshold',
   'adapterUrl',
+  'remoteAdapterUrl',
+  'robotId',
+  'followRobot',
   'transport',
   'sshTarget',
   'sshGatewayPort',
@@ -268,7 +271,7 @@ function serviceLifecycleVariables(config: AgentCatalogEntry | undefined, id: st
     })
   }
 
-  if (id === 'environment-bridge-local' || id === 'environment-bridge-remote') {
+  if (id === 'environment-bridge') {
     variables.push(
       {
         key: 'adapterUrl',
@@ -291,12 +294,21 @@ function serviceLifecycleVariables(config: AgentCatalogEntry | undefined, id: st
     );
   }
 
-  if (id === 'environment-bridge-remote') {
+  if (id === 'environment-bridge') {
     variables.push(
+      { key: 'remoteAdapterUrl', label: 'Remote adapter URL', type: 'url',
+        value: typeof effective.remoteAdapterUrl === 'string' ? effective.remoteAdapterUrl : '',
+        applyMode: 'restart', writable: true, description: 'Forwarded endpoint used only when SSH or Cloudflare is selected.' },
+      { key: 'followRobot', label: 'Follow robot across saved hosts', type: 'toggle',
+        value: effective.followRobot === true, applyMode: 'restart', writable: true,
+        description: 'Follow the same robot between the local host and the saved remote route, retaining one active control stream.' },
+      { key: 'robotId', label: 'Selected robot', type: 'text',
+        value: typeof effective.robotId === 'string' ? effective.robotId : '',
+        applyMode: 'restart', writable: true, description: 'Physical robot identity to follow. Empty follows the selected body on one host, or the first available body until restart in automatic mode.' },
       { key: 'transport', label: 'Connection route', type: 'select',
-        value: typeof effective.transport === 'string' ? effective.transport : 'cloudflare',
-        options: ['ssh', 'cloudflare'], applyMode: 'restart', writable: true,
-        description: 'SSH for a configured machine on LAN/Wi-Fi; Cloudflare for an existing Access tunnel.' },
+        value: typeof effective.transport === 'string' ? effective.transport : 'local',
+        options: ['local', 'ssh', 'cloudflare'], applyMode: 'restart', writable: true,
+        description: 'Local uses this computer only. SSH or Cloudflare starts the selected remote connection.' },
       { key: 'sshTarget', label: 'SSH destination', type: 'text',
         value: typeof effective.sshTarget === 'string' ? effective.sshTarget : '',
         applyMode: 'restart', writable: true,
@@ -478,7 +490,7 @@ export function buildAgentDescriptor(id: string, catalogEntry?: AgentCatalogEntr
     variables: [
       ...catalogOwnershipVariables(catalogItem),
       ...serviceLifecycleVariables(catalogEntry, id, kind, bootEligible),
-      ...((id === 'environment-bridge-local' || id === 'environment-bridge-remote') ? environmentBridgeVariables() : []),
+      ...((id === 'environment-bridge') ? environmentBridgeVariables() : []),
     ],
   };
 }

@@ -14,7 +14,7 @@ Save settings before testing a provider.
 Voice preferences and the audio cache belong to the selected profile. A complete
 profile voice configuration works without a global `etc/voice.json`; if that
 installation defaults file exists, profile settings override it. Missing or
-invalid configuration is reported as an error. Shared Kokoro/Kitten/Whisper process and
+invalid configuration is reported as an error. Shared Kokoro/Whisper process and
 device settings remain in `etc/voice-servers.json`.
 
 ## Providers and Roles
@@ -23,37 +23,9 @@ device settings remain in `etc/voice-servers.json`.
   Native shell may use device-native speech recognition instead.
 - **Piper** synthesizes speech from an installed ONNX voice.
 - **Kokoro** synthesizes speech with installed or imported voicepacks.
-- **Kitten Micro** synthesizes English speech with eight bundled voices on CPU.
-- **GPT-SoVITS** synthesizes speech using its service and reference audio.
 - **RVC** converts Piper-generated speech with a trained profile model.
 
-Whisper, Kokoro and Kitten use the shared voice-service lifecycle. GPT-SoVITS has its own server lifecycle. RVC conversion runs on demand and does not have a second MetaHuman RVC server.
-
-## Kitten Micro
-
-Install the managed CPU runtime and all voices:
-
-```bash
-./bin/install-kitten.sh --yes
-./bin/mh voice-server start kitten
-./bin/mh voice-server status kitten
-```
-
-Select **Kitten TTS** in Voice Settings, choose Bella, Jasper, Luna, Bruno,
-Rosie, Hugo, Kiki or Leo, and save. Speed ranges from 0.5 to 2.0. Chat and the
-voice preview use the shared streaming player; the next phrase is prefetched
-while earlier audio plays. Inference errors stop the stream visibly.
-
-The verified Micro 0.8 model is about 40 MiB, with one 3 MiB voice bundle.
-Downloaded assets and the Python environment live under ignored
-`external/kitten/`. The installer pins Kitten 0.8.1 and uses its actual CPU
-dependencies without the unused Misaki transformer extra, PyTorch or CUDA.
-Inference runs locally without downloading model files on startup. The Python
-environment needs additional disk space beyond the model and voices.
-
-The shared process defaults to two CPU threads without spinning. Kitten supports
-local browser/batch speech; the existing robot speech renderer still requires
-Kokoro. Voice cloning and imported Kokoro voicepacks are not Kitten features.
+Whisper and Kokoro use the shared voice-service lifecycle. RVC conversion runs on demand and does not have a second MetaHuman RVC server.
 
 ## Start and Check Shared Voice Services
 
@@ -141,16 +113,6 @@ layout, and other workloads affect latency. The language selector chooses the
 pronunciation language explicitly; `a` means American English, not auto-detection.
 Missing or malformed imported voicepacks fail instead of selecting another voice.
 
-### GPT-SoVITS
-
-```bash
-./bin/mh sovits status
-./bin/mh sovits start
-./bin/mh sovits test "Hello"
-```
-
-GPT-SoVITS requires its installed addon, a healthy service, and valid reference audio or speaker settings.
-
 ### RVC
 
 ```bash
@@ -171,7 +133,7 @@ The profile-owned sample commands are:
 ./bin/mh voice export
 ```
 
-`voice export` prepares a dataset; it is not proof that a model was trained. Use the maintained RVC or GPT-SoVITS workflow described in [Voice Training](/user-guide#voice-training).
+`voice export` prepares a dataset; it is not proof that a model was trained. Use the maintained RVC workflow described in [Voice Training](/user-guide#voice-training).
 
 ## Diagnose Failures
 

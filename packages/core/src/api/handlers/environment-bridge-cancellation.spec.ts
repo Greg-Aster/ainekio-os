@@ -42,8 +42,8 @@ test('queue Cancel and Cancel pending cancel the saved workflow, not only its wa
       const record = store.enter(username, definition, randomUUID(), { graph: {}, context: { cognitiveMode: 'environment' } });
       const lease = store.claim(record.executionId, definition);
       store.settle(lease, 'waiting', 'user_or_autonomy'); store.release(lease);
-      const work = manager.enqueue({ type: 'generic', handler: 'graph.signal', username,
-        input: { executionId: record.executionId, eventId: 'wake' } });
+      const work = manager.enqueue({ type: 'generic', handler: 'graph.resume', username,
+        input: { executionId: record.executionId } });
       const response = bulk ? await handleClearQueueTasks(request()) : await handleDeleteQueueTask(request(work.id));
       assert.equal(response.status, 200);
       assert.equal(store.get(record.executionId).status, 'cancelled');
@@ -176,7 +176,7 @@ test('Cancel pending includes global system jobs but leaves actively executing w
   const running = manager.enqueue({ type: 'generic', handler: 'fixture.active', username, input: {} });
   assert.ok(manager.claim(running.id));
   manager.attachExecution(running.id, record.executionId);
-  const waiting = manager.enqueue({ type: 'generic', handler: 'graph.signal', username, input: { executionId: record.executionId } });
+  const waiting = manager.enqueue({ type: 'generic', handler: 'graph.resume', username, input: { executionId: record.executionId } });
   const systemWork = manager.enqueue({ type: 'generic', handler: 'fixture.system', username: 'system', input: {} });
   const request: UnifiedRequest = { path: '/api/unified-queue/clear', method: 'POST',
     user: { userId: username, username, role: 'owner', isAuthenticated: true } };
@@ -299,9 +299,8 @@ test('cancelled unsent speech settles its durable delivery without an adapter re
     store.settle(lease, 'waiting', 'robot_result'); store.release(lease);
     const task = manager.enqueue(executionWorkInput(store, store.dispatch(effectId)));
     store.acknowledgeAdmission(effectId, task.id); manager.interruptSpeech(username, 'new input');
-    const enqueue = async (work: any) => manager.enqueue(work);
-    await deliverDurableWorkReceipt(task, enqueue, store);
-    await deliverDurableWorkReceipt(task, enqueue, store);
+    await deliverDurableWorkReceipt(task, manager, store);
+    await deliverDurableWorkReceipt(task, manager, store);
     store.confirmUndispatched(effectId, task);
     assert.equal(store.dispatch(effectId).status, 'completed');
     assert.equal(store.get(execution.executionId).cancelledAt, null);
@@ -467,5 +466,49 @@ test('interrupted speech reconciles through the adapter without blocking newer s
       assert.equal(store.dispatch(effectId).status, 'completed');
       manager.cancel(next.id);
     } finally { store.close(); }
+  }
+});
+
+
+test('same-millisecond reports without adapter receipt IDs remain distinct in Robot Buffer', async (t) => {
+  const { handleEnvironmentBridgeActionResult } = await import('./environment-bridge.js');
+  const { RobotBufferNode } = await import('../../nodes/output/robot-buffer.node.js');
+  const { loadBufferForUser } = await import('../../conversation-buffer.js');
+  const username = 'feedback-identity-owner';
+  const actionIds = [randomUUID(), randomUUID()];
+  const work = actionIds.map(id => manager.enqueue({ type: 'environment_command', handler: 'environment.command', username,
+    input: { id, sessionId: 'identity-fixture', type: 'robotCommand', command: 'wave' } }));
+  const receiptIds: string[] = [];
+  t.mock.method(Date, 'now', () => 1_700_000_000_000);
+  const admit = async (user: string, record: Record<string, unknown>) => {
+    receiptIds.push((record.feedback as { id: string }).id);
+    await RobotBufferNode.execute({ bridgeRecord: record }, { username: user }, {});
+    return true;
+  };
+  const request = (body: Record<string, unknown>): UnifiedRequest => ({
+    path: '/api/environment-bridge/action-result', method: 'POST', body,
+    headers: { Authorization: `Bearer ${process.env.MH_ENVIRONMENT_BRIDGE_TOKEN}` },
+    user: { userId: 'fixture', username: 'fixture', role: 'guest', isAuthenticated: false },
+  });
+  try {
+    for (const [index, actionId] of actionIds.entries()) {
+      const response = await handleEnvironmentBridgeActionResult(request({ actionId, type: 'status', message: `Progress ${index}` }), admit);
+      assert.equal(response.status, 200);
+      assert.equal(response.data.robotBufferPersisted, true);
+    }
+    const messages = loadBufferForUser(username, 'robot').messages;
+    assert.deepEqual(messages.map(message => message.meta?.actionId), actionIds,
+      'Distinct reports must not share the Robot Buffer idempotency key');
+    assert.equal(new Set(receiptIds).size, 2);
+    for (let attempt = 0; attempt < 2; ++attempt) {
+      const response = await handleEnvironmentBridgeActionResult(request({ id: 'adapter-stable-receipt',
+        actionId: actionIds[0], type: 'status', message: 'Reported with stable identity' }), admit);
+      assert.equal(response.status, 200);
+    }
+    assert.deepEqual(receiptIds.slice(-2), ['adapter-stable-receipt', 'adapter-stable-receipt']);
+    assert.equal(loadBufferForUser(username, 'robot').messages.length, 3,
+      'Retries with an adapter-supplied identity remain idempotent');
+  } finally {
+    for (const task of work) manager.cancel(task.id, 'Isolated receipt fixture complete');
   }
 });

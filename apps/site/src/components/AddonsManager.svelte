@@ -48,8 +48,8 @@
       if (!response.ok) throw new Error('Failed to load addons');
 
       const data = await response.json();
-      addons = { ...data.addons } || {};
-      categories = { ...data.categories } || {};
+      addons = { ...data.addons };
+      categories = { ...data.categories };
       error = null;
     } catch (e) {
       error = String(e);

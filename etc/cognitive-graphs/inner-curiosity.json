@@ -493,6 +493,17 @@
       "data": {
         "type": "string"
       }
+    },
+    {
+      "id": "delegated-task-answer-context",
+      "source": "task-brief",
+      "sourceHandle": "text",
+      "target": "answer",
+      "targetHandle": "taskBrief",
+      "type": "default",
+      "data": {
+        "type": "string"
+      }
     }
   ]
 }

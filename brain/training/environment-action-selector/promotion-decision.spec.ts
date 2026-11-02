@@ -32,6 +32,16 @@ test('promotion requires a measured improvement without validity or physical-act
   assert.throws(() => compareEnvironmentSpecialistReports(current, improved), /not comparable/)
 })
 
+test('promotion reports the actual serving measurement without changing its comparison rule', () => {
+  const current = { ...report(), providers: ['llama-cpp'] }
+  const candidate = { ...current, aggregate: { ...current.aggregate, acceptableRouting: { count: 16 } } }
+  const decision = compareEnvironmentSpecialistReports(current, candidate)
+  assert.equal(decision.promote, true)
+  assert.equal(decision.latencyMeasurement, 'Measured llama.cpp request duration; not end-to-end workflow latency')
+  const proxy = compareEnvironmentSpecialistReports(report(), report())
+  assert.equal(proxy.latencyMeasurement, 'Transformers batch-duration-per-item proxy; not llama.cpp serving latency')
+})
+
 test('service rewrite changes only one LoRA while preserving the other adapter and server options', () => {
   const unit = '[Service]\nExecStart=/repo/llama-server --model /base.gguf --lora-scaled /old-intent.gguf:0,/task.gguf:0 --port 8081\n'
   assert.equal(replaceStartupAdapter(unit, '/old-intent.gguf', '/new-intent.gguf'),

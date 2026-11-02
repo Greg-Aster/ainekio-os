@@ -39,7 +39,7 @@ async function startThroughBoundedLauncher() {
 
 const prior = getRunningAgents().find(agent => agent.name === 'maintenance-service');
 if (prior) {
-  stopAgent('maintenance-service');
+  await stopAgent('maintenance-service');
   await waitFor(() => !getRunningAgents().some(agent => agent.name === 'maintenance-service'));
 }
 
@@ -72,9 +72,9 @@ try {
 } finally {
   const running = getRunningAgents().find(agent => agent.name === 'maintenance-service');
   if (running) {
-    stopAgent('maintenance-service');
-    await waitFor(() => !getRunningAgents().some(agent => agent.name === 'maintenance-service')).catch(() => {
-      stopAgent('maintenance-service', true);
+    await stopAgent('maintenance-service');
+    await waitFor(() => !getRunningAgents().some(agent => agent.name === 'maintenance-service')).catch(async () => {
+      await stopAgent('maintenance-service', true);
     });
   }
   eventBus.disconnect();

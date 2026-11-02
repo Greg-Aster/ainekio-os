@@ -14,6 +14,7 @@
     questionId: string;
     content: string;
     answeredAt: string;
+    editedAt?: string;
   }
 
   interface Session {
@@ -708,6 +709,7 @@
           </div>
 
           {#if currentSession?.answers?.[i]}
+            {@const answer = currentSession.answers[i]}
             <div class="flex justify-end">
               <div class="max-w-[75%] p-4 rounded-lg leading-relaxed bg-blue-900">
                 <strong class="block mb-2 text-gray-50">You:</strong>
@@ -731,16 +733,16 @@
                     </button>
                   </div>
                 {:else}
-                  <p class="m-0 text-gray-200">{currentSession.answers[i].content}</p>
+                  <p class="m-0 text-gray-200">{answer.content}</p>
                   <div class="mt-3 flex justify-between items-center gap-2 flex-wrap">
-                    {#if currentSession.answers[i].editedAt}
+                    {#if answer.editedAt}
                       <span class="text-xs text-gray-400 italic">
-                        Edited {new Date(currentSession.answers[i].editedAt).toLocaleString()}
+                        Edited {new Date(answer.editedAt).toLocaleString()}
                       </span>
                     {/if}
                     <button
                       class="bg-transparent border-none text-blue-300 p-0 text-sm underline cursor-pointer hover:text-blue-200"
-                      on:click={() => startEditAnswer(question.id, currentSession.answers[i].content)}
+                      on:click={() => startEditAnswer(question.id, answer.content)}
                     >
                       Edit Response
                     </button>

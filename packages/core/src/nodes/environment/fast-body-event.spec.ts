@@ -117,6 +117,8 @@ for (const stallData of [
   { joints: [{ id: 0, name: 'rear_left_shoulder' }], reason: 'no_position_progress', outputs_released: true },
   { joints: [{ id: 7, name: 'front_left_carrier' }, { id: 11, name: 'front_right_crank' }],
     reason: 'no_position_progress', outputs_released: false },
+  { joints: [{ id: 4, name: 'rear_right_carrier' }], correction_failed: true,
+    outputs_released: false, release_error: 'Body rejected release' },
   {},
 ]) {
   test(`servo stall preserves reported joint identities and release evidence (${JSON.stringify(stallData)})`, async () => {

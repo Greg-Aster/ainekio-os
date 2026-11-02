@@ -23,12 +23,13 @@ export interface SpecialistCase {
   contextRequirements?: IntentRequirements
   responseOptional?: true
   inputSource?: 'user' | 'autonomy'
+  outputContract?: 'autonomy-context'
   visualTask?: true
   taskEvidence?: Record<string, unknown>
 }
-export const ROUTE_FIELDS = ['needsResponse', 'needsAction', 'needsToolUse', 'taskPlanner', 'taskContext', 'conversationContext'] as const
-export const intentOutput = (task: string[], conversation: string[], response = true, action = false) => ({
-  needsResponse: response, needsAction: action, needsToolUse: false, taskContext: task, conversationContext: conversation,
+export const ROUTE_FIELDS = ['needsResponse', 'needsAction', 'needsGoalReview', 'needsToolUse', 'taskPlanner', 'taskContext', 'conversationContext'] as const
+export const intentOutput = (task: string[], conversation: string[], response = true, action = false, goalReview = false) => ({
+  needsResponse: response, needsAction: action, needsGoalReview: goalReview, needsToolUse: false, taskContext: task, conversationContext: conversation,
 })
 // Synthetic corpus annotations only; runtime route decisions belong to the model.
 export function routes(selected: string[], memoryQuery?: string, personaSections = ['personality']): SpecialistCase['routes'] {
@@ -37,7 +38,7 @@ export function routes(selected: string[], memoryQuery?: string, personaSections
   const sources = selected.flatMap(field => fields[field] ? [fields[field]!] : [])
   const persona = selected.includes('needsPersona') ? personaSections.map(section => `persona.${section}`) : []
   const needsResponse = selected.includes('needsResponse'), needsAction = selected.includes('needsAction')
-  return { needsResponse, needsAction,
+  return { needsResponse, needsAction, needsGoalReview: selected.includes('needsGoalReview'),
     taskContext: needsAction || !needsResponse ? [...sources, ...(!needsResponse ? persona : [])] : [],
     conversationContext: needsResponse ? [...(needsAction ? [] : sources), ...persona] : [],
     ...(memoryQuery ? { memoryQuery } : {}) }
@@ -53,7 +54,10 @@ export function addCase(specialist: Specialist, suite: string, instructions: str
   expected: Record<string, any> | null, inputs: Record<string, unknown> = {}, split: CaseSplit = 'development', memoryQuery?: string, personaSections?: string[]) {
   const familyIndex = cases.filter(item => item.specialist === specialist && item.split === split).length
   const routing = specialist === 'intent' && expected ? expected : routes(selected, memoryQuery, personaSections)
-  if (specialist === 'intent') routing.needsToolUse ??= false
+  if (specialist === 'intent') {
+    routing.needsToolUse ??= false
+    routing.needsGoalReview ??= false
+  }
   cases.push({ id: `${specialist}-${split}-${String(familyIndex + 1).padStart(3, '0')}`, specialist, suite,
     risk: routing.needsAction === true || (Array.isArray(routing.taskContext) && routing.taskContext.includes('executionContext')) ? 'high' : 'low',
     fold: familyIndex % 4, split, instructions, routes: routing, inputs, expected: expected ?? routing })
@@ -75,7 +79,7 @@ export const COMMAND_DESCRIPTIONS: Record<string, string> = {
 export function observation(): EnvironmentObservation {
   return { adapter: 'synthetic-training-adapter', environmentId: 'training-room', sessionId: 'training-body', timestamp: TIME,
     state: { batteryPercent: 72, posture: 'standing' }, capabilities: {
-      actions: ['robotCommand', 'move', 'stop', 'captureImage', 'robotMotionPlan'],
+      actions: ['robotCommand', 'move', 'stop', 'captureImage'],
       robotCommands: Object.keys(COMMAND_DESCRIPTIONS), robotCommandDescriptions: { ...COMMAND_DESCRIPTIONS },
       movement: true, visual: true,
     } }

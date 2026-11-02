@@ -58,9 +58,9 @@ for (const lateOutcome of ['proposal', 'rejection'] as const) {
     const manager = new UnifiedQueueManager()
     const errors: Error[] = []
     const engine = new ExecutionEngine({ wakeFallbackMs: 250, onError: error => errors.push(error) }, manager)
-    // This spec observes proposal receipts; the active-task owner is exercised
-    // by its separate real-graph regressions, rather than a replacement handler.
-    engine.unregisterHandler('graph.resume')
+    // Observe proposal delivery without invoking a model or leaving an
+    // intentionally unsupported continuation in the queue.
+    engine.registerHandler('graph.resume', async () => ({ fixtureOnly: true }))
     const store = openExecutionStore(username)
     const definition = { graphId: 'interpretation-cancellation', graphHash: 'fixture', runtimeVersion: 'fixture',
       checkpointSchemaVersion: 1, nodeVersions: {} }

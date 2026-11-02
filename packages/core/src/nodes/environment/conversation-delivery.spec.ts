@@ -35,6 +35,22 @@ fs.mkdirSync(path.join(root, 'etc'), { recursive: true })
 fs.cpSync(path.join(repo, 'etc/cognitive-graphs'), path.join(root, 'etc/cognitive-graphs'), { recursive: true })
 const manager = getQueueManager()
 
+test('failed conversation inference remains a failure at both delivery entrypoints', async () => {
+  const { environmentConversationDeliveryNode, environmentConversationResultNode } = await import('./conversation.node.js')
+  for (const state of ['failed', 'cancelled']) {
+    const error = { code: 'handler_failed', message: 'Cannot find module conversation_fixture.mjs' }
+    const result = { effectId: 'conversation-effect', result: { state, result: null, error } }
+    const context = { username, graphExecution: { pendingEvents: () => [],
+      events: () => [{ eventId: 'conversation-result', kind: 'work_result', payload: result }],
+      callGraph: () => { throw new Error('Failed inference must not run delivery') } } } as any
+    for (const node of [environmentConversationDeliveryNode, environmentConversationResultNode]) {
+      await assert.rejects(node.execute({ work: { effectId: result.effectId } }, context, {}),
+        /Cannot find module conversation_fixture.mjs/)
+    }
+    assert.equal(loadBufferForUser(username, 'conversation').messages.length, 0)
+  }
+})
+
 test('final Persona reply reaches buffer, memory and speech once and survives resume', async () => {
   await withUserContext({ username, userId: username, role: 'owner' }, async () => {
     const { graph } = await loadGraphForMode('environment-conversation', username)

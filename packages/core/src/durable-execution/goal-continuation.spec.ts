@@ -31,7 +31,7 @@ afterEach(() => {
   replies.length = 0
   const store = openExecutionStore(username)
   try { for (const record of store.list(username)) {
-    if (record.status === 'waiting') store.cancel(record.executionId, {eventId: randomUUID(), kind:'user_cancelled', payload:{reason:'Isolated test cleanup'}})
+    if (record.status === 'waiting' || record.status === 'idle') store.cancel(record.executionId, {eventId: randomUUID(), kind:'user_cancelled', payload:{reason:'Isolated test cleanup'}})
   } } finally { store.close() }
 })
 const calls: { provider: string; messages: any[]; options: any }[] = []
@@ -76,6 +76,8 @@ const { createUser } = await import('../users.js')
 if (!restartRequest) createUser(username, 'fixture-only-password', 'owner')
 const profile = getProfilePaths(username)
 const { loadBufferForUser } = await import('../conversation-buffer.js')
+const { saveIndex } = await import('../vector-index.js')
+if (!restartRequest) saveIndex({ meta: { model: 'fixture', provider: 'fixture', createdAt: new Date().toISOString(), items: 0 }, data: [] }, undefined, username)
 const { createDefaultPersonaFacetConfig } = await import('../persona-facets.js')
 if (!restartRequest) {
   fs.mkdirSync(profile.etc, { recursive: true })
@@ -97,7 +99,7 @@ if (!restartRequest) {
 function configureProvider(provider = 'ollama', model = 'fixture-model') {
   configuredProvider = provider
   configuredModel = model
-  const roles = { orchestrator: 'fixture', persona: 'fixture', planner: 'fixture', psychotherapist: 'fixture', environmentActionSelector: 'fixture', environmentVision: 'fixture' }
+  const roles = { autonomy: 'fixture', orchestrator: 'fixture', persona: 'fixture', planner: 'fixture', psychotherapist: 'fixture', environmentActionSelector: 'fixture', environmentVision: 'fixture' }
   fs.writeFileSync(path.join(profile.etc, 'models.json'), JSON.stringify({
     version: '1', description: 'Isolated provider selection', defaults: roles,
     cognitiveModeMappings: { environment: roles, agent: roles },
@@ -120,22 +122,18 @@ async function run(params: Parameters<typeof runDurableGraph>[0]) {
   manager.complete(work.id, result.status !== 'failed', { executionId: result.executionId, status: result.status })
   return result
 }
-async function signalExecution(executionId: string) {
-  const store = openExecutionStore(username)
-  let eventId: string
-  try { eventId = `autonomy:${executionId}:${store.get(executionId).checkpointVersion}` } finally { store.close() }
-  const work = manager.enqueue({ type: 'generic', handler: 'graph.signal', resource: 'io',
-    source: 'autonomy', priority: 'background', username, cognitiveMode: 'environment',
-    input: { executionId, eventId, agentId: 'robot-autonomy-controller' }, idempotencyKey: eventId, maxAttempts: 1 })
-  assert.ok(manager.claim(work.id))
-  // Exercise the registered finite-work handler without starting the engine's service loop.
-  await (engine as unknown as { execute(task: typeof work): Promise<void> }).execute(work)
-  assert.equal(manager.getTask(work.id)?.state, 'completed', manager.getTask(work.id)?.error?.message)
+async function assessAutonomy(current: EnvironmentObservation) {
+  const ctx = controllerContext(current)
+  const assessed = await settleReads(await run({ graph: graph('robot-autonomy-controller'), context: ctx }),
+    'robot-autonomy-controller', ctx)
+  assert.equal(assessed.status, 'completed', assessed.error?.stack)
+  return assessed
 }
+
 const objective = 'Locate the fixture target and report its location.'
 const observation = {
   environmentId: 'fixture-room', adapter: 'ainekio-gateway', sessionId: 'fixture-body', timestamp: new Date().toISOString(),
-  capabilities: { actions: ['captureImage', 'robotCommand', 'robotMotionPlan', 'sendText'], robotCommands: ['walk', 'stop'],
+  capabilities: { actions: ['captureImage', 'robotCommand', 'requestMotion', 'sendText'], robotCommands: ['walk', 'stop'],
     robotCommandDescriptions: { walk: 'Walk forward', stop: 'Stop body movement' }, visual: true, movement: true },
   state: { body: { authenticated: true, cameraReady: true, motionAvailable: true } },
   visual: { id: 'fixture-before', mimeType: 'image/jpeg', dataUrl: 'data:image/jpeg;base64,/9j/2gAA/9k=', timestamp: new Date().toISOString() },
@@ -159,10 +157,10 @@ function controllerContext(current: EnvironmentObservation) {
   } }
 }
 
-function controllerChoice(taskId: string) {
-  return { response: '', taskId, reason: 'A new observation will help locate the fixture target.',
-    observationSummary: 'The current floor area does not contain the fixture target.',
-    instruction: objective }
+function controllerChoice(taskId: string, executionId?: string) {
+  return { updates: taskId === 'none' ? [] : [{ operationId: taskId, activation: 80,
+    reason: 'A new observation will help locate the fixture target.', instruction: objective,
+    target: executionId ? { kind: 'execution', executionId } : null }], memoryRequest: null, assessmentReason: 'A new observation will help locate the fixture target.' }
 }
 
 function presetChoice() {
@@ -232,7 +230,7 @@ function completeAction(current: EnvironmentObservation, expectedType: string, f
 
 // Use the current contracts and unchanged checked-in graph prompts.
 const intent = (action = false, response = false) => ({ needsAction: action, needsResponse: response,
-  needsToolUse: false, taskContext: ['executionContext', 'environment'], conversationContext: [] })
+  needsGoalReview: true, taskPlanner: 'specialist', needsToolUse: false, taskContext: ['executionContext', 'environment'], conversationContext: [] })
 function snapshot(id: string) {
   const store = openExecutionStore(username)
   try { return { record: store.get(id), task: store.task(id), events: store.events(id) } }
@@ -564,10 +562,10 @@ for (const firstAction of [false, true]) test(`Full Auto resumes a goal with pre
     assert.equal(state.status,'waiting')
     assert.equal(saved.record.waitingReason,'user_or_autonomy')
     const start = calls.length
-    replies.push(controllerChoice('robot-autonomy-executor'),intent(true,false),presetChoice())
-    await signalExecution(state.executionId!)
+    replies.push(controllerChoice('robot-autonomy-executor', state.executionId!),intent(true,false),presetChoice())
     const disconnect = connectAdapter(current.sessionId!)
     try {
+      await assessAutonomy(current)
       const next = await settleReads(await run({graph:graph('environment'),context:ctx,executionId:state.executionId}), 'environment', ctx)
       assert.notEqual(next.status,'failed',next.error?.stack)
       const beforeReceipt = snapshot(state.executionId!)
@@ -688,19 +686,22 @@ for (const outcome of ['wait', 'abandon'] as const) test(`Goal Review can revise
       assert.ok(saved.events.some(event => JSON.stringify(event.payload).includes(action.id)), 'Recorded action evidence remains available')
       const { loadRobotStatus } = await import('../robot-status.js')
       const status = loadRobotStatus(username)!
-      assert.equal(status.situation.currentGoal, outcome === 'abandon' ? '' : assessment.objective)
       assert.equal(calls.length - before, 3, 'Assessment does not start another planner or a reply')
       assert.deepEqual(takeAdapterActions(current.sessionId!), [])
       if (outcome === 'wait') {
         replies.push(controllerChoice('none'))
-        await signalExecution(state.executionId!)
-        await settleReads(await run({ graph: graph('environment'), context: ctx, executionId: state.executionId }), 'environment', ctx)
+        await assessAutonomy(current)
+        const beforeResume = calls.length
+        await run({ graph: graph('environment'), context: ctx, executionId: state.executionId })
+        assert.equal(calls.length, beforeResume, 'Quiet controller choice does not wake the unrelated pending goal')
         const received = JSON.stringify(calls[before + 3]?.messages)
         assert.ok(received.includes(assessment.objective), 'Independently triggered Full Auto receives the revised goal')
         assert.ok(received.includes(assessment.completionCriteria))
         assert.ok(received.includes(original.instruction))
         assert.ok(received.includes(action.id))
       }
+      assert.equal(status.situation.currentGoal, outcome === 'abandon' ? '' : assessment.objective,
+        `Robot Status must retain the unresolved goal (execution=${saved.record.status}, projection=${status.task?.executionStatus})`)
     } finally { disconnect() }
   })
 })

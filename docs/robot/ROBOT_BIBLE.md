@@ -19,6 +19,15 @@ means I turn it on and it doesn't act like a companion.” Successful individual
 nodes, model calls, services or firmware commands support that outcome; they do
 not establish it.
 
+Companionship means participation in a shared life: noticing and responding to
+one another, carrying shared experience forward, and contributing initiative
+that develops the relationship over time. The
+[companion design guidelines](COMPANION_BEHAVIOR.md#companion-design-guidelines)
+make this purpose observable through responsiveness, shared context, continuity,
+initiative, reciprocity, coherence and personal fit. They guide design and review;
+[everyday companion evaluation](QUALIFICATION.md#everyday-companion-evaluation)
+connects them to observed interactions across repeated encounters.
+
 The active development scope is **V2: twelve servos, ESP32-P4 and PCA9685 servo
 output**. V1 work is paused; its separate eight-servo ESP32-S3 implementation
 is retained. The selected body's identity, advertised capabilities and installed
@@ -143,6 +152,10 @@ For each change:
 
 1. Read this core and the architecture, then the affected capability contract.
    State the expected behavior, existing owner and why the repair belongs there.
+   For companion behavior work, identify the affected
+   [companion qualities](COMPANION_BEHAVIOR.md#companion-design-guidelines) and
+   the [observable interaction](QUALIFICATION.md#everyday-companion-evaluation)
+   that would demonstrate an improvement.
 2. Trace the input, identities, state transitions and result through its consumers,
    including the other repository when an interface crosses it. Identify an
    interacting capability that must continue working.

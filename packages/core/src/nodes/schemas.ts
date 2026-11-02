@@ -21,7 +21,6 @@ import { observationHistorySchema, saveVisualObservationSchema } from './environ
 import { faceExpressionSchema, expressionFeedbackSchema } from './environment/expression.schemas.js';
 import { environmentTrainingOutputSchema } from './environment/training-output.schema.js';
 import { environmentTrainingReviewInputSchema, environmentTrainingReviewSaveSchema } from './environment/training-review.schemas.js';
-import { freestyleRequestInputSchema, freestyleTrainingOutputSchema } from './environment/freestyle-training.schemas.js';
 import { MODEL_ROLE_OPTIONS } from '../model-roles.js';
 import { modelRouterDefinition } from './llm/model-router.schema.js';
 import { bigBrotherToolRequestSchema, bigBrotherToolExecutionSchema } from './utility/big-brother-tools.schema.js';
@@ -55,39 +54,15 @@ export interface NodeSchema {
   tags?: string[];
 }
 
-// Category colors (same as types.ts)
-export const categoryColors: Record<NodeCategory, { color: string; bgColor: string }> = {
-  input: { color: '#4ade80', bgColor: '#166534' },
-  router: { color: '#fbbf24', bgColor: '#92400e' },
-  context: { color: '#60a5fa', bgColor: '#1e3a8a' },
-  environment: { color: '#2dd4bf', bgColor: '#115e59' },
-  operator: { color: '#a78bfa', bgColor: '#5b21b6' },
-  chat: { color: '#f472b6', bgColor: '#9f1239' },
-  model: { color: '#fb923c', bgColor: '#9a3412' },
-  skill: { color: '#34d399', bgColor: '#065f46' },
-  output: { color: '#ef4444', bgColor: '#991b1b' },
-  control_flow: { color: '#818cf8', bgColor: '#4338ca' },
-  memory: { color: '#c084fc', bgColor: '#7e22ce' },
-  utility: { color: '#94a3b8', bgColor: '#475569' },
-  agent: { color: '#22d3ee', bgColor: '#155e75' },
-  config: { color: '#fde047', bgColor: '#854d0e' },
-  persona: { color: '#e879f9', bgColor: '#86198f' },
-  thought: { color: '#67e8f9', bgColor: '#0e7490' },
-  dreamer: { color: '#d8b4fe', bgColor: '#6b21a8' },
-  curiosity: { color: '#fcd34d', bgColor: '#a16207' },
-  curator: { color: '#86efac', bgColor: '#14532d' },
-  safety: { color: '#fca5a5', bgColor: '#7f1d1d' },
-  emulation: { color: '#a5b4fc', bgColor: '#3730a3' },
-  agency: { color: '#f59e0b', bgColor: '#78350f' },
-  cognitive: { color: '#38bdf8', bgColor: '#0c4a6e' },
-  'active-operator': { color: '#8b5cf6', bgColor: '#4c1d95' },
-};
+// Browser-safe presentation uses the same owner as executable definitions.
+import { categoryColors, getNodeColors } from './types.js';
+export { categoryColors } from './types.js';
 
 // Helper to define a schema with category colors
 function defineSchema(
   schema: Omit<NodeSchema, 'color' | 'bgColor'> & { color?: string; bgColor?: string }
 ): NodeSchema {
-  const colors = categoryColors[schema.category];
+  const colors = getNodeColors(schema);
   return {
     ...schema,
     color: schema.color ?? colors.color,
@@ -164,8 +139,6 @@ export const nodeSchemas: NodeSchema[] = [
   defineSchema(environmentTrainingOutputSchema),
   defineSchema(environmentTrainingReviewInputSchema),
   defineSchema(environmentTrainingReviewSaveSchema),
-  defineSchema(freestyleRequestInputSchema),
-  defineSchema(freestyleTrainingOutputSchema),
   defineSchema({
     id: 'execution_event_wait', name: 'Wait for Continuation', category: 'utility',
     execution: { eventInput: true },
@@ -898,7 +871,7 @@ export const nodeSchemas: NodeSchema[] = [
     },
     "description": "Complete read-only Ainekio Environment Bridge source. Every observation, body-status, gateway, session, and diagnostic output is always available; workflows choose data by connecting only the ports they need.",
     "presentation": {
-      "defaultExpanded": true,
+      "defaultExpanded": false,
       "badges": [
         {
           "label": "Read only",
@@ -1123,6 +1096,7 @@ export const nodeSchemas: NodeSchema[] = [
       { name: 'work', type: 'object', optional: true, description: 'Selected camera read from the existing Coordinator' },
       { name: 'sessionId', type: 'string', optional: true, description: 'Read already received camera evidence for this Bridge session when the node runs.' },
       { name: 'observation', type: 'object', optional: true, description: 'Returned observation containing camera evidence from the execution owner' },
+      { name: 'taskResult', type: 'object', optional: true, description: 'Completed program result containing ordered captured frame IDs' },
       {
         "name": "visual",
         "label": "Current camera frame",
@@ -1451,38 +1425,6 @@ export const nodeSchemas: NodeSchema[] = [
   description: 'Validates task selection and capability admission; optionally separates speech from a combined model output.',
   }),
   defineSchema({
-    id: 'movement_generator',
-    name: 'Movement Generator',
-    category: 'environment',
-    inputs: [
-      { name: 'movementRequest', type: 'object', optional: true, description: 'Eligible structured off-script movement request' },
-      { name: 'instruction', type: 'string', optional: true, description: 'Original interpreted user instruction' },
-      { name: 'observation', type: 'object', optional: true, description: 'Robot capability and current-state observation' },
-      { name: 'sessionId', type: 'string', optional: true, description: 'Target environment session' },
-    ],
-    outputs: [
-      { name: 'modelMessages', type: 'array', description: 'Exact messages supplied to the trajectory model' },
-      { name: 'rawOutput', type: 'string', description: 'Exact trajectory model output before validation' },
-      { name: 'action', type: 'object', description: 'One validated robotMotionPlan action, or null' },
-      { name: 'actions', type: 'array', description: 'Validated action list for Environment Bridge Out' },
-      { name: 'valid', type: 'boolean', description: 'Whether a validated plan was produced' },
-      { name: 'rejected', type: 'boolean', description: 'Whether a requested plan was rejected' },
-      { name: 'error', type: 'string', description: 'Validation or generation error' },
-      { name: 'response', type: 'string', description: 'Visible generation result or rejection' },
-      { name: 'planSummary', type: 'object', description: 'Bounded frame and duration summary' },
-    ],
-    properties: { enableThinking: false, role: 'planner', executionTarget: '', maxTokens: 4096, temperature: 0.2 },
-    propertySchemas: {
-      enableThinking: reasoningProperty,
-      role: { ...modelRouterDefinition.propertySchemas.role, default: 'planner' },
-      executionTarget: { type: 'select', default: '', label: 'Execution Target',
-        options: [{ value: '', label: 'Configured role backend' }, { value: 'remote', label: 'Remote' }] },
-      maxTokens: { type: 'number', default: 4096, label: 'Max Tokens', min: 1024, max: 8192, step: 256 },
-      temperature: { type: 'slider', default: 0.2, label: 'Temperature', min: 0, max: 0.5, step: 0.05 },
-    },
-    description: 'Generates and strictly validates one bounded off-script logical-joint trajectory.',
-  }),
-  defineSchema({
     "id": "environment_send_action",
     "name": "Environment Bridge Out",
     "category": "environment",
@@ -1498,12 +1440,6 @@ export const nodeSchemas: NodeSchema[] = [
         "type": "array",
         "optional": true,
         "description": "Actions to enqueue"
-      },
-      {
-        "name": "generatedActions",
-        "type": "array",
-        "optional": true,
-        "description": "Validated actions from Movement Generator"
       },
       {
         "name": "sessionId",
@@ -1615,8 +1551,8 @@ export const nodeSchemas: NodeSchema[] = [
         "stop",
         "captureImage",
         "robotCommand",
+        "requestMotion",
         "faceExpression",
-        "robotMotionPlan",
         "inspect",
         "visualApproach",
         "sendText"
@@ -1635,8 +1571,8 @@ export const nodeSchemas: NodeSchema[] = [
           "stop",
           "captureImage",
           "robotCommand",
+          "requestMotion",
           "faceExpression",
-          "robotMotionPlan",
           "inspect",
           "visualApproach",
           "sendText"
@@ -1650,8 +1586,8 @@ export const nodeSchemas: NodeSchema[] = [
           "stop",
           "captureImage",
           "robotCommand",
+          "requestMotion",
           "faceExpression",
-          "robotMotionPlan",
           "inspect",
           "visualApproach",
           "sendText"
@@ -1779,12 +1715,11 @@ export const nodeSchemas: NodeSchema[] = [
         options: ['conversation', 'inner', 'robot'],
       },
       limit: {
-        type: 'slider',
+        type: 'number',
         default: 20,
         label: 'Entry Limit',
         description: 'Maximum entries to retrieve; 0 uses the canonical buffer retention without an additional graph-local cutoff',
         min: 0,
-        max: 50,
         step: 1,
       },
     },
@@ -1824,6 +1759,7 @@ export const nodeSchemas: NodeSchema[] = [
       { name: 'robotObserver', type: 'object', description: 'Validated Robot Operator cycle metadata' },
       { name: 'plannerDecision', type: 'object', description: 'Planner-authored observation, instruction, and reason' },
       { name: 'plannerInstruction', type: 'string', description: 'Planner-authored instruction' },
+      { name: 'frames', type: 'array', description: 'Delegated camera images with their frame-bound recognition metadata' },
       { name: 'memories', type: 'array', description: 'Planner-delegated historical memories' },
       { name: 'stimulusAgent', type: 'string', description: 'Robot Operator child that admitted this cycle' },
       { name: 'sourceObservationAt', type: 'string', description: 'Timestamp of the bridge observation used for this cycle' },
@@ -2108,6 +2044,10 @@ export const nodeSchemas: NodeSchema[] = [
     "name": "Robot Autonomy Controller Context",
     "category": "operator",
     "inputs": [
+      { name: 'fullInstruction', type: 'string', optional: true, description: 'Graph-owned instructions for this one LLM task' },
+      { name: 'selectedMemoryContext', type: 'array', optional: true, description: 'Selected memories retrieved for this assessment.' },
+      { name: 'activeExecutions', type: 'array', optional: true, description: 'Current executions with their recorded objective, state and input capability.' },
+      { name: 'memoryContext', type: 'array', optional: true, description: 'Historical memories supplied as inspiration, never current-world evidence' },
       { name: 'activationState', type: 'object', optional: true },
       {
         "name": "execution",
@@ -2212,6 +2152,7 @@ export const nodeSchemas: NodeSchema[] = [
       }
     ],
     "outputs": [
+      { name: 'fullMode', type: 'boolean', description: 'Whether this assessment uses Full Autonomy mode.' },
       {
         "name": "messages",
         "type": "array",
@@ -2307,12 +2248,13 @@ export const nodeSchemas: NodeSchema[] = [
     inputs: [],
     outputs: [
       { name: 'activationState', type: 'object' },
+      { name: 'memoryHints', type: 'object', description: 'Memory selection recorded by the previous assessment.' },
       { name: 'tasks', type: 'array', description: 'Configured tasks that are currently executable, with their Agent Catalog descriptions' },
       { name: 'taskIds', type: 'array', description: 'Identifiers of the currently available tasks' },
       { name: 'unavailableTaskIds', type: 'array', description: 'Configured tasks that are missing, disabled, or not executable' },
       { name: 'count', type: 'number', description: 'Number of tasks currently available to the controller' },
     ],
-    properties: { taskIds: [...DEFAULT_ROBOT_AUTONOMY_TASK_IDS] },
+    properties: { taskIds: [...DEFAULT_ROBOT_AUTONOMY_TASK_IDS], limit: 10 },
     propertySchemas: {
       taskIds: {
         type: 'multiselect',
@@ -2320,6 +2262,11 @@ export const nodeSchemas: NodeSchema[] = [
         label: 'Available Tasks',
         description: 'Operations the Active Operator may select in Semi or Full mode. Meanings and availability come from the canonical Agent Catalog.',
         options: ROBOT_AUTONOMY_TASK_OPTIONS,
+      },
+      limit: {
+        type: 'slider', default: 10, label: 'Task Receipt Limit',
+        description: 'Maximum prior Controller-selected task receipts supplied to this decision',
+        min: 1, max: 20, step: 1,
       },
     },
     description: 'Loads configured Active Operator operations from the canonical Agent Catalog without choosing or starting a task.',
@@ -2336,7 +2283,7 @@ export const nodeSchemas: NodeSchema[] = [
       { name: 'observation', type: 'object', optional: true }, { name: 'robotObserver', type: 'object', optional: true },
       { name: 'frames', type: 'array', optional: true }, { name: 'currentVisualEvidence', type: 'boolean', optional: true },
       { name: 'observationCurrent', type: 'boolean', optional: true }],
-    outputs: [{ name: 'requests', type: 'array' }, { name: 'innerEntries', type: 'array' }],
+    outputs: [{ name: 'requests', type: 'array' }, { name: 'innerEntries', type: 'array' }, { name: 'inactiveReason', type: 'string', optional: true }],
     description: 'Stages activated operations through Work Coordinator without awaiting their completion.',
   }),
   defineSchema({
@@ -2614,6 +2561,7 @@ export const nodeSchemas: NodeSchema[] = [
       { name: 'role', type: 'string', optional: true },
       { name: 'jsonSchema', type: 'object', optional: true },
       { name: 'precomputedResponse', type: 'string', optional: true },
+      { name: 'enableThinking', type: 'boolean', optional: true, description: 'Optional reasoning override; a connection takes precedence over Reasoning.' },
     ],
     outputs: [{ name: 'response', type: 'string' }],
     properties: modelRouterDefinition.properties,
@@ -3872,6 +3820,7 @@ export const nodeSchemas: NodeSchema[] = [
     name: 'Generate Inner Curiosity Question',
     category: 'curiosity',
     inputs: [
+      { name: 'taskBrief', type: 'string', optional: true, description: 'Purpose and observations supplied by the delegating autonomy decision' },
       { name: 'memories', type: 'array' },
       { name: 'personaLoaded', type: 'boolean' },
       { name: 'identity', type: 'object', optional: true },
@@ -3893,6 +3842,8 @@ export const nodeSchemas: NodeSchema[] = [
 Generate one private, self-directed question that explores deeper patterns, connections, meanings, or implications in those experiences. Ask yourself rather than the user. Keep it under 100 words.`,
       userPromptTemplate: `Recent experiences:
 {{memoriesText}}
+
+Autonomy task context, when supplied: {{taskBrief}}
 
 What question should I ask myself to deepen my understanding?`,
     },
@@ -3918,6 +3869,7 @@ What question should I ask myself to deepen my understanding?`,
     name: 'Answer Inner Curiosity Question',
     category: 'curiosity',
     inputs: [
+      { name: 'taskBrief', type: 'string', optional: true, description: 'Purpose and observations supplied by the delegating autonomy decision' },
       { name: 'question', type: 'string' },
       { name: 'personaName', type: 'string' },
       { name: 'memories', type: 'array' },
@@ -3939,6 +3891,8 @@ What question should I ask myself to deepen my understanding?`,
 
 Recent experiences:
 {{memoriesText}}{{searchContext}}
+
+Autonomy task context, when supplied: {{taskBrief}}
 
 What grounded insights or patterns emerge?`,
     },
@@ -4176,11 +4130,10 @@ What grounded insights or patterns emerge?`,
       { name: 'userMessage', type: 'string', description: 'User message as fallback query' },
     ],
     outputs: [{ name: 'memories', type: 'array', description: 'Retrieved memories' }, { name: 'work', type: 'object', description: 'Identified Coordinator memory lookup' }],
-    properties: { dispatch: false, topK: 8, threshold: 0.5 },
+    properties: { dispatch: false, topK: 8 },
     propertySchemas: {
       dispatch: { type: 'toggle', default: false, label: 'Lookup in Parallel' },
       topK: { type: 'slider', default: 8, label: 'Top K Results', min: 1, max: 20, step: 1 },
-      threshold: { type: 'slider', default: 0.5, label: 'Similarity Threshold', min: 0, max: 1, step: 0.05 },
     },
     size: [220, 100],
     description: 'AI-driven memory routing using orchestrator hints',
@@ -4312,12 +4265,15 @@ nodeSchemas.push(
     outputs: [{ name: 'actionId', type: 'string', description: 'Durable speech playback action identity' }],
     description: 'Admits prepared audio through the existing Environment Bridge command owner.' }),
   defineSchema({ ...modelRouterSchema, id: 'environment_conversation', name: 'Generate Environment Conversation', category: 'environment',
+    propertySchemas: { ...modelRouterSchema.propertySchemas,
+      metadata: { type: 'json', default: {}, advanced: true, label: 'Response Source', description: 'Recorded provenance for this workflow’s generated response.' } },
     inputs: [...modelRouterSchema.inputs,
       { name: 'metadata', type: 'object', optional: true, description: 'Recorded origin metadata for the assistant response' }],
     outputs: [{ name: 'effectId', type: 'string', description: 'Durable conversation work identity' },
       { name: 'work', type: 'object', description: 'Identified conversation work for the existing result wait' }],
     description: 'Queues conversation inference on the Coordinator and delivers it through the conversation workflow.' }),
-  defineSchema({ id: 'environment_conversation_result', name: 'Conversation Work Result', category: 'environment', inputs: [],
+  defineSchema({ id: 'environment_conversation_result', name: 'Conversation Work Result', category: 'environment',
+    inputs: [{ name: 'work', type: 'object', optional: true, description: 'Identified conversation inference whose result is supplied to the output nodes' }],
     outputs: [{ name: 'response', type: 'string', description: 'Generated conversation text from this finite work item' },
       { name: 'metadata', type: 'object', description: 'Recorded origin metadata for the assistant response' }],
     description: 'Supplies the completed inference to the existing buffer, memory and speech owners.' }),
@@ -4332,6 +4288,8 @@ nodeSchemas.push(
 );
 const environmentContextSchema = getNodeSchema('environment_context_builder')!;
 environmentContextSchema.inputs.push(
+  { name: 'event', type: 'object', optional: true, description: 'Original autonomous event with its recorded source and time.' },
+  { name: 'persona', type: 'object', optional: true, description: 'Active persona supplied by Persona Loader.' },
   { name: 'autonomy', type: 'boolean', optional: true, description: 'Select the saved autonomous-input instructions.' },
   { name: 'goalAssessment', type: 'object', optional: true, description: 'Completed goal assessment supplied before final response generation' },
   { name: 'toolWork', type: 'object', optional: true, description: 'Attributed delegated-work identity, state, result, and error.' },
@@ -4357,9 +4315,40 @@ Object.assign(getNodeSchema('orchestrator_llm')!.propertySchemas!, {
 });
 getNodeSchema('conversation_history')!.inputs.push({ name: 'includeInnerDialogue', type: 'boolean', optional: true, description: 'Input-specific selection of inner dialogue alongside conversation.' });
 
+// Shared context-selection ports mirror their existing runtime owners.
+const suppliedContextPort = { name: 'selectedContext', type: 'object' as const, optional: true,
+  description: 'Attributed context already selected and read for the originating assessment.' };
+for (const id of ['orchestrator_llm', 'conversation_history', 'memory_router', 'persona_loader', 'environment_visual_read', 'environment_image_input', 'active_operator_dispatch']) {
+  const inputs = getNodeSchema(id)!.inputs;
+  if (id === 'persona_loader') inputs.unshift({ ...suppliedContextPort });
+  else inputs.push({ ...suppliedContextPort });
+}
+for (const id of ['conversation_history', 'memory_router', 'robot_operator_input', 'robot_autonomy_controller_context'])
+  getNodeSchema(id)!.outputs.push({ ...suppliedContextPort });
+const contextSchema = getNodeSchema('robot_autonomy_controller_context')!;
+for (const name of ['conversationSelection', 'innerSelection', 'memorySelection', 'sourceContext'])
+  contextSchema.inputs.push({ ...suppliedContextPort, name });
+contextSchema.inputs.push({ name: 'contextSelection', type: 'object', optional: true, description: 'Context sources selected by the Intent Orchestrator.' },
+  { name: 'persona', type: 'object', optional: true, description: 'Active persona supplied by Persona Loader.' });
+contextSchema.inputs.find(input => input.name === 'instruction')!.optional = true;
+contextSchema.outputs.push({ name: 'request', type: 'string', description: 'Compact trigger and source availability for context selection.' });
+contextSchema.properties = { contextPurpose: 'assessment' };
+contextSchema.propertySchemas = { contextPurpose: { type: 'select', label: 'Context Purpose', default: 'assessment',
+  description: 'Build the assessment context or the request that selects its sources.', options: ['assessment', 'selection'] } };
+const selectorSchema = getNodeSchema('orchestrator_llm')!;
+selectorSchema.outputs.push({ name: 'personaSections', type: 'array', description: 'Context sources selected for this autonomy assessment.' });
+for (const [name, description] of Object.entries({ needsInnerDialogue: 'Whether private thoughts and reflections were selected.',
+  needsRobotActions: 'Whether recorded robot action outcomes were selected.', needsActivityHistory: 'Whether recorded autonomous activity was selected.',
+  needsObservationHistory: 'Whether earlier observations were selected.', needsDesires: 'Whether recorded desires were selected.' }))
+  selectorSchema.outputs.push({ name, type: 'boolean', description });
+(selectorSchema.propertySchemas!.outputContract.options as any[]).push({ value: 'autonomy-context', label: 'Autonomy Context' });
+getNodeSchema('robot_autonomy_task_catalog')!.properties!.includeActivityHistory = true;
+getNodeSchema('robot_autonomy_task_catalog')!.propertySchemas!.includeActivityHistory = { type: 'boolean', label: 'Include Activity History', default: true, description: 'Whether recorded autonomous activity was selected.' };
+getNodeSchema('robot_autonomy_activity_history')!.inputs.push({ name: 'availableTasks', type: 'array', optional: true, description: 'Catalog-backed operations available to Active Operator' });
+
 nodeSchemas.push(...[bodyEventContextSchema, bodyEventDecisionSchema, environmentEventRequestSchema,
   fastBodyEventContextSchema, fastBodyEventResponseSchema]
-  .map(schema => ({ ...schema, ...categoryColors.environment })));
+  .map(schema => ({ ...schema, ...getNodeColors(schema) })));
 
 // Helper function to get schema by ID
 export function getNodeSchema(id: string): NodeSchema | undefined {

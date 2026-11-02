@@ -1,20 +1,8 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
-import { serializeContext } from './context-serialization.js';
+import { serializeContext, parseContext } from './context-serialization.js';
 
-function expandReferences(root: any): any {
-  function expand(value: any): any {
-    if (!value || typeof value !== 'object') return value;
-    if (Object.keys(value).length === 1 && typeof value.$ref === 'string') {
-      const target = value.$ref.slice(2).split('/').reduce((object: any, key: string) =>
-        object[key.replace(/~1/g, '/').replace(/~0/g, '~')], root);
-      return expand(target);
-    }
-    return Array.isArray(value) ? value.map(expand)
-      : Object.fromEntries(Object.entries(value).map(([key, child]) => [key, expand(child)]));
-  }
-  return expand(root);
-}
+const expandReferences = (value: any) => parseContext(JSON.stringify(value));
 
 test('repeated observations and action receipts remain losslessly accessible with their provenance', () => {
   const observation = { summary: 'A book beside a lamp on the table.', observedAt: '2026-10-08T12:00:00Z', frameId: 'frame-1', source: 'camera' };
@@ -36,8 +24,22 @@ test('distinct dates, speakers and receipts are not conflated; pointer keys are 
   const input = { 'a/b~c': fact, same: fact, otherSpeaker: { ...fact, role: 'assistant' }, otherDate: { ...fact, at: '2026-10-09' }, empty: [{}, {}] };
   const result = JSON.parse(serializeContext(input));
   assert.deepEqual(result.same, { $ref: '#/a~1b~0c' });
-  assert.deepEqual(result.otherSpeaker, input.otherSpeaker);
-  assert.deepEqual(result.otherDate, input.otherDate);
+  assert.equal(result.otherSpeaker.role, input.otherSpeaker.role);
+  assert.equal(result.otherDate.at, input.otherDate.at);
   assert.deepEqual(result.empty, [{}, {}]);
   assert.deepEqual(expandReferences(result), input);
+});
+
+test('repeated instruction text is represented once without merging its different records', () => {
+  const instruction = 'Continue the recorded investigation with the original objective and returned evidence. '.repeat(12);
+  const input = { activity: { instruction, source: 'autonomy', timestamp: '2026-10-27T12:00:00Z' },
+    execution: { instruction, source: 'user', timestamp: '2026-10-27T12:01:00Z' },
+    history: [{ content: instruction, role: 'assistant', timestamp: '2026-10-27T12:02:00Z' }] };
+  const serialized = serializeContext(input, true);
+  const result = JSON.parse(serialized);
+  assert.deepEqual(result.execution.instruction, { $ref: '#/activity/instruction' });
+  assert.deepEqual(expandReferences(result), input);
+  assert.equal(result.execution.source, 'user');
+  assert.equal(result.history[0].role, 'assistant');
+  assert.ok(serialized.length < JSON.stringify(input).length / 2);
 });

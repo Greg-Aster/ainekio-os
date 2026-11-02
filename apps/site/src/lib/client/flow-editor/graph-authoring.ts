@@ -48,7 +48,7 @@ export function slotFor(
 export function connectionProblem(
   nodes: Node[],
   edges: Edge[],
-  connection: Connection,
+  connection: Connection | Edge,
   ignoredEdgeId?: string,
 ): string | null {
   const source = nodes.find(node => node.id === connection.source)

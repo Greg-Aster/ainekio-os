@@ -7,6 +7,13 @@
 
 import * as fs from 'fs';
 import * as path from 'path';
+import { fileURLToPath } from 'node:url';
+
+/** Model storage used by the standalone service entrypoint. */
+export function resolveModelsDirectory(env: NodeJS.ProcessEnv = process.env): string {
+  const root = env.METAHUMAN_ROOT || fileURLToPath(new URL('../../../', import.meta.url));
+  return path.resolve(root, env.MODELS_DIR || 'models');
+}
 
 // Embedding model definitions (GGUF format)
 export interface EmbeddingModelConfig {
@@ -124,12 +131,10 @@ export interface LocalModelServiceConfig {
 
   embeddings: {
     model: string;
-    preloadAtStartup: boolean;
   };
 
   llm: {
     model: string;
-    preloadAtStartup: boolean;
   };
 
   modelsDir: string;
@@ -151,12 +156,10 @@ export const DEFAULT_CONFIG: LocalModelServiceConfig = {
 
   embeddings: {
     model: 'qwen3-embedding-0.6b',  // Qwen3 Embedding 0.6B, 1024-dim, Sep 2024
-    preloadAtStartup: true
   },
 
   llm: {
     model: 'qwen3-1.7b',
-    preloadAtStartup: false
   },
 
   modelsDir: '',  // Set at runtime based on profile

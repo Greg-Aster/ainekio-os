@@ -1,12 +1,87 @@
+import { projectRobotStatusContext } from '../../robot-status.js'
 import assert from 'node:assert/strict'
+import { readFileSync } from 'node:fs'
 import test from 'node:test'
 
-import type { EnvironmentObservation } from '../../environment-interface/index.js'
+import type { EnvironmentObservation, EnvironmentVisualFrame } from '../../environment-interface/index.js'
 import { environmentContextBuilderNode } from './context-builder.node.js'
 import { environmentImageInputNode } from './image-input.node.js'
-import { buildEnvironmentSelectorEnvelope, buildEnvironmentSelectorJsonSchema, projectRobotStatusContext } from './helpers.js'
+import { buildEnvironmentSelectorEnvelope, buildEnvironmentSelectorJsonSchema } from './helpers.js'
+import { getNodeSchema } from '../schemas.js'
+import { validateSvelteFlowGraph } from '../../cognitive-graph-schema.js'
 
 const TEST_JPEG = 'data:image/jpeg;base64,/9j/2gAA/9k='
+
+test('Environment model context carries local clock and timezone alongside the same UTC instant', async () => {
+  const previousTimezone = process.env.TZ
+  try {
+    for (const [timeZone, currentTime, expectedLocal] of [
+      ['America/Los_Angeles', '2026-10-27T22:14:25.377Z', /Oct 27 2026 15:14:25 GMT-0700/],
+      ['America/Los_Angeles', '2026-12-27T22:14:25.377Z', /Dec 27 2026 14:14:25 GMT-0800/],
+      ['America/Los_Angeles', '2026-10-28T01:14:25.377Z', /Oct 27 2026 18:14:25 GMT-0700/],
+      ['Asia/Calcutta', '2026-10-27T22:14:25.377Z', /Oct 28 2026 03:44:25 GMT\+0530/],
+      ['UTC', '2026-10-27T22:14:25.377Z', /Oct 27 2026 22:14:25 GMT\+0000/],
+    ] as const) {
+      process.env.TZ = timeZone
+      const inputs = { userInstruction: 'What time is it?',
+        routingAnalysis: { needsResponse: true, needsAction: false, taskContext: [], conversationContext: [] } }
+      for (const purpose of ['task', 'conversation']) {
+        const result = await environmentContextBuilderNode.execute(inputs, { currentTime },
+          { purpose, systemPrompt: 'Unchanged instructions.' })
+        const supplied = JSON.parse(result.messages[1].content)
+        assert.equal(supplied.currentTime, currentTime)
+        assert.equal(supplied.timeZone, timeZone)
+        assert.match(supplied.localTime, expectedLocal)
+        assert.equal(Date.parse(supplied.localTime), Date.parse(currentTime) - 377)
+        assert.equal(result.messages[0].content, 'Unchanged instructions.')
+      }
+    }
+  } finally {
+    if (previousTimezone === undefined) delete process.env.TZ
+    else process.env.TZ = previousTimezone
+  }
+})
+
+test('Environment task-to-conversation handoff retains the clock metadata', async () => {
+  const task = await environmentContextBuilderNode.execute({ userInstruction: 'What time is it?' },
+    { currentTime: '2026-10-27T22:14:25.377Z' }, { purpose: 'task', systemPrompt: 'Fixture' })
+  const conversation = await environmentContextBuilderNode.execute({
+    userInstruction: 'What time is it?', selectedContext: task.selectedContext,
+  }, {}, { purpose: 'conversation', systemPrompt: 'Fixture' })
+  const supplied = JSON.parse(conversation.messages[1].content)
+  assert.equal(typeof supplied.localTime, 'string')
+  assert.equal(supplied.localTime, task.selectedContext.localTime)
+  assert.equal(supplied.timeZone, task.selectedContext.timeZone)
+  assert.equal(supplied.currentTime, task.selectedContext.currentTime)
+})
+
+test('wake-up keeps the dated status interpretation separate from the current image evidence', async () => {
+  const recorded = { updatedAt: '2026-10-26T17:15:29.304Z',
+    sourceUpdatedAt: { environment: '2026-10-26T17:15:10Z' },
+    visualFrames: [{ id: 'previous-connection-frame', timestamp: '2026-10-26T17:15:10Z' }],
+    situation: { environmentDescription: 'The person may be Greg.',
+      uncertainties: ['Identity is unverified.'], currentGoal: '', currentIntent: '' }, task: null,
+    live: { readAt: '2026-10-26T17:48:49Z', recognition: { status: 'fresh' } } }
+  const result = await environmentContextBuilderNode.execute({
+    sourceObservation: observation(), observationCurrent: true,
+    event: { kind: 'wake' }, robotStatus: recorded, images: [], frames: [],
+  }, {}, { purpose: 'conversation', systemPrompt: 'Unchanged startup instructions.' })
+  const serialized = JSON.parse(result.message)
+  const expand = (item: any): any => item && typeof item === 'object'
+    ? item.$ref ? expand(item.$ref.slice(2).split('/').reduce((value: any, key: string) => value[key], serialized))
+      : Array.isArray(item) ? item.map(expand) : Object.fromEntries(Object.entries(item).map(([key, value]) => [key, expand(value)]))
+    : item
+  const supplied = expand(serialized).robotStatus
+  assert.equal(supplied.situation.environmentDescription, undefined)
+  assert.equal(supplied.recordedSituation.environmentDescription, recorded.situation.environmentDescription)
+  assert.deepEqual(supplied.recordedSituation.uncertainties, recorded.situation.uncertainties)
+  assert.equal(supplied.recordedSituation.updatedAt, undefined)
+  assert.equal(supplied.recordedSituation.evidence.environmentDescription, null)
+  assert.equal(supplied.recordedSituation.evidence.uncertainties, null)
+  assert.deepEqual(supplied.live, recorded.live)
+  assert.deepEqual(JSON.parse(JSON.stringify(projectRobotStatusContext(supplied, false))), supplied, 'Repeated projection preserves attribution')
+  assert.equal(result.messages[0].content, 'Unchanged startup instructions.')
+})
 
 test('status context retains execution provenance and full outcomes without a second raw gateway event', () => {
   const snapshot = {
@@ -28,7 +103,7 @@ test('status context retains execution provenance and full outcomes without a se
   const result = projectRobotStatusContext(snapshot) as any
   assert.deepEqual(result.projection, snapshot.projection)
   assert.deepEqual(result.task, snapshot.task)
-  assert.deepEqual(result.situation.uncertainties, snapshot.situation.uncertainties)
+  assert.deepEqual(result.recordedSituation.uncertainties, snapshot.situation.uncertainties)
   assert.equal(result.body.observationAt, snapshot.body.observationAt)
   assert.equal('state' in result.body, false)
   assert.equal(snapshot.body.state.bodyEvent.data.kind, 'tipped')
@@ -69,7 +144,7 @@ test('selector follows the adapter-selected V1 or V2 body without losing model o
   for (const robotId of ['v1', 'v2', 'v1'] as const) {
     const v2 = robotId === 'v2'
     const current = observation()
-    current.capabilities = { actions: ['robotCommand', 'move', ...(v2 ? [] : ['robotMotionPlan' as const])],
+    current.capabilities = { actions: ['robotCommand', 'move', 'requestMotion'],
       robotCommands: v2 ? ['crawl', 'crab_right', 'turn_left_15'] : ['#1', '#2', 'crab'],
       robotCommandDescriptions: v2 ? { crab_right: 'ongoing wide-stance sideways right' }
         : { crab: 'perform an alternating crab-like leg motion, then return to stand' } }
@@ -85,12 +160,24 @@ test('selector follows the adapter-selected V1 or V2 body without losing model o
     assert.equal('robots' in envelope.currentEnvironment.state.gateway, false)
     assert.deepEqual(envelope.currentEnvironment.state.activeMovementUpdates.controls,
       v2 ? ['speed', 'stride', 'rate', 'forward', 'turn'] : [])
-    assert.equal(envelope.capabilityRules.some((rule: string) => rule.startsWith('V2 locomotion:')), v2)
-    assert.equal(envelope.capabilityRules.some((rule: string) => rule.startsWith('V2 named locomotion commands are open-ended')), v2)
-    assert.equal(envelope.currentEnvironment.capabilities.actions.includes('robotMotionPlan'), !v2)
+    assert.equal(envelope.currentEnvironment.capabilities.actions.includes('requestMotion'), true)
     assert.deepEqual(envelope.currentEnvironment.capabilities.robotCommandCatalog, current.capabilities.robotCommandDescriptions)
     if (v2) assert.equal(envelope.currentEnvironment.state.gateway.selectedRobot.activeWalk.speed, 150)
   }
+})
+
+test('depth preview pixels stay in source evidence, not the textual task envelope', () => {
+  const current = observation()
+  const position = { available: true, x: 1, z: 2, observedAt: '2026-10-22T23:01:00Z',
+    sourceRobotId: 'body', uncertainty: 'relative', depthPreview: 'data:image/png;base64,' + 'a'.repeat(86000) }
+  current.state = { locomotionMeasurement: { position, yaw: { available: false, reason: 'not_reported' } } }
+  const envelope = JSON.parse(buildEnvironmentSelectorEnvelope({ instruction: 'Please wave.', observation: current }))
+  const { depthPreview, ...measurement } = position
+  assert.deepEqual(envelope.currentEnvironment.state.locomotionMeasurement, {
+    position: measurement, yaw: { available: false, reason: 'not_reported' },
+  })
+  assert.equal((current.state.locomotionMeasurement as { position: typeof position }).position.depthPreview, depthPreview)
+  assert.equal(JSON.stringify(envelope).includes('data:image/png;base64,'), false)
 })
 
 test('an unselected gateway does not lend another robot its model', () => {
@@ -108,7 +195,7 @@ function observation(): EnvironmentObservation {
     sessionId: 'robot-1',
     timestamp: '2026-09-02T12:00:00.000Z',
     capabilities: {
-      actions: ['robotCommand', 'robotMotionPlan', 'captureImage'],
+      actions: ['robotCommand', 'requestMotion', 'captureImage'],
       robotCommands: ['stand', '#1', '#2'],
       robotCommandDescriptions: {
         stand: 'Rise into the standard upright four-leg standing pose.',
@@ -316,7 +403,7 @@ test('Environment Context Builder does not present a saved camera frame as curre
 })
 
 test('Environment selector schema describes conversation or an ordered program with evidence-based task completion', () => {
-  const capabilities = { actions: ['robotCommand', 'robotMotionPlan'], robotCommands: ['stand', '#1', '#2'] }
+  const capabilities = { actions: ['robotCommand', 'requestMotion'], robotCommands: ['stand', '#1', '#2'] }
   const schema = buildEnvironmentSelectorJsonSchema(capabilities) as any
   assert.equal('properties' in schema, false, 'Provider alternatives are complete object contracts')
   assert.equal('allOf' in schema, false)
@@ -342,15 +429,15 @@ test('Environment selector schema describes conversation or an ordered program w
   assert.equal(program.properties.steps.minItems, 1)
   assert.equal('maxItems' in program.properties.steps, false, 'The program can express every ordered phase')
   const steps = program.properties.steps.items.anyOf
-  assert.deepEqual(steps.map((step: any) => step.properties.kind.const), ['action', 'generatedMotion'])
+  assert.deepEqual(steps.map((step: any) => step.properties.kind.const), ['action'])
   for (const step of steps) assert.equal(step.additionalProperties, false)
-  const [action, generated] = steps
+  const [action] = steps
   assert.deepEqual(action.required, ['kind', 'action'])
-  assert.deepEqual(action.properties.action.required, ['type', 'command'])
-  assert.deepEqual(action.properties.action.properties.type.enum, ['robotCommand'])
-  assert.deepEqual(action.properties.action.properties.command.enum, capabilities.robotCommands)
-  assert.deepEqual(generated.required, ['kind', 'description'])
-  assert.equal(generated.properties.description.minLength, 1)
+  const [command, request] = action.properties.action.anyOf
+  assert.deepEqual(command.required, ['type', 'command'])
+  assert.deepEqual(command.properties.command.enum, capabilities.robotCommands)
+  assert.deepEqual(request.required, ['type', 'description'])
+  assert.equal(request.properties.description.minLength, 1)
   assert.equal(activity.properties.taskDecision.type, 'object', 'A physical program requires its objective decision')
   assert.equal(activity.properties.taskDecision.additionalProperties, false)
   const outcomes = activity.properties.taskDecision.properties.outcome.enum
@@ -366,11 +453,11 @@ test('program steps remain restricted to advertised commands, generation and fee
     [[], [], [], []],
     [['robotCommand'], [], [], []],
     [['robotCommand'], ['wave'], ['action'], ['robotCommand']],
-    [['robotMotionPlan'], [], ['generatedMotion'], []],
+    [['requestMotion'], [], ['action'], ['requestMotion']],
     [['move'], [], ['action'], ['move']],
     [['captureImage'], [], ['action', 'vision', 'behavior'], ['captureImage']],
     [['move', 'captureImage'], [], ['action', 'vision', 'behavior'], ['move', 'captureImage']],
-    [['robotCommand', 'robotMotionPlan', 'move', 'captureImage'], ['wave'], ['action', 'generatedMotion', 'vision', 'behavior'], ['move', 'captureImage', 'robotCommand']],
+    [['robotCommand', 'requestMotion', 'move', 'captureImage'], ['wave'], ['action', 'vision', 'behavior'], ['move', 'captureImage', 'robotCommand', 'requestMotion']],
   ] as const) {
     const schema = buildEnvironmentSelectorJsonSchema({ actions, robotCommands }) as any
     const activity = schema.anyOf.find((route: any) => route.properties.program.type === 'object')
@@ -406,6 +493,61 @@ test('program steps remain restricted to advertised commands, generation and fee
   }
 })
 
+test('Environment returned camera captures receive the declared program result through the saved graph', () => {
+  const runtimePort = environmentImageInputNode.inputs.find(input => input.name === 'taskResult')
+  assert.ok(runtimePort)
+  assert.deepEqual(getNodeSchema(environmentImageInputNode.id)!.inputs.find(input => input.name === 'taskResult'), runtimePort)
+  const graph = JSON.parse(readFileSync(new URL('../../../../../etc/cognitive-graphs/environment-mode.json', import.meta.url), 'utf8'))
+  validateSvelteFlowGraph(graph)
+  assert.equal(graph.edges.filter((edge: { source: string; sourceHandle: string; target: string; targetHandle: string }) =>
+    edge.source === 'active-task' && edge.sourceHandle === 'result'
+      && edge.target === 'conversation-result-images' && edge.targetHandle === 'taskResult').length, 1)
+})
+
+test('Environment returned camera captures retain every image and timestamp through conversation', async () => {
+  for (const count of [1, 2]) {
+    const returned = observation()
+    const captures = Array.from({ length: count }, (_, index) => ({
+      ...returned.visual!, id: `capture-${index + 1}`,
+      timestamp: `2026-10-29T22:20:${index === 0 ? '21.657' : '25.228'}Z`,
+      metadata: { actionId: `capture-action-${index + 1}`, correlationId: 'comparison-execution' },
+    }))
+    returned.visual = captures.at(-1)
+    const unrelated = { ...captures[0], id: 'unrelated-cache', timestamp: '2026-10-29T22:21:00Z' }
+    returned.visuals = [unrelated, ...captures, { ...captures[0], id: 'invalid-image', dataUrl: 'not-a-jpeg' }]
+    const taskResult = { done: true, capturedFrameIds: captures.map(frame => frame.id) }
+    const selected = await environmentImageInputNode.execute({ observation: returned, taskResult }, {}, {})
+    assert.deepEqual(selected.frames.map((frame: EnvironmentVisualFrame) => frame.id), captures.map(frame => frame.id))
+    assert.deepEqual(selected.frames.map((frame: EnvironmentVisualFrame) => frame.timestamp), captures.map(frame => frame.timestamp))
+    assert.equal(selected.images.length, count)
+    assert.equal(selected.rejectedCount, 1)
+    assert.equal(selected.current, true)
+    assert.equal(selected.verified, true)
+
+    const conversation = await environmentContextBuilderNode.execute({
+      userInstruction: 'Take two fresh pictures, one after the other, and tell me whether the scene changed between them.',
+      observation: returned, resultImages: selected.images, resultFrames: selected.frames,
+      taskResult,
+    }, {}, { purpose: 'conversation', systemPrompt: 'Fixture' })
+    const parts = conversation.messages[1].content
+    assert.ok(Array.isArray(parts))
+    assert.deepEqual(parts.filter(part => part.type === 'image_url'), selected.images)
+    const supplied = JSON.parse(conversation.message)
+    assert.deepEqual(supplied.currentEnvironment.visualFrames.map((frame: any) => ({
+      id: frame.id, timestamp: frame.timestamp, actionId: frame.actionId,
+    })), captures.map(frame => ({ id: frame.id, timestamp: frame.timestamp, actionId: frame.metadata.actionId })))
+
+    for (const capturedFrameIds of [[], ['missing-capture'], [captures[0].id, 'missing-capture']]) {
+      const partial = await environmentImageInputNode.execute({ observation: returned,
+        taskResult: { done: true, capturedFrameIds },
+      }, {}, {})
+      assert.deepEqual(partial.frames.map((frame: EnvironmentVisualFrame) => frame.id),
+        capturedFrameIds.length ? capturedFrameIds.filter(id => id === captures[0].id) : [unrelated.id])
+      assert.equal(partial.verified, capturedFrameIds.length !== 1 || capturedFrameIds[0] !== 'missing-capture')
+    }
+  }
+})
+
 test('Environment Image Input distinguishes a saved view from evidence for a specific action', async () => {
   const savedObservation = observation()
   savedObservation.visual = { ...savedObservation.visual!,
@@ -421,6 +563,7 @@ test('Environment Image Input distinguishes a saved view from evidence for a spe
     const selected = await environmentImageInputNode.execute({
       visual: savedObservation.visual, observationCurrent: false, actionId, correlationId: 'action-cycle-1',
       terminalFeedback: { type: 'completed', actionId },
+      taskResult: { capturedFrameIds: [savedObservation.visual.id] },
     }, {}, {})
     assert.equal(selected.current, false)
     assert.equal(selected.verified, actionId === 'action-1')
@@ -470,8 +613,8 @@ test('selected Robot Status retains bounded history, summaries, and source times
   const selected = JSON.parse(result.message).robotStatus
   assert.deepEqual(selected.history, status.history)
   assert.deepEqual(selected.sourceUpdatedAt, status.sourceUpdatedAt)
-  assert.equal(selected.situation.situationalSummary, 'Reported situation')
-  assert.equal(selected.situation.environmentDescription, 'Earlier description')
+  assert.equal(selected.recordedSituation.situationalSummary, 'Reported situation')
+  assert.equal(selected.recordedSituation.environmentDescription, 'Earlier description')
 })
 
 test('conversation excludes images selected only for task reasoning', async () => {
@@ -529,19 +672,55 @@ test('recall receipts already consumed by task execution can be reused without a
 test('selected body motor evidence survives model context without changing capability or borrowing another body', () => {
   const current = observation()
   const timestamp = '2026-10-14T22:58:49.076903+00:00'
-  const motorOutput = { output_ready: false, output_armed: false, output_fault: 1, timestamp }
+  const motorOutput = { output_ready: false, servoPwmOutputEnabled: false, output_fault: 1, timestamp }
+  const rawStatus = { output_ready: false, output_armed: false, output_fault: 1, status_received_at: timestamp }
   current.state = { body: { robotId: 'selected', motionAvailable: true }, gateway: { robots: {
-    selected: { status: { ...motorOutput, status_received_at: timestamp } }, other: { status: { output_ready: true, output_armed: true, output_fault: 0 } },
+    selected: { status: rawStatus }, other: { status: { output_ready: true, output_armed: true, output_fault: 0 } },
   } } }
   const envelope = JSON.parse(buildEnvironmentSelectorEnvelope({ instruction: 'Report body state.', observation: current,
     robotStatus: { live: { movement: { motorOutput } } } }))
   assert.deepEqual(envelope.currentEnvironment.state.gateway.selectedRobot.motorOutput, motorOutput)
   assert.equal(envelope.currentEnvironment.state.body.motionAvailable, true)
   assert.deepEqual(envelope.currentEnvironment.capabilities.actions, current.capabilities.actions)
-  assert.ok(JSON.stringify(envelope.robotStatus.live).includes('motorOutput'))
-  current.state = { body: { robotId: 'missing' }, gateway: { robots: { other: { status: motorOutput } } } }
+  assert.deepEqual(envelope.robotStatus.live.movement.motorOutput, motorOutput)
+  current.state = { body: { robotId: 'missing' }, gateway: { robots: { other: { status: rawStatus } } } }
   const missing = JSON.parse(buildEnvironmentSelectorEnvelope({ instruction: 'Report body state.', observation: current }))
   assert.equal(missing.currentEnvironment.state.gateway.selectedRobot, null)
+})
+
+test('selected body status retains complete reported samples without inventing sample freshness', () => {
+  const current = observation()
+  const status = {
+    output_ready: true, output_armed: false, output_fault: 0,
+    status_received_at: '2026-10-26T17:19:25Z',
+    imu: { timestamp_us: 1596000000, received_at: '2026-10-26T17:19:28Z' },
+    servo_feedback: { enabled: true, usable: true, scan: 59906, clock_us: 1302014762,
+      calibrated_mask: 4095, unavailable_mask: 0, clipped_mask: 0,
+      below_calibration_mask: 0, above_calibration_mask: 0, adc_error: 'ESP_OK',
+      supply_voltage_available: false, signal_millivolts: Array.from({ length: 12 }, (_, i) => 1000 + i) },
+    reportedDetails: Array.from({ length: 40 }, (_, i) => ({ index: i, value: `Reported detail ${i}` })),
+  }
+  const original = structuredClone(status)
+  current.state = { body: { robotId: 'selected', motionAvailable: true }, gateway: { robots: {
+    selected: { epoch: 3, status }, other: { epoch: 7, status: { servo_feedback: { usable: false } } },
+  } } }
+  const envelope = () => JSON.parse(buildEnvironmentSelectorEnvelope({ instruction: 'Report body state.', observation: current }))
+  const selected = envelope().currentEnvironment.state.gateway.selectedRobot
+  assert.equal(selected.epoch, 3)
+  assert.deepEqual(selected.status, original)
+  assert.deepEqual(selected.motorOutput, { output_ready: true, servoPwmOutputEnabled: false, output_fault: 0,
+    timestamp: status.status_received_at })
+  assert.equal('received_at' in selected.status.servo_feedback, false, 'Other telemetry cannot date an older sample')
+  assert.deepEqual(status, original, 'Projection does not mutate the recorded evidence')
+
+  current.state = { body: { robotId: 'selected' }, gateway: { robots: {
+    selected: { epoch: 3 }, other: { epoch: 7, status },
+  } } }
+  assert.equal('status' in envelope().currentEnvironment.state.gateway.selectedRobot, false)
+  current.state = { body: { robotId: 'selected' }, gateway: { robots: { selected: { status } } } }
+  assert.equal('epoch' in envelope().currentEnvironment.state.gateway.selectedRobot, false)
+  current.state = { body: { robotId: 'missing' }, gateway: { robots: { other: { status } } } }
+  assert.equal(envelope().currentEnvironment.state.gateway.selectedRobot, null)
 })
 
 test('locomotion capability context presents the exact executable goal schemas and placement', async () => {
@@ -568,4 +747,24 @@ test('locomotion capability context presents the exact executable goal schemas a
     assert.ok(result.planningMessages[1].content.includes(field))
     assert.ok(result.messages[1].content.includes(field))
   }
+})
+
+test('conversation context retains the prose producer and acquisition evidence across handoff', async () => {
+  const evidence = { recordedAt: '2026-10-26T17:15:29.304Z',
+    sourceUpdatedAt: { environment: '2026-10-26T17:15:10Z' },
+    visualFrames: [{ id: 'earlier-frame', timestamp: '2026-10-26T17:15:10Z' }] }
+  const task = await environmentContextBuilderNode.execute({ userInstruction: 'What did you see?',
+    routingAnalysis: { needsRobotStatus: true },
+    robotStatus: { updatedAt: '2026-10-27T22:14:25.377Z',
+      situation: { environmentDescription: 'An earlier scene', uncertainties: ['Identity unknown'] },
+      situationEvidence: { environmentDescription: evidence, uncertainties: evidence } },
+  }, {}, { purpose: 'task', systemPrompt: 'Fixture' })
+  const conversation = await environmentContextBuilderNode.execute({ userInstruction: 'What did you see?',
+    selectedContext: task.selectedContext }, {}, { purpose: 'conversation', systemPrompt: 'Fixture' })
+  const { parseContext } = await import('../../context-serialization.js')
+  const status = parseContext(conversation.messages[1].content).robotStatus
+  assert.deepEqual(status.recordedSituation.evidence.environmentDescription, evidence)
+  assert.deepEqual(status.recordedSituation.evidence.uncertainties, evidence)
+  assert.equal(status.recordedSituation.environmentDescription, 'An earlier scene')
+  assert.equal(status.recordedSituation.updatedAt, undefined)
 })

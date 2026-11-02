@@ -7,7 +7,7 @@
  * Architecture:
  * - Model Router resolves 'embedder' role from user profile's models.json
  * - Default provider is 'local-models' (llama.cpp on CPU)
- * - Can run in parallel with GPU backends (vLLM, Ollama)
+ * - Can run in parallel with GPU backends (llama.cpp, Ollama)
  * - Works on both desktop and mobile (React Native)
  *
  * Configuration comes from user profiles:
@@ -18,7 +18,7 @@
  * All configuration must come from user profile or be passed explicitly.
  */
 
-import { embedWithLocalService, isLocalModelServiceRunning, loadLocalModel } from './providers/local-models.js'
+import { embedWithLocalService, isLocalModelServiceRunning } from './providers/local-models.js'
 import { callEmbeddings, isEmbeddingServiceAvailable as checkEmbeddingAvailable } from './model-router.js'
 import { getUserContext } from './context.js'
 import { loadBackendConfig } from './llm-backend.js'
@@ -49,41 +49,6 @@ const DEFAULTS = {
  */
 export async function isEmbeddingServiceAvailable(userId?: string): Promise<boolean> {
   return checkEmbeddingAvailable(userId);
-}
-
-/**
- * Preload the embedding model to keep it in memory
- *
- * @param userId - Optional user ID to get model config from profile
- */
-export async function preloadEmbeddingModel(): Promise<void> {
-  const backendConfig = loadBackendConfig();
-  const localModels = backendConfig.localModels;
-  if (!localModels?.enabled || !localModels.embeddings.preloadAtStartup) {
-    return;
-  }
-  const endpoint = localModels.endpoint || DEFAULTS.endpoint;
-  const model = localModels.embeddings.model || DEFAULTS.model;
-
-  try {
-    const isRunning = await isLocalModelServiceRunning(endpoint);
-    if (!isRunning) {
-      console.log('[embeddings] Local model service not running at', endpoint);
-      console.log('[embeddings] Start it with: ./bin/start-local-models');
-      return;
-    }
-
-    console.log(`[embeddings] Preloading model "${model}" via llama.cpp...`);
-
-    // Request model load
-    await loadLocalModel('embeddings', model, endpoint);
-
-    // Warm up with a test embedding
-    await embedWithLocalService('warmup', { model, endpoint });
-    console.log(`[embeddings] ✓ Model "${model}" preloaded and ready`);
-  } catch (error) {
-    console.error('[embeddings] Failed to preload model:', error);
-  }
 }
 
 /**

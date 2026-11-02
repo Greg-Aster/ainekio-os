@@ -76,7 +76,7 @@ test('waiting replies survive long playback and orphan audio is still cleaned', 
   for (const reply of [...replies, orphan]) fs.utimesSync(path.join(root, 'speech', `${reply.id}.pcm`), old, old);
   persistQueueState({ items: replies.map((reply, index) => ({ id: `job-${index}`, type: 'environment_command',
     state: 'queued', input: { type: 'speak', speechArtifactId: reply.id } })), history: [],
-    durableReceipts: [], bodyOwners: {}, inFlightRemote: [], lastUpdated: new Date().toISOString() } as any);
+    durableReceipts: [], bodyOwners: {}, lastUpdated: new Date().toISOString() } as any);
   const next = stageRobotSpeech({ pcm: Buffer.alloc(640), durationMs: 20 });
   for (const reply of replies) assert.deepEqual(claimRobotSpeech(reply.id)?.pcm, reply.pcm);
   assert.equal(claimRobotSpeech(orphan.id), null);

@@ -2,7 +2,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { randomBytes } from 'node:crypto';
 import { systemPaths } from '../paths.js';
-import { loadQueueState } from '../queue/queue-persister.js';
+import { readPendingSpeechArtifacts } from '../queue/queue-persister.js';
 
 const TARGET_SAMPLE_RATE = 16_000;
 const FRAME_BYTES = 640;
@@ -31,11 +31,9 @@ function artifactPath(id: string): string {
 function cleanupSpool(now = Date.now()): void {
   const dir = spoolDir();
   fs.mkdirSync(dir, { recursive: true, mode: 0o700 });
-  // A reply may wait behind arbitrarily long speech. Only orphaned audio
-  // expires; the existing coordinator ledger owns pending artifacts.
-  const pending = new Set((loadQueueState()?.items ?? [])
-    .filter(task => !['completed', 'failed', 'cancelled', 'expired'].includes(task.state))
-    .map(task => task.input?.speechArtifactId));
+  // Preserve audio referenced by active Coordinator work; completed receipts
+  // and browsing history do not own pending audio files.
+  const pending = readPendingSpeechArtifacts();
   const artifacts = fs.readdirSync(dir)
     .filter(name => /^speech-[a-zA-Z0-9-]{1,96}\.(?:pcm|claim-\d+)$/.test(name))
     .map(name => {

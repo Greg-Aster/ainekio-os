@@ -10,7 +10,7 @@ Persona, profile, memory, voice, logs, and generated outputs are user/runtime da
 
 ## Does MetaHuman require the cloud?
 
-No. Ollama, vLLM, Whisper, Piper, Kokoro, and supported training workflows can run locally. Remote model and sync features require a configured server and network access.
+No. llama.cpp, Ollama, Whisper, Piper, Kokoro, and supported training workflows can run locally. Remote model and sync features require a configured server and network access.
 
 ## How do I check system health?
 
@@ -23,7 +23,7 @@ For a specific subsystem, use its status command, such as `./bin/mh ollama statu
 
 ## Which LLM backend should I use?
 
-Use Ollama for the simplest local setup, vLLM when its GPU-serving features are needed, or a remote backend when compute is hosted elsewhere. Keep routing in the backend and model-router owners. See [LLM Backend Configuration](/user-guide#llm-backend).
+Use Ollama or llama.cpp for local serving, or a remote backend when compute is hosted elsewhere. Keep routing in the backend and model-router owners. See [LLM Backend Configuration](/user-guide#llm-backend).
 
 ## Why is a model unavailable?
 
@@ -47,7 +47,7 @@ Yes. The maintained training workflow creates profile-owned artifacts through th
 
 ## Can I train a voice?
 
-RVC model training and GPT-SoVITS reference preparation are maintained. Piper and Kokoro synthesis are supported, but this repository does not expose verified custom trainers for them. See [Voice Training](/user-guide#voice-training).
+RVC model training is maintained. Piper and Kokoro synthesis are supported, but this repository does not expose verified custom trainers for them. See [Voice Training](/user-guide#voice-training).
 
 ## Why did voice output fall back to Piper?
 

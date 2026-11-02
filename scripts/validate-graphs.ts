@@ -10,7 +10,7 @@
 
 import { readdirSync, readFileSync } from 'node:fs';
 import { join } from 'node:path';
-import { validateSvelteFlowGraph, type SvelteFlowGraph } from '../packages/core/src/cognitive-graph-schema.js';
+import { validateSvelteFlowGraph } from '../packages/core/src/cognitive-graph-schema.js';
 
 const GRAPHS_DIR = 'etc/cognitive-graphs';
 const VALID_MODES = ['dual', 'agent', 'emulation', 'environment'];
@@ -20,20 +20,6 @@ console.log('🔍 Validating cognitive graphs...\n');
 let totalGraphs = 0;
 let validGraphs = 0;
 let errors: Array<{ file: string; errors: string[] }> = [];
-
-function validateDualArtifacts(graph: SvelteFlowGraph): void {
-  const artifactPaths = [
-    join('apps', 'site', 'public', 'cognitive-graphs', 'dual-mode.json'),
-  ];
-  const canonical = JSON.stringify(graph);
-
-  for (const artifactPath of artifactPaths) {
-    const artifact = JSON.parse(readFileSync(artifactPath, 'utf8'));
-    if (JSON.stringify(artifact) !== canonical) {
-      throw new Error(`${artifactPath} has drifted from etc/cognitive-graphs/dual-mode.json; run pnpm sync:graph-artifacts dual-mode`);
-    }
-  }
-}
 
 // Get all .json files (excluding backups directory)
 const files = readdirSync(GRAPHS_DIR, { withFileTypes: true })
@@ -55,10 +41,6 @@ for (const file of files) {
     // Additional checks
     if (graph.cognitiveMode && !VALID_MODES.includes(graph.cognitiveMode)) {
       throw new Error(`Invalid cognitiveMode: "${graph.cognitiveMode}". Must be one of: ${VALID_MODES.join(', ')}, or omit the field for cross-mode graphs.`);
-    }
-
-    if (file === 'dual-mode.json') {
-      validateDualArtifacts(graph);
     }
 
     console.log(`  ✅ Valid (cognitiveMode: ${graph.cognitiveMode || 'not specified'})\n`);

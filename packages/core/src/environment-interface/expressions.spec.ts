@@ -168,7 +168,7 @@ test('Pass-through thinking, conditional release and replay preserve input and d
     assert.equal(on.state, 'cancelled', 'the unsent thinking SET is superseded by its matching release')
     assert.equal(on.startedAt, undefined)
     assert.equal(off.state, 'queued', 'the release remains deliverable')
-    await deliverDurableWorkReceipt(on, async input => manager.enqueue(input))
+    await deliverDurableWorkReceipt(on, manager)
     assert.ok(manager.claim(off.id))
     recordEnvironmentActionResult({ id: 'face-release-completed', actionId: String(off.input.id), timestamp: new Date().toISOString(),
       type: 'completed', message: 'Simulated release' })

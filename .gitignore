@@ -10,6 +10,7 @@ __pycache__/
 *.pyo
 *.egg-info/
 dist/
+/apps/site/dist
 apps/site/dist-static/
 build/
 
@@ -225,11 +226,10 @@ secrets/
 # ============================================
 # AI TOOL CONFIGURATIONS (Local settings, not tracked)
 # ============================================
-# Root agent instructions are remote-safe governance; nested/local settings stay ignored.
+# Agent instructions and tool entrypoints are local-only.
+AGENTS.md
 CLAUDE.md
 GEMINI.md
-!/CLAUDE.md
-!/GEMINI.md
 .ai-config/
 .Claude/
 .Gemini/
@@ -260,11 +260,10 @@ external/kokoro/*
 !external/kokoro/server_defaults.py
 !external/kokoro/test_server_defaults.py
 !external/kokoro/test_kokoro_server.py
-!external/kitten/
-external/kitten/*
-!external/kitten/kitten_server.py
-!external/kitten/kitten_runtime.py
-!external/kitten/test_kitten_server.py
+!external/whisper/
+external/whisper/*
+!external/whisper/whisper_server.py
+!external/whisper/test_whisper_server.py
 vendor/cmake*/
 vendor/*.tar.gz
 vendor/qwen*/

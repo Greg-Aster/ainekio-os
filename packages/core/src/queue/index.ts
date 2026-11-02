@@ -44,10 +44,8 @@ export {
   isPersistentService,
 } from './agent-work-catalog.js';
 export type { AgentLifecycleClass, TriggerStartupPolicy } from './agent-work-catalog.js';
-export { RemoteDispatcher } from './remote-dispatcher.js';
 export {
   SLEEP_WORKFLOW_STAGES,
-  SLEEP_WORKFLOW_HANDLERS,
   advanceSleepWorkflow,
   beginSleepWorkflow,
   markSleepStageRunning,
@@ -80,6 +78,7 @@ export type {
 // Persistence
 export {
   loadQueueState,
+  readActiveQueueItems,
   clearQueueState,
   persistQueueState,
   shouldRestoreState,

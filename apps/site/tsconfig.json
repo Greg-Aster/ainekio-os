@@ -1,14 +1,12 @@
 {
+  "extends": "astro/tsconfigs/strict",
   "compilerOptions": {
-    "jsx": "preserve",
-    "module": "esnext",
-    "moduleResolution": "bundler",
-    "target": "esnext",
-    "strict": true,
     "types": ["astro/client"],
     "baseUrl": ".",
     "paths": {
       "@brain/*": ["../../brain/*"]
     }
-  }
+  },
+  "include": [".astro/types.d.ts", "**/*"],
+  "exclude": ["node_modules", "dist", "build"]
 }

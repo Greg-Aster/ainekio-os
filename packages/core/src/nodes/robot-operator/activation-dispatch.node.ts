@@ -3,12 +3,14 @@ import { selectActivatedOperations, type ActivationAssessment } from '../../acti
 import type { RobotAutonomyTaskDescriptor } from './autonomy-task-options.js'
 import type { TaskInput } from '../../queue/types.js'
 import { getTriggerConfigService } from '../../queue/trigger-config-service.js'
+import { buildDesireAgentTaskInput } from '../../queue/work-submission.js'
 import { getOperatorMode } from '../../active-operator/mode-controller.js'
 import { robotOperatorEnvironmentDispatchNode } from './environment-dispatch.node.js'
 
 export const activeOperatorDispatchNode = defineNode({
   id: 'active_operator_dispatch', name: 'Request Activated Operations', category: 'operator',
   inputs: [
+    { name: 'selectedContext', type: 'object', optional: true, description: 'Attributed context already selected and read for the originating assessment.' },
     { name: 'assessment', type: 'object' }, { name: 'availableTasks', type: 'array' },
     { name: 'observation', type: 'object', optional: true },
     { name: 'robotObserver', type: 'object', optional: true },
@@ -16,10 +18,13 @@ export const activeOperatorDispatchNode = defineNode({
     { name: 'currentVisualEvidence', type: 'boolean', optional: true },
     { name: 'observationCurrent', type: 'boolean', optional: true },
   ],
-  outputs: [{ name: 'requests', type: 'array' }, { name: 'innerEntries', type: 'array' }],
+  outputs: [{ name: 'requests', type: 'array' }, { name: 'innerEntries', type: 'array' }, { name: 'inactiveReason', type: 'string', optional: true }],
   properties: {}, propertySchemas: {},
   description: 'Stages selected operations through the existing Work Coordinator. Their results remain independent of the next activation assessment.',
   async execute(inputs, context) {
+    if (!inputs.assessment) {
+      return { requests: [], innerEntries: [], inactiveReason: 'No active assessment' }
+    }
     const assessment = inputs.assessment as ActivationAssessment
     const tasks = inputs.availableTasks as RobotAutonomyTaskDescriptor[]
     const requests: TaskInput[] = []
@@ -34,6 +39,19 @@ export const activeOperatorDispatchNode = defineNode({
         sourceObservationAt: inputs.observation?.timestamp ?? null })
       const plannerDecision = { instruction: update.instruction, reason: update.reason,
         observed: observationSummary, decidedAt: assessment.assessedAt }
+      if (update.target?.kind === 'desire') {
+        requests.push({ ...buildDesireAgentTaskInput({ operation: update.target.operation,
+          desireId: update.target.desireId, username: context.username!, source: 'autonomy',
+          reason: update.reason, correlationId: cycleId, idempotencyKey: `active-operator:${cycleId}`,
+          metadata: { producer: 'robot-autonomy-controller', selectedAgent: task.id,
+            decisionInstruction: update.instruction, decisionReason: update.reason, activation: update.activation },
+        }), executionScope: 'independent', cognitiveMode: 'environment' })
+        innerEntries.push({ role: 'reflection', timestamp: assessment.assessedAt,
+          content: `Intention: ${update.instruction}\n\nReason: ${update.reason}`,
+          meta: { source: 'autonomy', dialogueSource: 'robot-autonomy-controller', executionId: assessment.executionId,
+            cycleId, operationId: task.id, target: update.target, plannerDecision } })
+        continue
+      }
       let input: TaskInput['input'] = {
         agentId: task.id, args: [], triggeredBy: 'robot-autonomy-controller', usesLLM: true, cycleId,
         sessionId: inputs.observation?.sessionId,
@@ -50,6 +68,7 @@ export const activeOperatorDispatchNode = defineNode({
         const delegated = prepared.invocation.context
         // Preserve the complete approved model output through the existing handoff.
         delegated.robotOperatorContext.plannerDecision = plannerDecision
+        if (inputs.selectedContext) delegated.robotOperatorContext.selectedContext = inputs.selectedContext
         input = { ...input, graph: prepared.invocation.graph, observation: delegated.environmentObservation,
           observationCurrent: delegated.environmentObservationCurrent,
           robotOperatorContext: delegated.robotOperatorContext }
@@ -57,11 +76,31 @@ export const activeOperatorDispatchNode = defineNode({
         innerEntry.content = `Intention: ${update.instruction}\n\nReason: ${update.reason}`
         innerEntry.meta.plannerDecision = plannerDecision
       } else {
+        if (task.id === 'robot-status') {
+          input.robotOperatorContext = {
+            plannerDecision, sessionId: input.sessionId,
+            frames: inputs.frames ?? [], currentVisualEvidence: inputs.currentVisualEvidence === true,
+          }
+        }
         innerEntry = { role: 'reflection', timestamp: assessment.assessedAt,
           content: `Operation: ${task.name}\n\nIntention: ${update.instruction}\n\nReason: ${update.reason}`,
           meta: { source: 'autonomy', dialogueSource: 'robot-autonomy-controller', agentId: 'robot-autonomy-controller',
             executionId: assessment.executionId, cycleId, operationId: task.id, activation: update.activation,
             tags: ['autonomy', 'autonomy-intention', 'inner'], plannerDecision } }
+      }
+      if (update.target?.kind === 'execution') {
+        context.graphExecution!.dispatch({ kind: 'execution_event', payload: {
+          executionId: update.target.executionId, kind: 'autonomy_trigger',
+          context: { userMessage: null, conversationInput: null, userMessageEntry: null,
+            sessionId: context.sessionId ?? null, memoryTimestamp: assessment.assessedAt,
+            ttsGeneration: null, idempotencyKey: null, replyToQuestionId: null, replyToContent: null,
+            replyToDesireId: null, replyToDesireTitle: null, desireContext: null,
+            environmentObservation: input.observation ?? null,
+            environmentObservationCurrent: input.observationCurrent === true,
+            robotOperatorContext: input.robotOperatorContext },
+        } })
+        innerEntries.push(innerEntry)
+        continue
       }
       requests.push({ type: task.taskType as TaskInput['type'], handler: task.handler,
         executionScope: 'independent', source: 'autonomy', priority: task.priority, username: context.username!, cognitiveMode: 'environment',

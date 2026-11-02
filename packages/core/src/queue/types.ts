@@ -25,8 +25,7 @@ export type WorkState =
   | 'completed'
   | 'failed'
   | 'cancelled'
-  | 'expired'
-  | 'needs_review';
+  | 'expired';
 
 export type QueueLifecycleState =
   | 'starting'
@@ -58,7 +57,6 @@ export type TaskType =
   | 'desire_review'
   | 'desire_checkin'
   | 'big_brother_escalation'
-  | 'runpod_inference'
   | 'environment_command'
   | 'environment_observation'
   | 'sleep_workflow'
@@ -86,7 +84,6 @@ export const TASK_LANE_MAP: Record<TaskType, ResourceLaneId> = {
   index_update: 'vector-index',
   semantic_search: 'vector-index',
   big_brother_escalation: 'remote-llm',
-  runpod_inference: 'remote-llm',
   desire_execute: 'remote-llm',
   desire_review: 'remote-llm',
 };
@@ -105,7 +102,6 @@ export const DEFAULT_PRIORITIES: Record<TaskType, Priority> = {
   semantic_search: 'normal',
   reflect: 'normal',
   curiosity: 'normal',
-  runpod_inference: 'normal',
   custom: 'normal',
   generic: 'normal',
   inner_curiosity: 'low',
@@ -134,8 +130,7 @@ export const DEFAULT_HANDLERS: Record<TaskType, string> = {
   desire_execute: 'agency.desire-execute',
   desire_review: 'agency.desire-outcome-review',
   desire_checkin: 'agency.desire-checkin',
-  big_brother_escalation: 'remote.big-brother',
-  runpod_inference: 'remote.runpod',
+  big_brother_escalation: 'environment.tools',
   environment_command: 'environment.command',
   environment_observation: 'environment.observation',
   sleep_workflow: 'workflow.sleep',
@@ -234,6 +229,8 @@ export interface QueuedTask {
   error?: WorkError;
   /** Terminal failure still awaiting durable delivery to the profile's System Buffer. */
   failureNoticePending?: boolean;
+  /** The execution owner has committed this job's result; its queue copy is no longer needed for delivery. */
+  resultDelivered?: boolean;
   waitingReason?: string;
   wakeAt?: string;
   leaseOwner?: string;
@@ -260,26 +257,6 @@ export interface ResourceLane {
   lastExecutionAt?: string;
 }
 
-export interface RemoteTaskHandle {
-  taskId: string;
-  provider: string;
-  startedAt: string;
-  timeoutMs: number;
-  abortController?: AbortController;
-}
-
-export interface RemoteResult {
-  taskId: string;
-  success: boolean;
-  output: any;
-  durationMs: number;
-  followUpTasks?: TaskInput[];
-  updateBuffer?: boolean;
-  saveMemory?: boolean;
-  memoryType?: 'inner_dialogue' | 'conversation' | 'observation';
-  memoryTags?: string[];
-}
-
 export interface QueueConfig {
   enabled: boolean;
   lanes: Record<ResourceLaneId, LaneConfig>;
@@ -295,7 +272,6 @@ export interface QueueState {
   items?: QueuedTask[];
   history?: QueuedTask[];
   durableReceipts?: QueuedTask[];
-  inFlightRemote: RemoteTaskHandle[];
   lastUpdated: string;
 }
 
@@ -318,8 +294,6 @@ export type QueueEventType =
   | 'task_reordered'
   | 'task_deleted'
   | 'execution_cancelled'
-  | 'remote_dispatched'
-  | 'remote_callback'
   | 'lane_blocked'
   | 'lane_unblocked';
 

@@ -1,15 +1,14 @@
 /**
  * Shared local model artifact discovery.
  *
- * Indexes the existing Ollama model store and complete Hugging Face cache
- * snapshots. It does not move, delete, or download models.
+ * Indexes the existing Ollama model store. It does not move, delete, or download models.
  */
 
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 
-export type LocalModelProvider = 'ollama' | 'vllm' | 'local-models';
+export type LocalModelProvider = 'ollama' | 'local-models';
 export type LocalModelArtifactFormat = 'gguf' | 'safetensors';
 
 export interface LocalModelArtifact {
@@ -17,8 +16,8 @@ export interface LocalModelArtifact {
   name: string;
   tag: string;
   displayName: string;
-  source: 'ollama-store' | 'huggingface-cache';
-  provider: 'ollama' | 'vllm';
+  source: 'ollama-store';
+  provider: 'ollama';
   compatibleProviders: LocalModelProvider[];
   format: LocalModelArtifactFormat;
   /** Model architecture reported by the artifact's native metadata. */
@@ -53,11 +52,6 @@ export function getOllamaModelsDir(): string {
   return path.join(os.homedir(), '.ollama', 'models');
 }
 
-export function getHuggingFaceHubDir(): string {
-  if (process.env.HF_HUB_CACHE) return process.env.HF_HUB_CACHE;
-  if (process.env.HF_HOME) return path.join(process.env.HF_HOME, 'hub');
-  return path.join(os.homedir(), '.cache', 'huggingface', 'hub');
-}
 
 function blobPathForDigest(modelsDir: string, digest: string): string {
   return path.join(modelsDir, 'blobs', digest.replace(':', '-'));
@@ -165,7 +159,7 @@ function listOllamaModelArtifacts(modelsDir: string): LocalModelArtifact[] {
           displayName,
           source: 'ollama-store',
           provider: 'ollama',
-          compatibleProviders: isGGUF ? ['ollama', 'vllm', 'local-models'] : ['ollama'],
+          compatibleProviders: isGGUF ? ['ollama', 'local-models'] : ['ollama'],
           format: 'gguf',
           architecture: metadata.architecture,
           modelType: metadata.modelType,
@@ -186,109 +180,8 @@ function listOllamaModelArtifacts(modelsDir: string): LocalModelArtifact[] {
   return artifacts;
 }
 
-function listHuggingFaceModelArtifacts(hubDir: string): LocalModelArtifact[] {
-  if (!fs.existsSync(hubDir)) return [];
-
-  const artifacts: LocalModelArtifact[] = [];
-  let repositories: fs.Dirent[] = [];
-  try {
-    repositories = fs.readdirSync(hubDir, { withFileTypes: true });
-  } catch {
-    return [];
-  }
-
-  for (const repository of repositories) {
-    if (!repository.isDirectory() || !repository.name.startsWith('models--')) continue;
-
-    const repositoryDir = path.join(hubDir, repository.name);
-    const revisionRef = path.join(repositoryDir, 'refs', 'main');
-    let snapshot: string;
-    try {
-      snapshot = fs.readFileSync(revisionRef, 'utf-8').trim();
-    } catch {
-      continue;
-    }
-    if (!snapshot) continue;
-
-    const snapshotDir = path.join(repositoryDir, 'snapshots', snapshot);
-    const configPath = path.join(snapshotDir, 'config.json');
-    if (!fs.existsSync(configPath)) continue;
-
-    try {
-      const config = JSON.parse(fs.readFileSync(configPath, 'utf-8')) as {
-        architectures?: string[];
-        model_type?: string;
-        quantization_config?: { quant_method?: string };
-      };
-      const indexPath = path.join(snapshotDir, 'model.safetensors.index.json');
-      const singleWeightsPath = path.join(snapshotDir, 'model.safetensors');
-      let weightPaths: string[] = [];
-      let manifestPath = configPath;
-
-      if (fs.existsSync(indexPath)) {
-        const index = JSON.parse(fs.readFileSync(indexPath, 'utf-8')) as {
-          weight_map?: Record<string, string>;
-        };
-        weightPaths = [...new Set(Object.values(index.weight_map || {}))]
-          .map(file => path.join(snapshotDir, file));
-        manifestPath = indexPath;
-      } else if (fs.existsSync(singleWeightsPath)) {
-        weightPaths = [singleWeightsPath];
-        manifestPath = singleWeightsPath;
-      }
-
-      // Hugging Face creates snapshot links only after each blob is complete.
-      // Do not advertise partially downloaded or metadata-only repositories.
-      if (weightPaths.length === 0 || weightPaths.some(file => !fs.existsSync(file))) continue;
-
-      const repositoryId = repository.name
-        .slice('models--'.length)
-        .split('--')
-        .join('/');
-      const sizeBytes = weightPaths.reduce((total, file) => total + fs.statSync(file).size, 0);
-
-      artifacts.push({
-        id: `huggingface:${repositoryId}`,
-        name: repositoryId,
-        tag: 'main',
-        displayName: repositoryId,
-        source: 'huggingface-cache',
-        provider: 'vllm',
-        compatibleProviders: ['vllm'],
-        format: 'safetensors',
-        architecture: config.architectures?.[0] || config.model_type,
-        modelType: config.model_type,
-        quantization: config.quantization_config?.quant_method,
-        digest: snapshot,
-        sizeBytes,
-        // Launch discovered installed artifacts from the complete local
-        // snapshot. Passing the repository ID can make Transformers perform
-        // network lookups for optional processor files even when all required
-        // runtime files are already present in this snapshot.
-        path: snapshotDir,
-        manifestPath,
-        installed: true,
-      });
-    } catch {
-      // Ignore malformed or incomplete cache entries.
-    }
-  }
-
-  return artifacts;
-}
-
-export function listLocalModelArtifacts(
-  modelsDir?: string,
-  huggingFaceHubDir?: string,
-): LocalModelArtifact[] {
-  const ollamaArtifacts = listOllamaModelArtifacts(modelsDir || getOllamaModelsDir());
-  const huggingFaceArtifacts = huggingFaceHubDir
-    ? listHuggingFaceModelArtifacts(huggingFaceHubDir)
-    : modelsDir === undefined
-      ? listHuggingFaceModelArtifacts(getHuggingFaceHubDir())
-      : [];
-
-  return [...ollamaArtifacts, ...huggingFaceArtifacts]
+export function listLocalModelArtifacts(modelsDir?: string): LocalModelArtifact[] {
+  return listOllamaModelArtifacts(modelsDir || getOllamaModelsDir())
     .sort((a, b) => a.displayName.localeCompare(b.displayName));
 }
 
@@ -296,9 +189,8 @@ export function resolveLocalModelArtifact(
   model: string,
   provider: LocalModelProvider,
   modelsDir?: string,
-  huggingFaceHubDir?: string,
 ): LocalModelArtifactResolution {
-  const artifacts = listLocalModelArtifacts(modelsDir, huggingFaceHubDir);
+  const artifacts = listLocalModelArtifacts(modelsDir);
   const normalized = model.trim();
   const candidates = new Set([
     normalized,

@@ -60,10 +60,12 @@ async function* streamMonitorUpdates(signal: AbortSignal | undefined): AsyncGene
 
   const scheduleSnapshot = () => {
     if (closed) return;
-    if (debounceTimer) {
-      clearTimeout(debounceTimer);
-    }
-    debounceTimer = setTimeout(sendSnapshot, 100);
+    // Coalesce updates without waiting for the robot's telemetry to become idle.
+    if (debounceTimer) return;
+    debounceTimer = setTimeout(() => {
+      debounceTimer = undefined;
+      sendSnapshot();
+    }, 100);
   };
 
   const watchPath = (target: string) => {

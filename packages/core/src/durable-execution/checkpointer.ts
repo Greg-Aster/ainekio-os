@@ -316,16 +316,15 @@ export class ExecutionCheckpointer extends SqliteSaver {
   }
 
   async pruneTerminal(before: number, unfinishedWork = new Set<string>()): Promise<number> {
-    const candidates = this.store.list().filter(state =>
-      ['completed', 'failed', 'cancelled'].includes(state.status)
-        && !this.store.hasLiveWriter(state.executionId) && state.updatedAt < before
-        && !unfinishedWork.has(state.executionId))
+    const candidates = this.store.db.prepare(`SELECT execution_id FROM executions e
+      WHERE e.status IN ('completed', 'failed', 'cancelled') AND e.updated_at < ?
+        AND NOT EXISTS (SELECT 1 FROM execution_outbox o WHERE o.execution_id=e.execution_id
+          AND o.status IN ('pending', 'admitted', 'accepted', 'outcome_unknown'))`)
+      .all(before) as { execution_id: string }[]
     let count = 0
-    for (const state of candidates) {
-      const unresolved = this.store.db.prepare(`SELECT 1 FROM execution_outbox WHERE execution_id = ?
-        AND status IN ('pending', 'admitted', 'accepted', 'outcome_unknown') LIMIT 1`).get(state.executionId)
-      if (unresolved) continue
-      await this.deleteThread(state.executionId)
+    for (const { execution_id: id } of candidates) {
+      if (unfinishedWork.has(id) || this.store.hasLiveWriter(id)) continue
+      await this.deleteThread(id)
       count++
     }
     return count

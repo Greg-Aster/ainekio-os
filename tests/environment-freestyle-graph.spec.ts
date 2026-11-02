@@ -92,13 +92,13 @@ test('Environment Mode uses one route-only orchestrator before selected context 
   assert.equal(hasEdge(contextBuilder.id, 'planningSchema', actionParser.id, 'planningSchema'), true);
   assert.equal(hasEdge(actionParser.id, 'response', 'conversation-buffer', 'response'), false);
   assert.equal(orchestrator.data.properties?.outputContract, 'environment-request');
-  assert.equal(orchestrator.data.properties?.maxTokens, 768);
+  assert.equal(orchestrator.data.properties?.maxTokens, -1);
   const intentPrompt = String(orchestrator.data.properties?.systemPrompt);
   assert.match(intentPrompt, /needsResponse for user-visible expression/i);
   assert.match(intentPrompt, /robotStatus for reported body condition, task state/i);
   assert.match(intentPrompt, /Select each consumer’s context independently/i);
   assert.match(intentPrompt, /Read the incoming request/i);
-  const selection = { needsResponse: true, needsAction: true, taskContext: ['robotStatus', 'environment'], conversationContext: [] };
+  const selection = { needsResponse: true, needsAction: true, needsGoalReview: false, needsToolUse: false, taskPlanner: 'specialist', taskContext: ['robotStatus', 'environment'], conversationContext: [] };
   assert.deepEqual(parseEnvironmentIntentRouting(JSON.stringify(selection)), selection);
   assert.throws(
     () => parseEnvironmentIntentRouting('{"needsResponse":true}'),
@@ -107,7 +107,7 @@ test('Environment Mode uses one route-only orchestrator before selected context 
   assert.equal('recentHistoryLimit' in (contextBuilder.data.properties ?? {}), false,
     'The connected Buffer History node owns the conversation window');
   assert.match(String(contextBuilder.data.properties?.systemPrompt), /complete.*program/i);
-  assert.match(String(contextBuilder.data.properties?.systemPrompt), /generatedMotion/i);
+  assert.match(String(contextBuilder.data.properties?.systemPrompt), /requestMotion/i);
   assert.match(String(contextBuilder.data.properties?.systemPrompt), /completion/i);
   assert.equal(hasEdge('11', 'frames', contextBuilder.id, 'frames'), true, 'Image Input owns the matching frame metadata');
 
@@ -124,7 +124,7 @@ test('Environment Mode uses one route-only orchestrator before selected context 
   const inputHandoff = graph.nodes.find(node => node.data.nodeType === 'execution_event_out')!;
   assert.equal(hasEdge(userInput.id, 'entry', inputHandoff.id, 'entry'), true);
   assert.equal(hasEdge(history.id, 'history', orchestrator.id, 'conversationHistory'), false);
-  assert.deepEqual(graph.edges.filter(edge => edge.target === orchestrator.id).map(edge => edge.targetHandle).sort(), ['autonomy', 'message']);
+  assert.deepEqual(graph.edges.filter(edge => edge.target === orchestrator.id).map(edge => edge.targetHandle).sort(), ['autonomy', 'message', 'selectedContext']);
   assert.deepEqual(history.data.activation?.when, [{ nodeId: orchestrator.id, output: 'needsConversationHistory', truthy: true }]);
   assert.equal(hasEdge(actionParser.id, 'executionSelection', inputHandoff.id, 'selection'), true);
   assert.equal(hasEdge(orchestrator.id, 'analysis', contextBuilder.id, 'routingAnalysis'), true);
@@ -223,7 +223,7 @@ test('intent orchestrator opens its actual prompt ahead of routing settings', ()
 })
 
 
-test('Environment Intent prompts visibly describe the temporal memory contract in both graph mirrors', () => {
+test('Environment Intent prompts visibly describe the temporal memory contract in the canonical graph', () => {
   const schema = ENVIRONMENT_REQUEST_INTENT_JSON_SCHEMA.properties;
   const definitions = [
     `memoryOrder (optional: relevance | newest): ${schema.memoryOrder.description}`,
@@ -231,16 +231,12 @@ test('Environment Intent prompts visibly describe the temporal memory contract i
     `memorySleepCycle (optional: latest): ${schema.memorySleepCycle.description}`,
   ].join('\n');
   for (const promptKey of ['systemPrompt', 'autonomySystemPrompt']) {
-    const prompts = ['etc/cognitive-graphs', 'apps/site/public/cognitive-graphs'].map(directory => {
-      const saved = JSON.parse(fs.readFileSync(new URL(`../${directory}/environment-mode.json`, import.meta.url), 'utf8'));
-      const intent = saved.nodes.find((node: any) => node.id === 'intent-orchestrator');
-      assert.equal(intent.data.properties.outputContract, 'environment-request');
-      const prompt = intent.data.properties[promptKey] as string;
-      assert.equal(prompt.split(definitions).length, 2, 'Each approved definition appears once as readable prompt text');
-      assert.ok(saved.edges.some((edge: any) => edge.source === intent.id && edge.target === 'memory-router'),
-        'The described interface remains connected to the existing memory owner');
-      return prompt;
-    });
-    assert.equal(prompts[0], prompts[1]);
+    const saved = JSON.parse(fs.readFileSync(new URL('../etc/cognitive-graphs/environment-mode.json', import.meta.url), 'utf8'));
+    const intent = saved.nodes.find((node: any) => node.id === 'intent-orchestrator');
+    assert.equal(intent.data.properties.outputContract, 'environment-request');
+    const prompt = intent.data.properties[promptKey] as string;
+    assert.equal(prompt.split(definitions).length, 2, 'Each approved definition appears once as readable prompt text');
+    assert.ok(saved.edges.some((edge: any) => edge.source === intent.id && edge.target === 'memory-router'),
+      'The described interface remains connected to the existing memory owner');
   }
 });

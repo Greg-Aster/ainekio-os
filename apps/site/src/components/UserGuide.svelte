@@ -39,8 +39,13 @@
   let searching = false;
   let searchError = '';
 
-  // Load chapter list on mount
-  onMount(async () => {
+  onMount(() => {
+    window.addEventListener('hashchange', handleHashChange);
+    void loadGuide();
+    return () => window.removeEventListener('hashchange', handleHashChange);
+  });
+
+  async function loadGuide() {
     try {
       const response = await apiFetch('/api/user-guide');
       if (!response.ok) throw new Error('Failed to load user guide');
@@ -64,11 +69,7 @@
       error = (e as Error).message;
       loading = false;
     }
-
-    // Listen for hash changes
-    window.addEventListener('hashchange', handleHashChange);
-    return () => window.removeEventListener('hashchange', handleHashChange);
-  });
+  }
 
   function handleHashChange() {
     const hash = window.location.hash.substring(1);
@@ -251,9 +252,10 @@
 
         <nav class="flex justify-between gap-4 mt-12 pt-8 border-t border-gray-200 dark:border-gray-800">
           {#if prevChapter}
+            {@const previous = prevChapter}
             <button
               class="flex items-center gap-3 px-5 py-4 border border-gray-200 dark:border-gray-700 rounded-lg bg-white dark:bg-gray-900 text-gray-900 dark:text-gray-100 cursor-pointer transition-all text-[0.9375rem] max-w-[45%] hover:border-blue-600 dark:hover:border-blue-400 hover:bg-blue-50 dark:hover:bg-blue-900/50 hover:-translate-y-0.5"
-              on:click={() => navigateTo(prevChapter.id)}
+              on:click={() => navigateTo(previous.id)}
             >
               <span class="text-xl font-semibold text-blue-600 dark:text-blue-400">←</span>
               <span class="flex flex-col gap-1">
@@ -264,9 +266,10 @@
           {/if}
 
           {#if nextChapter}
+            {@const next = nextChapter}
             <button
               class="flex items-center gap-3 px-5 py-4 border border-gray-200 dark:border-gray-700 rounded-lg bg-white dark:bg-gray-900 text-gray-900 dark:text-gray-100 cursor-pointer transition-all text-[0.9375rem] max-w-[45%] ml-auto hover:border-blue-600 dark:hover:border-blue-400 hover:bg-blue-50 dark:hover:bg-blue-900/50 hover:-translate-y-0.5"
-              on:click={() => navigateTo(nextChapter.id)}
+              on:click={() => navigateTo(next.id)}
             >
               <span class="flex flex-col gap-1">
                 <span class="text-xs uppercase font-semibold text-gray-500 dark:text-gray-400 tracking-wide">Next</span>

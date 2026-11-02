@@ -19,9 +19,11 @@ export const robotOperatorInputNode = defineNode({
     { name: 'actionRobotObserver', type: 'object', optional: true, description: 'Robot Operator cycle restored with the current Work Coordinator action' },
   ],
   outputs: [
+    { name: 'selectedContext', type: 'object', description: 'Attributed context already selected and read for the originating assessment.' },
     { name: 'robotObserver', type: 'object', description: 'Validated Robot Operator cycle metadata' },
     { name: 'plannerDecision', type: 'object', description: 'Planner-authored observation, instruction, and reason' },
     { name: 'plannerInstruction', type: 'string', description: 'Planner-authored instruction' },
+    { name: 'frames', type: 'array', description: 'Delegated camera images with their frame-bound recognition metadata' },
     { name: 'memories', type: 'array', description: 'Planner-delegated historical memories' },
     { name: 'stimulusAgent', type: 'string', description: 'Robot Operator child that admitted this cycle' },
     { name: 'sourceObservationAt', type: 'string', description: 'Timestamp of the bridge observation used for this cycle' },
@@ -42,11 +44,11 @@ export const robotOperatorInputNode = defineNode({
     const rawDecision = isRecord(supplied?.plannerDecision)
       ? supplied.plannerDecision
       : null;
-    const observed = cleanText(rawDecision?.observed, 500);
-    const instruction = cleanText(rawDecision?.instruction, 1_000);
-    const reason = cleanText(rawDecision?.reason, 500);
+    const observed = typeof rawDecision?.observed === 'string' ? rawDecision.observed : '';
+    const instruction = typeof rawDecision?.instruction === 'string' ? rawDecision.instruction : '';
+    const reason = typeof rawDecision?.reason === 'string' ? rawDecision.reason : '';
     const decidedAt = cleanText(rawDecision?.decidedAt, 100);
-    const plannerDecision = observed && instruction && reason
+    const plannerDecision = observed.trim() && instruction.trim() && reason.trim()
       ? {
           observed,
           instruction,
@@ -56,13 +58,11 @@ export const robotOperatorInputNode = defineNode({
       : null;
     const memories = Array.isArray(supplied?.memories)
       ? supplied.memories
-          .filter((value): value is string => typeof value === 'string')
-          .map(value => cleanText(value, 800))
-          .filter(Boolean)
-          .slice(0, 3)
       : [];
     return {
+      selectedContext: supplied?.selectedContext,
       robotObserver,
+      frames: Array.isArray(supplied?.frames) ? supplied.frames : [],
       plannerDecision,
       plannerInstruction: plannerDecision?.instruction ?? '',
       memories,

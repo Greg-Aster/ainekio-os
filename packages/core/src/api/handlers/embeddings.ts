@@ -7,7 +7,6 @@ interface EmbeddingsConfig {
   enabled?: boolean;
   model?: string;
   provider?: string;
-  preloadAtStartup?: boolean;
   description?: string;
   localModels?: {
     endpoint?: string;

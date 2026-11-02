@@ -22,7 +22,7 @@ path.
 - Edit a persona directly or build one through the guided Persona Generator.
 - Review and control desires, plans, approvals, and outcome reviews through
   Agency.
-- Configure Ollama, vLLM, the local-model service, or a supported remote model
+- Configure llama.cpp, Ollama, the local-model service, or a supported remote model
   path.
 - Use speech-to-text, text-to-speech, voice conversion, and voice-training
   workflows when their providers are installed.

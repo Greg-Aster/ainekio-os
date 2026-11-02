@@ -1,4 +1,10 @@
 import assert from 'node:assert/strict'
+import test from 'node:test'
+import fs from 'node:fs'
+import path from 'node:path'
+import os from 'node:os'
+import { spawn } from 'node:child_process'
+import { once } from 'node:events'
 import {
   activateTunnelExposure,
   deactivateTunnelExposure,
@@ -13,6 +19,37 @@ const EXPOSURE_KEYS = [
 ] as const
 
 const original = Object.fromEntries(EXPOSURE_KEYS.map(key => [key, process.env[key]]))
+
+test('tunnel stop releases its owned process before removing its PID receipt', async () => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'metahuman-tunnel-stop-'))
+  process.env.METAHUMAN_ROOT = root
+  const { stopTunnel, autoStartTunnel } = await import('./cloudflare-tunnel.js')
+  fs.mkdirSync(path.join(root, 'logs/run'), { recursive: true })
+  const script = path.join(root, 'cloudflared')
+  fs.writeFileSync(script, "process.on('SIGTERM',()=>setTimeout(()=>process.exit(0),100)); console.log('ready'); setInterval(()=>{},1000)")
+  const child = spawn(process.execPath, [script, 'tunnel', 'run', 'fixture'], { stdio: ['ignore', 'pipe', 'ignore'] })
+  const exited = once(child, 'exit')
+  await once(child.stdout!, 'data')
+  const receipt = path.join(root, 'logs/run/cloudflare-tunnel.pid')
+  fs.writeFileSync(receipt, `${child.pid}\n`)
+  try {
+    assert.equal(await stopTunnel(), true)
+    fs.mkdirSync(path.join(root, 'etc'), { recursive: true })
+    const config = path.join(root, 'etc/cloudflare.json')
+    fs.writeFileSync(config, JSON.stringify({ enabled: false, autoStart: true }))
+    assert.equal(autoStartTunnel(), true, 'Disabled boot is a successful no-op')
+    fs.writeFileSync(config, JSON.stringify({ enabled: true, autoStart: true, hostname: 'fixture.invalid' }))
+    const exists = fs.existsSync
+    try {
+      fs.existsSync = file => String(file).endsWith('/cloudflared') ? false : exists(file)
+      assert.equal(autoStartTunnel(), false, 'An unavailable enabled tunnel must report launch failure')
+    } finally { fs.existsSync = exists }
+    assert.equal(fs.existsSync(receipt), false)
+    await exited
+    assert.throws(() => process.kill(child.pid!, 0), { code: 'ESRCH' })
+    assert.equal(await stopTunnel(), true)
+  } finally { child.kill('SIGKILL'); await exited; fs.rmSync(root, { recursive: true, force: true }) }
+})
 
 function resetEnvironment(): void {
   for (const key of EXPOSURE_KEYS) delete process.env[key]

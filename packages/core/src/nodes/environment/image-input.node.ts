@@ -33,13 +33,16 @@ function cleanText(value: unknown): string {
 
 export const environmentVisualReadNode = defineNode({
   id: 'environment_visual_read', name: 'Read Latest Camera Evidence', category: 'environment',
-  inputs: [{ name: 'sessionId', type: 'string', optional: true, description: 'Selected Bridge session' }],
+  inputs: [{ name: 'selectedContext', type: 'object', optional: true, description: 'Attributed context already selected and read for the originating assessment.' }, { name: 'sessionId', type: 'string', optional: true, description: 'Selected Bridge session' }],
   outputs: [{ name: 'work', type: 'object', optional: true, description: 'Coordinator camera read identity' }],
   properties: {},
   description: 'Reads the selected body camera stream cache through the existing Bridge without capturing a new photo.',
   async execute(inputs, context) {
     const sessionId = cleanText(inputs.sessionId);
     if (!sessionId) return { work: null };
+    const vision = inputs.selectedContext?.sources?.vision;
+    if (vision?.scope?.sessionId === sessionId && vision.value?.current === true
+      && vision.value.frames?.some((frame: EnvironmentVisualFrame) => validEnvironmentJpegDataUrl(frame.dataUrl))) return { work: null };
     const work = context.graphExecution!.dispatch({ kind: 'coordinator_work', payload: {
       type: 'generic', handler: 'environment.visual-read', resource: `environment-visual-read:${sessionId}`,
       source: 'environment', username: context.username, maxAttempts: 1, input: { sessionId },
@@ -53,9 +56,11 @@ export const environmentImageInputNode = defineNode({
   name: 'Select Available Camera Evidence',
   category: 'environment',
   inputs: [
+    { name: 'selectedContext', type: 'object', optional: true, description: 'Attributed context already selected and read for the originating assessment.' },
     { name: 'work', type: 'object', optional: true, description: 'Selected camera read from the existing Coordinator' },
     { name: 'sessionId', type: 'string', optional: true, description: 'Read already received camera evidence for this Bridge session when the node runs.' },
     { name: 'observation', type: 'object', optional: true, description: 'Returned observation containing camera evidence from the execution owner' },
+    { name: 'taskResult', type: 'object', optional: true, description: 'Completed program result containing ordered captured frame IDs' },
     { name: 'visual', label: 'Current camera frame', type: 'object', optional: true, description: 'The latest camera frame received from the robot bridge.' },
     { name: 'visuals', label: 'Camera frame list', type: 'array', optional: true, description: 'Other camera frames included in the current robot observation.' },
     { name: 'observationCurrent', label: 'Current-run observation', type: 'boolean', optional: true, description: 'Whether these frames arrived with the observation that triggered this graph run. Omit only in workflows whose input is already current by contract.' },
@@ -84,7 +89,11 @@ export const environmentImageInputNode = defineNode({
   },
   description: 'Selects the latest available Bridge camera image for observation, or matches images to a specific returned action for result review. Retains recorded timestamps and action IDs, and sends no capture command.',
   async execute(inputs, context) {
-    const supplied = framesFromInputs(inputs.visual ?? inputs.observation?.visual, inputs.visuals ?? inputs.observation?.visuals);
+    const delegated = inputs.selectedContext?.sources?.vision;
+    const supplied = framesFromInputs(inputs.visual ?? inputs.observation?.visual, [
+      ...(inputs.visuals ?? inputs.observation?.visuals ?? []),
+      ...(delegated && delegated.scope?.sessionId === inputs.sessionId ? delegated.value?.frames ?? [] : []),
+    ]);
     const sessionId = cleanText(inputs.sessionId);
     let candidates: EnvironmentVisualFrame[];
     if (inputs.work) {
@@ -121,8 +130,12 @@ export const environmentImageInputNode = defineNode({
             : Boolean(correlationId && frameCorrelationId === correlationId);
         })
       : undefined;
-    const selected = terminalFeedback ? resultFrame : latest[0];
-    const accepted = [baseline, selected]
+    const captureIds: unknown = inputs.taskResult?.capturedFrameIds;
+    const captured = !terminalFeedback && Array.isArray(captureIds) && captureIds.length
+      ? captureIds.flatMap((id: unknown) => valid.filter(frame => frame.id === id))
+      : undefined;
+    const selected = terminalFeedback ? resultFrame : captured ? captured.at(-1) : latest[0];
+    const accepted = (captured ?? [baseline, selected])
       .filter((frame): frame is EnvironmentVisualFrame => Boolean(frame))
       .filter((frame, index, frames) => frames.findIndex(candidate => candidate.id === frame.id) === index);
     if (context.graphExecution) context.graphExecution.recordFrames(accepted);

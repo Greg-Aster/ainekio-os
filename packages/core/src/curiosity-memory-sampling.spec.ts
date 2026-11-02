@@ -88,3 +88,41 @@ test('curiosity selection is distinct and validates resource limits', async () =
     /random source/,
   )
 })
+
+test('curiosity sampling preserves recorded speaker, source and mode without inventing missing attribution', async t => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'curiosity-attribution-'))
+  const username = `curiosity-attribution-${process.pid}`
+  const episodic = path.join(root, 'memory', 'episodic')
+  fs.mkdirSync(episodic, { recursive: true })
+  t.after(() => fs.rmSync(root, { recursive: true, force: true }))
+  registerProfileStorageConfigGetter(candidate => candidate === username ? { path: root, type: 'internal' } : undefined)
+  const records = [
+    { id: 'assistant', timestamp: '2026-08-28T10:00:00.000Z', type: 'conversation', content: 'An expressive description, not a measurement.',
+      metadata: { role: 'assistant', source: 'conversation', cognitiveMode: 'environment' } },
+    { id: 'user', timestamp: '2026-08-28T09:00:00.000Z', type: 'conversation', content: 'A separate statement from the person.',
+      metadata: { role: 'user', source: 'conversation', cognitiveMode: 'dual' } },
+    { id: 'unattributed', timestamp: '2026-08-28T08:00:00.000Z', type: 'observation', content: 'An older unattributed record.' },
+  ]
+  for (const record of records) fs.writeFileSync(path.join(episodic, `${record.id}.json`), JSON.stringify(record))
+  const sampled = await sampleCuriosityMemories({ username, sampleSize: 3, now: NOW, random: () => 0 })
+  for (const record of records) {
+    const selected = sampled.memories.find(item => item.id === record.id)
+    assert.deepEqual(selected, { __memoryId: record.id, id: record.id, timestamp: record.timestamp,
+      type: record.type, content: record.content, ...record.metadata })
+  }
+})
+
+test('curiosity sampling retains complete selected content including original whitespace', async t => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'curiosity-complete-content-'))
+  const username = `curiosity-complete-content-${process.pid}`
+  const episodic = path.join(root, 'memory', 'episodic')
+  fs.mkdirSync(episodic, { recursive: true })
+  t.after(() => fs.rmSync(root, { recursive: true, force: true }))
+  registerProfileStorageConfigGetter(candidate => candidate === username ? { path: root, type: 'internal' } : undefined)
+  const content = `  ${'Earlier evidence. '.repeat(300)}\nThe final sentence attributes this to a historical assistant statement.\n `
+  fs.writeFileSync(path.join(episodic, 'record.json'), JSON.stringify({ id: 'complete-record',
+    timestamp: '2026-08-28T10:00:00.000Z', type: 'conversation', content }))
+  const sampled = await sampleCuriosityMemories({ username, sampleSize: 1, now: NOW, random: () => 0 })
+  assert.equal(sampled.memories[0].content, content)
+  assert.equal(Object.hasOwn(sampled.diagnostics, 'truncatedContent'), false)
+})

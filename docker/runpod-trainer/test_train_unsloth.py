@@ -47,6 +47,54 @@ def example(source, target="The recorded answer."):
 
 
 class TrainerContractTest(unittest.TestCase):
+    def test_llama_cpp_exports_adapter_only_with_exact_cached_base(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            output = root / "candidate"
+            output.mkdir()
+            source = root / "llama.cpp-source"
+            source.mkdir()
+            (source / "convert_lora_to_gguf.py").write_text("# fixture converter")
+            base = root / "cached-pinned-base"
+            base.mkdir()
+            hub = MagicMock()
+            hub.snapshot_download.return_value = str(base)
+            zoo = MagicMock(LLAMA_CPP_DEFAULT_DIR=str(root / "llama.cpp"))
+            model = MagicMock()
+            cfg = {**config(), "base_model_revision": "reviewed-revision",
+                   "gguf_conversion": {"enabled": True, "artifact": "adapter", "quantization_type": "Q4_K_M"}}
+
+            def convert(command, *, check):
+                self.assertTrue(check)
+                self.assertEqual(command[:4], [sys.executable, str(source / "convert_lora_to_gguf.py"), str(output), "--base"])
+                self.assertEqual(command[4:7], [str(base), "--outtype", "f16"])
+                Path(command[-1]).write_bytes(b"GGUFadapter-fixture")
+
+            with patch.dict(sys.modules, {"huggingface_hub": hub, "unsloth_zoo.llama_cpp": zoo}), \
+                    patch.object(trainer.subprocess, "run", side_effect=convert) as process:
+                exported = trainer.export_gguf(model, MagicMock(), cfg, output)
+            hub.snapshot_download.assert_called_once_with("fixture/model", revision="reviewed-revision", local_files_only=True)
+            model.save_pretrained_gguf.assert_not_called()
+            process.assert_called_once()
+            self.assertEqual(exported, output / "adapter.gguf")
+            self.assertEqual(exported.read_bytes(), b"GGUFadapter-fixture")
+            self.assertFalse((output / "model.gguf").exists())
+            self.assertFalse((output / "gguf-conversion").exists())
+
+    def test_merged_gguf_export_remains_available(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            output = Path(temporary)
+            model = MagicMock()
+
+            def save(directory, tokenizer, *, quantization_method):
+                self.assertEqual(quantization_method, "q4_k_m")
+                (Path(directory) / "merged.Q4_K_M.gguf").write_bytes(b"GGUFmerged-fixture")
+
+            model.save_pretrained_gguf.side_effect = save
+            cfg = {**config(), "gguf_conversion": {"enabled": True, "quantization_type": "Q4_K_M"}}
+            self.assertEqual(trainer.export_gguf(model, MagicMock(), cfg, output), output / "model.gguf")
+            self.assertFalse((output / "adapter.gguf").exists())
+
     def test_adapter_reload_preserves_pinned_base_revision(self):
         cfg = {**config(), "base_model_revision": "reviewed-commit"}
         base, tokenizer, adapter = MagicMock(), MagicMock(), MagicMock()

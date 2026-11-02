@@ -28,34 +28,14 @@ try {
     }],
   }))
 
-  const hubDir = path.join(modelsDir, 'huggingface-hub')
-  const repositoryDir = path.join(hubDir, 'models--Example--Vision-9B')
-  const snapshot = 'snapshot-hash'
-  const snapshotDir = path.join(repositoryDir, 'snapshots', snapshot)
-  fs.mkdirSync(path.join(repositoryDir, 'refs'), { recursive: true })
-  fs.mkdirSync(snapshotDir, { recursive: true })
-  fs.writeFileSync(path.join(repositoryDir, 'refs', 'main'), snapshot)
-  fs.writeFileSync(path.join(snapshotDir, 'config.json'), JSON.stringify({
-    architectures: ['ExampleForConditionalGeneration'],
-    model_type: 'example_vision',
-    quantization_config: { quant_method: 'compressed-tensors' },
-  }))
-  fs.writeFileSync(path.join(snapshotDir, 'model.safetensors'), Buffer.from('weights'))
-
-  const artifacts = listLocalModelArtifacts(modelsDir, hubDir)
-  assert.equal(artifacts.length, 2)
+  const artifacts = listLocalModelArtifacts(modelsDir)
+  assert.equal(artifacts.length, 1)
   const ollamaArtifact = artifacts.find(artifact => artifact.source === 'ollama-store')
   assert.equal(ollamaArtifact?.architecture, 'example_arch')
   assert.equal(ollamaArtifact?.modelType, '9B')
   assert.equal(ollamaArtifact?.quantization, 'Q4_K_M')
-  assert.equal(ollamaArtifact?.compatibleProviders.includes('vllm'), true)
+  assert.deepEqual(ollamaArtifact?.compatibleProviders, ['ollama', 'local-models'])
 
-  const huggingFaceArtifact = artifacts.find(artifact => artifact.source === 'huggingface-cache')
-  assert.equal(huggingFaceArtifact?.displayName, 'Example/Vision-9B')
-  assert.equal(huggingFaceArtifact?.architecture, 'ExampleForConditionalGeneration')
-  assert.equal(huggingFaceArtifact?.quantization, 'compressed-tensors')
-  assert.equal(huggingFaceArtifact?.format, 'safetensors')
-  assert.equal(huggingFaceArtifact?.path, snapshotDir)
 } finally {
   fs.rmSync(modelsDir, { recursive: true })
 }

@@ -12,7 +12,6 @@ import { WorkCommitUncertainError } from './types.js';
 
 const STATE_DIR = path.join(systemPaths.logs, 'run', 'queue');
 const WORK_FILE = path.join(STATE_DIR, 'work-items.sqlite');
-const LEGACY_FILE = path.join(STATE_DIR, 'work-items.json');
 const STATE_VERSION = 2;
 
 function ensureStateDir(): void {
@@ -81,26 +80,31 @@ export function persistQueueState(state: QueueState, changedTaskIds?: ReadonlySe
   saveQueueState(createPersistedState(state), changedTaskIds);
 }
 
-export function loadQueueState(): PersistedQueueState | null {
-  if (!fs.existsSync(WORK_FILE) && !fs.existsSync(LEGACY_FILE)) return null;
-  const db = database();
-  if (!db.prepare('SELECT 1 FROM work_state WHERE id=1').get() && fs.existsSync(LEGACY_FILE)) {
-    db.transaction(() => {
-      if (db.prepare('SELECT 1 FROM work_state WHERE id=1').get()) return;
-      const legacy = JSON.parse(fs.readFileSync(LEGACY_FILE, 'utf8')) as PersistedQueueState;
-      if (legacy.version !== STATE_VERSION) throw new Error(`Unsupported coordinator state version ${legacy.version}`);
-      saveQueueState(legacy);
-    }).immediate();
+function restoredDatabase(): Database.Database | null {
+  return fs.existsSync(WORK_FILE) ? database() : null;
+}
+
+/** Read only active audio references; retained work results are not speech spool state. */
+export function readPendingSpeechArtifacts(): Set<string> {
+  const db = restoredDatabase();
+  if (!db) return new Set();
+  const rows = db.prepare(`SELECT active.value AS id, task.id AS storedId,
+      json_extract(task.document, '$.state') AS state,
+      json_extract(task.document, '$.input.speechArtifactId') AS artifactId
+    FROM work_state AS state, json_each(state.document, '$.items') AS active
+    LEFT JOIN work_items AS task ON task.id = active.value
+    WHERE state.id = 1`).all() as Array<{ id: string; storedId: string | null; state: string; artifactId: string | null }>;
+  const artifacts = new Set<string>();
+  for (const row of rows) {
+    if (row.storedId === null) throw new Error(`Coordinator ledger is missing work ${row.id}`);
+    if (row.artifactId && !['completed', 'failed', 'cancelled', 'expired'].includes(row.state)) artifacts.add(row.artifactId);
   }
-  // The committed database owns all migrated records. Retire the superseded
-  // snapshot, including inert copies left by earlier versions.
-  db.transaction(() => {
-    if (db.prepare('SELECT 1 FROM work_state WHERE id=1').get()) {
-      for (const file of [LEGACY_FILE, `${LEGACY_FILE}.migrated`]) {
-        fs.rmSync(file, { force: true });
-      }
-    }
-  }).immediate();
+  return artifacts;
+}
+
+export function loadQueueState(): PersistedQueueState | null {
+  const db = restoredDatabase();
+  if (!db) return null;
   return db.transaction(() => {
     const row = db.prepare('SELECT document FROM work_state WHERE id=1').get() as { document: string } | undefined;
     if (!row) return null;
@@ -117,10 +121,24 @@ export function loadQueueState(): PersistedQueueState | null {
   }).deferred();
 }
 
+/** Current work readers must not deserialize retained delivery/history payloads. */
+export function readActiveQueueItems(): NonNullable<QueueState['items']> {
+  const db = restoredDatabase();
+  if (!db) return [];
+  const rows = db.prepare(`SELECT active.value AS id, task.document
+    FROM work_state AS state, json_each(state.document, '$.items') AS active
+    LEFT JOIN work_items AS task ON task.id = active.value
+    WHERE state.id = 1`).all() as Array<{ id: string; document: string | null }>;
+  return rows.map(row => {
+    if (row.document === null) throw new Error(`Coordinator ledger is missing work ${row.id}`);
+    return JSON.parse(row.document);
+  });
+}
+
 export function clearQueueState(): void {
   ledger?.close();
   ledger = undefined;
-  for (const file of [WORK_FILE, `${WORK_FILE}-wal`, `${WORK_FILE}-shm`, LEGACY_FILE, `${LEGACY_FILE}.tmp`]) {
+  for (const file of [WORK_FILE, `${WORK_FILE}-wal`, `${WORK_FILE}-shm`]) {
     fs.rmSync(file, { force: true });
   }
 }
@@ -130,15 +148,15 @@ export function createImmediateSaver(getState: () => QueueState): (changedTaskId
 }
 
 export function shouldRestoreState(): boolean {
-  return fs.existsSync(WORK_FILE) || fs.existsSync(LEGACY_FILE);
+  return fs.existsSync(WORK_FILE);
 }
 
-export function auditRecovery(tasksRestored: number, inFlightRestored: number, crashedTaskId?: string): void {
+export function auditRecovery(tasksRestored: number, crashedTaskId?: string): void {
   audit({
     level: 'info',
     category: 'system',
     event: 'queue_state_recovered',
     actor: 'queue_persister',
-    details: { tasksRestored, inFlightRestored, crashedTaskId },
+    details: { tasksRestored, crashedTaskId },
   });
 }

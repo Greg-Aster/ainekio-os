@@ -3,6 +3,8 @@ import { isDeepStrictEqual } from 'node:util'
 import type { ExecutionEvent } from '../../durable-execution/types.js'
 import { projectSelectorState } from '../environment/helpers.js'
 
+export const EXECUTION_OBSERVATION_ENCODING = 'First observation is complete; later observationChanges replace or remove the named path relative to the previous observation. Image references retain their recorded time.'
+
 // Lossless changes avoid repeating an entire capability/body envelope after
 // every action. This is a model-context representation, not another event store.
 function observationChanges(before: any, after: any, path: string[] = []): Array<Record<string, unknown>> {
@@ -19,7 +21,7 @@ function observationChanges(before: any, after: any, path: string[] = []): Array
 
 // Execution text carries camera references. Pixel bytes remain in durable
 // receipts/frames and reach models only through the selected image-input path.
-function executionPayloadContext(value: any): any {
+export function executionPayloadContext(value: any): any {
   if (!value || typeof value !== 'object') return value
   if (Array.isArray(value)) return value.map(executionPayloadContext)
   const isFrame = typeof value.id === 'string' && typeof value.timestamp === 'string'
@@ -87,9 +89,10 @@ export const executionContextNode = defineNode({
       || task?.decision.continuationPolicy === 'none' && task.decision.requiredCompletionBasis === 'user_input'
     )
     const hasReviewableGoal = hasActiveTask && !task?.desireId
-    const needsGoalReview = hasReviewableGoal && !awaitingInput && (!inputs.taskResult || inputs.taskResult.done === true)
     const responseEntry = inputs.responseEntry ?? context.environmentResponseEntry
     const routingAnalysis = inputs.routingAnalysis ?? context.environmentRoutingAnalysis
+    const needsGoalReview = routingAnalysis?.needsGoalReview === true && hasReviewableGoal
+      && !awaitingInput && (!inputs.taskResult || inputs.taskResult.done === true)
     return {
       reviewContext: { ...inputs.resultContext,
         environmentRoutingAnalysis: routingAnalysis,
@@ -100,7 +103,7 @@ export const executionContextNode = defineNode({
         ...(routingAnalysis ? { routingAnalysis } : {}),
         ...(responseEntry ? { responseEntry } : {}),
         latestEventSequence: events.at(-1)?.sequence ?? 0,
-        observationEncoding: 'First observation is complete; later observationChanges replace or remove the named path relative to the previous observation. Image references retain their recorded time.',
+        observationEncoding: EXECUTION_OBSERVATION_ENCODING,
         events: executionEventContext(events) },
       task,
       hasActiveTask,

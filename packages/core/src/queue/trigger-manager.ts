@@ -154,16 +154,19 @@ interface TriggerFireContext {
   idleReset?: boolean;
 }
 
-function zonedClock(date: Date, timezone: string): { hour: number; minute: number } {
-  const parts = new Intl.DateTimeFormat('en-US', {
+function createZonedClock(timezone: string): (date: Date) => { hour: number; minute: number } {
+  const formatter = new Intl.DateTimeFormat('en-US', {
     timeZone: timezone,
     hour: '2-digit',
     minute: '2-digit',
     hourCycle: 'h23',
-  }).formatToParts(date);
-  return {
-    hour: Number(parts.find(part => part.type === 'hour')?.value ?? 0),
-    minute: Number(parts.find(part => part.type === 'minute')?.value ?? 0),
+  });
+  return date => {
+    const parts = formatter.formatToParts(date);
+    return {
+      hour: Number(parts.find(part => part.type === 'hour')?.value ?? 0),
+      minute: Number(parts.find(part => part.type === 'minute')?.value ?? 0),
+    };
   };
 }
 
@@ -171,9 +174,10 @@ function nextTimeOfDay(schedule: string, timezone: string, now = Date.now()): Da
   const [targetHour, targetMinute] = schedule.split(':').map(Number);
   if (!Number.isInteger(targetHour) || !Number.isInteger(targetMinute)) return undefined;
   const firstMinute = Math.floor(now / 60_000) * 60_000 + 60_000;
+  const clockAt = createZonedClock(timezone);
   for (let offset = 0; offset < 72 * 60; offset += 1) {
     const candidate = new Date(firstMinute + offset * 60_000);
-    const clock = zonedClock(candidate, timezone);
+    const clock = clockAt(candidate);
     if (clock.hour === targetHour && clock.minute === targetMinute) return candidate;
   }
   return undefined;
@@ -702,7 +706,7 @@ export class TriggerManager extends EventEmitter {
   private isQuietHours(): boolean {
     const quiet = this.config.globalSettings.quietHours;
     if (!quiet?.enabled) return false;
-    const currentClock = zonedClock(new Date(), this.config.globalSettings.timezone);
+    const currentClock = createZonedClock(this.config.globalSettings.timezone)(new Date());
     const current = currentClock.hour * 60 + currentClock.minute;
     const [startHour, startMinute] = quiet.start.split(':').map(Number);
     const [endHour, endMinute] = quiet.end.split(':').map(Number);

@@ -19,7 +19,7 @@ import {
   updateProfileTrainingConfig,
 } from '../../training-config.js';
 import { launchTrainingJob, validateTrainingLaunchConfig, type TrainingLaunchRequest } from '../../training-launch.js';
-import { parseTrainingDataSettings } from '../../training-schema.js';
+import { isTrainingTarget, parseTrainingDataSettings } from '../../training-schema.js';
 
 /**
  * GET /api/training-config - Get training configuration
@@ -68,7 +68,7 @@ export async function handleUpdateTrainingConfig(req: UnifiedRequest): Promise<U
     if (Object.keys(body).some(key => !allowed.includes(key))) return { status: 400, error: 'Unsupported training setting' };
     const validation = validateTrainingLaunchConfig({ ...readProfileTrainingConfig(user.username), ...body });
     if (validation) return { status: 400, error: validation };
-    if (body.trainingTarget !== undefined && !['ollama', 'vllm'].includes(body.trainingTarget)) return { status: 400, error: 'Invalid training target' };
+    if (body.trainingTarget !== undefined && !isTrainingTarget(body.trainingTarget)) return { status: 400, error: 'Invalid training target' };
     const updatedConfig = updateProfileTrainingConfig(user.username, {
       ...(body as Record<string, unknown>),
       lastUpdated: new Date().toISOString(),

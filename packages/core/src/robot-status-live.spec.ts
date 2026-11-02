@@ -170,11 +170,72 @@ test('disabled, error, disconnected and replaced sessions do not expose current 
 test('gateway manual source and commanded steering never become measured motion or orientation', async () => {
   const source = observation(); source.state.gateway.robots.p4.body_command_source = 'manual'; reset(source)
   const live = await readRobotStatusLive('status-user', 'robot-session')
-  assert.equal(live.control.manualTakeover, true)
+  assert.equal(live.control.lastBodyCommandSource, 'manual')
+  assert.equal('manualTakeover' in live.control, false)
+  assert.equal('source' in live.control, false)
   assert.equal(live.movement.commanded.turn, 20)
   assert.equal(live.movement.measuredPhysicalMotion.available, false)
   assert.equal(live.movement.physicalRestConfirmed, false)
   assert.equal(live.sensing.orientation.available, false)
+})
+
+test('a completed manual command remains historical source evidence rather than an active takeover', async () => {
+  const source = observation()
+  const robot = source.state.gateway.robots.p4 as Record<string, any>
+  robot.body_command_source = 'manual'
+  robot.active_walk = null
+  robot.active_walk_sequence = null
+  robot.last_terminal = { t: 'done', seq: robot.body_command_sequence }
+  reset(source)
+  const before = JSON.stringify(readEnvironmentBridgeState())
+  const jobs = getQueueManager().getAllTasks().length
+  for (const now of [Date.now(), Date.now() + 1000]) {
+    const live = await readRobotStatusLive('manual-completion-user', source.sessionId, now)
+    assert.deepEqual(live.control, { lastBodyCommandSource: 'manual', gatewayCommandSequence: 3,
+      lastCoordinatorLease: null, observedAt: source.timestamp })
+    assert.equal(live.movement.activeWalkSequence, null)
+    assert.deepEqual(live.executions, [])
+  }
+  assert.equal(JSON.stringify(readEnvironmentBridgeState()), before)
+  assert.equal(getQueueManager().getAllTasks().length, jobs)
+})
+
+test('last command provenance remains separate from queued, active and completed Coordinator ownership', async () => {
+  const source = observation()
+  source.state.gateway.robots.p4.body_command_source = 'manual'
+  reset(source)
+  const username = 'coordinator-control-user'
+  const manager = getQueueManager()
+  const work = manager.enqueue({ type: 'environment_command', handler: 'environment.command', username,
+    input: { id: randomUUID(), type: 'robotCommand', command: 'stand', sessionId: source.sessionId } })
+  const queued = await readRobotStatusLive(username, source.sessionId)
+  assert.equal(queued.control.lastBodyCommandSource, 'manual')
+  assert.equal(queued.control.lastCoordinatorLease, null, 'Queued work has not acquired the body')
+  assert.ok(manager.claim(work.id))
+  try {
+    const active = await readRobotStatusLive(username, source.sessionId)
+    assert.equal(active.control.lastBodyCommandSource, 'manual', 'The recorded source does not infer the current command owner')
+    assert.deepEqual(active.control.lastCoordinatorLease, work.bodyLease)
+    assert.equal('manualTakeover' in active.control, false)
+    const receipt = { actionId: work.input.id, type: 'completed', message: 'done' }
+    manager.complete(work.id, true, { feedback: receipt })
+    const completed = await readRobotStatusLive(username, source.sessionId)
+    assert.equal(completed.control.lastBodyCommandSource, 'manual')
+    assert.equal(completed.control.lastCoordinatorLease, null)
+    assert.deepEqual(manager.getHistory().find(task => task.id === work.id)?.result?.feedback, receipt)
+  } finally { manager.complete(work.id, true, { fixture: true }) }
+})
+
+test('unreported command provenance remains unknown', async () => {
+  const source = observation()
+  delete (source.state.gateway.robots.p4 as Record<string, any>).body_command_source
+  reset(source)
+  for (const sessionId of [source.sessionId, 'missing-session']) {
+    const live = await readRobotStatusLive('unknown-control-user', sessionId)
+    assert.equal(live.control.lastBodyCommandSource, null)
+    assert.equal('manualTakeover' in live.control, false)
+    assert.equal('source' in live.control, false)
+  }
 })
 
 test('status preserves movement limits without treating an objective as an action stopping condition', async () => {
@@ -269,10 +330,9 @@ test('checkpoint behavior and correlated termination survive expiry of candidate
     assert.equal(await saver.activeBehaviorSnapshot('robot-session'), null)
     store.decodeDocument = decode
     live = await readRobotStatusLive(username, 'robot-session', now + 3300)
-    assert.equal(live.executions[0].behavior, null, 'A terminal execution no longer owns active behavior')
-    assert.equal(live.executions[0].status, 'failed')
-    assert.equal(live.executions[0].objective, task.objective, 'Historical task and physical receipt remain visible')
-    assert.equal(live.executions[0].commands[0].termination, 'terminal_receipt')
+    assert.deepEqual(live.executions, [], 'A settled execution is not current work')
+    assert.equal(store.task(execution.executionId)?.objective, task.objective, 'Historical task remains available by identity')
+    assert.ok(store.events(execution.executionId).some(event => event.eventId === 'walk-terminal'), 'The correlated receipt remains preserved')
   } finally { store.release(lease); store.close() }
 })
 
@@ -311,8 +371,10 @@ test('active behavior projection reads selected checkpoint fields without loadin
   } finally { store.release(lease); store.close() }
 })
 
-test('Robot Status works before a semantic summary exists; task and conversation receive current facts', async () => {
-  const source = reset()
+test('Robot Status works before a semantic summary exists; task and conversation receive current facts', async t => {
+  const now = Date.now()
+  t.mock.method(Date, 'now', () => now)
+  const source = reset(observation(now))
   const context: any = { username: 'new-status-user', sessionId: source.sessionId }
   const status: any = await robotStatusNode.execute({}, context, {})
   assert.equal(status.found, false); assert.equal(status.context.live.recognition.peopleCount, 1)
@@ -322,7 +384,8 @@ test('Robot Status works before a semantic summary exists; task and conversation
       routingAnalysis: { needsResponse: true, needsAction: false, taskContext: ['robotStatus'], conversationContext: ['robotStatus'] } }, context, { purpose })
     const message = JSON.parse(result.message)
     assert.equal(message.robotStatus.live.recognition.peopleCount, 1)
-    assert.equal(message.robotStatus.live.control.manualTakeover, false)
+    assert.equal(message.robotStatus.live.control.lastBodyCommandSource, 'coordinator')
+    assert.equal('manualTakeover' in message.robotStatus.live.control, false)
     assert.ok(!result.message.includes('data:image'))
   }
 })
@@ -461,11 +524,16 @@ test('authenticated perception telemetry retains measured rate without new work 
 })
 
 test('actual active behavior graph exposes its current checkpoint through Robot Status', async () => {
-  const source = reset()
   await import('./index.js')
   const { runDurableGraph, withGraphWork } = await import('./durable-execution/runtime.js')
   const { validateSvelteFlowGraph } = await import('./cognitive-graph-schema.js')
   const graph = validateSvelteFlowGraph(JSON.parse(fs.readFileSync(new URL('../../../etc/cognitive-graphs/robot-active-task-mode.json', import.meta.url), 'utf8')))
+  const observed = observation()
+  const source = { ...observed, state: { ...observed.state, locomotionMeasurement: {
+    camera: { available: true, source: 'camera-frame', robotId: 'p4', referenceId: 'gateway', frameId: 'frame-1',
+      observedAt: observed.timestamp, expiresAt: new Date(Date.parse(observed.timestamp) + 10_000).toISOString() },
+  } } }
+  reset(source)
   const manager = getQueueManager(); const username = 'actual-behavior'
   const work = manager.enqueue({ type: 'generic', username, handler: 'graph.resume', input: {} })
   const { subscribeEnvironmentActions } = await import('./environment-interface/store.js')
@@ -473,7 +541,9 @@ test('actual active behavior graph exposes its current checkpoint through Robot 
   const result = await withGraphWork(work, () => {}, () => runDurableGraph({ graph, context: {
     username, userId: username, sessionId: source.sessionId, environment: 'server', activeTaskSessionId: source.sessionId,
     activeProgram: { steps: [{ kind: 'behavior', target: 'current candidate person', completionCriteria: 'Until cancelled',
-      motion: { type: 'move', continuous: true, direction: 'forward', speed: 40 }, candidateLabels: ['person'], identifyEveryFrames: 100, steering: null }] },
+      motion: { type: 'move', continuous: true, direction: 'forward', speed: 40,
+        locomotionGoal: { kind: 'visual', target: 'current candidate person', completionCriteria: 'Until cancelled' } },
+      candidateLabels: ['person'], identifyEveryFrames: 100, steering: null }] },
     activeTaskDecision: { outcome: 'act', objective: 'Observe candidate', reason: 'Directly selected fixture', objectiveComplete: false,
       completionCriteria: 'Until cancelled', requiredCompletionBasis: 'visual_observation' },
   } }), async input => manager.enqueue(input))
@@ -508,6 +578,25 @@ test('timestamped IMU telemetry updates Robot Status without camera changes or c
 })
 
 
+test('motor output context distinguishes driver readiness from enabled servo PWM without changing raw telemetry', async () => {
+  const now = Date.now()
+  const { recordEnvironmentRobotStatus } = await import('./environment-interface/store.js')
+  const jobs = getQueueManager().getAllTasks().length
+  const timestamp = new Date(now - 500).toISOString()
+  for (const [ready, enabled] of [[true, false], [true, true], [false, false], [true, null]] as const) {
+    reset(observation(now))
+    const fault = ready ? 0 : 1
+    recordEnvironmentRobotStatus('robot-session', { robot_id: 'p4', epoch: 1, status_received_at: timestamp,
+      output_ready: ready, ...(enabled === null ? {} : { output_armed: enabled }), output_fault: fault })
+    const raw = readEnvironmentBridgeState()
+    const projected = (await readRobotStatusLive('status-user', 'robot-session', now)).movement.motorOutput
+    assert.deepEqual(projected, { output_ready: ready, servoPwmOutputEnabled: enabled, output_fault: fault, timestamp })
+    assert.equal('output_armed' in projected!, false, 'The model projection replaces the raw hardware key')
+    assert.deepEqual(readEnvironmentBridgeState(), raw, 'Reading context preserves the original hardware evidence')
+  }
+  assert.equal(getQueueManager().getAllTasks().length, jobs)
+})
+
 test('motor telemetry remains attributed evidence through faults, recovery and missing status without admitting work', async () => {
   const now = Date.now()
   reset(observation(now))
@@ -518,7 +607,7 @@ test('motor telemetry remains attributed evidence through faults, recovery and m
   recordEnvironmentRobotStatus('robot-session', { robot_id: 'p4', epoch: 1, status_received_at: timestamp,
     output_ready: false, output_armed: false, output_fault: 1 })
   const fault = await readRobotStatusLive('status-user', 'robot-session', now)
-  assert.deepEqual(fault.movement.motorOutput, { output_ready: false, output_armed: false, output_fault: 1, timestamp })
+  assert.deepEqual(fault.movement.motorOutput, { output_ready: false, servoPwmOutputEnabled: false, output_fault: 1, timestamp })
   assert.equal(fault.movement.measuredPhysicalMotion.available, false)
   recordEnvironmentRobotStatus('robot-session', { robot_id: 'other', epoch: 1, output_fault: 2 })
   assert.equal((await readRobotStatusLive('status-user', 'robot-session', now)).movement.motorOutput?.output_fault, 1)
@@ -526,7 +615,7 @@ test('motor telemetry remains attributed evidence through faults, recovery and m
   recordEnvironmentRobotStatus('robot-session', { robot_id: 'p4', epoch: 1, status_received_at: recoveredAt,
     output_ready: true, output_armed: true, output_fault: 0 })
   assert.deepEqual((await readRobotStatusLive('status-user', 'robot-session', now)).movement.motorOutput,
-    { output_ready: true, output_armed: true, output_fault: 0, timestamp: recoveredAt })
+    { output_ready: true, servoPwmOutputEnabled: true, output_fault: 0, timestamp: recoveredAt })
   assert.equal((await readRobotStatusLive('status-user', 'missing-session', now)).movement.motorOutput, null)
   assert.equal(getQueueManager().getAllTasks().length, jobs)
 })
@@ -544,7 +633,7 @@ test('periodic status API retains motor and power evidence without refreshing it
   try {
     assert.equal((await handleEnvironmentBridgeTelemetry(request)).status, 200)
     const fault = await readRobotStatusLive('status-user', source.sessionId, now)
-    assert.deepEqual(fault.movement.motorOutput, { output_ready: false, output_armed: false, output_fault: 1, timestamp: measuredAt })
+    assert.deepEqual(fault.movement.motorOutput, { output_ready: false, servoPwmOutputEnabled: false, output_fault: 1, timestamp: measuredAt })
     assert.deepEqual(fault.power, { voltage: 0, monitorReady: false, observedAt: measuredAt })
     request.body.robotStatus = { robot_id: 'p4', epoch: 1, timestamp: new Date(now).toISOString(), imu: { available: true } }
     assert.equal((await handleEnvironmentBridgeTelemetry(request)).status, 200)

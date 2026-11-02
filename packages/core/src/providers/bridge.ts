@@ -2,12 +2,12 @@
  * Provider Bridge (Core)
  *
  * Unified entry point for ALL LLM providers.
- * - Local providers (ollama, vllm, mock) are handled here
+ * - Local providers (ollama, mock) are handled here
  * - Cloud providers (RunPod, HuggingFace) are owned by the Core provider layer
  *
  * model-router.ts calls this ONE function - it knows nothing about specific providers.
  *
- * BACKEND-AWARE: Automatically routes to Ollama or vLLM based on etc/llm-backend.json
+ * Explicit assignments retain their provider; only the generic local slot uses backend selection.
  * AUTO-START: Automatically starts the configured backend if not running
  *
  * Web and mobile use the same provider implementations.
@@ -21,8 +21,7 @@ import {
   resolveOllamaThinkingMode,
 } from '../ollama.js';
 import { callLlamaCpp, getLlamaCppStatus } from './llama-cpp.js';
-import { vllm, isVLLMRunning, type VLLMConfig } from '../vllm.js';
-import { buildVLLMStartConfig, loadBackendConfig, getBackendStatus } from '../llm-backend.js';
+import { loadBackendConfig, getBackendStatus } from '../llm-backend.js';
 import { generateWithLocalService, isLocalModelServiceRunning } from './local-models.js';
 import { loadDeploymentConfig } from '../deployment.js';
 import { callCloudProvider, isCloudProviderAvailable } from './cloud.js';
@@ -32,8 +31,6 @@ import {
   type RemoteProviderName,
 } from './remote.js';
 import { getUserContext } from '../context.js';
-import { getProfilePaths } from '../path-builder.js';
-import { getAdaptersToLoad, getVllmLoraConfig } from '../vllm-lora.js';
 import { resolveCredentials } from '../llm-config.js';
 import { loadFreshOperatorConfig } from '../config.js';
 
@@ -48,7 +45,6 @@ import {
   type ProviderType,
   ProviderInputError,
   inspectProviderMessages,
-  parseProviderImageDataUrl,
   providerImagePolicyFromOptions,
   isCloudProvider,
   isRemoteServerProvider,
@@ -60,20 +56,6 @@ function messageText(message: ProviderMessage): string {
     .filter(part => part.type === 'text')
     .map(part => part.text)
     .join('\n');
-}
-
-function escalationImages(
-  messages: ProviderMessage[],
-  imagePolicy: ReturnType<typeof providerImagePolicyFromOptions>,
-): Array<{ mimeType: string; base64: string }> {
-  return messages.flatMap(message => {
-    if (!Array.isArray(message.content)) return []
-    return message.content.flatMap(part => {
-      if (part.type !== 'image_url') return []
-      const parsed = parseProviderImageDataUrl(part.image_url.url, imagePolicy)
-      return [{ mimeType: parsed.mimeType, base64: parsed.base64 }]
-    })
-  })
 }
 
 export function assertAdapterPreservesImageInput(provider: string, imageCount: number): void {
@@ -92,7 +74,7 @@ export * from './types.js';
  * Routes to local or cloud provider based on provider type.
  *
  * For local providers (ollama), automatically routes to the active backend
- * (Ollama or vLLM) based on etc/llm-backend.json configuration.
+ * (Ollama or llama.cpp) based on etc/llm-backend.json configuration.
  */
 export async function callProvider(
   providerName: ProviderType,
@@ -186,22 +168,20 @@ export async function callProvider(
 
     onProgress?.({ phase: 'loading', message: `${backendName}: Starting...` });
 
-    // Format messages for the backend
-    let prompt = messages.map(m => {
-      if (m.role === 'system') return `[System]: ${messageText(m)}`;
-      if (m.role === 'user') return `[User]: ${messageText(m)}`;
-      return `[Assistant]: ${messageText(m)}`;
-    }).join('\n\n');
-
-    // CLI providers receive their response contract in the prompt. Their native
+    // CLI providers receive their response contract as instructions. Their native
     // strict-schema modes cannot represent all workflow schemas (optional fields
     // and open objects); the calling workflow retains response validation.
+    let responseInstructions: string | undefined;
     if (options.jsonSchema || options.format === 'json') {
-      prompt += '\n\n[System]: Return only the final JSON value, without Markdown fences or surrounding commentary.';
+      responseInstructions = 'Return only the final JSON value, without Markdown fences or surrounding commentary.';
       if (options.jsonSchema) {
-        prompt += `\nThe final response must conform to this JSON Schema:\n${JSON.stringify(options.jsonSchema)}`;
+        responseInstructions += `\nThe final response must conform to this JSON Schema:\n${JSON.stringify(options.jsonSchema)}`;
       }
     }
+    const nativeMessages = resolvedBackendId === 'codex';
+    const prompt = nativeMessages ? '' : messages.map(m =>
+      `[${m.role === 'system' ? 'System' : m.role === 'user' ? 'User' : 'Assistant'}]: ${messageText(m)}`
+    ).join('\n\n') + (responseInstructions ? `\n\n[System]: ${responseInstructions}` : '');
 
     onProgress?.({ phase: 'running', message: `${backendName}: Processing...` });
 
@@ -212,7 +192,8 @@ export async function callProvider(
       username,
       preferredBackend,
       timeout: 300000,
-      images: preservesImages ? escalationImages(messages, imagePolicy) : undefined,
+      ...(nativeMessages ? { modelRequest: { messages, ...(responseInstructions ? { responseInstructions } : {}),
+        ...(options.contextWindow !== undefined ? { contextWindow: options.contextWindow } : {}) } } : {}),
     });
 
     // NO FALLBACK - if Big Brother fails, throw and stop
@@ -234,95 +215,26 @@ export async function callProvider(
   // A registered llama.cpp role retains its serving endpoint and request adapters.
   // Role assignment retains its selected provider.
   if (providerName === 'llama-cpp') {
-    const backend = loadBackendConfig();
-    return callLlamaCpp({ ...backend.llamaCpp,
-        endpoint: options.endpoint ?? backend.llamaCpp.endpoint,
-        model: options.model ?? backend.llamaCpp.model,
-        contextWindow: options.contextWindow ?? backend.llamaCpp.contextWindow,
-        capabilities: (options.modelCapabilities?.length ? options.modelCapabilities : backend.llamaCpp.capabilities) as Array<'text' | 'image'>,
-    }, messages, options, onProgress);
+    return callLlamaCppProvider(messages, options, onProgress);
   }
-  if (options.explicitModel) {
-    const backend = loadBackendConfig();
-    if (providerName === 'ollama') return callOllamaProvider(messages, options, onProgress);
-    if (providerName === 'vllm') return callVLLMProvider(messages, options, backend.vllm.endpoint, onProgress, options.model);
-    if (isCloudProvider(providerName)) {
-      assertAdapterPreservesImageInput(providerName, contentInspection.imageCount);
-      return callCloudProvider(providerName, messages, options, config, onProgress);
-    }
-  }
-
-  const backendStatus = await getBackendStatus();
-
-  // Local provider selected: check its backend availability
-  if (!backendStatus.running || backendStatus.health === 'offline') {
-    const errorMsg = `No LLM backend available. ${backendStatus.reason || `${backendStatus.backend} is ${backendStatus.health}`}. Check the configured service in System settings.`;
-    console.error(`[provider-bridge] ${errorMsg}`);
-    throw new Error(errorMsg);
-  }
-
-  // Route to appropriate handler
   if (isCloudProvider(providerName)) {
-    assertAdapterPreservesImageInput(providerName, contentInspection.imageCount)
+    assertAdapterPreservesImageInput(providerName, contentInspection.imageCount);
     return callCloudProvider(providerName, messages, options, config, onProgress);
   }
 
-  if (backendStatus.resolvedBackend === 'llama-cpp'
-    && ['local', 'ollama', 'vllm', 'llama-cpp'].includes(providerName)) {
-    return callLlamaCpp(loadBackendConfig().llamaCpp, messages, options, onProgress);
-  }
-
-  // Local providers - check which backend is active
   switch (providerName) {
-    case 'local':
-    case 'ollama': {
-      // Use intelligent backend detection for 'local' or 'ollama' provider
-      const backendConfig = loadBackendConfig();
-      const activeBackend = backendConfig.activeBackend;
-
-      // Handle 'auto' mode - use intelligent detection
-      if (activeBackend === 'auto' || activeBackend === 'remote') {
-        const backendStatus = await getBackendStatus();
-
-        if (backendStatus.resolvedBackend === 'vllm') {
-          return callVLLMProvider(messages, options, backendConfig.vllm.endpoint, onProgress);
-        } else if (backendStatus.resolvedBackend === 'ollama') {
-          return callOllamaProvider(messages, options, onProgress);
-        } else if (backendStatus.resolvedBackend === 'remote') {
-          // Route to remote provider
-          return callRemoteProvider(messages, options, backendConfig, onProgress);
-        } else {
-          throw new Error('No LLM backend available. Configure a local LLM (Ollama/vLLM) or remote provider.');
-        }
-      }
-
-      // Explicit backend selection
-      if (activeBackend === 'vllm') {
-        return callVLLMProvider(messages, options, backendConfig.vllm.endpoint, onProgress);
-      }
+    case 'ollama':
       return callOllamaProvider(messages, options, onProgress);
-    }
-
-    case 'vllm': {
-      // Explicit vLLM model assignments can survive in user registries after
-      // switching the default backend. Respect the active backend here so a
-      // stale role mapping cannot start/use vLLM while Ollama is selected.
-      const backendConfig = loadBackendConfig();
-      if (backendConfig.activeBackend !== 'vllm') {
-        const status = await getBackendStatus();
-        if (status.resolvedBackend === 'ollama') {
-          return callOllamaProvider(
-            messages,
-            { ...options, model: backendConfig.ollama.defaultModel },
-            onProgress
-          );
-        }
-        if (status.resolvedBackend === 'remote') {
-          return callRemoteProvider(messages, options, backendConfig, onProgress);
-        }
-        throw new Error(`vLLM provider requested but active backend is ${backendConfig.activeBackend}. Switch the backend to vLLM or update the model role assignment.`);
+    case 'local': {
+      // Only the explicitly selected generic local slot follows deployment settings.
+      const backend = loadBackendConfig();
+      const status = await getBackendStatus();
+      switch (status.resolvedBackend) {
+        case 'llama-cpp': return callLlamaCppProvider(messages, options, onProgress);
+        case 'ollama': return callOllamaProvider(messages, options, onProgress);
+        case 'remote': return callRemoteProvider(messages, options, backend, onProgress);
+        default: throw new Error(`No local backend available: ${status.reason || status.health}`);
       }
-      return callVLLMProvider(messages, options, backendConfig.vllm.endpoint, onProgress, options.model);
     }
 
     case 'mock':
@@ -449,7 +361,7 @@ async function callRemoteServerProvider(
 
   try {
     // Proxy to the remote server's LLM chat endpoint
-    // This routes to whatever backend is active on the remote server (Ollama or vLLM)
+    // This routes to whatever backend is active on the remote server (Ollama or llama.cpp)
     const llmUrl = `${serverUrl}/api/llm/chat`;
 
     const response = await fetch(llmUrl, {
@@ -519,9 +431,20 @@ function requiresExclusiveGPU(modelName: string): boolean {
     lowerName.includes(':70b') || lowerName.includes(':72b');
 }
 
-/**
- * Ollama provider implementation with GPU contention handling
- */
+async function callLlamaCppProvider(messages: ProviderMessage[], options: ProviderOptions, onProgress?: ProviderProgressCallback): Promise<ProviderResponse> {
+  const backend = loadBackendConfig();
+  const config = { ...backend.llamaCpp,
+    endpoint: options.endpoint ?? backend.llamaCpp.endpoint,
+    model: options.model ?? backend.llamaCpp.model,
+    contextWindow: options.contextWindow ?? backend.llamaCpp.contextWindow,
+    capabilities: (options.modelCapabilities?.length ? options.modelCapabilities : backend.llamaCpp.capabilities) as Array<'text' | 'image'>,
+  };
+  const { assertTrainingModelApproved } = await import('../adapters.js');
+  await assertTrainingModelApproved(getUserContext()?.username, 'llama-cpp', config.model, { ...options, endpoint: config.endpoint });
+  return callLlamaCpp(config, messages, options, onProgress);
+}
+
+/** Ollama provider implementation with GPU contention handling. */
 async function callOllamaProvider(
   messages: ProviderMessage[],
   options: ProviderOptions,
@@ -681,170 +604,6 @@ async function callOllamaProvider(
 }
 
 /**
- * vLLM provider implementation
- * Uses the same OpenAI-compatible API that vLLM serves
- * Auto-starts vLLM if not running
- */
-async function callVLLMProvider(
-  messages: ProviderMessage[],
-  options: ProviderOptions,
-  endpoint: string,
-  onProgress?: ProviderProgressCallback,
-  requestedModel?: string,
-): Promise<ProviderResponse> {
-  const backendConfig = loadBackendConfig();
-  // Cross-backend routing uses the configured base. An explicit vLLM role may
-  // select a loaded LoRA name and must not be silently replaced by the base.
-  let vllmStartConfig: VLLMConfig = buildVLLMStartConfig(backendConfig);
-  const username = getUserContext()?.username;
-  if (username) {
-    try {
-      const profilePaths = getProfilePaths(username);
-      const loraConfig = getVllmLoraConfig(profilePaths.etc);
-      vllmStartConfig = {
-        ...vllmStartConfig,
-        loraModules: await getAdaptersToLoad(
-          profilePaths.out,
-          profilePaths.etc,
-          vllmStartConfig.artifact?.displayName || vllmStartConfig.servedModelName || vllmStartConfig.model,
-        ),
-        maxLoraRank: loraConfig.maxLoraRank,
-        maxLoras: loraConfig.maxLoras,
-        maxCpuLoras: loraConfig.maxCpuLoras,
-        loraDtype: loraConfig.loraDtype,
-      };
-    } catch (error) {
-      throw new Error('Cannot resolve the configured vLLM adapters: ' + (error as Error).message);
-    }
-  }
-  const baseModel = vllmStartConfig.servedModelName || backendConfig.vllm.model;
-  const model = requestedModel && ![backendConfig.vllm.model, vllmStartConfig.model].includes(requestedModel)
-    ? requestedModel : baseModel;
-  if (!model) throw new Error('No vLLM model is configured');
-
-  // Log active backend once
-  if (!backendLoggedOnce) {
-    console.log(`[provider-bridge] Active backend: vLLM (${model})`);
-    backendLoggedOnce = true;
-  }
-
-  // Check if vLLM is running, auto-start if not
-  const running = await isVLLMRunning();
-  if (!running) {
-    onProgress?.({
-      phase: 'loading',
-      message: `Starting vLLM server...`,
-    });
-
-    console.log('[provider-bridge] vLLM not running, attempting to start...');
-
-    // Try to start vLLM
-    const startResult = await vllm.startServer(vllmStartConfig);
-
-    if (!startResult.success) {
-      onProgress?.({
-        phase: 'failed',
-        message: `Failed to start vLLM: ${startResult.error}`,
-      });
-      throw new Error(`vLLM failed to start: ${startResult.error}`);
-    }
-
-    console.log(`[provider-bridge] vLLM started (PID: ${startResult.pid})`);
-
-    // Wait for vLLM to be ready (it takes time to load the model)
-    onProgress?.({
-      phase: 'loading',
-      message: `Loading model ${model} (this may take a minute)...`,
-    });
-
-    const maxWaitMs = 120000; // 2 minutes
-    const pollIntervalMs = 2000;
-    const startTime = Date.now();
-
-    while (Date.now() - startTime < maxWaitMs) {
-      const ready = await isVLLMRunning();
-      if (ready) {
-        console.log('[provider-bridge] vLLM is ready');
-        break;
-      }
-      await new Promise(r => setTimeout(r, pollIntervalMs));
-      onProgress?.({
-        phase: 'loading',
-        message: `Loading model... (${Math.round((Date.now() - startTime) / 1000)}s)`,
-      });
-    }
-
-    // Final check
-    if (!(await isVLLMRunning())) {
-      throw new Error('vLLM failed to become ready within timeout');
-    }
-  }
-
-  const { assertTrainingModelApproved } = await import('../adapters.js');
-  await assertTrainingModelApproved(username, 'vllm', model);
-  onProgress?.({ phase: 'loading', message: `Connecting to vLLM (${model})...` });
-
-  // Temporarily set endpoint on vllm client
-  const originalEndpoint = (vllm as any).endpoint;
-  (vllm as any).endpoint = endpoint;
-
-  try {
-    onProgress?.({
-      phase: 'running',
-      message: `Generating with ${model}...`,
-    });
-
-    // Debug: Log what we're sending to vLLM
-    const mappedMessages = messages.map(m => ({ role: m.role as 'system' | 'user' | 'assistant', content: m.content }));
-    for (let i = 0; i < mappedMessages.length; i++) {
-      const msg = mappedMessages[i];
-      if (msg.content === undefined || msg.content === null) {
-        console.error(`[provider-bridge] WARNING: Message ${i} (${msg.role}) has ${msg.content === null ? 'null' : 'undefined'} content!`);
-      }
-      const contentSummary = typeof msg.content === 'string'
-        ? `${msg.content.length} chars`
-        : `${msg.content.length} content parts`;
-      console.log(`[provider-bridge] Message ${i} (${msg.role}): ${contentSummary}`);
-    }
-
-    const response = await vllm.chat(
-      mappedMessages,
-      {
-        signal: options.signal,
-        model,
-        temperature: options.temperature,
-        // Don't fall back to default maxTokens if explicitly undefined (for Big Brother mode)
-        maxTokens: options.maxTokens !== undefined ? options.maxTokens : backendConfig.vllm.maxTokens,
-        topP: options.topP,
-        enableThinking: options.enableThinking ?? backendConfig.vllm.enableThinking,
-        frequencyPenalty: backendConfig.vllm.frequencyPenalty,
-        presencePenalty: backendConfig.vllm.presencePenalty,
-        repetitionPenalty: backendConfig.vllm.repetitionPenalty ?? options.repeatPenalty,
-      }
-    );
-
-    onProgress?.({
-      phase: 'completed',
-      message: `${model} ready`,
-    });
-
-    return {
-      content: response.content,
-      model: response.model || model,
-      provider: 'vllm',
-      usage: response.usage ? {
-        promptTokens: response.usage.prompt_tokens || 0,
-        completionTokens: response.usage.completion_tokens || 0,
-        totalTokens: response.usage.total_tokens || 0,
-      } : undefined,
-    };
-  } finally {
-    // Restore original endpoint
-    (vllm as any).endpoint = originalEndpoint;
-  }
-}
-
-/**
  * Mock provider for testing
  */
 async function callMockProvider(
@@ -875,9 +634,6 @@ export async function isProviderAvailable(providerName: ProviderType): Promise<b
       return (await getLlamaCppStatus(loadBackendConfig().llamaCpp)).running;
     case 'ollama':
       return ollama.isRunning();
-
-    case 'vllm':
-      return vllm.isRunning();
 
     case 'local-models': {
       const backendConfig = loadBackendConfig();

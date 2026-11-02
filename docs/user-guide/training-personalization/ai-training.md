@@ -21,8 +21,8 @@ The wizard and these CLI entrypoints share the Core launcher and saved profile s
 
 | Workflow | CLI | Output target |
 | --- | --- | --- |
-| Local LoRA | `pnpm exec tsx brain/training/personalization/full-cycle-local.ts --username NAME` | Ollama GGUF or vLLM adapter |
-| Remote LoRA | `pnpm exec tsx brain/training/personalization/full-cycle.ts --username NAME` | Ollama GGUF or vLLM adapter |
+| Local LoRA | `pnpm exec tsx brain/training/personalization/full-cycle-local.ts --username NAME` | Ollama GGUF |
+| Remote LoRA | `pnpm exec tsx brain/training/personalization/full-cycle.ts --username NAME` | Ollama GGUF |
 | Remote full fine-tune | `pnpm exec tsx brain/training/personalization/fine-tune-cycle.ts --username NAME` | Ollama GGUF or native full model |
 
 Use `--help` for CLI overrides. **Save training settings** makes wizard values available to the CLI. **Apply recommended preset** is an explicit action. A custom training base must be compatible native Hugging Face weights or a local weight directory. An Ollama inference tag is not a training base. Selecting a training backend does not change conversation or specialist model roles.
@@ -56,8 +56,8 @@ Sleep owns the schedule. Manual and automatic runs share the admission lock. New
 Open **Training → Training History** and choose a candidate.
 
 1. Review status, independent losses, sample counts and artifact path. A failed quality gate cannot be accepted.
-2. Click **Prepare exact artifact**. Ollama imports the verified merged GGUF. vLLM LoRA needs the exact training base running with runtime adapter loading enabled. For a full vLLM model, use **Backend setup** to serve the displayed artifact path first. Preparation does not assign a role.
-3. Select a baseline model and backend. A baseline may use another configured backend; for example, compare a full vLLM candidate with an Ollama baseline. Enter three to eight representative prompts and run the comparison.
+2. Click **Prepare exact artifact**. Ollama imports the verified merged GGUF. Preparation does not assign a role.
+3. Select a baseline model and backend. Use an Ollama baseline. Enter three to eight representative prompts and run the comparison.
 4. Review every response, add notes, and accept or reject. Acceptance checks the artifacts and serving identity again.
 5. Open **Model Settings and rollback** to assign the accepted model to the intended role. Select a previous model there to roll back. Other roles remain unchanged.
 

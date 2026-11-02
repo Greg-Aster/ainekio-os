@@ -2,12 +2,11 @@
   import { onMount } from 'svelte'
 
   import { apiFetch } from '../lib/client/api-config'
-  import { DEFAULT_TRAINING_MODEL, DEFAULT_VLLM_TRAINING_MODEL } from '../lib/client/model-defaults'
+  import { DEFAULT_TRAINING_MODEL, DEFAULT_FULL_TRAINING_MODEL } from '../lib/client/model-defaults'
   import TrainingDataControls from './TrainingDataControls.svelte'
-  import { parseTrainingDataSettings, type TrainingDataSettings } from '@metahuman/core/training-schema'
+  import { parseTrainingDataSettings, type TrainingDataSettings, type TrainingTarget } from '@metahuman/core/training-schema'
 
   type TrainingMethod = 'local-lora' | 'remote-lora' | 'fine-tune'
-  type TrainingTarget = 'ollama' | 'vllm'
 
   interface AutomaticTrainingConfig {
     version: 1
@@ -80,7 +79,7 @@
     version: 1,
     enabled: false,
     method: 'local-lora',
-    trainingTarget: 'ollama',
+    trainingTarget: 'llama-cpp',
     minimumTrainableSamples: 250,
     minimumNewSamples: 50,
     cooldownHours: 168,
@@ -153,8 +152,7 @@
     if (config.method === 'fine-tune') {
       config = {
         ...config,
-        trainingTarget: 'ollama',
-        baseModel: DEFAULT_VLLM_TRAINING_MODEL,
+        baseModel: DEFAULT_FULL_TRAINING_MODEL,
         epochs: 2,
         maxSamples: 5000,
         useRollingWindow: true,
@@ -170,10 +168,9 @@
       }
       lastSampleCap = 5000
     } else {
-      const vllm = config.trainingTarget === 'vllm'
       config = {
         ...config,
-        baseModel: vllm ? DEFAULT_VLLM_TRAINING_MODEL : DEFAULT_TRAINING_MODEL,
+        baseModel: DEFAULT_TRAINING_MODEL,
         epochs: 1,
         maxSamples: 3000,
         useRollingWindow: false,
@@ -424,8 +421,8 @@
           <div class="form-group">
             <label class="form-label" for="automatic-target">Output target</label>
             <select id="automatic-target" class="select-field w-full" bind:value={config.trainingTarget}>
+              <option value="llama-cpp">llama.cpp / GGUF</option>
               <option value="ollama">Ollama / GGUF</option>
-              <option value="vllm">vLLM / safetensors</option>
             </select>
           </div>
         </div>
@@ -504,7 +501,7 @@
             <input id="automatic-base-model" class="input-field" type="text" maxlength="300" list="training-models" bind:value={config.baseModel} />
             <datalist id="training-models">
               <option value={DEFAULT_TRAINING_MODEL}>Maintained Ollama/GGUF training base</option>
-              <option value={DEFAULT_VLLM_TRAINING_MODEL}>Maintained vLLM/full-fine-tune base</option>
+              <option value={DEFAULT_FULL_TRAINING_MODEL}>Maintained full-fine-tune base</option>
             </datalist>
             <small class="mt-2 block text-sm text-gray-500">A custom Hugging Face model identifier is allowed when it is compatible with the selected trainer.</small>
           </div>
@@ -543,7 +540,7 @@
           </div>
           <div class="form-group">
             <label class="form-label" for="automatic-quantization">GGUF quantization</label>
-            <input id="automatic-quantization" class="input-field" type="text" maxlength="32" list="quantization-options" bind:value={config.quantization} disabled={config.trainingTarget === 'vllm'} />
+            <input id="automatic-quantization" class="input-field" type="text" maxlength="32" list="quantization-options" bind:value={config.quantization} />
             <datalist id="quantization-options">
               <option value="Q4_K_M"></option>
               <option value="Q4_K_S"></option>
@@ -552,7 +549,6 @@
               <option value="Q6_K"></option>
               <option value="Q8_0"></option>
             </datalist>
-            <small class="mt-2 block text-sm text-gray-500">vLLM keeps safetensors adapters and skips GGUF conversion.</small>
           </div>
         </div>
 

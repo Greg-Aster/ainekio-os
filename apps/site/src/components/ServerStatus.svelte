@@ -33,14 +33,8 @@
 
   interface LLMBackendInfo {
     llamaCpp: { configured: boolean; running: boolean; model?: string; endpoint: string; error?: string };
-    activeBackend: 'llama-cpp' | 'auto' | 'ollama' | 'vllm' | 'remote' | 'local-models';
+    activeBackend: 'llama-cpp' | 'auto' | 'ollama' | 'remote' | 'local-models';
     ollama: {
-      installed: boolean;
-      running: boolean;
-      model?: string;
-      endpoint: string;
-    };
-    vllm: {
       installed: boolean;
       running: boolean;
       model?: string;
@@ -99,8 +93,6 @@
   const serverConfigs = [
     { name: 'whisper', displayName: 'Whisper STT', endpoint: '/api/whisper-server', port: 9883 },
     { name: 'kokoro', displayName: 'Kokoro TTS', endpoint: '/api/kokoro-server', port: 9882 },
-    { name: 'kitten', displayName: 'Kitten TTS', endpoint: '/api/kitten-server', port: 9884 },
-    { name: 'sovits', displayName: 'GPT-SoVITS', endpoint: '/api/sovits-server', port: 9880 },
   ];
 
   async function fetchStatusEndpoint(endpoint: string): Promise<Response> {
@@ -147,12 +139,6 @@
               running: data.available.ollama.running,
               model: data.available.ollama.model,
               endpoint: data.config.ollama.endpoint,
-            },
-            vllm: {
-              installed: data.available.vllm.installed,
-              running: data.available.vllm.running,
-              model: data.available.vllm.model || data.config.vllm.model,
-              endpoint: data.config.vllm.endpoint,
             },
           };
         }
@@ -283,7 +269,7 @@
     }
   }
 
-  function isBackendActive(backend: 'ollama' | 'vllm' | 'llama-cpp'): boolean {
+  function isBackendActive(backend: 'ollama' | 'llama-cpp'): boolean {
     return llmBackend?.activeBackend === backend;
   }
 
@@ -488,39 +474,6 @@
           {/if}
         </div>
 
-        <!-- vLLM -->
-        <div class="border rounded-lg p-3 bg-white dark:bg-gray-800 transition-all hover:shadow-md dark:hover:shadow-black/30 {llmBackend.activeBackend === 'vllm' ? 'border-2 border-emerald-500/40 dark:border-emerald-400/40 bg-emerald-500/[0.02] dark:bg-emerald-400/[0.03]' : 'border-blue-500/20 dark:border-blue-400/20'}">
-          <div class="mb-3">
-            <div class="flex items-start gap-3">
-              <span class="text-xl leading-none">
-                {#if !llmBackend.vllm.installed}⚠️
-                {:else if llmBackend.vllm.running}🟢
-                {:else}🔴{/if}
-              </span>
-              <div class="flex-1 min-w-0">
-                <div class="font-semibold text-sm text-gray-900 dark:text-gray-100 mb-1">
-                  vLLM
-                  {#if llmBackend.activeBackend === 'vllm'}
-                    <span class="inline-block px-1.5 py-0.5 ml-2 bg-emerald-500/15 dark:bg-emerald-400/20 text-emerald-600 dark:text-emerald-400 rounded text-[0.65rem] font-bold tracking-wide">ACTIVE</span>
-                  {/if}
-                </div>
-                <div class="text-xs text-gray-500 dark:text-gray-400">
-                  {llmBackend.vllm.endpoint}
-                  {#if llmBackend.vllm.model}
-                    • {llmBackend.vllm.model}
-                  {/if}
-                </div>
-              </div>
-            </div>
-          </div>
-          {#if llmBackend.vllm.installed}
-            <button class="w-full py-1.5 px-3 border border-blue-500/30 dark:border-blue-400/30 rounded-md text-xs font-semibold cursor-pointer transition-all bg-blue-500/10 dark:bg-blue-400/10 text-blue-700 dark:text-blue-300 hover:bg-blue-500/15 dark:hover:bg-blue-400/15" on:click={openBackendSettings}>
-              Configure in Backend
-            </button>
-          {:else}
-            <div class="text-xs text-gray-500 dark:text-gray-400 italic p-2 text-center bg-black/5 dark:bg-white/5 rounded-md">Not installed - requires Python vLLM package</div>
-          {/if}
-        </div>
 
         <!-- Local Models -->
         <div class="border rounded-lg p-3 bg-white dark:bg-gray-800 transition-all hover:shadow-md dark:hover:shadow-black/30 {localModels?.running ? 'border-2 border-orange-500/40 dark:border-orange-400/40 bg-orange-500/[0.02] dark:bg-orange-400/[0.03]' : 'border-orange-500/20 dark:border-orange-400/20'}">

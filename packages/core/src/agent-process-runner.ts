@@ -2,8 +2,7 @@ import { spawn } from 'node:child_process';
 import fs from 'node:fs';
 import path from 'node:path';
 import { audit } from './audit.js';
-import { acquireLock, getLockOwnerPid, type LockHandle } from './locks.js';
-import { readAgentMonitorConfig, writeServiceConfig } from './agent-monitor-descriptors.js';
+import { getLockOwnerPid } from './locks.js';
 import { ROOT, systemPaths } from './path-builder.js';
 import {
   buildAgentNodePath,
@@ -14,8 +13,6 @@ import {
 import {
   clearAgentFailure,
   isAgentRunning,
-  stopAgent,
-  waitForProcessExit,
   recordAgentFailure,
   registerAgent,
   unregisterAgent,
@@ -46,10 +43,10 @@ export interface StartAgentProcessOptions {
   readyPattern?: RegExp;
 }
 
-export function outputExcerpt(chunks: string[]): string | undefined {
+export function collectAgentOutput(chunks: string[]): string | undefined {
   const text = chunks.join('').trim();
   if (!text) return undefined;
-  return text.length > 2000 ? text.slice(-2000) : text;
+  return text;
 }
 
 function failedStart(
@@ -81,12 +78,11 @@ export function agentFailureMessage(agentName: string, code: number | null, outp
     .reverse()
     .find(line => /^\[[^\]]+\]\s+(?:Failed|Fatal error):/.test(line.trim()))
     ?.trim()
-  const detail = terminalSummary || (trimmed.length > 2_000 ? trimmed.slice(-2_000) : trimmed)
+  const detail = terminalSummary || trimmed
   return `Agent ${agentName} exited with code ${code ?? 'unknown'}: ${detail}`
 }
 
 function processLockName(agentName: string): string {
-  if (agentName === 'environment-bridge-local' || agentName === 'environment-bridge-remote') return 'agent-environment-bridge';
   if (agentName === 'maintenance-service') return 'service-maintenance';
   return `agent-${agentName}`;
 }
@@ -98,24 +94,10 @@ export async function startAgentProcess(agentName: string, options: StartAgentPr
   const detached = options.detached ?? true;
   const useBootstrap = options.useBootstrap ?? true;
   const waitForMs = options.waitForMs ?? 0;
-  const bridgeChoice = agentName === 'environment-bridge-local' || agentName === 'environment-bridge-remote';
-  let selectionLock: LockHandle | undefined;
 
   try {
     if (isAgentRunning(agentName)) {
       return { agent: agentName, started: false, success: false, alreadyRunning: true };
-    }
-
-    if (bridgeChoice) {
-      selectionLock = acquireLock('environment-bridge-selection', { exitOnSignal: false });
-      for (const other of ['environment-bridge-local', 'environment-bridge-remote', 'environment-bridge']) {
-        if (other === agentName || !isAgentRunning(other)) continue;
-        const stopped = stopAgent(other);
-        if (!stopped.success) throw new Error(stopped.message);
-        if (stopped.pid && !await waitForProcessExit(stopped.pid)) {
-          throw new Error(`${other} did not stop in time`);
-        }
-      }
     }
 
     const lockOwnerPid = options.checkLock ? getLockOwnerPid(processLockName(agentName)) : undefined;
@@ -152,14 +134,14 @@ export async function startAgentProcess(agentName: string, options: StartAgentPr
     const commandArgs = useBootstrap ? [bootstrapPath, agentName, ...args] : [agentPath, ...args];
     let stdoutFd: number | undefined;
     let stderrFd: number | undefined;
-    if (detached) {
-      const logDir = path.join(systemPaths.logs, 'run', 'agents');
-      fs.mkdirSync(logDir, { recursive: true });
-      stdoutFd = fs.openSync(path.join(logDir, `${agentName}.log`), 'a');
-      stderrFd = fs.openSync(path.join(logDir, `${agentName}.error.log`), 'a');
-    }
     let child: ReturnType<typeof spawn>;
     try {
+      if (detached) {
+        const logDir = path.join(systemPaths.logs, 'run', 'agents');
+        fs.mkdirSync(logDir, { recursive: true });
+        stdoutFd = fs.openSync(path.join(logDir, `${agentName}.log`), 'a');
+        stderrFd = fs.openSync(path.join(logDir, `${agentName}.error.log`), 'a');
+      }
       child = spawn(resolveAgentRunner(commandArgs[0]), commandArgs, {
         // A detached service must never inherit pipes owned by a short-lived
         // CLI/API request. Durable files keep diagnostics without keeping the
@@ -224,24 +206,24 @@ export async function startAgentProcess(agentName: string, options: StartAgentPr
         })
       : undefined;
 
-    child.stdout?.on('data', (data: Buffer) => {
-      const text = data.toString();
+    child.stdout?.setEncoding('utf8');
+    child.stderr?.setEncoding('utf8');
+    child.stdout?.on('data', (text: string) => {
       stdoutChunks.push(text);
       if (options.readyPattern?.test(text)) {
         finishImmediate?.({ type: 'running' });
       }
       console.log(`[Agent: ${agentName}] ${text.trim()}`);
     });
-    child.stderr?.on('data', (data: Buffer) => {
-      const text = data.toString();
+    child.stderr?.on('data', (text: string) => {
       stderrChunks.push(text);
       console.error(`[Agent: ${agentName}] ${text.trim()}`);
     });
 
     child.once('close', (code: number | null) => {
       closeCode = code;
-      const stderr = outputExcerpt(stderrChunks);
-      const stdout = outputExcerpt(stdoutChunks);
+      const stderr = collectAgentOutput(stderrChunks);
+      const stdout = collectAgentOutput(stdoutChunks);
       audit({
         level: code === 0 ? 'info' : 'error',
         category: 'system',
@@ -273,8 +255,8 @@ export async function startAgentProcess(agentName: string, options: StartAgentPr
 
     if (immediateResult?.type === 'error') {
       unregisterAgent(agentName, pid);
-      const stderr = outputExcerpt(stderrChunks);
-      const stdout = outputExcerpt(stdoutChunks);
+      const stderr = collectAgentOutput(stderrChunks);
+      const stdout = collectAgentOutput(stdoutChunks);
       recordAgentFailure({
         agent: agentName,
         pid,
@@ -295,8 +277,8 @@ export async function startAgentProcess(agentName: string, options: StartAgentPr
     }
 
     if (immediateResult?.type === 'closed') {
-      const stderr = outputExcerpt(stderrChunks);
-      const stdout = outputExcerpt(stdoutChunks);
+      const stderr = collectAgentOutput(stderrChunks);
+      const stdout = collectAgentOutput(stdoutChunks);
       if (closeCode === 0) {
         return {
           agent: agentName,
@@ -321,14 +303,6 @@ export async function startAgentProcess(agentName: string, options: StartAgentPr
       };
     }
 
-    if (bridgeChoice) {
-      const config = readAgentMonitorConfig();
-      for (const id of ['environment-bridge-local', 'environment-bridge-remote']) {
-        const service = config.services?.[id];
-        if (service) service.startOnSystemBoot = id === agentName;
-      }
-      writeServiceConfig(config);
-    }
     return { agent: agentName, started: true, success: true, pid };
   } catch (error) {
     return failedStart(
@@ -336,7 +310,5 @@ export async function startAgentProcess(agentName: string, options: StartAgentPr
       source,
       error instanceof Error ? error.message : String(error),
     );
-  } finally {
-    selectionLock?.release();
   }
 }

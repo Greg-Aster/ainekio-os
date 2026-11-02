@@ -1,15 +1,13 @@
 <script lang="ts">
   /**
    * DirectVoiceRecorder
-   * Record voice samples for GPT-SoVITS reference audio
+   * Record source audio for voice training
    * Minimum 5 seconds, no maximum - user controls when to stop
    */
 
 import { onDestroy } from 'svelte';
 import { apiFetch } from '../lib/client/api-config';
 
-export let provider: 'piper' | 'sovits' | 'gpt-sovits' = 'gpt-sovits';
-export let speakerId: string = 'default';
 export let onRecordingComplete: (success: boolean) => void = () => {};
 
   let isRecording = false;
@@ -27,9 +25,6 @@ export let onRecordingComplete: (success: boolean) => void = () => {};
   const MIN_DURATION = 5;
   const RECOMMENDED_PROMPT = "The quick brown fox jumps over the lazy dog. Testing, one, two, three.";
 
-  function normalizeProvider(value: string): 'piper' | 'gpt-sovits' {
-    return value === 'sovits' ? 'gpt-sovits' : (value as 'piper' | 'gpt-sovits');
-  }
 
   onDestroy(() => {
     cleanup();
@@ -179,12 +174,8 @@ export let onRecordingComplete: (success: boolean) => void = () => {};
       const formData = new FormData();
       formData.append('audio', audioBlob, 'recording.webm');
       formData.append('transcript', RECOMMENDED_PROMPT);
-      const normalizedProvider = normalizeProvider(provider);
-      formData.append('provider', normalizedProvider);
-      formData.append('speakerId', speakerId);
       formData.append('duration', recordingSeconds.toString());
       formData.append('quality', '1.0'); // Assume high quality for direct recordings
-      formData.append('copyToReference', 'true'); // Immediately set as reference audio
 
       // Upload to voice profile endpoint
       const uploadResponse = await apiFetch('/api/voice-profile/upload', {
@@ -199,11 +190,7 @@ export let onRecordingComplete: (success: boolean) => void = () => {};
 
       const result = await uploadResponse.json();
 
-      if (result.copiedToReference) {
-        successMessage = `✅ Voice profile saved! Created reference.wav in SoVITS directory. Ready for testing. Sample ID: ${result.sampleId}`;
-      } else {
-        successMessage = `Voice profile saved! Sample ID: ${result.sampleId}`;
-      }
+      successMessage = `Voice sample saved! Sample ID: ${result.sampleId}`;
 
       // Clear the recording
       URL.revokeObjectURL(audioUrl);

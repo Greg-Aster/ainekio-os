@@ -1,3 +1,4 @@
+import { parseContext } from '../../context-serialization.js'
 import assert from 'node:assert/strict'
 import fs from 'node:fs'
 import os from 'node:os'
@@ -53,7 +54,7 @@ async function simulate(options: { action: boolean; response: boolean; failure?:
       order.push('task')
       const taskProperties = graph.nodes.find((node: any) => node.id === '3').data.properties
       assert.ok(inputs.messages[0].content.includes(options.human ? taskProperties.systemPrompt : taskProperties.autonomySystemPrompt))
-      taskContext = JSON.parse(inputs.messages[1].content)
+      taskContext = parseContext(inputs.messages[1].content)
       return { response: JSON.stringify({ taskDecision: options.action ? decision : null, program: options.action ? program : null }) }
     },
     conversation_history: async () => ({ history: [
@@ -79,7 +80,7 @@ async function simulate(options: { action: boolean; response: boolean; failure?:
       order.push('conversation')
       const conversationProperties = graph.nodes.find((node: any) => node.id === 'conversation-context').data.properties
       assert.equal(inputs.messages[0].content, options.human ? conversationProperties.systemPrompt.trim() : conversationProperties.autonomySystemPrompt.trim())
-      conversationContext = JSON.parse(inputs.messages[1].content)
+      conversationContext = parseContext(inputs.messages[1].content)
       responseMetadata = inputs.metadata
       return { work: { effectId: 'simulated-conversation' } }
     },
@@ -150,10 +151,20 @@ test('activation workflow reads current evidence and dispatches an independent i
   const selectImage = environmentImageInputNode.execute
   const frame = { id: 'controller-camera', timestamp, dataUrl: 'data:image/jpeg;base64,/9j/2gAA/9k=',
     metadata: { robotId: 'p4', gatewayInstance: 'gateway', epoch: 2, counter: 20 } }
+  fs.mkdirSync(path.join(root, 'logs/run'), { recursive: true })
+  fs.writeFileSync(path.join(root, 'logs/run/environment-bridge-state.json'), JSON.stringify({ enabled: true, feedback: [],
+    updatedAt: new Date().toISOString(), sessions: { [observation.sessionId]: { sessionId: observation.sessionId,
+      environmentId: 'fixture', adapter: 'ainekio', status: 'connected', firstSeenAt: new Date().toISOString(), lastSeenAt: new Date().toISOString(),
+      latestObservation: { ...observation, state: { body: { authenticated: true, robotId: 'p4' }, gateway: { robots: { p4: { connection_state: 'online' } } } } } } } }))
   const intention = 'Visually track the ball while remaining stationary.'
+  const memories = Array.from({ length: 12 }, (_, index) => ({ id: `memory-${index}`,
+    content: index < 2 ? 'Identical words with different authors.' : 'Complete record. '.repeat(500),
+    role: index % 2 ? 'assistant' : 'user', source: 'conversation', timestamp, type: 'conversation' }))
   fs.mkdirSync(path.join(root, 'etc'), { recursive: true })
   fs.writeFileSync(path.join(root, 'etc/active-operator.json'), JSON.stringify({ autonomyMode: 'full' }))
   fs.copyFileSync(new URL('../../../../../etc/agents.json', import.meta.url), path.join(root, 'etc/agents.json'))
+  let selectedSources = ['vision', 'memory'];
+  const sourceReads: string[] = [];
   const order: string[] = []
   const requests: any[] = []
   const execution = { executionId: 'assessment-fixture', task: () => null,
@@ -161,6 +172,15 @@ test('activation workflow reads current evidence and dispatches an independent i
   const parse = nodeRegistry.get('robot_autonomy_controller_parser')!.execute
   const dispatch = nodeRegistry.get('active_operator_dispatch')!.execute
   const overrides: Record<string, NodeExecutor> = {
+    orchestrator_llm: async (inputs, _context, properties) => {
+      order.push('select');
+      assert.equal(properties?.role, 'orchestrator');
+      assert.equal(properties?.outputContract, 'autonomy-context');
+      assert.doesNotMatch(inputs.message, /Complete record/);
+      const analysis = { contextSources: selectedSources, needsVision: selectedSources.includes('vision'),
+        needsMemory: selectedSources.includes('memory'), needsConversationHistory: selectedSources.includes('conversationHistory') };
+      return { ...analysis, analysis };
+    },
     robot_autonomy_controller_parser: (inputs, context, properties) => parse(inputs, { ...context, graphExecution: execution }, properties),
     active_operator_dispatch: (inputs, context, properties) => dispatch(inputs, { ...context, graphExecution: execution }, properties),
     environment_bridge_input: async () => ({ observation, sessionId: observation.sessionId, isTriggeringObservation: false }),
@@ -174,20 +194,36 @@ test('activation workflow reads current evidence and dispatches an independent i
       order.push('join')
       return selectImage({ visual: frame, observationCurrent: false }, {})
     },
-    robot_autonomy_task_catalog: async () => ({ activationState: { mode: 'full', previous: null, assessedAt: timestamp, operations: [] }, tasks: [{ id: 'robot-autonomy-executor', name: 'Executor',
+    memory_router: async inputs => {
+      if (inputs.orchestratorHints?.needsMemory === false) return { memories: [], searchPerformed: false }
+      assert.equal(inputs.orchestratorHints.needsMemory, true)
+      return { memories, searchPerformed: true }
+    },
+    robot_autonomy_task_catalog: async () => ({ memoryHints: { needsMemory: false }, activationState: { mode: 'full', previous: null, assessedAt: timestamp, operations: [] }, tasks: [{ id: 'robot-autonomy-executor', name: 'Executor',
       description: 'Existing executor.', kind: 'environment-executor', handler: 'environment.observation', taskType: 'generic', priority: 'normal', tags: [] }] }),
     model_router: async inputs => {
       order.push('decide')
       const content = inputs.messages[1].content
-      assert.equal(content[1].image_url.url, frame.dataUrl)
-      assert.ok(content[0].text.includes(frame.id))
-      assert.ok(content[0].text.includes('gateway'))
+      const text = typeof content === 'string' ? content : content[0].text;
+      if (selectedSources.includes('vision')) {
+        assert.equal(content[1].image_url.url, frame.dataUrl)
+        assert.ok(text.includes(frame.id))
+        assert.ok(text.includes('gateway'))
+      } else assert.equal(typeof content, 'string', 'Unselected vision must not attach an image');
+      const envelope = parseContext(text.slice(text.indexOf('{')))
+      if (selectedSources.includes('memory')) assert.deepEqual(envelope.robotOperatorContext.sampledMemories.entries, memories)
+      else assert.doesNotMatch(text, /Complete record/);
       return { response: JSON.stringify({ updates: [{ operationId: 'robot-autonomy-executor', activation: 46,
-        reason: 'Fixture selection.', instruction: intention }] }) }
+        reason: 'Fixture selection.', instruction: intention, target: null }],
+        assessmentReason: 'Current camera evidence supports the selected intention.', memoryRequest: null }) }
     },
     inner_dialogue_buffer: async inputs => { assert.equal(inputs.entries.length, 1); return { entries: inputs.entries } },
     inner_dialogue_saver: async inputs => { assert.equal(inputs.entries[0].meta.source, 'autonomy'); return { saved: true } },
-    conversation_history: async () => ({ history: [] }),
+    conversation_history: async (_inputs, _context, properties) => {
+      sourceReads.push(properties?.mode ?? 'conversation');
+      assert.equal(properties?.includeInnerDialogue, false, 'Selected conversation must not also read private thoughts');
+      return { history: [] };
+    },
     robot_status: async () => ({ context: {} }),
     robot_status_out: async () => ({ persisted: true, status: {} }),
     persona_loader: async () => ({ persona: {} }),
@@ -213,7 +249,7 @@ test('activation workflow reads current evidence and dispatches an independent i
       robotOperatorContext: { robotObserver }, graphExecution: { executionId: 'assessment-fixture', task: () => null,
         dispatch: (effect: any) => { order.push('delegate'); requests.push(effect.payload); return { effectId: 'simulated-admission' } } } as any })
     assert.equal(result.status, 'completed', result.error?.stack)
-    assert.deepEqual(order, ['read', 'join', 'decide', 'delegate'])
+    assert.deepEqual(order, ['select', 'read', 'join', 'decide', 'delegate'])
     assert.equal(requests.length, 1)
     assert.equal(requests[0].executionScope, 'independent')
     assert.equal(requests[0].handler, 'environment.observation')
@@ -222,6 +258,23 @@ test('activation workflow reads current evidence and dispatches an independent i
     assert.deepEqual(requests[0].input.observation.visual, frame)
     assert.equal(requests[0].input.observationCurrent, false)
     assert.equal(controller.nodes.some((node: any) => ['workflow_call', 'work_result_wait', 'tts', 'conversation_buffer'].includes(node.data.nodeType)), false)
+    const runSelection = async (sources: string[]) => {
+      selectedSources = sources;
+      order.length = 0;
+      sourceReads.length = 0;
+      const state = await executeGraph(controller, { username: 'fixture', currentTime: timestamp,
+        robotOperatorContext: { robotObserver } });
+      assert.equal(state.status, 'completed', state.error?.stack);
+      assert.deepEqual(order, ['select', 'decide', 'delegate']);
+      for (const id of ['robot-status', 'persona-loader', 'active-desires', 'observation-history', 'execution', 'activity-history', 'recent-memories', 'read-camera'])
+        assert.equal(state.nodes.get(id)?.status, 'skipped', `${id} must not read an unselected source`);
+      return state;
+    };
+    await runSelection([]);
+    assert.deepEqual(sourceReads, []);
+    await runSelection(['conversationHistory']);
+    assert.deepEqual(sourceReads, ['conversation']);
+
   } finally {
     for (const [id, execute] of originals) { nodeRegistry.get(id)!.execute = execute; nodeExecutors.set(id, execute) }
   }
@@ -439,4 +492,57 @@ test('body event decisions preserve null instructions only for no-action results
   }
   await assert.rejects(() => bodyEventDecisionNode.execute({ response: JSON.stringify({ decision: 'none',
     instruction: null, reason: null }) }, {}, {}), /Event decision requires/)
+})
+
+test('autonomy memory and inactivity ports are visible in the browser schema', async () => {
+  const { getNodeSchema } = await import('../schemas.js')
+  const context = getNodeSchema('robot_autonomy_controller_context')!
+  assert.ok(context.inputs.some(input => input.name === 'memoryContext'))
+  assert.ok(getNodeSchema('active_operator_dispatch')!.outputs.some(output => output.name === 'inactiveReason'))
+})
+
+test('supplied context avoids duplicate reads only for matching downstream selections', async () => {
+  const { environmentVisualReadNode, environmentImageInputNode } = await import('../environment/image-input.node.js');
+  const { environmentEventRequestNode } = await import('../environment/body-event.node.js');
+  let reads = 0;
+  const context: any = { username: 'fixture', graphExecution: { dispatch: () => { reads++; return { effectId: 'next-read' } } } };
+  const frame = { id: 'supplied-frame', timestamp, dataUrl: 'data:image/jpeg;base64,/9j/2gAA/9k=' };
+  const memories = [{ id: 'remembered', content: 'The retained account.', role: 'user', source: 'conversation', timestamp, score: 0.9 }];
+  const packet = { sources: {
+    vision: { value: { frames: [frame], current: true }, scope: { sessionId: 'fixture-body' } },
+    memory: { value: { memories, query: 'retained account', searchPerformed: true },
+      scope: { query: 'retained account', searchTopK: 12 } },
+    conversationHistory: { value: { history: [{ role: 'user', content: 'Original words.', timestamp }] },
+      scope: { mode: 'conversation', limit: 8, includeInnerDialogue: false } },
+  } };
+  const joined = await environmentEventRequestNode.execute({ plannerDecision, selectedContext: packet }, {}, {});
+  assert.deepEqual(joined.selectedContext, packet);
+  const human = await environmentEventRequestNode.execute({ message: 'A new request.', plannerDecision, selectedContext: packet }, {}, {});
+  assert.equal(human.selectedContext, null);
+  assert.deepEqual(await environmentVisualReadNode.execute({ sessionId: 'fixture-body', selectedContext: packet }, context, {}), { work: null });
+  const image = await environmentImageInputNode.execute({ sessionId: 'fixture-body', selectedContext: packet, observationCurrent: false }, {});
+  assert.equal(image.frames[0].id, frame.id);
+  assert.equal(image.frames[0].timestamp, timestamp);
+  assert.equal(reads, 0);
+  await environmentVisualReadNode.execute({ sessionId: 'other-body', selectedContext: packet }, context, {});
+  assert.equal(reads, 1);
+  const router = nodeRegistry.get('memory_router')!;
+  const reused = await router.execute({ selectedContext: packet, orchestratorHints: { needsMemory: true, memoryQuery: 'retained account' } }, context, { dispatch: true, topK: 3 });
+  assert.deepEqual(reused.memories, memories);
+  assert.equal(reused.searchPerformed, false);
+  assert.equal(reads, 1);
+  await router.execute({ selectedContext: packet, orchestratorHints: { needsMemory: true, memoryQuery: 'a different account' } }, context, { dispatch: true, topK: 3 });
+  assert.equal(reads, 2);
+  const history = await nodeRegistry.get('conversation_history')!.execute({ selectedContext: packet }, context, { mode: 'conversation', limit: 8, includeInnerDialogue: false });
+  assert.deepEqual(history.history, packet.sources.conversationHistory.value.history);
+});
+
+
+test('selected inactive persona remains an attributed completed read in the handoff', async () => {
+  const context = nodeRegistry.get('robot_autonomy_controller_context')!
+  const result = await context.execute({ instruction: 'Assess the supplied context.', observation, persona: null,
+    contextSelection: { contextSources: ['persona.identity'] }, activationState: { mode: 'semi', operations: [] },
+  }, {} as any, {})
+  assert.equal(result.valid, true)
+  assert.deepEqual(result.selectedContext.sources.persona, { value: null, scope: {} })
 })

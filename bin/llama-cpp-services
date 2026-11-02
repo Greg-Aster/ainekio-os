@@ -3,8 +3,9 @@
 import hashlib
 import json
 import os
+import shlex
+from urllib.parse import urlparse
 from pathlib import Path
-import re
 import subprocess
 import sys
 
@@ -16,7 +17,7 @@ def systemctl(*args):
                           text=True, stdout=subprocess.PIPE).stdout
 
 
-def services(operation):
+def services(selection=None):
     units = [line.split()[0] for line in systemctl(
         'list-unit-files', '--type=service', '--no-legend', '--no-pager').splitlines() if line.strip()]
     # Uninstantiated systemd templates have no process or effective properties.
@@ -31,9 +32,30 @@ def services(operation):
             continue
         command = properties.get('ExecStart', '')
         on_demand = f'path={ROOT}/bin/llama-cpp-services ;' in command and ' serve ' in command
-        direct = re.search(r'path=[^;]*/llama-server ;', command) is not None
-        if on_demand or (operation == 'stop' and direct):
-            selected.append(properties['Id'])
+        if not on_demand:
+            continue
+        if selection is not None:
+            arguments = shlex.split(command.split('argv[]=', 1)[1].split(' ;', 1)[0])
+            options = {}
+            for index, argument in enumerate(arguments):
+                key, separator, value = argument.partition('=')
+                if key in ('--port', '--host', '--alias', '-a', '--model', '-m'):
+                    options[key] = value if separator else arguments[index + 1]
+            alias = options.get('--alias', options.get('-a'))
+            model = options.get('--model', options.get('-m', ''))
+            names = (alias or Path(model).name).split(',')
+            port = int(options.get('--port', '8080'))
+            host = options.get('--host', '127.0.0.1')
+            loopback = {'127.0.0.1', 'localhost', '::1'}
+            def matches(item):
+                endpoint = urlparse(item['endpoint'])
+                local_host = endpoint.hostname == host or (
+                    endpoint.hostname in loopback and host in loopback | {'0.0.0.0', '::'})
+                return (endpoint.scheme == 'http' and local_host
+                        and (endpoint.port or 80) == port and item['model'] in names)
+            if not any(matches(item) for item in selection):
+                continue
+        selected.append(properties['Id'])
     return selected
 
 
@@ -72,12 +94,13 @@ def main():
     operation = sys.argv[1] if len(sys.argv) > 1 else ''
     if operation == 'serve':
         serve(sys.argv[2], sys.argv[3:])
-    elif operation in ('start', 'stop'):
-        selected = services(operation)
+    elif operation == 'stop' or operation == 'start' and len(sys.argv) == 3:
+        selection = json.loads(sys.argv[2]) if operation == 'start' else None
+        selected = services(selection)
         if selected:
             systemctl(operation, *selected)
     else:
-        print('Usage: llama-cpp-services start|stop|serve LLAMA_SERVER [arguments...]', file=sys.stderr)
+        print('Usage: llama-cpp-services start SELECTION_JSON | stop | serve LLAMA_SERVER [arguments...]', file=sys.stderr)
         return 2
     return 0
 

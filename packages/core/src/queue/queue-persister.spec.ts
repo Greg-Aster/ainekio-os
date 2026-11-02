@@ -9,7 +9,7 @@ import type { PersistedQueueState } from './types.js';
 
 const root = fs.mkdtempSync(path.join(os.tmpdir(), 'metahuman-ledger-'));
 process.env.METAHUMAN_ROOT = root;
-const { saveQueueState, loadQueueState, clearQueueState, getQueueStateDir } = await import('./queue-persister.js');
+const { saveQueueState, loadQueueState, readActiveQueueItems, readPendingSpeechArtifacts, clearQueueState, getQueueStateDir } = await import('./queue-persister.js');
 const { UnifiedQueueManager } = await import('./unified-queue-manager.js');
 const { eventBus } = await import('../infrastructure/event-bus/client.js');
 after(() => { clearQueueState(); eventBus.disconnect(); fs.rmSync(root, { recursive: true, force: true }); });
@@ -17,29 +17,84 @@ const state = (): PersistedQueueState => ({ version: 2, savedAt: 'saved', lastUp
   items: [{ id: 'one', state: 'queued', input: { text: 'first' } } as any],
   history: [{ id: 'two', state: 'completed', result: { value: 'retained' } } as any],
   durableReceipts: [{ id: 'three', state: 'completed', durable: { executionId: 'parent', effectId: 'effect' } } as any],
-  bodyOwners: { robot: { bodyId: 'robot', executionId: 'parent', generation: 7 } }, inFlightRemote: [] });
+  bodyOwners: { robot: { bodyId: 'robot', executionId: 'parent', generation: 7 } } });
 
-test('imports the old ledger once, preserving receipts, ordering and body ownership', () => {
+test('active work reads never decode retained receipts and reflect the next commit', () => {
   clearQueueState();
+  assert.deepEqual(readActiveQueueItems(), []);
   const original = state();
-  const legacy = path.join(getQueueStateDir(), 'work-items.json');
-  fs.writeFileSync(legacy, JSON.stringify(original));
-  assert.deepEqual(loadQueueState(), original);
-  assert.equal(fs.existsSync(legacy), false);
-  assert.equal(fs.existsSync(`${legacy}.migrated`), false);
-  original.items![0]!.state = 'completed';
   saveQueueState(original);
-  assert.deepEqual(loadQueueState(), original);
+  const db = new Database(path.join(getQueueStateDir(), 'work-items.sqlite'));
+  try {
+    db.prepare("UPDATE work_items SET document='not JSON' WHERE id IN ('two', 'three')").run();
+    assert.deepEqual(readActiveQueueItems(), original.items);
+    original.items![0]!.state = 'waiting';
+    saveQueueState(original, new Set(['one']));
+    assert.deepEqual(readActiveQueueItems(), original.items);
+    db.prepare("DELETE FROM work_items WHERE id='one'").run();
+    assert.throws(() => readActiveQueueItems(), /Coordinator ledger is missing work one/);
+    original.items = [];
+    saveQueueState(original, new Set());
+    assert.deepEqual(readActiveQueueItems(), []);
+  } finally { db.close(); }
 });
 
-test('retires an inert migration snapshot without changing the live ledger', () => {
+test('result acknowledgement releases its queue copy atomically while active work, recent activity and undelivered notices survive', () => {
+  clearQueueState();
+  const manager = new UnifiedQueueManager({ historyLimit: 2 });
+  manager.setOnQueueChange(ids => saveQueueState({ ...manager.exportState(), version: 2, savedAt: 'fixture' }, ids));
+  const work = (effectId: string) => manager.enqueue({ type: 'generic', username: 'fixture', input: { evidence: effectId },
+    durable: { executionId: 'execution', effectId, recovery: 'resume' } });
+  const settled = work('settled'); manager.claim(settled.id); manager.complete(settled.id, true, { value: 'recorded' });
+  const undelivered = work('undelivered'); manager.claim(undelivered.id); manager.complete(undelivered.id, true);
+  const failure = work('failure'); manager.claim(failure.id); manager.complete(failure.id, false, 'unpublished failure');
+  const recent = work('recent'); manager.claim(recent.id); manager.complete(recent.id, true);
+  const active = work('active');
+  const db = new Database(path.join(getQueueStateDir(), 'work-items.sqlite'));
+  try {
+    db.exec("CREATE TRIGGER reject_prune BEFORE DELETE ON work_items BEGIN SELECT RAISE(ABORT, 'fixture rejected cleanup'); END;");
+    assert.throws(() => manager.acknowledgeResult(settled.id), /fixture rejected cleanup/);
+    assert.ok(manager.getTask(settled.id), 'Rejected deletion restores the in-memory owner');
+    assert.equal(manager.getTask(settled.id)?.resultDelivered, undefined);
+    db.exec('DROP TRIGGER reject_prune');
+    manager.acknowledgeResult(settled.id);
+    assert.equal(db.prepare('SELECT id FROM work_items WHERE id=?').get(settled.id), undefined);
+    const restored = new UnifiedQueueManager({ historyLimit: 2 });
+    restored.importState(loadQueueState()!);
+    assert.equal(restored.getTask(settled.id), null);
+    for (const task of [undelivered, failure, recent, active]) assert.ok(restored.getTask(task.id));
+    manager.acknowledgeResult(settled.id);
+    assert.equal(manager.getTask(settled.id), null, 'A repeated acknowledgement is inert');
+  } finally { db.close(); }
+});
+
+test('speech references follow active work without decoding history or retained receipts', () => {
   clearQueueState();
   const original = state();
+  original.items = ['queued', 'leased', 'waiting', 'completed', 'failed', 'cancelled', 'expired'].map(state => ({
+    id: state, state, input: { type: 'speak', speechArtifactId: `audio-${state}` },
+  } as any));
   saveQueueState(original);
-  const obsolete = path.join(getQueueStateDir(), 'work-items.json.migrated');
-  fs.writeFileSync(obsolete, 'obsolete snapshot');
+  const db = new Database(path.join(getQueueStateDir(), 'work-items.sqlite'));
+  try {
+    // These unrelated records must not even be decoded by the speech query.
+    db.prepare("UPDATE work_items SET document='not JSON' WHERE id IN ('two', 'three')").run();
+    assert.deepEqual(readPendingSpeechArtifacts(), new Set(['audio-queued', 'audio-leased', 'audio-waiting']));
+    db.prepare("UPDATE work_items SET document=json_set(document, '$.state', 'cancelled') WHERE id='queued'").run();
+    assert.deepEqual(readPendingSpeechArtifacts(), new Set(['audio-leased', 'audio-waiting']));
+    db.prepare("DELETE FROM work_items WHERE id='waiting'").run();
+    assert.throws(() => readPendingSpeechArtifacts(), /Coordinator ledger is missing work waiting/);
+  } finally { db.close(); }
+});
+
+test('speech references use the same SQLite ledger and preserve empty-installation behavior', () => {
+  clearQueueState();
+  assert.deepEqual(readPendingSpeechArtifacts(), new Set());
+  const original = state();
+  original.items![0]!.input = { type: 'speak', speechArtifactId: 'saved-audio' };
+  saveQueueState(original);
+  assert.deepEqual(readPendingSpeechArtifacts(), new Set(['saved-audio']));
   assert.deepEqual(loadQueueState(), original);
-  assert.equal(fs.existsSync(obsolete), false);
 });
 
 test('updates only changed tasks and atomically rolls back a failed commit', () => {
@@ -114,31 +169,13 @@ test('the coordinator persists changed lifecycle records and restores a rejected
   } finally { db.close(); }
 });
 
-test('a failed initial migration leaves the original ledger available for retry', () => {
-  clearQueueState();
-  const original = state();
-  const legacy = path.join(getQueueStateDir(), 'work-items.json');
-  fs.writeFileSync(legacy, JSON.stringify(original));
-  const db = new Database(path.join(getQueueStateDir(), 'work-items.sqlite'));
-  try {
-    db.exec(`CREATE TABLE work_state (id INTEGER PRIMARY KEY, document TEXT NOT NULL);
-      CREATE TRIGGER fail_import BEFORE INSERT ON work_state
-      BEGIN SELECT RAISE(ABORT, 'fixture migration failure'); END;`);
-    assert.throws(() => loadQueueState(), /fixture migration failure/);
-    assert.deepEqual(JSON.parse(fs.readFileSync(legacy, 'utf8')), original);
-    db.exec('DROP TRIGGER fail_import');
-    assert.deepEqual(loadQueueState(), original);
-    assert.equal(fs.existsSync(legacy), false);
-  } finally { db.close(); }
-});
-
 test('live progress does not commit the work ledger and remains available across stream reconnects', () => {
   clearQueueState();
   const manager = new UnifiedQueueManager();
   manager.setOnQueueChange(ids => saveQueueState({ ...manager.exportState(), version: 2, savedAt: 'fixture' }, ids));
   const task = manager.enqueue({ type: 'generic', handler: 'fixture', username: 'fixture', input: {} });
   manager.claim(task.id);
-  const chunks = ['preparing context', 'model response', 'delivering response'];
+  const chunks = ['preparing context', ...Array.from({ length: 1_005 }, (_, i) => `model response ${i}`), 'delivering response'];
   const received: string[] = [];
   manager.addEventListener(event => {
     if (event.type === 'task_output') received.push(event.details!.chunk);

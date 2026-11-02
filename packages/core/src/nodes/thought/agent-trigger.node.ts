@@ -5,8 +5,6 @@ import { submitAgentFollowOn } from '../../queue/work-submission.js'
 import type { QueuedTask } from '../../queue/types.js'
 import { defineNode, type NodeDefinition, type NodeExecutionContext } from '../types.js'
 
-const MAX_SEED_CHARS = 12_000
-
 export interface AgentTriggerDependencies {
   random: () => number
   submit: typeof submitAgentFollowOn
@@ -58,9 +56,6 @@ export async function executeAgentTrigger(
 ): Promise<Record<string, any>> {
   const seed = resolveSeed(inputs)
   if (!seed) return { admitted: false, skipped: true, reason: 'empty-seed' }
-  if (seed.length > MAX_SEED_CHARS) {
-    throw new Error(`Agent trigger seed must not exceed ${MAX_SEED_CHARS} characters`)
-  }
 
   const username = safeIdentityPart(context.username)
   if (!username || username === 'anonymous') {

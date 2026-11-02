@@ -126,7 +126,11 @@ export function evaluateReflectorGraph(
   graphResult: GraphExecutionState,
   identity: { username: string; executionId: string },
 ): ReflectorOutcome {
-  if (graphResult.status !== 'completed') {
+  // A completed finite pass can retain independent speech delivery. An
+  // unfinished or suspended graph pass has no completed generation to report.
+  const deliveryPending = graphResult.status === 'waiting'
+    && graphResult.endTime !== undefined && !graphResult.pending?.length
+  if (graphResult.status !== 'completed' && !deliveryPending) {
     const failure = getFirstFailedNode(graphResult)
     throw new Error(
       failure

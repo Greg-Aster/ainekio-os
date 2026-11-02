@@ -11,24 +11,10 @@ import { renderPromptTemplate } from './nodes/prompt-template.js'
 import { parseEnvironmentIntentRouting } from './nodes/llm/orchestrator-llm.node.js'
 import { isPlanningDelegation } from './nodes/environment/planning-contract.js'
 import { validateEnvironmentSelectorOutput } from './nodes/environment/helpers.js'
-import { normalizeGeneratedMotionPlan } from './nodes/environment/movement-generator.node.js'
+import { EXECUTION_OBSERVATION_ENCODING, executionEventContext, executionPayloadContext } from './nodes/utility/execution-context.node.js'
 import { readFileSync as readProfileFile, resolvePath, writeFileSync as writeProfileFile } from './storage-client.js'
 
 export type EnvironmentTrainingSpecialist = 'intent' | 'task'
-
-export interface FreestyleTrainingCandidate {
-  id: string
-  sourceDigest: string
-  executionId: string
-  effectId: string
-  recordedAt: string
-  system: string
-  user: string
-  observedOutput: string
-  valid: boolean
-  generationError: string
-  generatedAction: unknown
-}
 
 export interface EnvironmentTrainingCandidate {
   id: string
@@ -68,23 +54,18 @@ export interface EnvironmentTrainingProposal {
 const BANK_FILE = 'environment-action-selector/rolling-bank.json'
 const REVIEWS_FILE = 'environment-action-selector/reviews.json'
 const CANDIDATE_DIRECTORY = 'environment-action-selector/candidates'
-const FREESTYLE_DIRECTORY = 'environment-freestyle/candidates'
-const FREESTYLE_REVIEWS_FILE = 'environment-freestyle/reviews.json'
-
-function proposalFile(bank: 'decision' | 'freestyle', candidateId: string): string {
+function proposalFile(bank: 'decision', candidateId: string): string {
   if (!/^[a-f0-9]{32}$/.test(candidateId)) throw new Error('Invalid training decision identity')
-  return `${bank === 'freestyle' ? 'environment-freestyle' : 'environment-action-selector'}/proposals/${candidateId}.json`
+  return `environment-action-selector/proposals/${candidateId}.json`
 }
 
-export function readEnvironmentTrainingProposal(username: string, bank: 'decision' | 'freestyle', candidateId: string): EnvironmentTrainingProposal | null {
+export function readEnvironmentTrainingProposal(username: string, bank: 'decision', candidateId: string): EnvironmentTrainingProposal | null {
   return readStored<EnvironmentTrainingProposal | null>(username, proposalFile(bank, candidateId), null)
 }
 
-export function saveEnvironmentTrainingProposal(username: string, bank: 'decision' | 'freestyle',
+export function saveEnvironmentTrainingProposal(username: string, bank: 'decision',
   proposal: Omit<EnvironmentTrainingProposal, 'createdAt'>): EnvironmentTrainingProposal {
-  const candidate = bank === 'freestyle'
-    ? readFreestyleTrainingBank(username).find(value => value.id === proposal.candidateId)
-    : readEnvironmentTrainingBank(username).candidates.find(value => value.id === proposal.candidateId)
+  const candidate = readEnvironmentTrainingBank(username).candidates.find(value => value.id === proposal.candidateId)
   if (!candidate || candidate.sourceDigest !== proposal.sourceDigest) throw new Error('Training proposal source changed')
   if (!proposal.reason.trim()) throw new Error('Training proposal requires a reason')
   if (proposal.verdict === 'incorrect' && !proposal.correctedOutput?.trim()) throw new Error('Incorrect training proposal needs a corrected output')
@@ -94,8 +75,22 @@ export function saveEnvironmentTrainingProposal(username: string, bank: 'decisio
 }
 
 /** Evidence stays attached to its recorded execution and action identity. */
-export function readEnvironmentTrainingEvidence(store: ExecutionStore, executionId: string) {
-  const events = store.events(executionId).filter(event =>
+export function readEnvironmentTrainingEvidence(store: ExecutionStore, executionId: string,
+  candidates: EnvironmentTrainingCandidate[] = []) {
+  const execution = store.get(executionId)
+  const orderedEvents = executionEventContext(store.events(executionId))
+  const admitted = store.entryOrNull(executionId)?.context
+  const originalInput = admitted ? executionPayloadContext(Object.fromEntries([
+    'userMessage', 'userMessageEntry', 'event', 'bodyEventDecision', 'environmentObservation',
+    'environmentObservationCurrent', 'robotOperatorContext',
+  ].filter(key => Object.hasOwn(admitted, key)).map(key => [key, admitted[key]]))) : null
+  const decisions = candidates.filter(candidate => candidate.executionId === executionId)
+    .map(candidate => ({ id: candidate.id, sourceDigest: candidate.sourceDigest, executionId,
+      recordedAt: candidate.recordedAt, observedOutput: candidate.observedOutput,
+      specialist: candidate.specialist, nodeId: candidate.nodeId,
+      checkpointNamespace: candidate.checkpointNamespace, graphHash: candidate.graphHash,
+    })).sort((left, right) => left.recordedAt.localeCompare(right.recordedAt) || left.id.localeCompare(right.id))
+  const events = orderedEvents.filter(event =>
     ['physical_result', 'action_accepted', 'work_result'].includes(event.kind))
     .map(event => {
       const payload = event.payload && typeof event.payload === 'object'
@@ -119,14 +114,20 @@ export function readEnvironmentTrainingEvidence(store: ExecutionStore, execution
         kind: value.kind, actionType: input.type, command: input.command, sessionId: input.sessionId }
     })
   return { scope: 'same execution; action identity is recorded, but this list does not automatically attribute a result to one model decision',
-    events, dispatches }
+    events, dispatches,
+    trajectory: { executionId, status: execution.status, createdAt: new Date(execution.createdAt).toISOString(),
+      updatedAt: new Date(execution.updatedAt).toISOString(), originalInput,
+      task: executionPayloadContext(store.task(executionId)), observationEncoding: EXECUTION_OBSERVATION_ENCODING,
+      events: orderedEvents, decisions },
+  }
 }
 
-export function readEnvironmentTrainingEvidenceForProfile(username: string, executionId: string) {
+export function readEnvironmentTrainingEvidenceForProfile(username: string, executionId: string,
+  candidates: EnvironmentTrainingCandidate[] = []) {
   const store = openExecutionStore(username)
   try {
     if (store.get(executionId).username !== username) throw new Error('Execution belongs to another profile')
-    return readEnvironmentTrainingEvidence(store, executionId)
+    return readEnvironmentTrainingEvidence(store, executionId, candidates)
   } finally { store.close() }
 }
 
@@ -200,82 +201,6 @@ export function readEnvironmentTrainingReviews(username: string): ReviewBank {
   const bank = readStored<ReviewBank>(username, REVIEWS_FILE, { version: 1, reviews: [] })
   if (bank.version !== 1 || !Array.isArray(bank.reviews)) throw new Error('Invalid environment training reviews')
   return bank
-}
-
-export function readFreestyleTrainingBank(username: string): FreestyleTrainingCandidate[] {
-  const directory = resolvePath(trainingFile(username, FREESTYLE_DIRECTORY))
-  if (!directory.success || !directory.path) throw new Error(directory.error || 'Freestyle training storage is unavailable')
-  if (!fs.existsSync(directory.path)) return []
-  return fs.readdirSync(directory.path).filter(filename => /^[a-f0-9]{32}\.json(?:\.enc)?$/.test(filename))
-    .map(filename => {
-      const id = filename.slice(0, 32)
-      const candidate = readStored<FreestyleTrainingCandidate | null>(username, `${FREESTYLE_DIRECTORY}/${id}.json`, null)
-      if (!candidate || candidate.id !== id) throw new Error(`Invalid saved freestyle decision ${id}`)
-      return candidate
-    }).sort((a, b) => a.recordedAt.localeCompare(b.recordedAt) || a.id.localeCompare(b.id))
-}
-
-export function readFreestyleTrainingReviews(username: string): ReviewBank {
-  const bank = readStored<ReviewBank>(username, FREESTYLE_REVIEWS_FILE, { version: 1, reviews: [] })
-  if (bank.version !== 1 || !Array.isArray(bank.reviews)) throw new Error('Invalid freestyle training reviews')
-  return bank
-}
-
-export function recordFreestyleTrainingOutput(input: {
-  username: string; executionId: string; effectId: string; messages: unknown;
-  observedOutput: string; valid: boolean; generationError: string; generatedAction: unknown;
-}): FreestyleTrainingCandidate {
-  const messages = textMessages(input.messages)
-  if (!messages) throw new Error('Freestyle training output needs exact model messages')
-  const sourceDigest = digest([messages, input.observedOutput, input.valid, input.generationError, input.generatedAction])
-  const id = digest([input.username, input.executionId, input.effectId, sourceDigest]).slice(0, 32)
-  const relativePath = `${FREESTYLE_DIRECTORY}/${id}.json`
-  const existing = readStored<FreestyleTrainingCandidate | null>(input.username, relativePath, null)
-  if (existing) {
-    if (existing.sourceDigest !== sourceDigest) throw new Error('Saved freestyle decision identity changed')
-    return existing
-  }
-  const candidate: FreestyleTrainingCandidate = {
-    id, sourceDigest, executionId: input.executionId, effectId: input.effectId,
-    recordedAt: new Date().toISOString(), ...messages, observedOutput: input.observedOutput,
-    valid: input.valid, generationError: input.generationError, generatedAction: input.generatedAction,
-  }
-  writeStored(input.username, relativePath, candidate)
-  return candidate
-}
-
-export function reviewFreestyleTrainingCandidate(username: string, review: Omit<EnvironmentTrainingReview, 'sourceDigest' | 'reviewedAt'>) {
-  const candidate = readFreestyleTrainingBank(username).find(value => value.id === review.candidateId)
-  if (!candidate) throw new Error('Freestyle training candidate does not exist')
-  if (!review.reason.trim()) throw new Error('Freestyle review requires a reason')
-  if (review.decision === 'correct' && !review.correctedOutput?.trim()) throw new Error('Corrected freestyle output is required')
-  if (review.decision === 'accept' && !candidate.valid) throw new Error('Rejected generation cannot be accepted as a training target')
-  const reviews = readFreestyleTrainingReviews(username).reviews.filter(value => value.candidateId !== candidate.id)
-  reviews.push({ ...review, sourceDigest: candidate.sourceDigest, reviewedAt: new Date().toISOString() })
-  writeStored(username, FREESTYLE_REVIEWS_FILE, { version: 1, reviews })
-}
-
-export function exportReviewedFreestyleTraining(username: string): { file: string; count: number } {
-  const reviews = new Map(readFreestyleTrainingReviews(username).reviews.map(review => [review.candidateId, review]))
-  const records: string[] = []
-  for (const candidate of readFreestyleTrainingBank(username)) {
-    const review = reviews.get(candidate.id)
-    if (!review || review.decision === 'reject' || review.decision === 'defer') continue
-    if (review.sourceDigest !== candidate.sourceDigest) throw new Error(`Stale freestyle review: ${candidate.id}`)
-    const output = review.decision === 'correct' ? review.correctedOutput! : candidate.observedOutput
-    normalizeGeneratedMotionPlan(output, 'training-export')
-    records.push(JSON.stringify({ system: candidate.system, user: candidate.user, output,
-      metadata: { recordId: candidate.id, sourceCaseId: candidate.executionId,
-        specialist: 'freestyle', sourceSplit: 'development', sourceDigest: candidate.sourceDigest,
-        reviewedAt: review.reviewedAt, reviewDecision: review.decision } }))
-  }
-  const directory = path.join(getProfilePaths(username).out, 'environment-freestyle', 'reviewed')
-  fs.mkdirSync(directory, { recursive: true, mode: 0o700 })
-  const file = path.join(directory, 'freestyle.jsonl')
-  const temporary = `${file}.tmp.${process.pid}`
-  fs.writeFileSync(temporary, records.join('\n') + (records.length ? '\n' : ''), { mode: 0o600 })
-  fs.renameSync(temporary, file)
-  return { file, count: records.length }
 }
 
 function textMessages(value: unknown): { system: string; user: string } | null {

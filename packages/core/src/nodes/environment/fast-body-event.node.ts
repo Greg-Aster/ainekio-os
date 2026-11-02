@@ -28,6 +28,8 @@ export const fastBodyEventContextNode = defineNode({
             joints: event.data.joints,
             reason: event.data.reason,
             outputs_released: event.data.outputs_released,
+            correction_failed: event.data.correction_failed,
+            release_error: event.data.release_error,
           } : {}),
         }) },
       ],

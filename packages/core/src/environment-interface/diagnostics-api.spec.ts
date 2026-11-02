@@ -1,15 +1,27 @@
 import assert from 'node:assert/strict';
-import test, { afterEach, beforeEach } from 'node:test';
-import {
+import test, { after, afterEach, beforeEach } from 'node:test';
+import fs from 'node:fs';
+import os from 'node:os';
+import path from 'node:path';
+
+const root = fs.mkdtempSync(path.join(os.tmpdir(), 'bridge-diagnostics-api-'));
+process.env.METAHUMAN_ROOT = root;
+globalThis.fetch = async () => { throw new Error('No network in diagnostics API tests'); };
+const { eventBus } = await import('../infrastructure/event-bus/client.js');
+eventBus.disconnect();
+const { setAuditEnabled } = await import('../audit.js');
+setAuditEnabled(false);
+const {
   handleEnvironmentBridgeDiagnosticAudio,
   handleEnvironmentBridgeDiagnosticMedia,
   handleEnvironmentBridgeDiagnostics,
   handleEnvironmentBridgeTelemetry,
-} from '../api/handlers/environment-bridge.js';
+} = await import('../api/handlers/environment-bridge.js');
 import type { UnifiedRequest } from '../api/types.js';
 import { resetEnvironmentBridgeDiagnosticsForTests } from './diagnostics.js';
 
 const originalToken = process.env.MH_ENVIRONMENT_BRIDGE_TOKEN;
+after(() => { eventBus.disconnect(); fs.rmSync(root, { recursive: true, force: true }); });
 
 function request(overrides: Partial<UnifiedRequest> = {}): UnifiedRequest {
   return {
@@ -73,6 +85,9 @@ test('service-token telemetry is aggregated and robot status is allowlisted', as
 });
 
 test('latest bounded diagnostic WAV can be read from the owner media handler', async () => {
+  const sessionId = 'session-' + 's'.repeat(200);
+  const utteranceId = 'utterance-' + 'u'.repeat(200);
+  await handleEnvironmentBridgeTelemetry(request({ headers: { Authorization: 'Bearer diagnostic-secret' }, body: { sessionId } }));
   const wav = Buffer.alloc(44);
   wav.write('RIFF', 0, 'ascii');
   wav.writeUInt32LE(36, 4);
@@ -82,18 +97,22 @@ test('latest bounded diagnostic WAV can be read from the owner media handler', a
     path: '/api/environment-bridge/diagnostics/audio',
     headers: {
       Authorization: 'Bearer diagnostic-secret',
-      'X-Environment-Session-Id': 'robot-session',
-      'X-Environment-Utterance-Id': 'utterance-1',
+      'X-Environment-Session-Id': sessionId,
+      'X-Environment-Utterance-Id': utteranceId,
       'X-Environment-Duration-Ms': '20',
     },
     rawBody: wav,
   }));
   assert.equal(stored.status, 200);
+  const snapshot = await handleEnvironmentBridgeDiagnostics(request({ method: 'GET' }));
+  assert.equal(snapshot.data.sessions.length, 1);
+  assert.equal(snapshot.data.sessions[0].sessionId, sessionId);
+  assert.equal(snapshot.data.sessions[0].latestAudio.utteranceId, utteranceId);
 
   const media = await handleEnvironmentBridgeDiagnosticMedia(request({
     path: '/api/environment-bridge/diagnostics/media',
     method: 'GET',
-    query: { sessionId: 'robot-session', kind: 'audio' },
+    query: { sessionId, kind: 'audio' },
   }));
   assert.equal(media.status, 200);
   assert.equal(media.contentType, 'audio/wav');

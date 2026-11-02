@@ -2,12 +2,76 @@
 
 The large development and evaluation JSONL corpora are stored with Git LFS. After cloning, run `git lfs install` and `git lfs pull` before training or validating the corpus. LFS preserves the complete files and their manifest hashes.
 
-This existing lane trains independent Intent and Task LoRA adapters on Qwen3.5 0.8B (default) or the explicitly selected Qwen3.5 2B base:
+This existing lane trains independent Intent and Task LoRA adapters on Qwen3.5 0.8B (default), or an explicitly selected Qwen3.5 2B or 9B base:
 
 - **Intent** reads only the current request and returns `needsResponse`, `needsAction`, `needsToolUse`, `taskPlanner`, and independent `taskContext` / `conversationContext` lists, with optional memory search fields. Context lists select individual persona sections and the relevant evidence sources for each consumer.
 - **Task** receives the runtime Context Builder's selected evidence and capability catalog. It returns `taskDecision`, an ordered `program`, and execution handoff fields when applicable. It can also return the approved `{"delegatePlanning":true}` branch to ask the configured larger model for a plan. Both paths use Core task validation and the same active executor. Task does not select speech steps. Intent selects `needsResponse`, and the separate Persona conversation model authors the outward response after selected task results.
 
-**Version 20 — Intent memory selection.** `intent-memory-cases.ts` adds 107 development records and 58 separate evaluation records. They contrast recalling a prior spoken description, consulting retained observations and describing the current image; diversify memory queries; and cover stored record types, newest-first retrieval, explicit absolute time bounds, and the latest recorded sleep cycle. Related visual subjects stay in one development fold. New stable family IDs do not renumber earlier cases. Previous decoded records, Task outputs, regression cases and approved runtime prompts remain unchanged. Totals are 6,873 development records (1,539 Intent / 5,334 Task), 1,648 evaluation records (355 Intent / 1,293 Task), and 187 regression records (46 Intent / 141 Task).
+**Body Control motion contract (October 23 source update).** Task no longer uses
+`generatedMotion` or a MetaHuman joint-generation graph. A robot configured for
+Freestyle advertises `requestMotion` with a movement `description`; Body Control
+owns generation and execution. Library-configured fixtures retain their named
+commands. The custom-motion source cases use this action, and the exact wave,
+right-hand and Hamlet requests are held-out regression cases. Scoring counts
+`requestMotion` as a physical selection. Regenerate datasets from the current
+graph/schema before a new training run; existing JSONL snapshots, frozen runs and
+LoRA weights have not been migrated or qualified by these source changes.
+
+**Version 23 — conversational continuity.** The existing memory curriculum adds
+37 development and 20 evaluation records distinguishing recent conversation,
+archived facts, earlier assistant claims and current visual evidence. Generic
+questions about a person include conversation history; explicitly archived
+questions retain memory-only examples. Speaker and persona evidence remain
+distinct. These are supervised examples, not runtime routing rules. Synthetic
+subjects replace private biography, and the original reported failures remain
+outside fitting and checkpoint selection.
+
+Totals are 7,174 development records (1,840 Intent / 5,334 Task), 1,798 evaluation
+records (505 Intent / 1,293 Task), and 196 regression records (46 Intent / 150
+Task). Existing Task targets and runtime prompts are unchanged. Training and
+qualification remain separate; generating these records does not change role
+assignments.
+
+**Version 22 — assessment context without a fixed mode shortcut.** The autonomy
+selector's version-21 targets mapped every Semi request to the same four sources.
+This curriculum error reproduced in saved-input serving replays. The existing
+source cases now cover open activity selection, an ongoing execution,
+environmental interest and inner interests in both modes. Their targets depend
+on the recorded operation state; equivalent Semi and Full inputs share context
+targets. Persona goals and desires can be relevant in either mode, and an
+ongoing execution can require execution evidence in either mode. Optional
+alternative sources remain accepted through the existing context requirements.
+This changes supervised examples, not runtime route rules or prompts.
+
+There are 256 autonomy-context development records and 128 separate evaluation
+records, with opaque cycle identities, reordered catalogs and preserved memory
+scope. Both modes and related variants remain in the same development fold.
+Intent totals are 1,803 development and 485 evaluation records, with its 46
+regression records unchanged. Ordinary Intent records and runtime graph properties
+are unchanged. Shared corpus regeneration also refreshes Task's existing local-time
+and status projections; Task source cases, target programs and instructions are
+unchanged, and no Task adapter is fitted by this Intent run. Private runtime
+failures remain replay-only; archived fits and reports
+retain their original corpora. A corrected corpus alone does not qualify a new
+adapter or repair companion behavior.
+
+**Version 21 — autonomy context selection.** Intent adds 128 synthetic development
+records and 48 separate evaluation records for the approved Active Operator
+context-selection contract. They reuse the graph-owned selector prompt and the
+shared Core schema/parser, with `outputContract: "autonomy-context"` provenance.
+`taskContext` selects assessment sources; these outputs neither select activity
+nor dispatch work. Families cover Semi/Full, source availability, operation state
+and an earlier assessment's memory request. Clock/catalog/camera siblings stay in
+one fold. The original private failures remain replay-only. These correlated
+synthetic cases qualify routing, not autonomous companionship or image accuracy.
+The generator also renders absent supplied-context availability as `{}`, matching
+the runtime template. Task references, folds and specialist assignment are unchanged.
+Intent totals are 1,675 development, 405 evaluation and 46 regression records.
+Context-only scoring validates the complete route structure but measures only the consumed taskContext and memory scope; unused compatibility routes are retained in captured outputs. Ordinary request scoring still includes every consumed route, including Goal Review.
+A new adapter requires matched old/new-skill serving comparison; generation alone
+neither changes the active adapter nor establishes selection quality.
+
+**Version 20 — Intent memory selection.** `intent-memory-cases.ts` adds 107 development records and 58 separate evaluation records. They contrast recalling a prior spoken description, consulting retained observations and describing the current image; diversify memory queries; and cover stored record types, newest-first retrieval, explicit absolute time bounds, and the latest recorded sleep cycle. Related visual subjects stay in one development fold. New stable family IDs do not renumber earlier cases. Previous decoded records, Task outputs, regression cases and approved runtime prompts remain unchanged. The current graph/schema regeneration includes the independent Goal Review route. Totals are 6,881 development records (1,547 Intent / 5,334 Task), 1,650 evaluation records (357 Intent / 1,293 Task), and 196 regression records (46 Intent / 150 Task).
 
 Absolute time targets use only timezone-qualified timestamps supplied in the synthetic request. Request-only Intent has no implicit clock; this extension does not teach invented dates for relative calendar language. Newest-first retrieval orders type/time/cycle-filtered records by recorded time and does not perform semantic topic ranking. Observed private failures remain outside fitting and checkpoint selection. Existing generic episodic-recall labels are preserved, and a saved statement remains attributed evidence rather than independent proof of its contents. No adapter is trained or activated by generating these records.
 
@@ -254,12 +318,14 @@ pnpm train:environment-action-selector:0.8b -- --specialist intent --final-from 
 pnpm export:environment-action-selector:merged -- --root out/environment-action-selector/training/intent-final-001
 ```
 
-Select the 2B base through the same training CLI, using separate run directories for Intent and Task:
+Select the 2B or 9B base through the same training CLI, using separate run directories for each specialist and base:
 
 ```bash
 pnpm train:environment-action-selector:0.8b -- --specialist intent --base-model unsloth/Qwen3.5-2B --reuse-settings-from out/environment-action-selector/training/<selected-intent-run>/final --output out/environment-action-selector/training/intent-2b-refined
 pnpm export:environment-action-selector:merged -- --root out/environment-action-selector/training/intent-2b-refined --stage final --lora-only
 ```
+
+For a 9B candidate, select `--base-model unsloth/Qwen3.5-9B` and a separate output directory. The existing remote path accepts `--remote-profile PROFILE --remote-max-hourly USD --remote-max-total USD` with `--reuse-settings-from`; it uses that profile's configured RunPod template and GPU, preserves complete examples, verifies downloaded artifacts and terminates its own pod. The 9B job allocates 100 GB each for container and volume storage to accommodate the trainer environment and base weights; existing smaller-model allocations are unchanged, and storage remains included in the budget calculation. A reused smaller-model recipe is not evidence of 9B quality. Remote specialist fitting returns an unactivated candidate requiring separate evaluation and serving qualification. Automatic specialist promotion still targets only the existing 0.8B and 2B service owners; this training extension does not change production roles or add a 9B promotion path.
 
 The command name retains its historical `0.8b` suffix; `--base-model` selects the actual base. Omit it to retain 0.8B. Reused settings record both their source base and the fit's target base; 0.8B development selection is not evidence of 2B quality. Complete examples are measured again, with no inherited sequence capacity or changed hyperparameters. The checkpoint evaluator reads the recorded training base, and export checks that base against run provenance. Adapter-only export permits one shared base with separate specialist adapters. Existing reviewed-data callers keep `--lora-only`'s reviewed-stage default; `--stage final` selects final or reused-development fits explicitly. Qualification and production activation remain separate.
 
@@ -283,13 +349,52 @@ Report version 5 adds separate `memorySelection` measurements for Intent records
 
 Environment request intent inherits the selected model's repetition penalty through Model Router. Include the actual node and model sampling settings in serving comparisons; a penalty on repeated tokens can change structured route decisions.
 
-Transformers evaluation latency is **not** llama.cpp/Ollama serving latency. Benchmark merged exports and shared adapters through the configured backend separately before claiming a speed improvement. Preserve PEFT adapters, GGUF LoRA adapters, training provenance, and quantized merged exports under ignored `out/environment-action-selector/training/`. Export receipts hash the merged language, GGUF adapter, and projector files. Training and export do not activate a model or execute robot actions.
+Transformers evaluation latency is **not** llama.cpp/Ollama serving latency. Benchmark merged exports and shared adapters through the configured backend separately before claiming a speed improvement. Preserve native PEFT adapters, the GGUF artifacts required by configured/selectable models, and training provenance under ignored `out/environment-action-selector/training/`; apply the retention boundaries below when retiring redundant outputs. Export receipts hash the merged language, GGUF adapter, and projector files. Training and export do not activate a model or execute robot actions.
 
 Scoring verifies every expected record ID and provenance against the frozen input file (or each archived fold's `validation.jsonl`) before writing a report. Missing, duplicate, unexpected or changed reference records fail scoring. `typedDecisionMatch` measures the program and typed fields, not semantic correctness. The report includes a `semanticReview.pending` list with the input, reference, actual output and prediction digest; no unreviewed prediction counts as confirmed correct. A valid prediction with a recorded passing semantic and grounding review can count as confirmed correct even when its wording differs from the reference. A human review JSON array can be supplied with `--reviews <json>`; each entry contains `recordId`, `predictionDigest`, `semantic` and `grounding` (`pass` or `fail`), and a nonempty `reason`. This separates format/action measurements from reviewed interpretation and grounding without a new grader prompt.
 
 Conversation uses finite Coordinator work and the `environment-conversation` delivery workflow under the same durable execution; slow generation does not hold the active program's execution lease. Task selection and conversation retain the same capability interface but independently select their optional context. Recall uses the existing Coordinator and is joined only by consumers selecting memory. The larger planner receives the original task context and schema; only the small planner sees the approved delegation option. Delegation training targets follow explicit requests to use that planner, with separate discussion, quotation, and direct-selection cases. These examples do not calibrate when the specialist should independently seek help or impose a complexity threshold.
 
-Archived runs retain their exact training/validation files and hashes. Updating the current corpus for a changed routing or delegation contract does not update an in-progress adapter's training inputs or qualify it against the new prompt. Keep those run directories intact and evaluate the served candidate against the current contract before activation; do not relabel old prompt results as current-contract results.
+Archived runs retain their exact training/validation content and hashes. Updating the current corpus for a changed routing or delegation contract does not update an in-progress adapter's training inputs or qualify it against the new prompt. Evaluate the served candidate against the current contract before activation; do not relabel old prompt results as current-contract results. Authorized artifact retirement follows the retention boundaries below; an archive's age alone does not authorize its deletion.
+
+### Training data and artifact retention
+
+Preserve the source cases, complete development corpora, per-run training and
+validation snapshots, frozen evaluation/regression sets, manifests and split
+identities. Preserve profile-owned reviewed training records and their human
+review history. These are inputs for successive training runs, not disposable
+checkpoint output. Keep held-out data separate from fitting, including the
+retired classifier's lock and one-shot evaluation receipt read by `corpus.ts`.
+Use a new output directory for each fit; do not overwrite an archived corpus.
+
+Keep configured and selectable model artifacts, their native PEFT adapters,
+tokenizers, training configurations, run provenance, selection reports and
+evaluation evidence. The manual trainer needs the current native adapter to
+compare a candidate; retaining only its serving GGUF is insufficient. Keep
+independent dataset/tokenizer copies where existing readers require those paths;
+do not turn writable training snapshots into shared hard links or symlinks.
+
+Owner-authorized cleanup can retire intermediate `checkpoint-*` output after
+training and selection finish, provided the selected adapter survives outside
+the removed directories and no active job needs their optimizer/restart state.
+Preserve small training-state/configuration records as dated evidence. Retain a
+checkpoint that is the only surviving native adapter. Retired epoch checkpoints
+cannot subsequently be resumed or reevaluated with `--checkpoint-policy epoch-1`,
+`epoch-2` or `final-epoch`; saved predictions and selection reports remain evidence,
+and a new fit is needed to recreate deleted weights. This does not change the
+trainer's checkpoint policy or introduce automatic deletion.
+For a retained selected checkpoint in a partially retired fold, use its exact
+adapter path with `evaluate_qwen_checkpoint.py`; `evaluate-folds.ts`'s epoch-policy
+selector expects all three original checkpoint directories.
+
+For failed attempts or redundant exports, verify full-file hashes and retain an
+accessible exact counterpart before removing a duplicate. Record original path,
+retained path and SHA-256 in the dated cleanup receipt. Preserve unique failed-run
+inputs, configuration and reports in its evidence archive. Completed run inputs
+that the training/scoring commands read remain at their original paths. The local
+2026-10-29 cleanup receipt is `out/training-cleanup-20261029.json`; its accompanying
+`out/training-cleanup-20261029-evidence.tar.gz` retains the retired checkpoint
+records and failed-attempt evidence, with their original relative paths.
 
 
 ## Tool-use scenarios and delegation boundaries

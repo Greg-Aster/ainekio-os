@@ -1,5 +1,6 @@
 <script lang="ts">
-  import type { Edge, Node } from '@xyflow/svelte'
+  import type { EditorNode as Node } from '../../lib/client/flow-editor/template-converter'
+  import type { Edge } from '@xyflow/svelte'
   import type { GraphOutputCondition } from '@metahuman/core/cognitive-graph-contract'
   import {
     connectionTypeWarning,

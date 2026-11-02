@@ -6,7 +6,7 @@ import { spawnSync } from 'node:child_process';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 import test from 'node:test';
 
-const server = path.resolve(process.env.METAHUMAN_BUILT_SERVER || fileURLToPath(new URL('./dist/server', import.meta.url)));
+const server = fs.realpathSync(path.resolve(process.env.METAHUMAN_BUILT_SERVER || fileURLToPath(new URL('./dist/server', import.meta.url))));
 const chunks = path.join(server, 'chunks');
 // The public Core barrel is emitted by the real worker build, with named exports.
 const barrel = fs.readdirSync(chunks).find(name => name.startsWith('index_')

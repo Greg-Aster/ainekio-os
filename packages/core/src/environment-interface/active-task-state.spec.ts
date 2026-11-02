@@ -14,7 +14,7 @@ eventBus.disconnect()
 const { setAuditEnabled } = await import('../audit.js')
 setAuditEnabled(false)
 await import('../index.js')
-const { recordEnvironmentObservation } = await import('./store.js')
+const { recordEnvironmentObservation, subscribeEnvironmentActions, setEnvironmentBridgeEnabled } = await import('./store.js')
 const { environmentActiveTaskStepNode: step, environmentActiveTaskWaitNode: wait } = await import('../nodes/environment/active-task.node.js')
 const { executionContextNode } = await import('../nodes/utility/execution-context.node.js')
 after(() => fs.rmSync(root, { recursive: true, force: true }))
@@ -24,7 +24,7 @@ const decision = { outcome: 'act', objective: 'Find the red cup', completionCrit
 const motion = { type: 'move' as const, continuous: true, direction: 'forward' as const, speed: 60, forward: 80, turn: 20 }
 const program: EnvironmentTaskProgram = { steps: [{ kind: 'action', action: motion }] }
 const observation: EnvironmentObservation = { environmentId: 'fixture', adapter: 'ainekio-gateway', sessionId: 'state-fixture',
-  timestamp: new Date().toISOString(), capabilities: { actions: ['move', 'captureImage', 'stop'] },
+  timestamp: new Date().toISOString(), capabilities: { actions: ['move', 'captureImage', 'stop', 'requestMotion'] },
   state: { activeMovementUpdates: { version: 1, available: true, gatewayInstance: 'gateway', robotId: 'p4', epoch: 1,
     maxValidityMs: 2000, maxInFlight: 1, controls: ['speed', 'forward', 'turn'] } } }
 recordEnvironmentObservation(observation)
@@ -39,6 +39,10 @@ function fixture(activeProgram = program) {
       dispatch: (value: any) => { (value.kind === 'robot_status' ? statusEffects : dispatches).push(value); return { effectId: `effect-${dispatches.length}` } },
       pendingEvents: () => [], waitForEvent: () => { throw new Error('WAIT') } } } as never
   const state: ActiveTaskState = { stepIndex: 0, evidence: [], updateRevision: 0, action: motion, motionId: 'motion', accepted: true }
+  const first = activeProgram.steps[0]
+  const goal = (first?.kind === 'action' ? first.action : first?.kind === 'behavior' ? first.motion : null)?.locomotionGoal
+  if (goal?.kind === 'distance' || (goal?.kind === 'approach' || goal?.kind === 'follow') && goal.proximity.kind === 'metric')
+    state.depthDemand = { consumerId: 'already-running-navigation', ready: true }
   const advance = async (value: ActiveTaskState) => (await step.execute({ state: value }, context, {})).state as ActiveTaskState
   const receive = async (value: ActiveTaskState, actionId: string, type: EnvironmentFeedback['type'], data?: Record<string, unknown>) => {
     const feedback: EnvironmentFeedback = { id: `${actionId}-${type}`, actionId, type, message: `Explicit ${type}`, timestamp: new Date().toISOString(), data }
@@ -68,6 +72,8 @@ test('a terminal motion receipt is projected as physical evidence while its earl
   assert.equal(final.steeringResult?.actionId, sent.pendingControls!.commandId)
   assert.equal(f.task().actionId, 'motion')
   assert.equal(f.task().feedback.actionId, 'motion', 'Control acceptance must not replace the physical result')
+  assert.equal(f.task().selectedAction.type, 'move', 'The terminal receipt retains the action it actually describes')
+  assert.equal(final.action, undefined, 'Retaining receipt attribution does not retain active motion')
 })
 
 test('failed steering is visible without suppressing an explicitly renewed attempt', async () => {
@@ -135,17 +141,47 @@ test('capture receipt alone never satisfies a visual objective', async () => {
   assert.equal(captured.captureCompleted, true)
 })
 
+for (const action of [{ type: 'stop' as const }, { type: 'captureImage' as const }]) {
+  test(`${action.type} program completion cannot establish a requested stretch`, async () => {
+    const f = fixture({ steps: [{ kind: 'action', action }] })
+    Object.assign(f.context, { activeTaskDecision: { outcome: 'act', objective: 'Perform the requested stretch.',
+      completionCriteria: 'The requested stretch has a correlated physical effect.',
+      requiredCompletionBasis: 'action_result', continuationPolicy: 'none', reason: 'Requested movement', objectiveComplete: false } })
+    const state = await f.advance({ stepIndex: 1, updateRevision: 0, evidence: ['Selected action completed'],
+      completedActionId: 'selected-action', feedback: { id: 'result', actionId: 'selected-action',
+        type: 'completed', timestamp: new Date().toISOString(), message: action.type === 'stop' ? 'ack' : 'image captured' } })
+    assert.equal(state.done, true)
+    assert.equal(state.objectiveComplete, false)
+    assert.equal(f.task().decision.outcome, 'act')
+    assert.equal(f.task().decision.objectiveComplete, false)
+    assert.equal(f.task().feedback.message, state.feedback?.message)
+    assert.equal(f.dispatches.length, 0, 'Returned evidence does not execute an alternative program')
+  })
+}
+
+test('program completion preserves a model-authored goal assessment and its evidence', async () => {
+  const f = fixture({ steps: [{ kind: 'action', action: { type: 'stop' } }] })
+  const assessed = { ...decision, outcome: 'complete', objectiveComplete: true,
+    completionEvidence: 'The selected observation establishes the goal criterion.' }
+  Object.assign(f.context, { activeTaskDecision: assessed })
+  const state = await f.advance({ stepIndex: 1, updateRevision: 0, evidence: ['Stop acknowledged'] })
+  assert.equal(state.done, true)
+  assert.equal(state.objectiveComplete, true)
+  assert.equal(f.task().decision.outcome, 'complete')
+  assert.equal(f.task().decision.objectiveComplete, true)
+  assert.equal(f.task().decision.completionEvidence, assessed.completionEvidence)
+})
+
 for (const basis of ['action_result', 'visual_observation', 'environment_state', 'response']) {
-  test(`a finished finite program settles only its selected receipt completion basis (${basis})`, async () => {
+  test(`a finished finite program retains its objective decision (${basis})`, async () => {
     const f = fixture()
     Object.assign(f.context, { activeTaskDecision: { ...decision, requiredCompletionBasis: basis, continuationPolicy: 'none' } })
     const received = await f.receive(f.state, 'motion', 'completed')
     const state = await f.advance(received)
-    const complete = basis === 'action_result'
     assert.equal(state.done, true)
-    assert.equal(state.objectiveComplete, complete)
+    assert.equal(state.objectiveComplete, false)
     assert.equal(f.task().decision.objective, decision.objective)
-    assert.equal(f.task().decision.outcome, complete ? 'complete' : decision.outcome)
+    assert.equal(f.task().decision.outcome, decision.outcome)
     assert.equal(f.task().actionStatus, 'completed', 'Physical result is independent of remaining objective interpretation')
     assert.deepEqual(f.task().feedback, { actionId: 'motion', type: 'completed', message: 'Explicit completed', observedAt: received.feedback!.timestamp })
     assert.equal(f.dispatches.length, 0)
@@ -153,7 +189,7 @@ for (const basis of ['action_result', 'visual_observation', 'environment_state',
   })
 }
 
-test('multi-step receipt completion waits for every selected action and ignores unrelated receipts', async () => {
+test('multi-step program completion waits for every selected action and retains objective assessment', async () => {
   const f = fixture({ steps: [
     { kind: 'action', action: { type: 'robotCommand', command: 'bow' } },
     { kind: 'action', action: { type: 'robotCommand', command: 'wave' } },
@@ -165,7 +201,8 @@ test('multi-step receipt completion waits for every selected action and ignores 
   assert.notEqual(first.objectiveComplete, true)
   const second = await f.receive({ ...first, motionId: 'second', action: { type: 'robotCommand', command: 'wave' } }, 'second', 'completed')
   const final = await f.advance(second)
-  assert.equal(final.objectiveComplete, true)
+  assert.equal(final.done, true)
+  assert.equal(final.objectiveComplete, false)
   assert.equal(final.evidence.length, 2)
   assert.equal(f.task().feedback.actionId, 'second')
 })
@@ -177,7 +214,7 @@ for (const type of ['failed', 'rejected', 'expired', 'cancelled', 'outcome_unkno
     const result = await f.receive({ ...f.state, action: { type: 'robotCommand', command: 'bow' } }, 'motion', type)
     const final = await f.advance(result)
     assert.equal(final.objectiveComplete, false)
-    assert.equal(f.task().decision.outcome, 'failed', 'A terminal failure cannot request continuation of a one-off receipt objective')
+    assert.equal(f.task().decision.outcome, decision.outcome, 'The actual action failure does not select another objective outcome')
     assert.equal(f.task().actionStatus, type)
     assert.equal(f.task().feedback.type, type)
     assert.equal(f.dispatches.length, 0)
@@ -322,12 +359,16 @@ test('stale image correlation is explicit before remote admission', async () => 
   assert.equal(f.dispatches.length, 0)
 })
 
-test('generated motion is admitted asynchronously and user steering remains responsive', async () => {
-  const f = fixture({ steps: [{ kind: 'generatedMotion', description: 'Wave at the owner' }] })
+test('description-based motion is admitted through the bridge and user steering remains responsive', async t => {
+  recordEnvironmentObservation({ ...observation, state: { ...observation.state, body: { authenticated: true } } })
+  setEnvironmentBridgeEnabled(true)
+  const disconnect = subscribeEnvironmentActions(observation.sessionId, () => {})
+  t.after(() => { disconnect(); recordEnvironmentObservation(observation) })
+  const f = fixture({ steps: [{ kind: 'action', action: { type: 'requestMotion', description: 'Wave at the owner' } }] })
   const pending = await f.advance({ stepIndex: 0, updateRevision: 0, evidence: [] })
-  assert.equal(f.dispatches[0].payload.handler, 'environment.generate-motion')
-  assert.equal(pending.generationEffectId, 'effect-1')
-  assert.equal(pending.motionId, undefined, 'Inference cannot admit body execution before its result')
+  assert.equal(f.dispatches[0].payload.handler, 'environment.command')
+  assert.equal(f.dispatches[0].payload.input.description, 'Wave at the owner')
+  assert.equal(pending.motionId, f.dispatches[0].actionId)
   const received = await wait.execute({ state: { ...pending, pendingEvents: [{ kind: 'user_steering', payload: { userMessage: 'Cancel that request' } }] } }, f.context, {})
   assert.equal(received.continue, true)
   assert.equal(received.state.userInput.userMessage, 'Cancel that request')
@@ -345,17 +386,20 @@ test('a replacement program cannot bypass uncertain delivery from the earlier mo
   assert.equal(replacement.task().feedback.type, 'outcome_unknown')
 })
 
-test('failed asynchronous motion generation reaches the planner without dispatching a body command', async () => {
-  const f = fixture({ steps: [{ kind: 'generatedMotion', description: 'Wave at the owner' }] })
+test('a failed Body Control motion result reaches the planner without a generation retry', async t => {
+  recordEnvironmentObservation({ ...observation, state: { ...observation.state, body: { authenticated: true } } })
+  setEnvironmentBridgeEnabled(true)
+  const disconnect = subscribeEnvironmentActions(observation.sessionId, () => {})
+  t.after(() => { disconnect(); recordEnvironmentObservation(observation) })
+  const f = fixture({ steps: [{ kind: 'action', action: { type: 'requestMotion', description: 'Wave at the owner' } }] })
   const pending = await f.advance({ stepIndex: 0, updateRevision: 0, evidence: [] })
-  const received = await wait.execute({ state: { ...pending, pendingEvents: [{ kind: 'work_result',
-    payload: { effectId: pending.generationEffectId, result: { state: 'failed', error: { message: 'Remote motion server unavailable' } } } }] } }, f.context, {})
-  const final = await f.advance(received.state)
+  const received = await f.receive(pending, pending.motionId!, 'failed', { motionSystem: 'freestyle' })
+  const final = await f.advance(received)
   assert.equal(final.done, true)
   assert.equal(final.objectiveComplete, false)
   assert.equal(f.task().decision.outcome, decision.outcome)
-  assert.match(f.task().decision.reason, /Remote motion server unavailable/)
-  assert.equal(f.dispatches.length, 1, 'Only the original remote generation job was admitted')
+  assert.match(f.task().decision.reason, /Explicit failed/)
+  assert.equal(f.dispatches.length, 1, 'Only the original Body Control request was admitted')
 })
 
 test('active action changes and physical receipts reach Robot Status without a semantic refresh', async () => {
@@ -1453,6 +1497,47 @@ test('locomotion wait subscribes only to its selected sensor event channel', asy
   assert.equal(reason, `active_task:${observation.sessionId}:perception:locomotion`)
 })
 
+test('distance navigation acquires its depth before motion and releases after failed measurement', async () => {
+  const action = { ...motion, locomotionGoal: { kind: 'distance' as const, direction: 'forward' as const, metres: 1, tolerance: .1 } }
+  const f = fixture({ steps: [{ kind: 'action', action }] })
+  let state = await f.advance({ stepIndex: 0, updateRevision: 0, evidence: [] })
+  assert.equal(f.dispatches.length, 1)
+  assert.equal(f.dispatches[0].payload.input.vision.operation, 'depthDemand')
+  assert.equal(f.dispatches[0].payload.input.vision.enabled, true)
+  assert.equal(state.motionId, undefined)
+  const consumerId = state.depthDemand!.consumerId
+  state = (await wait.execute({ state: { ...state, pendingEvents: [{ kind: 'work_result', payload: {
+    effectId: state.depthDemand!.effectId, result: { state: 'failed', error: { message: 'No camera measurement' } },
+  } }] } }, f.context, {})).state
+  assert.equal(state.done, true)
+  assert.equal(state.objectiveComplete, false)
+  assert.equal(state.depthDemand, undefined)
+  assert.deepEqual(f.dispatches[1].payload.input.vision, { operation: 'depthDemand', consumerId, enabled: false })
+  assert.equal(f.dispatches.some(d => d.payload.handler === 'environment.command'), false)
+})
+
+test('distance navigation starts from the measurement returned by its depth acquisition', async () => {
+  const action = { ...motion, locomotionGoal: { kind: 'distance' as const, direction: 'forward' as const, metres: 1, tolerance: .1 } }
+  const f = fixture({ steps: [{ kind: 'action', action }] })
+  const measurement = { position: { available: true, source: 'fixture-depth', robotId: 'p4', referenceId: 'fresh-map',
+    observedAt: new Date().toISOString(), xMetres: 0, yMetres: 0, headingDegrees: 0, uncertaintyMetres: null } }
+  recordEnvironmentObservation({ ...observation, state: { ...observation.state,
+    body: { authenticated: true, robotId: 'p4' }, locomotionMeasurement: measurement } })
+  setEnvironmentBridgeEnabled(true)
+  const disconnect = subscribeEnvironmentActions(observation.sessionId, () => {})
+  try {
+    let state = await f.advance({ stepIndex: 0, updateRevision: 0, evidence: [] })
+    state = (await wait.execute({ state: { ...state, pendingEvents: [{ kind: 'work_result', payload: {
+      effectId: state.depthDemand!.effectId, result: { state: 'completed', result: { vision: { enabled: true, locomotionMeasurement: measurement } } },
+    } }] } }, f.context, {})).state
+    state = await f.advance(state)
+    assert.equal(state.locomotion?.initial.position?.referenceId, 'fresh-map')
+    assert.equal(state.depthDemand?.ready, true)
+    assert.ok(state.motionId)
+    assert.equal(f.dispatches.filter(d => d.payload.handler === 'environment.command').length, 1)
+  } finally { disconnect(); recordEnvironmentObservation(observation) }
+})
+
 test('locomotion metric target acquisition sends the exact retained frame before any gait admission', async () => {
   const target = { frameId: 'retained-source', frameTimestamp: new Date().toISOString(), box: { x: .1, y: .2, width: .3, height: .4 },
     groundContact: { x: .25, y: .6 } }
@@ -1461,7 +1546,12 @@ test('locomotion metric target acquisition sends the exact retained frame before
   ;(f.context as any).graphExecution.frame = (id: string) => id === target.frameId ? { id, timestamp: target.frameTimestamp,
     dataUrl: 'data:image/jpeg;base64,c291cmNl', metadata: { robotId: 'p4', epoch: 3 } } : undefined
   let result = await f.advance({ stepIndex: 0, updateRevision: 0, evidence: [] })
-  const request = f.dispatches[0].payload
+  assert.equal(f.dispatches[0].payload.input.vision.operation, 'depthDemand')
+  result = (await wait.execute({ state: { ...result, pendingEvents: [{ kind: 'work_result', payload: {
+    effectId: result.depthDemand!.effectId, result: { state: 'completed', result: { vision: { enabled: true } } },
+  } }] } }, f.context, {})).state
+  result = await f.advance(result)
+  const request = f.dispatches[1].payload
   assert.equal(request.handler, 'environment.visual-read')
   assert.deepEqual(request.input.vision.groundContact, target.groundContact)
   assert.equal(request.input.vision.sourceFrame.jpeg, 'c291cmNl')

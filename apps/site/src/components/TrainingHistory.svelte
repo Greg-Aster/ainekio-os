@@ -2,12 +2,12 @@
   import { onMount, onDestroy } from 'svelte';
   import { apiFetch } from '../lib/client/api-config';
   import { activeView, systemSection } from '../stores/navigation';
-  import type { TrainingCandidateSummary, TrainingCleanupReceipt } from '@metahuman/core/training-schema';
+  import type { TrainingCandidateSummary, TrainingCleanupReceipt, TrainingTarget } from '@metahuman/core/training-schema';
   let candidates: TrainingCandidateSummary[] = [];
   let cleanup: TrainingCleanupReceipt[] = [];
   let selectedCandidate = '';
   let baselineModel = '';
-  let baselineProvider: 'ollama' | 'vllm' = 'ollama';
+  let baselineProvider: TrainingTarget = 'llama-cpp';
   let prompts = '';
   let notes = '';
   let checks: boolean[] = [];
@@ -405,14 +405,14 @@
         {#if candidate.error}<p class="text-red-400">{candidate.error}</p>{/if}
         {#if candidate.status === 'candidate'}
           {#if candidate.review?.decision !== 'accepted'}
-            <p class="text-sm text-gray-500">Ollama imports this run's GGUF. vLLM LoRA needs the exact training base already running with runtime LoRA loading enabled. For a full model, set its artifact path in Backend setup first. Preparation does not assign a role.</p>
+            <p class="text-sm text-gray-500">Ollama imports this run's GGUF. Preparation does not assign a role.</p>
             <button class="px-3 py-2 rounded bg-blue-700 text-white disabled:opacity-50" disabled={reviewBusy} on:click={() => reviewAction('prepare')}>Prepare exact artifact</button>
             <label class="block">Baseline backend
               <select class="block w-full mt-1 p-2 rounded bg-gray-900 text-white" bind:value={baselineProvider} disabled={reviewBusy}>
-                <option value="ollama">Ollama</option><option value="vllm">vLLM</option>
+                <option value="llama-cpp">llama.cpp (unadapted base)</option>
+                <option value="ollama">Ollama</option>
               </select>
             </label>
-            <p class="text-sm text-gray-500">The baseline may use another configured backend, so a full vLLM candidate can be compared with a base or previous model served by Ollama.</p>
             <label class="block">Baseline model
               <input class="block w-full mt-1 p-2 rounded bg-gray-900 text-white" bind:value={baselineModel} disabled={reviewBusy} placeholder="Installed base or previous accepted model" />
             </label>

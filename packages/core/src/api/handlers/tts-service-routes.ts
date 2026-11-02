@@ -5,11 +5,6 @@ import {
   stopVoiceService,
   type VoiceServiceId,
 } from '../../voice-service-manager.js';
-import {
-  getSovitsServerStatus,
-  startSovitsServer,
-  stopSovitsServer,
-} from '../../tts/server-manager.js';
 
 function managedVoiceServer(id: VoiceServiceId): UnifiedHandler {
   return async (req) => {
@@ -35,24 +30,3 @@ function managedVoiceServer(id: VoiceServiceId): UnifiedHandler {
 }
 
 export const handleKokoroServer = managedVoiceServer('kokoro');
-export const handleKittenServer = managedVoiceServer('kitten');
-
-export const handleSovitsServer: UnifiedHandler = async (req) => {
-  try {
-    if (req.method === 'GET') return { status: 200, data: await getSovitsServerStatus() };
-
-    const { action, port } = req.body ?? {};
-    if (action === 'start') {
-      const result = await startSovitsServer(port ?? 9880);
-      return { status: result.success ? 200 : 500, data: result };
-    }
-    if (action === 'stop') {
-      const result = await stopSovitsServer();
-      return { status: result.success ? 200 : 500, data: result };
-    }
-
-    return { status: 400, data: { error: 'Invalid action. Use "start" or "stop".' } };
-  } catch (error) {
-    return { status: 500, data: { error: String(error), success: false, running: false } };
-  }
-};

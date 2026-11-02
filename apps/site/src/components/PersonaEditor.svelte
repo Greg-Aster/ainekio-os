@@ -499,6 +499,7 @@
       <button class="btn-danger" on:click={loadPersonaData}>Retry</button>
     </div>
   {:else if personaCore}
+    {@const core = personaCore}
     <div class="border-b border-gray-200 dark:border-gray-700 p-4">
       <div class="flex gap-2 mb-3 flex-wrap">
         <button
@@ -542,7 +543,7 @@
     {#if editorTab === 'core'}
       <div class="flex-1 overflow-y-auto p-4">
         <div class="flex gap-2 flex-wrap mb-6">
-          {#each ['identity', 'personality', 'values', 'goals', 'context', 'advanced'] as tab}
+          {#each ['identity', 'personality', 'values', 'goals', 'context', 'advanced'] as const as tab}
             <button
               class="px-3 py-1.5 rounded-md text-sm font-medium transition-all
                      {coreTab === tab ? 'bg-indigo-500 text-white' : 'bg-gray-100 dark:bg-gray-700 dark:text-gray-300'}"
@@ -586,7 +587,8 @@
               <label class="flex flex-col gap-1.5 mt-4">
                 <span class="font-medium text-sm text-gray-700 dark:text-gray-300">Aliases (one per line)</span>
                 <textarea rows="3" value={personaCore.identity.aliases.join('\n')} on:input={(e) => {
-                  personaCore.identity.aliases = e.currentTarget.value.split('\n').map(s => s.trim()).filter(Boolean);
+                  core.identity.aliases = e.currentTarget.value.split('\n').map(s => s.trim()).filter(Boolean);
+                  personaCore = core;
                 }} class="input-field"></textarea>
               </label>
             </section>
@@ -598,7 +600,8 @@
                 <label class="flex flex-col gap-1.5">
                   <span class="font-medium text-sm text-gray-700 dark:text-gray-300">Tone (one per line)</span>
                   <textarea rows="3" value={personaCore.personality.communicationStyle.tone.join('\n')} on:input={(e) => {
-                    personaCore.personality.communicationStyle.tone = e.currentTarget.value.split('\n').map(s => s.trim()).filter(Boolean);
+                    core.personality.communicationStyle.tone = e.currentTarget.value.split('\n').map(s => s.trim()).filter(Boolean);
+                    personaCore = core;
                   }} class="input-field"></textarea>
                 </label>
                 <label class="flex flex-col gap-1.5">
@@ -638,7 +641,7 @@
                     { key: 'extraversion', label: 'Extraversion' },
                     { key: 'agreeableness', label: 'Agreeableness' },
                     { key: 'neuroticism', label: 'Neuroticism' }
-                  ] as trait}
+                  ] as const as trait}
                     <label class="flex flex-col gap-1.5">
                       <span class="font-medium text-sm text-gray-700 dark:text-gray-300">{trait.label} ({personaCore.personality.traits[trait.key]})</span>
                       <input type="range" min="0" max="1" step="0.05" bind:value={personaCore.personality.traits[trait.key]} class="w-full" />
@@ -657,19 +660,22 @@
               <label class="flex flex-col gap-1.5">
                 <span class="font-medium text-sm text-gray-700 dark:text-gray-300">Archetypes (one per line)</span>
                 <textarea rows="3" value={personaCore.personality.archetypes?.join('\n') || ''} on:input={(e) => {
-                  personaCore.personality.archetypes = e.currentTarget.value.split('\n').map(s => s.trim()).filter(Boolean);
+                  core.personality.archetypes = e.currentTarget.value.split('\n').map(s => s.trim()).filter(Boolean);
+                  personaCore = core;
                 }} class="input-field"></textarea>
               </label>
               <label class="flex flex-col gap-1.5 mt-4">
                 <span class="font-medium text-sm text-gray-700 dark:text-gray-300">Aesthetic (one per line)</span>
                 <textarea rows="3" value={personaCore.personality.aesthetic?.join('\n') || ''} on:input={(e) => {
-                  personaCore.personality.aesthetic = e.currentTarget.value.split('\n').map(s => s.trim()).filter(Boolean);
+                  core.personality.aesthetic = e.currentTarget.value.split('\n').map(s => s.trim()).filter(Boolean);
+                  personaCore = core;
                 }} class="input-field"></textarea>
               </label>
               <label class="flex flex-col gap-1.5 mt-4">
                 <span class="font-medium text-sm text-gray-700 dark:text-gray-300">Interests (one per line)</span>
                 <textarea rows="3" value={personaCore.personality.interests?.join('\n') || ''} on:input={(e) => {
-                  personaCore.personality.interests = e.currentTarget.value.split('\n').map(s => s.trim()).filter(Boolean);
+                  core.personality.interests = e.currentTarget.value.split('\n').map(s => s.trim()).filter(Boolean);
+                  personaCore = core;
                 }} class="input-field"></textarea>
               </label>
             </section>
@@ -707,7 +713,8 @@
               <label class="flex flex-col gap-1.5">
                 <span class="font-medium text-sm text-gray-700 dark:text-gray-300">Boundaries (one per line)</span>
                 <textarea rows="5" value={personaCore.values.boundaries.join('\n')} on:input={(e) => {
-                  personaCore.values.boundaries = e.currentTarget.value.split('\n').map(s => s.trim()).filter(Boolean);
+                  core.values.boundaries = e.currentTarget.value.split('\n').map(s => s.trim()).filter(Boolean);
+                  personaCore = core;
                 }} class="input-field"></textarea>
               </label>
             </section>
@@ -717,7 +724,7 @@
               { key: 'shortTerm', label: 'Short-Term Goals', statuses: ['pending', 'active', 'completed', 'paused'] },
               { key: 'midTerm', label: 'Mid-Term Goals', statuses: ['pending', 'active', 'design', 'planning', 'completed'] },
               { key: 'longTerm', label: 'Long-Term Goals', statuses: ['aspirational', 'ongoing', 'active', 'completed'] }
-            ] as goalType}
+            ] as const as goalType}
               <section class="mb-8 p-6 bg-gray-50 dark:bg-gray-800 rounded-lg">
                 <h3 class="m-0 mb-4 text-lg font-semibold">{goalType.label}</h3>
                 {#if personaCore.goals?.[goalType.key]}
@@ -753,8 +760,9 @@
               <label class="flex flex-col gap-1.5">
                 <span class="font-medium text-sm text-gray-700 dark:text-gray-300">Domains of Expertise (one per line)</span>
                 <textarea rows="4" value={personaCore.context?.domains?.join('\n') || ''} on:input={(e) => {
-                  if (!personaCore.context) personaCore.context = { domains: [], projects: [], currentFocus: [] };
-                  personaCore.context.domains = e.currentTarget.value.split('\n').map(s => s.trim()).filter(Boolean);
+                  if (!core.context) core.context = { domains: [], projects: [], currentFocus: [] };
+                  core.context.domains = e.currentTarget.value.split('\n').map(s => s.trim()).filter(Boolean);
+                  personaCore = core;
                 }} class="input-field"></textarea>
               </label>
             </section>
@@ -793,8 +801,9 @@
               <label class="flex flex-col gap-1.5">
                 <span class="font-medium text-sm text-gray-700 dark:text-gray-300">Current Focus Areas (one per line)</span>
                 <textarea rows="4" value={personaCore.context?.currentFocus?.join('\n') || ''} on:input={(e) => {
-                  if (!personaCore.context) personaCore.context = { domains: [], projects: [], currentFocus: [] };
-                  personaCore.context.currentFocus = e.currentTarget.value.split('\n').map(s => s.trim()).filter(Boolean);
+                  if (!core.context) core.context = { domains: [], projects: [], currentFocus: [] };
+                  core.context.currentFocus = e.currentTarget.value.split('\n').map(s => s.trim()).filter(Boolean);
+                  personaCore = core;
                 }} class="input-field"></textarea>
               </label>
             </section>
@@ -834,8 +843,9 @@
                 <label class="flex flex-col gap-1.5 mt-4">
                   <span class="font-medium text-sm text-gray-700 dark:text-gray-300">Motifs (one per line)</span>
                   <textarea rows="3" value={personaCore.writingStyle.motifs?.join('\n') || ''} on:input={(e) => {
-                    if (!personaCore.writingStyle) personaCore.writingStyle = { structure: '', motifs: [], defaultMantra: '' };
-                    personaCore.writingStyle.motifs = e.currentTarget.value.split('\n').map(s => s.trim()).filter(Boolean);
+                    if (!core.writingStyle) core.writingStyle = { structure: '', motifs: [], defaultMantra: '' };
+                    core.writingStyle.motifs = e.currentTarget.value.split('\n').map(s => s.trim()).filter(Boolean);
+                    personaCore = core;
                   }} class="input-field"></textarea>
                 </label>
                 <label class="flex flex-col gap-1.5 mt-4">

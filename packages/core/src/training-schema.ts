@@ -23,15 +23,22 @@ export interface TrainingCandidateResult {
   artifacts: Record<string, string>
 }
 
+export const TRAINING_TARGETS = ['llama-cpp', 'ollama'] as const
+export type TrainingTarget = typeof TRAINING_TARGETS[number]
+export function isTrainingTarget(value: unknown): value is TrainingTarget {
+  return TRAINING_TARGETS.some(target => target === value)
+}
+
 export interface TrainingCandidateReview {
   id: string
   runLabel: string
   datasetId: string
-  provider: 'ollama' | 'vllm'
+  provider: TrainingTarget
   model: string
   baselineModel: string
-  baselineProvider: 'ollama' | 'vllm'
+  baselineProvider: TrainingTarget
   servingIdentity: string
+  servingConfiguration?: { endpoint: string; model: string; lora: Array<{ path: string; scale: number }> }
   artifactReceiptHash: string
   createdAt: string
   cases: Array<{ prompt: string; baseline: string; candidate: string }>
@@ -52,7 +59,8 @@ export interface TrainingCandidateSummary {
   runLabel: string
   status: string
   method: string
-  target: 'ollama' | 'vllm'
+  /** Preserve the recorded label on historical runs, including retired targets. */
+  target: string
   baseModel: string
   candidateDirectory: string
   datasetId?: string

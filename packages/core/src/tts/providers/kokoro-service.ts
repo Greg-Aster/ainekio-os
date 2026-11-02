@@ -192,7 +192,7 @@ export class KokoroService implements ITextToSpeechService {
     }, { requestId });
 
     try {
-      const audioBuffer = await this.synthesizeViaServer(
+      const { audio: audioBuffer, readinessMs, requestMs } = await this.synthesizeViaServer(
         text,
         resolved.langCode,
         resolved.voice,
@@ -203,7 +203,9 @@ export class KokoroService implements ITextToSpeechService {
       );
 
       // Cache for future use
+      const cacheStartedAt = performance.now();
       cacheAudio(this.cacheConfig, text, resolved.cacheKey, resolved.speed, audioBuffer);
+      const cacheWriteMs = performance.now() - cacheStartedAt;
 
       const duration = Date.now() - startTime;
 
@@ -216,6 +218,9 @@ export class KokoroService implements ITextToSpeechService {
           textLength: text.length,
           audioSize: audioBuffer.length,
           durationMs: duration,
+          readinessMs,
+          requestMs,
+          cacheWriteMs,
           mode: 'server',
           voice: resolved.voiceKey,
           langCode: resolved.langCode,
@@ -279,11 +284,13 @@ export class KokoroService implements ITextToSpeechService {
     useCustom: boolean,
     customPath: string,
     signal?: AbortSignal
-  ): Promise<Buffer> {
+  ): Promise<{ audio: Buffer; readinessMs: number; requestMs: number }> {
     const serverUrl = getVoiceServiceUrl('kokoro');
 
     // Ensure server is ready (auto-start if needed)
+    const readinessStartedAt = performance.now();
     const serverReady = await this._ensureServerReady();
+    const readinessMs = performance.now() - readinessStartedAt;
     if (!serverReady) {
       throw new Error(`Kokoro server could not be started at ${serverUrl}`);
     }
@@ -298,6 +305,7 @@ export class KokoroService implements ITextToSpeechService {
       normalize: useCustom ? (this.config.normalizeCustomVoicepacks ?? true) : false,
     };
 
+    const requestStartedAt = performance.now();
     const response = await fetch(`${serverUrl}/synthesize`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
@@ -311,7 +319,8 @@ export class KokoroService implements ITextToSpeechService {
     }
 
     const arrayBuffer = await response.arrayBuffer();
-    return Buffer.from(arrayBuffer);
+    // Request time includes transport and client scheduling, not just inference.
+    return { audio: Buffer.from(arrayBuffer), readinessMs, requestMs: performance.now() - requestStartedAt };
   }
 
   /**

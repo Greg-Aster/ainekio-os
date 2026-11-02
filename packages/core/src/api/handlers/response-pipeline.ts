@@ -178,7 +178,7 @@ function getErrorSuggestion(error: string, failedNode: string | null): string {
   }
 
   if (failedNode === 'response_llm') {
-    return 'LLM generation failed. Try:\n• Check if Ollama/vLLM is running\n• Verify models are loaded (check Settings → Backend)\n• Check Big Brother status in the terminal\n• Try using a different model\n• Check system resources (CPU/Memory)';
+    return 'LLM generation failed. Try:\n• Check if the selected backend is running\n• Verify models are loaded (check Settings → Backend)\n• Check Big Brother status in the terminal\n• Try using a different model\n• Check system resources (CPU/Memory)';
   }
 
   if (failedNode === 'response_action_router') {
@@ -190,7 +190,7 @@ function getErrorSuggestion(error: string, failedNode: string | null): string {
   }
 
   // LLM/Model errors
-  if (error.includes('model') || error.includes('ollama') || error.includes('vllm')) {
+  if (error.includes('model') || error.includes('ollama')) {
     return 'Model or LLM backend issue. Try:\n• Check if your LLM backend is running (Settings → Backend)\n• Verify the model is loaded\n• Try switching to a different model\n• Restart your LLM backend';
   }
 

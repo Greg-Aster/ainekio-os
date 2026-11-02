@@ -79,7 +79,7 @@ export async function readRobotStatusLive(username: string, requestedSessionId?:
     && item.input.sessionId === session?.sessionId && !['speak', 'faceExpression', 'captureImage', 'sendText'].includes(String(item.input.type)))
   const store = openExecutionStore(username)
   try {
-    const projected = store.projectedTask(username)
+    const projected = store.projectedTasks(username).currentTask
     const ids = new Set(work.filter(item => ['queued', 'leased', 'waiting'].includes(item.state)).map(item => item.durable?.executionId).filter(Boolean))
     if (projected) ids.add(projected.executionId)
     const executions = []
@@ -154,7 +154,7 @@ export async function readRobotStatusLive(username: string, requestedSessionId?:
       movement: { source: 'gateway_command_state', observedAt: observation?.timestamp ?? null,
         motorOutput: Object.keys(record(robot.status)).length ? {
           output_ready: robot.status.output_ready ?? null,
-          output_armed: robot.status.output_armed ?? null,
+          servoPwmOutputEnabled: robot.status.output_armed ?? null,
           output_fault: robot.status.output_fault ?? null,
           timestamp: robot.status.status_received_at ?? null,
         } : null,
@@ -178,8 +178,7 @@ export async function readRobotStatusLive(username: string, requestedSessionId?:
           calibrationApplied: imu.calibration_applied === true },
         balance: record(robot.status).balance ?? null,
         distance: { available: false }, obstacleClearance: { available: false } },
-      control: { source: robot.body_command_source ?? 'unavailable',
-        manualTakeover: connected && robot.body_command_source ? robot.body_command_source === 'manual' : null,
+      control: { lastBodyCommandSource: robot.body_command_source ?? null,
         gatewayCommandSequence: robot.body_command_sequence ?? null,
         lastCoordinatorLease: work.find(item => item.bodyLease && manager.hasCurrentBodyLease(item.id))?.bodyLease ?? null,
         observedAt: observation?.timestamp ?? null },

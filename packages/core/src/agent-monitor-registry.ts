@@ -106,9 +106,13 @@ export function unregisterAgent(name: string, expectedPid?: number): void {
 export function isProcessRunning(pid: number): boolean {
   try {
     process.kill(pid, 0);
+    if (process.platform === 'linux') {
+      const stat = fs.readFileSync(`/proc/${pid}/stat`, 'utf8');
+      if (stat.slice(stat.lastIndexOf(')') + 2).startsWith('Z ')) return false;
+    }
     return true;
-  } catch {
-    return false;
+  } catch (error) {
+    return (error as NodeJS.ErrnoException).code === 'EPERM';
   }
 }
 
@@ -136,7 +140,7 @@ export function getRunningAgents(): Array<{ name: string; pid: number; startTime
   return running;
 }
 
-export function stopAgent(name: string, force = false): { success: boolean; message: string; pid?: number } {
+function signalAgent(name: string, force = false): { success: boolean; message: string; pid?: number } {
   const registry = readRegistry();
   const info = registry[name];
 
@@ -165,23 +169,23 @@ export function stopAgent(name: string, force = false): { success: boolean; mess
   }
 }
 
-export function stopAllAgents(force = false): {
+export async function stopAllAgents(force = false): Promise<{
   stopped: string[];
   failed: string[];
   total: number;
-} {
+}> {
   const running = getRunningAgents();
   const stopped: string[] = [];
   const failed: string[] = [];
 
-  for (const agent of running) {
-    const result = stopAgent(agent.name, force);
+  await Promise.all(running.map(async agent => {
+    const result = await stopAgent(agent.name, force);
     if (result.success) {
       stopped.push(agent.name);
     } else {
       failed.push(agent.name);
     }
-  }
+  }));
 
   return {
     stopped,
@@ -190,7 +194,19 @@ export function stopAllAgents(force = false): {
   };
 }
 
-export async function waitForProcessExit(pid: number, timeoutMs = 2500): Promise<boolean> {
+/** A stop receipt reports termination of the recorded child, not just a sent signal. */
+export async function stopAgent(name: string, force = false): Promise<ReturnType<typeof signalAgent>> {
+  const result = signalAgent(name, force);
+  if (!result.success || !result.pid) return result;
+  const pid = result.pid;
+  if (await waitForProcessExit(pid, 5000)) {
+    unregisterAgent(name, pid);
+    return { success: true, pid, message: `Agent '${name}' stopped` };
+  }
+  return { success: false, pid, message: `Agent '${name}' has not stopped` };
+}
+
+async function waitForProcessExit(pid: number, timeoutMs: number): Promise<boolean> {
   const deadline = Date.now() + timeoutMs;
   while (Date.now() < deadline) {
     if (!isProcessRunning(pid)) return true;

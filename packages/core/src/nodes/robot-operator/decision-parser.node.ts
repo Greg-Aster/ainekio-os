@@ -12,9 +12,9 @@ export const ROBOT_OPERATOR_DECISION_JSON_SCHEMA = {
   additionalProperties: false,
   required: ['observed', 'instruction', 'reason'],
   properties: {
-    observed: { type: 'string', minLength: 1, maxLength: 500 },
-    instruction: { type: 'string', minLength: 1, maxLength: 1_000 },
-    reason: { type: 'string', minLength: 1, maxLength: 500 },
+    observed: { type: 'string', minLength: 1 },
+    instruction: { type: 'string', minLength: 1 },
+    reason: { type: 'string', minLength: 1 },
   },
 } as const;
 
@@ -22,12 +22,6 @@ const DECISION_FIELDS = new Set(['observed', 'instruction', 'reason']);
 
 function isRecord(value: unknown): value is Record<string, unknown> {
   return Boolean(value) && typeof value === 'object' && !Array.isArray(value);
-}
-
-function cleanText(value: unknown, maxLength: number): string {
-  return typeof value === 'string'
-    ? value.replace(/\s+/g, ' ').trim().slice(0, maxLength)
-    : '';
 }
 
 function strictJsonObject(value: string): unknown {
@@ -71,12 +65,12 @@ export const robotOperatorDecisionParserNode = defineNode({
     if (unknown.length > 0 || [...DECISION_FIELDS].some(field => !(field in parsed))) {
       return invalid('Robot Operator decision requires observed, instruction, and reason, with optional visualObservation.');
     }
-    const observed = cleanText(parsed.observed, 500);
-    const reason = cleanText(parsed.reason, 500);
-    const instruction = cleanText(parsed.instruction, 1_000);
-    if (!observed) return invalid('Robot Operator decision requires a current observation summary.');
-    if (!reason) return invalid('Robot Operator decision requires a concise reason.');
-    if (!instruction) return invalid('Environment delegation requires a high-level intention.');
+    const observed = typeof parsed.observed === 'string' ? parsed.observed : '';
+    const reason = typeof parsed.reason === 'string' ? parsed.reason : '';
+    const instruction = typeof parsed.instruction === 'string' ? parsed.instruction : '';
+    if (!observed.trim()) return invalid('Robot Operator decision requires a current observation summary.');
+    if (!reason.trim()) return invalid('Robot Operator decision requires a concise reason.');
+    if (!instruction.trim()) return invalid('Environment delegation requires a high-level intention.');
     const decision: RobotOperatorDecision = {
       observed,
       instruction,

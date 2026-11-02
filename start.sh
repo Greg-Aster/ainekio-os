@@ -34,6 +34,7 @@ START_LOCK_HELD=false
 APP_ONLY=false
 APP_RESTART=false
 WEB_PID=""
+SERVICES_PID=""
 LAUNCHER_PID_FILE="$RUN_LOG_DIR/web-launcher.pid"
 LAUNCH_MODE="${1:-}"
 case "$LAUNCH_MODE" in
@@ -205,27 +206,6 @@ is_repo_process() {
   return 1
 }
 
-matching_repo_pids() {
-  local pattern="$1"
-  local pid=""
-  local matches=""
-  local lookup_status=0
-
-  matches="$(pgrep -f -- "$pattern")" || lookup_status=$?
-  case "$lookup_status" in
-    0) ;;
-    1) return 0 ;; # No matching process is a normal shutdown condition.
-    *) return "$lookup_status" ;;
-  esac
-
-  while read -r pid; do
-    [ -n "$pid" ] || continue
-    if is_repo_process "$pid"; then
-      echo "$pid"
-    fi
-  done <<< "$matches"
-}
-
 release_start_lock() {
   if [ "$START_LOCK_HELD" != true ]; then
     return
@@ -280,111 +260,20 @@ verify_site_runtime() {
   node "$RUNTIME_CHECK" "$REPO_ROOT"
 }
 
-kill_pids() {
-  local pids="$1"
-  local signal="${2:-TERM}"
-
-  [ -n "$pids" ] || return 0
-  echo "$pids" | xargs -r kill "-$signal" 2>/dev/null || true
-}
-
-live_pids() {
-  local pids="$1"
-  local pid=""
-
-  echo "$pids" | while read -r pid; do
-    [ -n "$pid" ] || continue
-    if kill -0 "$pid" 2>/dev/null; then
-      echo "$pid"
-    fi
-  done
-}
-
-run_with_timeout() {
-  local seconds="$1"
-  shift
-
-  if command_exists timeout; then
-    timeout "$seconds" "$@" || true
-  else
-    "$@" || true
-  fi
-}
-
-kill_pattern_fast() {
-  local pattern="$1"
-  local pids=""
-
-  pids="$(matching_repo_pids "$pattern")"
-  if [ -z "$pids" ]; then
-    return
-  fi
-
-  kill_pids "$pids" TERM
-  sleep 1
-  pids="$(live_pids "$pids")"
-  if [ -n "$pids" ]; then
-    kill_pids "$pids" KILL
-  fi
-}
-
-clean_stale_runtime_files() {
-  local pid_dir="$RUN_LOG_DIR"
-  local lock_dir="$RUN_LOG_DIR/locks"
-  local registry_file="$REPO_ROOT/logs/agents/running.json"
-  local pid=""
-  local pidfile=""
-  local lockfile=""
-
-  if [ -d "$pid_dir" ]; then
-    for pidfile in "$pid_dir"/*.pid; do
-      [ -f "$pidfile" ] || continue
-      pid="$(cat "$pidfile" 2>/dev/null || true)"
-      if [ -z "$pid" ] || ! kill -0 "$pid" 2>/dev/null; then
-        rm -f "$pidfile"
-      fi
-    done
-  fi
-
-  if [ -d "$lock_dir" ]; then
-    for lockfile in "$lock_dir"/*.lock; do
-      [ -f "$lockfile" ] || continue
-      pid="$(grep -o '"pid"[[:space:]]*:[[:space:]]*[0-9]*' "$lockfile" 2>/dev/null | grep -o '[0-9]*' || true)"
-      if [ -z "$pid" ] || ! kill -0 "$pid" 2>/dev/null; then
-        rm -f "$lockfile"
-      fi
-    done
-  fi
-
-  if [ -f "$registry_file" ] && command_exists node; then
-    node -e "
-const fs = require('fs');
-const registryFile = process.argv[1];
-const registry = JSON.parse(fs.readFileSync(registryFile, 'utf8'));
-const clean = {};
-for (const [name, info] of Object.entries(registry)) {
-  try {
-    process.kill(info.pid, 0);
-    clean[name] = info;
-  } catch {
-    // stale entry
-  }
-}
-fs.writeFileSync(registryFile, JSON.stringify(clean, null, 2));
-" "$registry_file" >/dev/null 2>&1 || true
-  fi
-}
-
 cleanup() {
-  # Stop child services when this launcher exits after startup began.
   if [ "$STARTED" != true ] || [ "$CLEANING_UP" = true ]; then
-    # Do nothing before services start or during repeated signal handling.
     release_start_lock
     return
   fi
-
   CLEANING_UP=true
-  trap '' INT TERM HUP
+  trap '' INT TERM HUP USR2
+  if [ -n "${SERVICES_PID:-}" ]; then
+    local child
+    for child in $(jobs -pr); do
+      if [ "$child" = "$SERVICES_PID" ]; then kill -TERM "$child" 2>/dev/null || true; fi
+    done
+    wait "$SERVICES_PID" 2>/dev/null || true
+  fi
   if [ -n "${WEB_PID:-}" ]; then
     kill -TERM "$WEB_PID" 2>/dev/null || true
     wait "$WEB_PID" 2>/dev/null || true
@@ -392,42 +281,17 @@ cleanup() {
   if [ -n "${LAUNCHER_PID_FILE:-}" ]; then rm -f "$LAUNCHER_PID_FILE"; fi
   if [ "${APP_ONLY:-false}" = true ]; then
     print_status "MetaHuman application stopped; background services unchanged"
-    release_start_lock
-    return
+  elif "$REPO_ROOT/stop.sh" --services-only >> "$RUN_LOG_DIR/startup-shutdown.log" 2>&1; then
+    print_status "MetaHuman services stopped"
+  else
+    print_warning "Some MetaHuman services failed to stop. See $RUN_LOG_DIR/startup-shutdown.log"
   fi
-  # Mark cleanup active so repeated Ctrl+C/TERM signals do not stack.
-  echo
-  # Separate shutdown output from the running server log.
-  print_warning "Stopping MetaHuman services"
-  # Stop only the services this startup path triggers. Do not call stop.sh here:
-  # stop.sh is the full-system shutdown path and also stops terminal sessions.
-  {
-    echo "[$(date -Is)] startup cleanup begin"
-    kill_pattern_fast "vllm.entrypoints.openai.api_server"
-    kill_pattern_fast "VLLM::EngineCore"
-    rm -f "$RUN_LOG_DIR/vllm.pid" "$RUN_LOG_DIR/vllm.starting"
-    run_with_timeout 5 "$REPO_ROOT/bin/mh" agent stop --all
-    kill_pattern_fast "packages/core/src/agent-bootstrap.ts"
-    kill_pattern_fast "maintenance-service"
-    kill_pattern_fast "audio-organizer"
-    kill_pattern_fast "mh start --no-restart"
-    kill_pattern_fast "src/entry.ts start --no-restart"
-    kill_pattern_fast "bin/start-services --background"
-    kill_pattern_fast "mh vllm start"
-    kill_pattern_fast "src/entry.ts vllm start"
-    kill_pattern_fast "mh backend start"
-    kill_pattern_fast "src/entry.ts backend start"
-    run_with_timeout 15 "$REPO_ROOT/bin/llama-cpp-services" stop || print_warning "llama.cpp user services did not stop cleanly"
-    run_with_timeout 5 "$REPO_ROOT/bin/stop-local-models"
-    run_with_timeout 5 "$REPO_ROOT/bin/stop-voice-server"
-    run_with_timeout 3 "$REPO_ROOT/bin/stop-event-bus"
-    kill_pattern_fast "cloudflared"
-    clean_stale_runtime_files
-    echo "[$(date -Is)] startup cleanup complete"
-  } >> "$RUN_LOG_DIR/startup-shutdown.log" 2>&1
-  # Report completion even if there was nothing left to stop.
-  print_status "MetaHuman services stopped"
   release_start_lock
+}
+
+start_background_services() {
+  (exec 9>&-; exec "$REPO_ROOT/bin/start-services" --background) &
+  SERVICES_PID=$!
 }
 
 request_app_restart() {
@@ -440,7 +304,7 @@ run_web_server() {
   local status=0
   while true; do
     APP_RESTART=false
-    (exec 9>&-; exec node "$SERVER_ENTRY") > >(exec 9>&-; tee "$SERVER_LOG") 2>&1 &
+    (exec 9>&-; exec node "$(readlink -f "$SERVER_ENTRY")") > >(exec 9>&-; tee "$SERVER_LOG") 2>&1 &
     WEB_PID=$!
     status=0
     wait "$WEB_PID" || status=$?
@@ -459,6 +323,8 @@ trap 'cleanup; exit 130' INT
 trap 'cleanup; exit 143' TERM HUP
 # Run cleanup on termination/hangup and exit with a signal-style code.
 trap request_app_restart USR1
+# Full stop owns service shutdown; this signal only releases the application.
+trap 'APP_ONLY=true; cleanup; exit 0' USR2
 
 if [ "$LAUNCH_MODE" = --restart-app ]; then
   launcher_pid="$(cat "$LAUNCHER_PID_FILE")"
@@ -544,16 +410,11 @@ configure_exposure_mode
 # Resolve the request boundary before background services and the web server
 # inherit their environment. Tunnel-derived sharing remains loopback-bound.
 
+STARTED=true
 if [ "$APP_ONLY" != true ]; then
   print_status "Starting background services"
-  # Announce the non-blocking service trigger.
-  if ! (exec 9>&-; "$REPO_ROOT/bin/start-services" --background) >> "$RUN_LOG_DIR/background-services.trigger.log" 2>&1; then
-    print_warning "One or more background service launchers could not be started"
-  fi
+  start_background_services
 fi
-# Start each service launcher before the web server, while the long-running
-# services themselves continue in the background.
-STARTED=true
 printf '%s\n' "$$" > "$LAUNCHER_PID_FILE"
 # Mark that cleanup should run when this launcher exits.
 

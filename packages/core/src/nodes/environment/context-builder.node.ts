@@ -1,3 +1,4 @@
+import { projectRobotStatusContext } from '../../robot-status.js';
 import { readRobotStatusLive } from '../../robot-status-live.js';
 import { serializeContext } from '../../context-serialization.js';
 import { selectedEnvironmentRoutes } from './context-routing.js';
@@ -55,15 +56,10 @@ function relevantMemoryItems(value: unknown): Array<string | Record<string, unkn
 
   return candidates
     .flatMap(memory => typeof memory === 'string' && memory.trim()
-      ? [memory.trim() as string | Record<string, unknown>]
+      ? [memory as string | Record<string, unknown>]
       : isRecord(memory) && typeof memory.content === 'string' && memory.content.trim()
-        ? [{ id: memory.id, type: memory.type, timestamp: memory.timestamp, content: memory.content.trim(),
-            ...(memory.role !== undefined ? { role: memory.role } : {}),
-            ...(memory.source !== undefined ? { source: memory.source } : {}),
-            ...(memory.sleepSessionId !== undefined ? { sleepSessionId: memory.sleepSessionId } : {}),
-          }]
-        : [])
-    .slice(0, 3);
+        ? [memory]
+        : []);
 }
 
 export const environmentContextBuilderNode = defineNode({
@@ -71,6 +67,8 @@ export const environmentContextBuilderNode = defineNode({
   name: 'Environment Context Builder',
   category: 'environment',
   inputs: [
+    { name: 'event', type: 'object', optional: true, description: 'Original autonomous event with its recorded source and time.' },
+    { name: 'persona', type: 'object', optional: true, description: 'Active persona supplied by Persona Loader.' },
     { name: 'autonomy', type: 'boolean', optional: true, description: 'Select the saved autonomous-input instructions.' },
     { name: 'toolWork', type: 'object', optional: true, description: 'Attributed delegated-work identity, state, result, and error.' },
     { name: 'plannerDecision', type: 'object', optional: true, description: 'Internally authored intention with its recorded observation, reason and time' },
@@ -152,10 +150,11 @@ export const environmentContextBuilderNode = defineNode({
     if (properties?.purpose === 'conversation'
       && (inputs.continueHere === false || inputs.program && inputs.taskResult?.done !== true)) return {};
     const consumer = properties?.purpose === 'conversation' ? 'conversation' : 'task';
+    const directlyConnectedContext = consumer === 'conversation' && !isRecord(inputs.routingAnalysis);
     const routingAnalysis = selectedEnvironmentRoutes(isRecord(inputs.routingAnalysis) ? inputs.routingAnalysis : {}, consumer);
     const recalled = routingAnalysis.needsMemory === true && inputs.memoryWork
       ? await resolveMemoryWork(inputs.memoryWork, context) : undefined;
-    const environmentSelected = routingAnalysis.needsEnvironment === true || routingAnalysis.needsVision === true
+    const environmentSelected = directlyConnectedContext || routingAnalysis.needsEnvironment === true || routingAnalysis.needsVision === true
       || (!Array.isArray(inputs.routingAnalysis?.taskContext) && routingAnalysis.needsAction === true);
     const initialObservation = consumer === 'conversation' ? inputs.sourceObservation : inputs.observation;
     const suppliedObservation = isRecord(initialObservation)
@@ -195,14 +194,14 @@ export const environmentContextBuilderNode = defineNode({
       && typeof inputs.plannerDecision.instruction === 'string' ? inputs.plannerDecision : null;
     const rawInstruction = conversationalInstruction || userInstruction
       || (typeof plannerDecision?.instruction === 'string' ? plannerDecision.instruction : '');
-    const inputSource = plannerDecision ? 'autonomy' : 'user';
+    const inputSource = plannerDecision || isRecord(inputs.event) && !userInstruction && !conversationalInstruction ? 'autonomy' : 'user';
     const directUserTurn = Boolean(userInstruction);
     const replyToContent = directUserTurn && typeof context.replyToContent === 'string'
       ? context.replyToContent.trim()
       : '';
     const includeRecentHistory = routingAnalysis.needsConversationHistory === true
       && (directUserTurn || Boolean(plannerDecision));
-    const useImages = routingAnalysis.needsVision === true
+    const useImages = (directlyConnectedContext || routingAnalysis.needsVision === true)
       && images.length > 0;
     const selectedImages = useImages ? images : [];
     const selectedFrames = useImages && Array.isArray(inputs.frames)
@@ -236,9 +235,7 @@ export const environmentContextBuilderNode = defineNode({
       rawInstruction,
     );
     const routedMemories = routingAnalysis.needsMemory === true ? (recalled?.memories ?? inputs.memories) : [];
-    const memoryItems = [...new Set([
-      ...relevantMemoryItems(routedMemories),
-    ])].slice(0, 3);
+    const memoryItems = relevantMemoryItems(routedMemories);
     const selectorContext = buildEnvironmentSelectorSystemPrompt({
       systemPrompt,
     });
@@ -280,7 +277,7 @@ export const environmentContextBuilderNode = defineNode({
       delegatedMemories: relevantMemoryItems(inputs.delegatedMemories),
     }) : taskEnvelope;
     if (properties?.purpose === 'conversation') {
-      const selected = Array.isArray(inputs.routingAnalysis?.conversationContext) ? JSON.parse(message) : inputs.selectedContext;
+      const selected = Array.isArray(inputs.routingAnalysis?.conversationContext) ? JSON.parse(message) : (inputs.selectedContext ?? JSON.parse(message));
       const { capabilityRules: _rules, ...evidence } = selected;
       if (evidence.robotStatus?.live && liveStatus) evidence.robotStatus = { ...evidence.robotStatus, live: liveStatus };
       if (evidence.currentEnvironment && liveStatus) {
@@ -313,6 +310,12 @@ export const environmentContextBuilderNode = defineNode({
       // frame times remain explicit alongside the new action evidence.
       if (returned && !hasReturnedImages) returned.currentEnvironment.visualFrames = environment?.visualFrames ?? [];
       const conversationMessage = serializeContext({ ...evidence,
+        ...(inputs.event ? { event: inputs.event } : {}),
+        ...(Object.hasOwn(inputs, 'persona') ? { activePersona: inputs.persona } : {}),
+        ...(Object.hasOwn(inputs, 'robotStatus') && !Array.isArray(inputs.routingAnalysis?.conversationContext)
+          ? { robotStatus: projectRobotStatusContext(inputs.robotStatus, false) } : {}),
+        ...(Array.isArray(inputs.frames) && !Array.isArray(inputs.routingAnalysis?.conversationContext)
+          ? { visualFrames: inputs.frames.map(({ dataUrl: _pixels, url: _url, ...frame }: EnvironmentVisualFrame) => frame) } : {}),
         ...(inputs.goalAssessment ? { goalAssessment: inputs.goalAssessment } : {}),
         ...(inputs.toolWork ? { toolWork: inputs.toolWork } : inputs.routingAnalysis?.needsToolUse === true
           ? { toolWork: { state: 'selected', request: rawInstruction } } : {}),
@@ -326,8 +329,7 @@ export const environmentContextBuilderNode = defineNode({
             visionResult: taskResult.visionResult, queryId: taskResult.queryId,
             perception: taskResult.perception } } : {}),
         selectedTask: { ...selectedTask, commandDescriptions } });
-      const images = hasReturnedImages ? inputs.resultImages : Array.isArray(inputs.routingAnalysis?.conversationContext)
-        ? selectedImages : (Array.isArray(inputs.images) ? inputs.images : []);
+      const images = hasReturnedImages ? inputs.resultImages : selectedImages;
       return { receivedInput: recalled?.receivedInput, selectedContext: evidence, message: conversationMessage, messages: [
         { role: 'system', content: systemPrompt.trim() },
         { role: 'user', content: images.length ? [

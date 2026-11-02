@@ -15,7 +15,7 @@ import { assertProfileMemoryAvailable } from '../locks.js'
 
 /** Finite-work identity is transport context; the checkpoint owns the reasoning state. */
 interface GraphWorkScope {
-  task: Pick<QueuedTask, 'id' | 'username' | 'handler' | 'attempt' | 'maxAttempts' | 'durable' | 'originatingCognitiveMode'>
+  task: Pick<QueuedTask, 'id' | 'username' | 'handler' | 'attempt' | 'maxAttempts' | 'durable' | 'originatingCognitiveMode' | 'priority'>
   graphIndex: number
   attach(executionId: string): void | (() => void)
   enqueue?: (input: TaskInput) => Promise<QueuedTask>
@@ -46,11 +46,10 @@ export async function runDurableGraph(params: GraphRunParams): Promise<GraphExec
   const parent = params.context.graphExecution
   if (parent?.callGraph) return parent.callGraph(params.graph, params.context)
   const scope = workScope.getStore() ?? subprocessWorkScope()
-  const admittedContext = { ...params.context, ...(scope?.task.originatingCognitiveMode
-    ? { originatingCognitiveMode: scope.task.originatingCognitiveMode } : {}) }
-  const delegated = !params.executionId && scope?.task.handler !== 'graph.resume' && scope?.task.durable?.scope !== 'independent'
+  const originatingWork = !params.executionId && scope?.task.handler !== 'graph.resume'
     ? scope?.task.durable ?? (process.env.MH_PARENT_EXECUTION ? JSON.parse(process.env.MH_PARENT_EXECUTION) : null)
     : null
+  const delegated = originatingWork?.scope === 'independent' ? null : originatingWork
   const username = params.context.username || getUserContext()?.username || scope?.task.username
   if (typeof username !== 'string' || !username.trim()) throw new Error('Graph execution requires an authenticated profile')
   assertProfileMemoryAvailable(username)
@@ -66,12 +65,19 @@ export async function runDurableGraph(params: GraphRunParams): Promise<GraphExec
     const admissionKey = suppliedId ? undefined
       : scope ? `${scope.task.id}:graph:${scope.graphIndex++}` : params.context.requestId || randomUUID()
     const admittedId = suppliedId ?? store.admittedExecutionId(username, admissionKey!)
+    // Independent work owns a new execution, but still receives the inputs in
+    // its committed dispatch. A retry uses that child's saved admission.
+    const inheritedContext = originatingWork && (!admittedId || delegated)
+      ? (store.dispatch(originatingWork.effectId).payload as TaskInput).input?.graphContext : undefined
+    const admittedContext = { ...params.context, ...(scope?.task.originatingCognitiveMode
+      ? { originatingCognitiveMode: scope.task.originatingCognitiveMode } : {}), ...inheritedContext }
     const resumed = admittedId ? resolveExecutionGraph(store, admittedId) : null
     const rootGraph = resumed?.graph ?? params.graph
     const definition = resumed?.definition ?? executionDefinition(rootGraph)
     const record = admittedId ? store.get(admittedId) : store.enter(
       username, definition, admissionKey!,
       { graph: params.graph, graphSource: loadedGraphSource(params.graph), context: graphContextSnapshot({ ...admittedContext, username }) },
+      scope?.task.priority,
     )
     if (record.username !== username) throw new Error('Execution belongs to a different profile')
     store.assertDefinition(record.executionId, definition)
@@ -113,11 +119,8 @@ export async function runDurableGraph(params: GraphRunParams): Promise<GraphExec
     }, 10_000)
     heartbeat.unref()
     await relay()
-    // Finite agents resume the parent's committed dispatch, including its graph
-    // inputs. Process-local arguments are not the authority for that brief.
-    const delegatedInput = delegated ? (store.dispatch(delegated.effectId).payload as TaskInput).input?.graphContext : undefined
     const saved = delegated
-      ? { context: graphContextSnapshot({ ...admittedContext, ...delegatedInput, username }) }
+      ? { context: graphContextSnapshot({ ...admittedContext, username }) }
       : store.entry(record.executionId)
     const reader = new ExecutionCheckpointer(store, lease, undefined, invocationId)
     const previousCheckpoint = await reader.getTuple(checkpointConfig)
@@ -143,8 +146,11 @@ export async function runDurableGraph(params: GraphRunParams): Promise<GraphExec
     return result
   } finally {
     if (heartbeat) clearInterval(heartbeat)
-    if (lease) store.release(lease)
-    if (releaseWorkExecution) releaseWorkExecution()
-    store.close()
+    try {
+      if (lease) store.release(lease)
+    } finally {
+      try { if (releaseWorkExecution) releaseWorkExecution() }
+      finally { store.close() }
+    }
   }
 }

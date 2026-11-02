@@ -136,9 +136,8 @@ export function useMicrophone(options: UseMicrophoneOptions) {
 
   // State
   let micStream: MediaStream | null = null;
-  let micRecorder: MediaRecorder | null = null;
-  let micChunks: BlobPart[] = [];
-  let micStartedAt: number | null = null;
+  type WhisperCapture = { recorder: MediaRecorder; chunks: BlobPart[]; startedAt: number | null };
+  let micCapture: WhisperCapture | null = null;
   let micAnalyser: AnalyserNode | null = null;
   let micAudioCtx: AudioContext | null = null;
   let micSilenceTimer: number | null = null;
@@ -1345,11 +1344,11 @@ export function useMicrophone(options: UseMicrophoneOptions) {
   function stopWhisperMic(): void {
     if (!get(isRecording)) return;
 
-    console.log('[useMicrophone] Stopping Whisper recording, chunks collected:', micChunks.length);
+    console.log('[useMicrophone] Stopping Whisper recording, chunks collected:', micCapture?.chunks.length ?? 0);
 
     try {
-      if (micRecorder && micRecorder.state !== 'inactive') {
-        micRecorder.stop();
+      if (micCapture && micCapture.recorder.state !== 'inactive') {
+        micCapture.recorder.stop();
       }
     } catch (e) {
       console.error('[useMicrophone] Error stopping recorder:', e);
@@ -1380,15 +1379,13 @@ export function useMicrophone(options: UseMicrophoneOptions) {
       micSilenceTimer = null;
     }
 
-    if (micRecorder && micRecorder.state !== 'inactive') {
+    if (micCapture && micCapture.recorder.state !== 'inactive') {
       try {
-        micRecorder.onstop = null;
-        micRecorder.stop();
+        micCapture.recorder.onstop = null;
+        micCapture.recorder.stop();
       } catch {}
     }
-    micRecorder = null;
-    micChunks = [];
-    micStartedAt = null;
+    micCapture = null;
     micSpeaking = false;
     micSilenceTimerStarted = false;
     isRecording.set(false);
@@ -1448,23 +1445,23 @@ export function useMicrophone(options: UseMicrophoneOptions) {
       micAnalyser.fftSize = 256;
       source.connect(micAnalyser);
 
-      micChunks = [];
       const mimeType = MediaRecorder.isTypeSupported('audio/webm;codecs=opus')
         ? 'audio/webm;codecs=opus'
         : 'audio/webm';
 
-      micRecorder = new MediaRecorder(micStream, { mimeType });
-      micRecorder.ondataavailable = (e) => {
-        if (e.data?.size) micChunks.push(e.data);
+      const capture: WhisperCapture = { recorder: new MediaRecorder(micStream, { mimeType }), chunks: [], startedAt: null };
+      micCapture = capture;
+      capture.recorder.ondataavailable = (e) => {
+        if (e.data?.size) capture.chunks.push(e.data);
       };
-      micRecorder.onstop = () => { void finalizeMic(); };
+      capture.recorder.onstop = () => { void finalizeMic(capture); };
 
       // In continuous mode, wait for VAD to detect speech before starting recording
       // In normal mode, start recording immediately
       if (!get(isContinuousMode)) {
-        micRecorder.start();
+        capture.recorder.start();
         isRecording.set(true);
-        micStartedAt = Date.now();
+        capture.startedAt = Date.now();
         onSystemMessage('🎤 Listening... click the microphone again when you are done speaking.');
         signalMicActivity(); // Signal activity to prevent background agents
       }
@@ -1488,10 +1485,10 @@ export function useMicrophone(options: UseMicrophoneOptions) {
   /**
    * Finalize recording and send to STT (Whisper)
    */
-  async function finalizeMic(): Promise<void> {
+  async function finalizeMic(capture: WhisperCapture): Promise<void> {
     try {
-      const blob = new Blob(micChunks, { type: 'audio/webm' });
-      const dur = micStartedAt ? (Date.now() - micStartedAt) : 0;
+      const blob = new Blob(capture.chunks, { type: 'audio/webm' });
+      const dur = capture.startedAt !== null ? (Date.now() - capture.startedAt) : 0;
 
       console.log('[useMicrophone] Finalizing recording:', dur, 'ms, blob size:', blob.size, 'bytes');
 
@@ -1571,35 +1568,38 @@ export function useMicrophone(options: UseMicrophoneOptions) {
       }
     } finally {
       // Clean up recording state
-      micChunks = [];
-      micStartedAt = null;
-      isRecording.set(false);
-      micSpeaking = false; // Reset speaking state
+      capture.chunks = [];
+      capture.startedAt = null;
+      if (micCapture === capture) {
+        micCapture = null;
+        isRecording.set(false);
+        micSpeaking = false; // Reset speaking state
 
-      // In continuous mode, restart VAD after TTS finishes (with cooldown)
-      if (get(isContinuousMode) && isComponentMounted()) {
-        if (!getTTSPlaying()) {
-          // TTS not playing - restart VAD immediately
-          console.log('[useMicrophone] Continuous mode: restarting VAD...');
-          runMicVAD();
-        } else {
-          // TTS is playing - poll until it finishes, then restart with cooldown
-          console.log('[useMicrophone] Continuous mode: waiting for TTS to finish...');
-          const pollForTTSEnd = () => {
-            if (!get(isContinuousMode) || !isComponentMounted()) return;
-            if (getTTSPlaying()) {
-              setTimeout(pollForTTSEnd, 200);
-            } else {
-              console.log('[useMicrophone] TTS finished, cooldown before VAD restart...');
-              setTimeout(() => {
-                if (get(isContinuousMode) && isComponentMounted() && !getTTSPlaying()) {
-                  console.log('[useMicrophone] Restarting VAD after cooldown');
-                  runMicVAD();
-                }
-              }, 800); // 800ms cooldown after TTS to prevent echo
-            }
-          };
-          setTimeout(pollForTTSEnd, 200);
+        // In continuous mode, restart VAD after TTS finishes (with cooldown)
+        if (get(isContinuousMode) && isComponentMounted()) {
+          if (!getTTSPlaying()) {
+            // TTS not playing - restart VAD immediately
+            console.log('[useMicrophone] Continuous mode: restarting VAD...');
+            runMicVAD();
+          } else {
+            // TTS is playing - poll until it finishes, then restart with cooldown
+            console.log('[useMicrophone] Continuous mode: waiting for TTS to finish...');
+            const pollForTTSEnd = () => {
+              if (!get(isContinuousMode) || !isComponentMounted()) return;
+              if (getTTSPlaying()) {
+                setTimeout(pollForTTSEnd, 200);
+              } else {
+                console.log('[useMicrophone] TTS finished, cooldown before VAD restart...');
+                setTimeout(() => {
+                  if (get(isContinuousMode) && isComponentMounted() && !getTTSPlaying()) {
+                    console.log('[useMicrophone] Restarting VAD after cooldown');
+                    runMicVAD();
+                  }
+                }, 800); // 800ms cooldown after TTS to prevent echo
+              }
+            };
+            setTimeout(pollForTTSEnd, 200);
+          }
         }
       }
     }
@@ -1621,7 +1621,7 @@ export function useMicrophone(options: UseMicrophoneOptions) {
         // If we were recording, stop it (we heard TTS start mid-recording)
         // But only if we've recorded enough data to avoid losing the recording
         if (get(isRecording)) {
-          const recordingDuration = micStartedAt ? (Date.now() - micStartedAt) : 0;
+          const recordingDuration = micCapture?.startedAt != null ? (Date.now() - micCapture.startedAt) : 0;
           if (recordingDuration < MIC_MIN_DURATION) {
             // Too short, let it continue until min duration
             // Just pause VAD checking while TTS plays
@@ -1657,7 +1657,7 @@ export function useMicrophone(options: UseMicrophoneOptions) {
           // In continuous mode, start recording when speech is detected
           if (get(isContinuousMode) && !get(isRecording) && micStream) {
             // Double-check recorder state before starting
-            if (micRecorder && micRecorder.state === 'recording') {
+            if (micCapture && micCapture.recorder.state === 'recording') {
               console.log('[useMicrophone] WARNING: Recorder already recording, skipping start');
               isRecording.set(true); // Sync state
               // CRITICAL: Don't return here - must continue VAD loop!
@@ -1670,17 +1670,17 @@ export function useMicrophone(options: UseMicrophoneOptions) {
             const mimeType = MediaRecorder.isTypeSupported('audio/webm;codecs=opus')
               ? 'audio/webm;codecs=opus'
               : 'audio/webm';
-            micChunks = [];
-            micRecorder = new MediaRecorder(micStream, { mimeType });
-            micRecorder.ondataavailable = (e) => {
-              if (e.data?.size) micChunks.push(e.data);
+            const capture: WhisperCapture = { recorder: new MediaRecorder(micStream, { mimeType }), chunks: [], startedAt: null };
+            micCapture = capture;
+            capture.recorder.ondataavailable = (e) => {
+              if (e.data?.size) capture.chunks.push(e.data);
             };
-            micRecorder.onstop = () => { void finalizeMic(); };
+            capture.recorder.onstop = () => { void finalizeMic(capture); };
 
             try {
-              micRecorder.start();
+              capture.recorder.start();
               isRecording.set(true);
-              micStartedAt = Date.now();
+              capture.startedAt = Date.now();
               signalMicActivity(); // Signal activity to prevent background agents
             } catch (e) {
               console.error('[useMicrophone] Failed to start recorder:', e);
@@ -1698,7 +1698,7 @@ export function useMicrophone(options: UseMicrophoneOptions) {
       // Silence detected while we were speaking
       else if (micSpeaking && get(isRecording) && !micSilenceTimer) {
         // Only start silence timer if we've been recording for at least the minimum duration
-        const recordingDuration = micStartedAt ? (Date.now() - micStartedAt) : 0;
+        const recordingDuration = micCapture?.startedAt != null ? (Date.now() - micCapture.startedAt) : 0;
         if (recordingDuration >= MIC_MIN_DURATION) {
           if (!micSilenceTimerStarted) {
             console.log('[useMicrophone] Silence detected, starting timer...');

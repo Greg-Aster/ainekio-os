@@ -17,11 +17,13 @@ const directory = await mkdtemp(resolve(REPOSITORY_ROOT, 'out/environment-action
 after(() => rm(directory, { recursive: true, force: true }))
 const save = (name: string, value: unknown) => writeFile(name, JSON.stringify(value))
 
-test('2B recipe transfer keeps archived base evidence and measures complete data anew', async () => {
-  const source = resolve(directory, 'source')
+for (const base of ['unsloth/Qwen3.5-2B', 'unsloth/Qwen3.5-9B']) test(`${base} recipe transfer keeps archived base evidence and measures complete data anew`, async () => {
+  const target = resolve(directory, base.split('/')[1])
+  await mkdir(target)
+  const source = resolve(target, 'source')
   await mkdir(source)
   const report = { owner: 'environment-action-selector', specialist: 'intent', split: 'development-cross-validation', priorHeldOutUsed: false, checkpointPolicy: 'epoch-1' }
-  const reportPath = resolve(directory, 'selection.json')
+  const reportPath = resolve(target, 'selection.json')
   await save(reportPath, report)
   const config = { owner: 'environment-action-selector', specialist: 'intent', base_model: 'unsloth/Qwen3.5-0.8B', require_exact_messages: true, train_on_responses_only: true, num_train_epochs: 1, max_seq_length: 1234, base_model_revision: 'source-base-commit' }
   await save(resolve(source, 'training-config.json'), config)
@@ -31,27 +33,27 @@ test('2B recipe transfer keeps archived base evidence and measures complete data
   const lines: string[] = []
   const original = console.log
   console.log = (...args) => { lines.push(args.join(' ')) }
-  try { await train(['--specialist', 'intent', '--base-model', 'unsloth/Qwen3.5-2B', '--reuse-settings-from', source, '--output', resolve(directory, 'target')]) }
+  try { await train(['--specialist', 'intent', '--base-model', base, '--reuse-settings-from', source, '--output', resolve(target, 'target')]) }
   finally { console.log = original }
-  assert.ok(lines.some(line => line.includes('source base: unsloth/Qwen3.5-0.8B; fit target base: unsloth/Qwen3.5-2B')))
+  assert.ok(lines.some(line => line.includes(`source base: unsloth/Qwen3.5-0.8B; fit target base: ${base}`)))
   assert.deepEqual(JSON.parse(await readFile(resolve(source, 'training-config.json'), 'utf8')), config)
-  const targetConfig = JSON.parse(await readFile(resolve(directory, 'target/final/training-config.json'), 'utf8'))
+  const targetConfig = JSON.parse(await readFile(resolve(target, 'target/final/training-config.json'), 'utf8'))
   const { max_seq_length: _oldCapacity, base_model_revision: _sourceRevision, ...expectedRecipe } = config
-  assert.deepEqual(targetConfig, { ...expectedRecipe, base_model: 'unsloth/Qwen3.5-2B' })
-  const targetProvenance = JSON.parse(await readFile(resolve(directory, 'target/final/run-provenance.json'), 'utf8'))
-  assert.equal(targetProvenance.baseModel, 'unsloth/Qwen3.5-2B')
+  assert.deepEqual(targetConfig, { ...expectedRecipe, base_model: base })
+  const targetProvenance = JSON.parse(await readFile(resolve(target, 'target/final/run-provenance.json'), 'utf8'))
+  assert.equal(targetProvenance.baseModel, base)
   assert.equal(targetProvenance.settingsSource.baseModel, 'unsloth/Qwen3.5-0.8B')
   assert.equal(targetProvenance.settingsSource.selectionEvidence.digest, sha256(report))
-  await train(['--specialist', 'intent', '--reuse-settings-from', source, '--output', resolve(directory, 'same-base')])
-  const sameBase = JSON.parse(await readFile(resolve(directory, 'same-base/final/training-config.json'), 'utf8'))
+  await train(['--specialist', 'intent', '--reuse-settings-from', source, '--output', resolve(target, 'same-base')])
+  const sameBase = JSON.parse(await readFile(resolve(target, 'same-base/final/training-config.json'), 'utf8'))
   assert.equal(sameBase.base_model_revision, config.base_model_revision)
   assert.equal(sameBase.base_model, config.base_model)
   await assert.rejects(train(['--base-model', 'unsupported']), /Unknown or incomplete argument/)
 })
 
-for (const base of ['unsloth/Qwen3.5-0.8B', 'unsloth/Qwen3.5-2B']) {
+for (const base of ['unsloth/Qwen3.5-0.8B', 'unsloth/Qwen3.5-2B', 'unsloth/Qwen3.5-9B']) {
   for (const stage of ['reviewed', 'final']) test(`adapter-only export accepts recorded ${base} ${stage} through existing owner`, async () => {
-    const root = resolve(directory, base.endsWith('2B') ? 'two' : 'small', stage)
+    const root = resolve(directory, base.split('/')[1], stage)
     const folder = resolve(root, stage)
     await mkdir(folder, { recursive: true })
     await save(resolve(folder, 'training-config.json'), { base_model: base })

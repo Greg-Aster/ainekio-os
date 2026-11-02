@@ -107,11 +107,11 @@ export function isHeadless(): boolean {
 /**
  * Enter headless mode (stop agents, keep tunnel/server running)
  */
-export function enterHeadlessMode(actor?: string): void {
+export async function enterHeadlessMode(actor?: string): Promise<void> {
   console.log('[runtime-mode] Entering headless mode - stopping all agents...');
 
   // Stop all agents gracefully
-  const result = stopAllAgents(false);
+  const result = await stopAllAgents(false);
 
   console.log(`[runtime-mode] Stopped ${result.stopped.length}/${result.total} agents`);
   if (result.failed.length > 0) {

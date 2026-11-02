@@ -1,5 +1,6 @@
 import fs from 'node:fs';
 import path from 'node:path';
+import { randomUUID } from 'node:crypto';
 import { audit } from '../audit.js';
 import { systemPaths } from '../path-builder.js';
 import {
@@ -364,10 +365,12 @@ export class TriggerConfigService {
       ...rawNext,
       revision: current.revision + 1,
     });
-    const temporaryPath = `${this.configPath}.tmp-${process.pid}-${Date.now()}`;
+    const temporaryPath = `${this.configPath}.tmp-${randomUUID()}`;
     fs.mkdirSync(path.dirname(this.configPath), { recursive: true });
-    fs.writeFileSync(temporaryPath, `${JSON.stringify(next, null, 2)}\n`, 'utf8');
-    fs.renameSync(temporaryPath, this.configPath);
+    try {
+      fs.writeFileSync(temporaryPath, `${JSON.stringify(next, null, 2)}\n`, 'utf8');
+      fs.renameSync(temporaryPath, this.configPath);
+    } finally { fs.rmSync(temporaryPath, { force: true }); }
     const value = { config: next, scope: 'system' as const, revision: next.revision, loadedAt: new Date().toISOString() };
     this.lastRead = value;
     this.lastError = undefined;

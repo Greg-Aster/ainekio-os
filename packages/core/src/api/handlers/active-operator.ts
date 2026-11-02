@@ -98,7 +98,8 @@ export async function handleGetActiveOperatorStatus(req?: UnifiedRequest): Promi
       ])
       const loaded = await loadGraphForMode(loadRobotOperatorConfig().robotAutonomyControllerGraph, req.user.username)
       const catalogNode = loaded.graph.nodes.find(node => node.data.nodeType === 'robot_autonomy_task_catalog')
-      const catalog = await robotAutonomyTaskCatalogNode.execute({}, { username: req.user.username }, catalogNode?.data.properties)
+      const catalog = await robotAutonomyTaskCatalogNode.execute({}, { username: req.user.username },
+        { ...catalogNode?.data.properties, includeActivityHistory: true })
       operations = catalog.activationState.operations
       assessments = await readActivationAssessments(req.user.username, 12)
     }
@@ -170,15 +171,15 @@ export async function handleUpdateActiveOperatorConfig(req: UnifiedRequest): Pro
     const input = { ...(req.body || {}) };
     const body = {
       ...(input.autonomyMode !== undefined ? { autonomyMode: input.autonomyMode } : {}),
-      ...(input.semiInactivityMinutes !== undefined ? { semiInactivityMinutes: input.semiInactivityMinutes } : {}),
+      ...(input.semiAssessmentMinutes !== undefined ? { semiAssessmentMinutes: input.semiAssessmentMinutes } : {}),
     };
     const requestedMode = body.autonomyMode as AutonomyMode | undefined;
     if (requestedMode && !['reactive', 'semi', 'full'].includes(requestedMode)) {
       return { status: 400, error: 'autonomyMode must be reactive, semi, or full' };
     }
-    if (body.semiInactivityMinutes !== undefined && (typeof body.semiInactivityMinutes !== 'number'
-      || !Number.isFinite(body.semiInactivityMinutes) || body.semiInactivityMinutes <= 0)) {
-      return { status: 400, error: 'semiInactivityMinutes must be a positive number' };
+    if (body.semiAssessmentMinutes !== undefined && (typeof body.semiAssessmentMinutes !== 'number'
+      || !Number.isFinite(body.semiAssessmentMinutes) || body.semiAssessmentMinutes <= 0)) {
+      return { status: 400, error: 'semiAssessmentMinutes must be a positive number' };
     }
     const config = updateActiveOperatorConfig(body);
     if (requestedMode) await getModeController().setMode(requestedMode, req.user.username);

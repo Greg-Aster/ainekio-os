@@ -1,7 +1,7 @@
 import { readFile, writeFile } from 'node:fs/promises'
 import { resolve, sep } from 'node:path'
 import { validateEnvironmentSelectorOutput } from '@metahuman/core'
-import { parseEnvironmentIntentRouting, isPlanningDelegation } from '@metahuman/core/nodes'
+import { parseEnvironmentIntentRouting, parseAutonomyContext, isPlanningDelegation } from '@metahuman/core/nodes'
 import { REPOSITORY_ROOT, sha256 } from './corpus.js'
 import { DEVELOPMENT_FOLD_COUNT, type ActionSelectorTrainingRecord } from './generate-training-data.js'
 import { ROUTE_FIELDS, type Specialist, type IntentRequirements } from './development-cases.js'
@@ -36,7 +36,7 @@ function view(value: Record<string, any> | null, specialist: Specialist) {
 }
 function hasPhysical(value: Record<string, any> | null) {
   return Boolean(Array.isArray(value?.program?.steps) && value.program.steps.some((step: any) => step?.kind === 'generatedMotion' || step?.kind === 'behavior'
-    || ['robotCommand', 'move', 'stop', 'visualApproach'].includes(step?.action?.type)))
+    || ['robotCommand', 'requestMotion', 'move', 'stop', 'visualApproach'].includes(step?.action?.type)))
 }
 export interface SemanticReview {
   recordId: string
@@ -74,9 +74,9 @@ export function validatePredictionCoverage(predictions: Prediction[], records: A
 
 /** Evaluation annotations only; no runtime routing or parser behavior changes. */
 export function assessIntentContext(expected: Record<string, any>, actual: Record<string, any> | null,
-  requirements: IntentRequirements = {}, responseOptional = false) {
+  requirements: IntentRequirements = {}, responseOptional = false, contextOnly = false) {
   const missing: string[] = [], unnecessary: string[] = []
-  for (const consumer of ['taskContext', 'conversationContext'] as const) {
+  for (const consumer of (contextOnly ? ['taskContext'] : ['taskContext', 'conversationContext']) as ('taskContext' | 'conversationContext')[]) {
     const rule = requirements[consumer] ?? { required: expected[consumer] ?? [], optional: [], anyOf: [] }
     const got = new Set<string>(Array.isArray(actual?.[consumer]) ? actual[consumer] : [])
     const allowed = new Set([...rule.required, ...rule.optional, ...(rule.anyOf ?? []).flat()])
@@ -86,10 +86,11 @@ export function assessIntentContext(expected: Record<string, any>, actual: Recor
     for (const entry of got) if (!allowed.has(entry)) unnecessary.push(`${consumer}.${entry}`)
   }
   return { missing, unnecessary, matches: missing.length === 0 && unnecessary.length === 0
-    && actual?.needsAction === expected.needsAction
+    && (contextOnly || actual?.needsAction === expected.needsAction
+    && actual?.needsGoalReview === expected.needsGoalReview
     && actual?.needsToolUse === expected.needsToolUse
     && actual?.taskPlanner === expected.taskPlanner
-    && (actual?.needsResponse === expected.needsResponse || responseOptional && typeof actual?.needsResponse === 'boolean') }
+    && (actual?.needsResponse === expected.needsResponse || responseOptional && typeof actual?.needsResponse === 'boolean')) }
 }
 
 function selectsMemory(value: Record<string, any> | null) {
@@ -166,15 +167,17 @@ export function score(predictions: Prediction[], reviews: SemanticReview[] = [],
     if (actual) jsonValid++
     let errors: string[] = []
     if (prediction.specialist === 'intent') {
-      try { parseEnvironmentIntentRouting(prediction.rawResponse) } catch (error) { errors = [String(error)] }
+      try { (recordsById.get(prediction.recordId)?.metadata.outputContract === 'autonomy-context' ? parseAutonomyContext : parseEnvironmentIntentRouting)(prediction.rawResponse) } catch (error) { errors = [String(error)] }
     } else {
       const envelope = JSON.parse(prediction.user)
       errors = isPlanningDelegation(actual) ? [] : validateEnvironmentSelectorOutput(prediction.rawResponse, envelope.currentEnvironment?.sessionId, envelope.activeExecutions ?? [], false).errors
     }
     const valid = errors.length === 0
     if (valid) coreValid++
-    const expectedView = view(prediction.expected, prediction.specialist)
-    const actualView = view(actual, prediction.specialist)
+    const contextOnly = recordsById.get(prediction.recordId)?.metadata.outputContract === 'autonomy-context'
+    const contextView = (value: Record<string, any> | null) => value ? { taskContext: [...new Set(Array.isArray(value.taskContext) ? value.taskContext : [])].sort() } : null
+    const expectedView = contextOnly ? contextView(prediction.expected) : view(prediction.expected, prediction.specialist)
+    const actualView = contextOnly ? contextView(actual) : view(actual, prediction.specialist)
     const selectionMatch = prediction.specialist === 'intent' ? sha256(expectedView) === sha256(actualView)
       : isPlanningDelegation(prediction.expected) === isPlanningDelegation(actual)
         && sha256(prediction.expected.program ?? null) === sha256(actual?.program ?? null)
@@ -184,7 +187,7 @@ export function score(predictions: Prediction[], reviews: SemanticReview[] = [],
     if (decisionMatch) typedDecisionMatch++
     const context = prediction.specialist === 'intent'
       ? assessIntentContext(prediction.expected, actual, recordsById.get(prediction.recordId)?.metadata.contextRequirements,
-        recordsById.get(prediction.recordId)?.metadata.responseOptional) : undefined
+        recordsById.get(prediction.recordId)?.metadata.responseOptional, contextOnly) : undefined
     const acceptable = valid && (context ? context.matches : decisionMatch)
     if (acceptable) acceptableRouting++
     if (context) {
@@ -196,7 +199,9 @@ export function score(predictions: Prediction[], reviews: SemanticReview[] = [],
     const suite = bySuite[prediction.suite] ??= { total: 0, exact: 0, acceptable: 0, valid: 0 }
     suite.total++; if (decisionMatch) suite.exact++; if (acceptable) suite.acceptable++; if (valid) suite.valid++
     const review = reviewById.get(prediction.recordId)
-    const memory = prediction.specialist === 'intent' ? assessMemorySelection(prediction.expected, actual, review) : undefined
+    const memory = prediction.specialist === 'intent' ? assessMemorySelection(
+      contextOnly ? { ...prediction.expected, conversationContext: [] } : prediction.expected,
+      contextOnly && actual ? { ...actual, conversationContext: [] } : actual, review) : undefined
     const reviewedCorrect = valid && review?.semantic === 'pass' && review.grounding === 'pass'
     const confirmedMemory = Boolean(memory && reviewedCorrect && context?.matches && memory.matches)
     if (memory) {
@@ -214,6 +219,7 @@ export function score(predictions: Prediction[], reviews: SemanticReview[] = [],
     if (!review) semanticReview.pending.push({ recordId: prediction.recordId, predictionDigest: sha256(prediction),
       context: prediction.user, expected: prediction.expected, actual, rawResponse: prediction.rawResponse })
     if (prediction.specialist === 'intent') for (const key of ROUTE_FIELDS) {
+      if (contextOnly && key !== 'taskContext') continue
       if (key === 'needsResponse' && recordsById.get(prediction.recordId)?.metadata.responseOptional) continue
       const expected = prediction.expected[key], observed = actual?.[key]
       if (key === 'taskContext' || key === 'conversationContext') {

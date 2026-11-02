@@ -3,6 +3,10 @@ import fs from 'node:fs'
 import os from 'node:os'
 import path from 'node:path'
 import test, { after, mock } from 'node:test'
+import childProcess, { spawn } from 'node:child_process'
+import { syncBuiltinESMExports } from 'node:module'
+import { PassThrough } from 'node:stream'
+import { EventEmitter } from 'node:events'
 
 const root = fs.mkdtempSync(path.join(os.tmpdir(), 'metahuman-agent-graph-retry-'))
 process.env.METAHUMAN_ROOT = root
@@ -125,4 +129,42 @@ test('subprocess execution retains exhausted attempts as terminal rather than re
   await assert.rejects(run(), /terminal failure/)
   assert.equal(fs.readFileSync(path.join(root, 'generations'), 'utf8'), generations)
   store.close()
+})
+
+
+test('Coordinator agent pipes retain complete UTF8 output across chunk boundaries', async () => {
+  const { eventBus } = await import('../infrastructure/event-bus/client.js')
+  eventBus.disconnect()
+  const output = 'Original output. ' + 'x'.repeat(3_000) + '🤖 stdout end.'
+  const diagnostic = 'Original cause. ' + 'y'.repeat(3_000) + '🤖 stderr end.'
+  for (const code of [0, 1]) {
+    const stdout = new PassThrough()
+    const stderr = new PassThrough()
+    const child = Object.assign(new EventEmitter(), { stdout, stderr })
+    const mocked = mock.method(childProcess, 'spawn', (...args: Parameters<typeof spawn>) => {
+      assert.equal(args[1]?.[0], fixture)
+      queueMicrotask(() => {
+        for (const [stream, text] of [[stdout, output], [stderr, diagnostic]] as const) {
+          const bytes = Buffer.from(text)
+          const split = bytes.indexOf(Buffer.from('🤖')) + (stream === stdout ? 2 : 1)
+          stream.write(bytes.subarray(0, split))
+          stream.end(bytes.subarray(split))
+        }
+        setImmediate(() => child.emit('close', code, null))
+      })
+      return child as unknown as ReturnType<typeof spawn>
+    })
+    syncBuiltinESMExports()
+    try {
+      const task = manager.enqueue({ type: 'dream', handler: 'agent.dreamer', resource: 'local-llm',
+        source: 'system', priority: 'background', username, maxAttempts: 1, input: {} })
+      const result = (engine as any).runAgent(task, 'dreamer', new AbortController().signal)
+      if (code === 0) assert.deepEqual(await result, { stdout: output, stderr: diagnostic })
+      else await assert.rejects(result, { message: 'Agent dreamer exited with code 1: ' + diagnostic })
+    } finally {
+      mocked.mock.restore()
+      syncBuiltinESMExports()
+      stdout.destroy(); stderr.destroy()
+    }
+  }
 })

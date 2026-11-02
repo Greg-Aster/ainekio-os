@@ -31,7 +31,7 @@
       "startOnSystemBoot": true,
       "autoRestart": true,
       "maxRetries": 3,
-      "comment": "Maintenance-only service for stale-lock health checks, audit-log cleanup, and embedding preload."
+      "comment": "Maintenance-only service for stale-lock health checks and audit-log cleanup."
     },
     "terminal": {
       "id": "terminal",
@@ -45,35 +45,20 @@
       "maxRetries": 0,
       "comment": "On-demand shell and Big Brother session owner. Stopping closes all owned sessions."
     },
-    "environment-bridge-local": {
-      "id": "environment-bridge-local",
+    "environment-bridge": {
+      "id": "environment-bridge",
       "enabled": true,
       "type": "manual",
       "priority": "high",
-      "agentPath": "environment-bridge/local.ts",
+      "agentPath": "environment-bridge/index.ts",
       "usesLLM": false,
       "startOnSystemBoot": true,
       "autoRestart": true,
       "maxRetries": 3,
       "adapterUrl": "ws://127.0.0.1:8790/environment",
       "graph": "environment",
-      "comment": "Environment Bridge Local; starting switches the active connection."
-    },
-    "environment-bridge-remote": {
-      "id": "environment-bridge-remote",
-      "enabled": true,
-      "type": "manual",
-      "priority": "high",
-      "agentPath": "environment-bridge/remote.ts",
-      "usesLLM": false,
-      "startOnSystemBoot": false,
-      "autoRestart": true,
-      "maxRetries": 3,
-      "adapterUrl": "ws://127.0.0.1:18790/environment",
-      "graph": "environment",
-      "comment": "Environment Bridge Remote; starting switches the active connection.",
-      "cloudflareHostname": "bridge.ainek.io",
-      "accessEnvFile": "/home/greggles/.cloudflared/ainekio-environment-access.env"
+      "comment": "One connection owner connects only to the selected Local, SSH, or Cloudflare Body Control host.",
+      "remoteAdapterUrl": "ws://127.0.0.1:18790/environment"
     }
   }
 }

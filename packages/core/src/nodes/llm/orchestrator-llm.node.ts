@@ -129,10 +129,10 @@ export const ENVIRONMENT_INTENT_JSON_SCHEMA = {
 
 export const ENVIRONMENT_REQUEST_INTENT_JSON_SCHEMA = {
   type: 'object', additionalProperties: false,
-  required: ['needsResponse', 'needsAction', 'needsToolUse', 'taskPlanner', 'taskContext', 'conversationContext'],
+  required: ['needsResponse', 'needsAction', 'needsGoalReview', 'needsToolUse', 'taskPlanner', 'taskContext', 'conversationContext'],
   properties: {
     ...temporalMemoryProperties,
-    needsResponse: { type: 'boolean' }, needsAction: { type: 'boolean' },
+    needsResponse: { type: 'boolean' }, needsAction: { type: 'boolean' }, needsGoalReview: { type: 'boolean' },
     needsToolUse: { type: 'boolean' },
     taskContext: { type: 'array', items: { type: 'string', enum: [...ENVIRONMENT_CONTEXT_ENTRIES] } },
     conversationContext: { type: 'array', items: { type: 'string', enum: [...ENVIRONMENT_CONTEXT_ENTRIES] } },
@@ -188,6 +188,41 @@ export function parseEnvironmentIntentRouting(value: unknown, requestOnly = true
   return record as unknown as EnvironmentRequestRouting | EnvironmentIntentRouting;
 }
 
+const AUTONOMY_CONTEXT_SOURCES = [...ENVIRONMENT_CONTEXT_ENTRIES,
+  'innerDialogue', 'robotActions', 'activityHistory', 'observationHistory', 'desires'] as const;
+export const AUTONOMY_CONTEXT_JSON_SCHEMA = {
+  ...ENVIRONMENT_REQUEST_INTENT_JSON_SCHEMA,
+  properties: {
+    ...ENVIRONMENT_REQUEST_INTENT_JSON_SCHEMA.properties,
+    taskContext: { type: 'array', items: { type: 'string', enum: [...AUTONOMY_CONTEXT_SOURCES] } },
+  },
+};
+const autonomySourceOutputs = {
+  needsInnerDialogue: ['innerDialogue', 'Whether private thoughts and reflections were selected.'],
+  needsRobotActions: ['robotActions', 'Whether recorded robot action outcomes were selected.'],
+  needsActivityHistory: ['activityHistory', 'Whether recorded autonomous activity was selected.'],
+  needsObservationHistory: ['observationHistory', 'Whether earlier observations were selected.'],
+  needsDesires: ['desires', 'Whether recorded desires were selected.'],
+} as const;
+
+export function parseAutonomyContext(value: string) {
+  const selection = JSON.parse(value);
+  if (!selection || typeof selection !== 'object' || Array.isArray(selection)
+    || !Array.isArray(selection.taskContext)
+    || selection.taskContext.some((source: unknown) => !AUTONOMY_CONTEXT_SOURCES.includes(source as any))) {
+    throw new Error('Invalid autonomy context selection');
+  }
+  // Validate the unchanged route and memory fields through their existing owner.
+  // The extended task sources belong to this selector only, not Environment routing.
+  parseEnvironmentIntentRouting(JSON.stringify({ ...selection, taskContext: [] }));
+  const contextSources: string[] = selection.taskContext;
+  return { ...selection, contextSources,
+    personaSections: contextSources.filter(source => source.startsWith('persona.')).map(source => source.slice(8)),
+    ...selectedEnvironmentRoutes({ ...selection, taskContext: contextSources, conversationContext: [] }),
+    ...Object.fromEntries(Object.entries(autonomySourceOutputs).map(([output, [source]]) => [output, contextSources.includes(source)])),
+  };
+}
+
 function withAnalysis<T extends Record<string, any>>(result: T): T & { analysis: T } {
   return {
     ...result,
@@ -211,6 +246,7 @@ export const OrchestratorLLMNode: NodeDefinition = defineNode({
   name: 'Intent Orchestrator',
   category: 'chat',
   inputs: [
+    { name: 'selectedContext', type: 'object', optional: true, description: 'Attributed context already selected and read for the originating assessment.' },
     { name: 'autonomy', type: 'boolean', optional: true, description: 'Select the saved autonomous-input prompts for an internally authored intention.' },
     { name: 'message', type: 'string', description: 'Instruction or message whose routing needs should be analyzed' },
     { name: 'execution', type: 'object', optional: true, description: 'Current execution facts for routing an internal intention' },
@@ -219,6 +255,8 @@ export const OrchestratorLLMNode: NodeDefinition = defineNode({
     { name: 'feedbackContext', type: 'object', optional: true, description: 'Feedback from previous iteration (for refinement loops)' },
   ],
   outputs: [
+    { name: 'personaSections', type: 'array', description: 'Context sources selected for this autonomy assessment.' },
+    ...Object.entries(autonomySourceOutputs).map(([name, [, description]]) => ({ name, type: 'boolean' as const, description })),
     { name: 'taskPlanner', type: 'string', description: 'Model-selected task planner' },
     { name: 'useVisionPlanner', type: 'boolean', description: 'Whether Intent selected the vision planner' },
     { name: 'needsToolUse', type: 'boolean', description: 'Whether delegated computer tool use is selected.' },
@@ -272,6 +310,7 @@ export const OrchestratorLLMNode: NodeDefinition = defineNode({
         { value: 'general', label: 'General' },
         { value: 'environment', label: 'Environment' },
         { value: 'environment-request', label: 'Environment Request Only' },
+        { value: 'autonomy-context', label: 'Autonomy Context' },
       ],
     },
     systemPrompt: {
@@ -309,7 +348,8 @@ export const OrchestratorLLMNode: NodeDefinition = defineNode({
   execute: async (inputs, context, properties) => {
     if (context.environmentInterpretation?.route) return context.environmentInterpretation.route;
     // Named inputs from graph edges with array fallbacks
-    const requestOnly = properties?.outputContract === 'environment-request';
+    const autonomyContext = properties?.outputContract === 'autonomy-context';
+    const requestOnly = properties?.outputContract === 'environment-request' || autonomyContext;
     const environmentContract = requestOnly || properties?.outputContract === 'environment';
     const inputData = inputs.message || inputs[0];
     const conversationHistory = requestOnly ? [] : inputs.conversationHistory || inputs[1] || context.conversationHistory || [];
@@ -383,7 +423,9 @@ Adjust your routing based on this feedback. If memory search already failed, con
 - Adjusting responseStyle to be more honest about uncertainty`;
       }
 
+      const suppliedContext = inputs.selectedContext;
       const promptValues = {
+        suppliedContext: JSON.stringify(Object.fromEntries(Object.entries(suppliedContext?.sources ?? {}).map(([source, value]: [string, any]) => [source, value.scope]))),
         userMessage,
         executionSection: !requestOnly && inputs.execution ? `Current execution: ${JSON.stringify(inputs.execution)}` : '',
         feedbackSection,
@@ -416,18 +458,18 @@ Adjust your routing based on this feedback. If memory search already failed, con
           ...(requestOnly ? {} : { repeatPenalty: 1.15 }),
           temperature: properties?.temperature ?? 0.2,
           format: environmentContract ? 'json' : undefined,
-          jsonSchema: requestOnly ? ENVIRONMENT_REQUEST_INTENT_JSON_SCHEMA : environmentContract ? ENVIRONMENT_INTENT_JSON_SCHEMA : undefined,
+          jsonSchema: autonomyContext ? AUTONOMY_CONTEXT_JSON_SCHEMA : requestOnly ? ENVIRONMENT_REQUEST_INTENT_JSON_SCHEMA : environmentContract ? ENVIRONMENT_INTENT_JSON_SCHEMA : undefined,
         },
         onProgress: context.emitProgress,
       });
 
+      if (autonomyContext) return { ...withAnalysis(parseAutonomyContext(response.content)), raw: response.content, modelMessages: messages };
       if (environmentContract) {
         const routing = parseEnvironmentIntentRouting(response.content, requestOnly);
         return {
           ...routing,
           ...selectedEnvironmentRoutes(routing),
-          useVisionPlanner: ('taskPlanner' in routing && routing.taskPlanner === 'vision')
-            || ('taskContext' in routing && Array.isArray(routing.taskContext) && routing.taskContext.includes('vision')),
+          useVisionPlanner: 'taskPlanner' in routing && routing.taskPlanner === 'vision',
           analysis: routing,
           modelMessages: messages,
           raw: response.content,

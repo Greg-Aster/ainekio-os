@@ -27,7 +27,7 @@ test('bridge admits a body event once into its separate workflow and leaves tele
   assert.equal(first.status, 200, JSON.stringify(first.data))
   const data: any = first.data
   assert.equal(data.graphQueued, true)
-  assert.equal(getQueueManager().getTask(data.workId)?.input.graph, 'body-event-trigger')
+  assert.equal(getQueueManager().getTask(data.workId)?.input.graph, 'robot-wake-up')
   const replay = await handleEnvironmentBridgeObservation(req, () => 'fixture')
   assert.equal(replay.status, 200)
   assert.equal((replay.data as any).workId, data.workId)

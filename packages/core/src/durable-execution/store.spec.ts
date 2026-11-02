@@ -4,6 +4,9 @@ import fs from 'node:fs'
 import os from 'node:os'
 import path from 'node:path'
 import { randomUUID } from 'node:crypto'
+import { execFile } from 'node:child_process'
+import { promisify } from 'node:util'
+import Database from 'better-sqlite3'
 import { Annotation, Command, END, START, StateGraph, interrupt } from '@langchain/langgraph'
 import { contentHash, ExecutionStore } from './store.js'
 import { ExecutionCheckpointer, type CheckpointConfig } from './checkpointer.js'
@@ -26,12 +29,257 @@ function fixture() {
   return { directory, filename, store, execution, lease, saver, config }
 }
 
+test('node-scoped history selects before decoding and survives reopening and retained-definition indexing', () => {
+  const directory = fs.mkdtempSync(path.join(os.tmpdir(), 'metahuman-node-history-'))
+  const filename = path.join(directory, 'execution.sqlite')
+  let decoded = 0
+  const codec = { encode: JSON.stringify, decode: (text: string) => { decoded++; return JSON.parse(text) } }
+  let store = new ExecutionStore(filename, codec)
+  const controller = { ...definition, nodeVersions: { active_operator_dispatch: 'fixture', robot_autonomy_controller_parser: 'fixture' } }
+  try {
+    const first = store.create('owner', controller)
+    const second = store.create('owner', controller)
+    store.create('other', controller)
+    store.db.transaction(() => {
+      for (let index = 0; index < 6_000; index++) store.create('owner', definition)
+    })()
+    decoded = 0
+    const started = performance.now()
+    assert.deepEqual([...store.iterateNodeExecutions('owner', 'active_operator_dispatch', true)].map(record => record.executionId),
+      [second.executionId, first.executionId])
+    assert.equal(decoded, 2, 'Unrelated retained definitions must not enter decoding')
+    console.log(`node history across 6003 retained executions: ${(performance.now() - started).toFixed(2)} ms`)
+    // Opening a pre-index database is a one-time derivation from the retained definitions.
+    store.db.exec('DROP TABLE execution_nodes; PRAGMA user_version=0')
+    store.close()
+    store = new ExecutionStore(filename, codec)
+    decoded = 0
+    assert.deepEqual([...store.iterateNodeExecutions('owner', 'active_operator_dispatch')].map(record => record.executionId),
+      [first.executionId, second.executionId])
+    assert.equal(decoded, 2)
+    store.close()
+    decoded = 0
+    store = new ExecutionStore(filename, codec)
+    assert.equal(decoded, 0, 'Subsequent opens must not re-index or decode history')
+    store.db.prepare('DELETE FROM executions WHERE execution_id=?').run(first.executionId)
+    assert.deepEqual([...store.iterateNodeExecutions('owner', 'active_operator_dispatch')].map(record => record.executionId), [second.executionId])
+    assert.equal((store.db.prepare('SELECT COUNT(*) AS count FROM execution_nodes WHERE execution_id=?').get(first.executionId) as { count: number }).count, 0,
+      'Derived membership has the canonical execution lifetime')
+  } finally { store.close(); fs.rmSync(directory, { recursive: true, force: true }) }
+})
+
+test('work execution lookup recovers every admitted root after queue copies are gone', () => {
+  const store = new ExecutionStore(':memory:')
+  try {
+    const one = store.enter('owner', definition, 'work-a:graph:0', {})
+    const two = store.enter('owner', definition, 'work-a:graph:1', {})
+    store.enter('other', definition, 'work-a:graph:0', {})
+    store.enter('owner', definition, 'work-ab:graph:0', {})
+    store.enter('owner', definition, 'work-a:other:0', {})
+    assert.deepEqual(store.workExecutions('owner', 'work-a').map(record => record.executionId), [one.executionId, two.executionId])
+    assert.deepEqual(store.workExecutions('owner', 'missing'), [])
+    assert.equal(store.executionWork(one.executionId), null, 'No parent association may be invented')
+    const parent = store.create('owner', definition)
+    store.db.transaction(() => store.commitTransition(parent.executionId, 'work-checkpoint', {
+      transitionId: 'original-dispatch', dispatches: [{ effectId: 'actual-effect', kind: 'coordinator_work', payload: { input: { message: 'Original input' } } }],
+    }))()
+    store.acknowledgeAdmission('actual-effect', 'work-a')
+    assert.deepEqual(store.executionWork(one.executionId), store.dispatch('actual-effect'))
+    assert.deepEqual(store.executionWork(two.executionId), store.dispatch('actual-effect'))
+    assert.equal(store.executionWork(parent.executionId), null)
+    assert.equal(store.executionWork(store.admittedExecutionId('other', 'work-a:graph:0')!), null, 'Other profiles cannot borrow a parent dispatch')
+  } finally { store.close() }
+})
+
+test('node-index migration rolls back interrupted encrypted decoding and concurrent readers finish it once', async () => {
+  const directory = fs.mkdtempSync(path.join(os.tmpdir(), 'metahuman-node-index-rollback-'))
+  const filename = path.join(directory, 'execution.sqlite')
+  const codec = { encode: (value: unknown) => `encoded:${JSON.stringify(value)}`, decode: (text: string) => JSON.parse(text.slice(8)) }
+  const original = new ExecutionStore(filename, codec)
+  const first = original.create('owner', definition).executionId
+  const second = original.create('owner', definition).executionId
+  original.db.transaction(() => original.commitTransition(first, 'indexed-dispatch', { transitionId: 'indexed-dispatch',
+    dispatches: [{ effectId: 'controller-work', kind: 'coordinator_work', payload: { metadata: { producer: 'controller' } } }],
+  }))()
+  original.db.exec(`DROP TABLE execution_nodes;
+    DROP INDEX execution_dispatch_producer; DROP INDEX execution_dispatch_requestor; DROP INDEX execution_dispatch_trigger;
+    ALTER TABLE execution_outbox DROP COLUMN producer;
+    ALTER TABLE execution_outbox DROP COLUMN requested_by;
+    ALTER TABLE execution_outbox DROP COLUMN triggered_by; PRAGMA user_version=0;`)
+  original.close()
+  const exec = promisify(execFile)
+  const script = (fail: boolean) => `
+    import { ExecutionStore } from ${JSON.stringify(new URL('./store.ts', import.meta.url).href)};
+    let decoded=0;
+    const store=new ExecutionStore(${JSON.stringify(filename)}, {
+      encode:value=>'encoded:'+JSON.stringify(value),
+      decode:text=>{ if(${fail} && ++decoded===2) throw new Error('interrupted fixture decode'); return JSON.parse(text.slice(8)) }
+    });
+    console.log(JSON.stringify([...store.iterateNodeExecutions('owner','review')].map(row=>row.executionId)));
+    store.close();`
+  try {
+    await assert.rejects(exec(process.execPath, ['--import', 'tsx', '--input-type=module', '--eval', script(true)]), /interrupted fixture decode/)
+    const inspection = new Database(filename)
+    try {
+      assert.equal(inspection.prepare("SELECT 1 FROM sqlite_master WHERE name='execution_nodes'").get(), undefined,
+        'Partial migration cannot leave the table present and skip missing membership next time')
+      assert.equal((inspection.prepare('SELECT COUNT(*) AS count FROM executions').get() as { count: number }).count, 2)
+      assert.equal((inspection.pragma('table_info(execution_outbox)') as { name: string }[]).some(column => column.name === 'producer'), false,
+        'An interrupted provenance backfill rolls back its columns as well as index construction')
+    } finally { inspection.close() }
+    const results = await Promise.all([false, false].map(fail => exec(process.execPath,
+      ['--import', 'tsx', '--input-type=module', '--eval', script(fail)])))
+    for (const result of results) assert.deepEqual(JSON.parse(result.stdout.trim()), [first, second])
+    const reopened = new ExecutionStore(filename, codec)
+    try {
+      assert.equal([...reopened.iterateNodeExecutions('owner', 'review')].length, 2)
+      assert.deepEqual([...reopened.iterateNodeExecutions('owner', 'review', false, { originatingAgent: 'controller' })].map(record => record.executionId), [first])
+    }
+    finally { reopened.close() }
+  } finally { fs.rmSync(directory, { recursive: true, force: true }) }
+})
+
+test('dispatch attribution selection preserves all recorded origins and handoffs across codec-aware migration', () => {
+  const directory = fs.mkdtempSync(path.join(os.tmpdir(), 'metahuman-dispatch-origin-'))
+  const filename = path.join(directory, 'execution.sqlite')
+  let decoded = 0
+  const codec = { encode: (value: unknown) => `encoded:${JSON.stringify(value)}`,
+    decode: (text: string) => { decoded++; return JSON.parse(text.slice(8)) } }
+  let store = new ExecutionStore(filename, codec)
+  const ids: string[] = []
+  try {
+    for (const [index, payload] of [
+      { metadata: { producer: 'controller' } },
+      { metadata: { producer: 'desire-agent', requestedBy: 'controller' } },
+      { input: { triggeredBy: 'controller' } },
+      { kind: 'autonomy_trigger', executionId: 'existing-target', context: {} },
+      { metadata: { producer: 'internal-camera' } },
+    ].entries()) {
+      const record = store.create('owner', definition)
+      ids.push(record.executionId)
+      store.db.transaction(() => store.commitTransition(record.executionId, `checkpoint-${index}`, { transitionId: `dispatch-${index}`,
+        dispatches: [{ effectId: `effect-${index}`, kind: index === 3 ? 'execution_event' : 'coordinator_work', payload }],
+      }))()
+    }
+    const original = ids.map((_, index) => store.dispatch(`effect-${index}`))
+    const selected = () => [...store.iterateNodeExecutions('owner', 'review', false,
+      { originatingAgent: 'controller', includeExecutionEvents: true })].map(record => record.executionId)
+    assert.deepEqual(selected(), ids.slice(0, 4))
+    assert.deepEqual([...store.iterateNodeExecutions('owner', 'review', false, { originatingAgent: 'controller' })].map(record => record.executionId), ids.slice(0, 3))
+    store.db.exec(`DROP INDEX execution_dispatch_producer; DROP INDEX execution_dispatch_requestor; DROP INDEX execution_dispatch_trigger;
+      ALTER TABLE execution_outbox DROP COLUMN producer;
+      ALTER TABLE execution_outbox DROP COLUMN requested_by;
+      ALTER TABLE execution_outbox DROP COLUMN triggered_by; PRAGMA user_version=0;`)
+    store.close()
+    store = new ExecutionStore(filename, codec)
+    assert.deepEqual(selected(), ids.slice(0, 4))
+    assert.deepEqual(ids.map((_, index) => store.dispatch(`effect-${index}`)), original, 'Indexing never rewrites canonical admission payloads or identities')
+    assert.deepEqual([...store.iterateNodeExecutions('other-profile', 'review', false, { originatingAgent: 'controller' })], [])
+    store.close()
+    decoded = 0
+    store = new ExecutionStore(filename, codec)
+    assert.equal(decoded, 0, 'Later opens must not backfill provenance again')
+    store.db.prepare('DELETE FROM executions WHERE execution_id=?').run(ids[1])
+    assert.deepEqual(selected(), [ids[0], ids[2], ids[3]])
+  } finally { store.close(); fs.rmSync(directory, { recursive: true, force: true }) }
+})
+
+test('optional admission reads distinguish missing history and preserve stored input', () => {
+  const store = new ExecutionStore(':memory:')
+  try {
+    const old = store.create('owner', definition)
+    assert.equal(store.entryOrNull(old.executionId), null)
+    assert.throws(() => store.entry(old.executionId), /has no admitted input/)
+    const current = store.enter('owner', definition, 'actual-admission', { context: { instruction: 'Original input' } })
+    assert.deepEqual(store.entryOrNull(current.executionId), store.entry(current.executionId))
+    store.db.prepare('UPDATE execution_entries SET bootstrap=? WHERE execution_id=?').run('not-json', current.executionId)
+    assert.throws(() => store.entryOrNull(current.executionId), SyntaxError, 'Malformed data is not absent history')
+  } finally { store.close() }
+})
+
+test('activity result selection preserves the selected action across a long-running goal', () => {
+  let decoded = 0
+  const store = new ExecutionStore(':memory:', { encode: JSON.stringify,
+    decode: (text: string) => { decoded++; return JSON.parse(text) } })
+  try {
+    const executionId = store.create('owner', definition).executionId
+    assert.deepEqual(store.activityResults(executionId, 'selected-command'), [])
+    store.db.transaction(() => {
+      for (let index = 0; index < 5_000; index++) store.appendEvent(executionId, {
+        eventId: `retained-${index}`, kind: index % 2 === 0 ? 'physical_result' : 'sensor', actionId: 'selected-command', payload: { index, evidence: 'Recorded frame evidence' },
+      })
+    })()
+    const receipt = store.appendEvent(executionId, { eventId: 'actual-result', kind: 'physical_result', actionId: 'selected-command',
+      payload: { feedback: { type: 'completed', message: 'Command ended; objective still unverified' } } })
+    const speech = store.appendEvent(executionId, { eventId: 'speech-result', kind: 'physical_result', actionId: 'speech',
+      payload: { feedback: { type: 'completed', message: 'speech_played' } } })
+    store.appendEvent(executionId, { eventId: 'later-context', kind: 'sensor', payload: { observed: 'New frame' } })
+    decoded = 0
+    const started = performance.now()
+    assert.deepEqual(store.activityResults(executionId, 'selected-command'), [receipt, speech])
+    assert.equal(decoded, 2)
+    console.log(`action result across 5002 retained goal events: ${(performance.now() - started).toFixed(2)} ms`)
+  } finally { store.close() }
+})
+
 async function checkpoint(f: ReturnType<typeof fixture>, transition?: CheckpointTransition, config: CheckpointConfig = f.config) {
   return f.saver.put(config, {
     v: 4, id: randomUUID(), ts: new Date().toISOString(),
     channel_values: transition ? { executionTransition: transition } : {}, channel_versions: {}, versions_seen: {},
   }, { source: 'loop', step: 0, parents: {} })
 }
+
+test('physical receipt ownership requires correlated evidence, independently of parent completion', async () => {
+  const f = fixture()
+  try {
+    await checkpoint(f, { transitionId: 'physical-delivery', dispatches: [{
+      effectId: 'motion', kind: 'coordinator_work', actionId: 'move', payload: {},
+    }] })
+    f.store.acknowledgeAdmission('motion', 'job')
+    f.store.acceptAction('motion')
+    assert.equal(f.store.hasActionResultReceipt('motion', 'job'), false)
+    f.store.recordResult(f.execution.executionId, 'move', {
+      eventId: 'uncertain', kind: 'physical_result', actionId: 'move', workItemId: 'job', payload: {},
+    }, true)
+    assert.equal(f.store.hasActionResultReceipt('motion', 'job'), false, 'An unknown physical outcome remains unresolved')
+    f.store.recordResult(f.execution.executionId, 'move', {
+      eventId: 'completed', kind: 'physical_result', actionId: 'move', workItemId: 'job', payload: {},
+    })
+    assert.equal(f.store.hasActionResultReceipt('motion', 'different-job'), false)
+    assert.equal(f.store.hasActionResultReceipt('motion', 'job'), true)
+    assert.equal(f.store.get(f.execution.executionId).status, 'running')
+  } finally { f.store.close(); fs.rmSync(f.directory, { recursive: true, force: true }) }
+})
+
+test('active execution context reads only this profile unfinished records and preserves live changes', () => {
+  let decoded = 0
+  const store = new ExecutionStore(':memory:', {
+    encode: JSON.stringify,
+    decode: text => { decoded++; return JSON.parse(text) },
+  })
+  try {
+    const running = store.create('owner', definition)
+    const waiting = store.create('owner', definition)
+    store.db.prepare("UPDATE executions SET status='waiting' WHERE execution_id=?").run(waiting.executionId)
+    store.db.prepare('INSERT INTO execution_waits VALUES (?, ?)').run(waiting.executionId, 'user_input')
+    store.create('another-owner', definition)
+    for (const status of ['completed', 'failed', 'cancelled']) {
+      for (let index = 0; index < 20; index++) {
+        const old = store.create('owner', definition)
+        store.db.prepare('UPDATE executions SET status=? WHERE execution_id=?').run(status, old.executionId)
+      }
+    }
+    const expected = store.list('owner').filter(record => ['running', 'waiting'].includes(record.status))
+    decoded = 0
+    assert.deepEqual(store.active('owner'), expected)
+    assert.equal(decoded, 2, 'Inactive history and other profiles must never be decoded for active context')
+    assert.equal(store.active('owner').find(record => record.executionId === waiting.executionId)?.waitingReason, 'user_input')
+    store.db.prepare("UPDATE executions SET status='completed' WHERE execution_id=?").run(running.executionId)
+    decoded = 0
+    assert.deepEqual(store.active('owner').map(record => record.executionId), [waiting.executionId])
+    assert.equal(decoded, 1, 'The next context read must reflect settlement without a cache or retained list')
+  } finally { store.close() }
+})
 
 test('execution listing preserves full records and waits with one database query', () => {
   const store = new ExecutionStore(':memory:');
@@ -69,6 +317,35 @@ test('execution listing preserves full records and waits with one database query
     assert.equal(store.summaries('first-user').length, 3, 'history projection must not delete older executions');
   } finally { store.close(); }
 });
+
+test('sensor subscription lookup decodes only matching waiting executions', () => {
+  const store = new ExecutionStore(':memory:')
+  try {
+    const create = (username: string, status: string, reason: string) => {
+      const execution = store.create(username, definition)
+      store.db.prepare('UPDATE executions SET status=? WHERE execution_id=?').run(status, execution.executionId)
+      store.db.prepare('INSERT INTO execution_waits VALUES (?, ?)').run(execution.executionId, reason)
+      return execution.executionId
+    }
+    for (let i = 0; i < 100; i++) create('owner', 'completed', 'active_task:body:perception')
+    create('other', 'waiting', 'active_task:body:perception')
+    create('owner', 'waiting', 'active_task:other-body:perception')
+    create('owner', 'running', 'active_task:body:perception')
+    const camera = create('owner', 'waiting', 'active_task:body:perception')
+    const locomotion = create('owner', 'waiting', 'active_task:body:perception:locomotion')
+    const decode = store.codec.decode.bind(store.codec)
+    let decoded = 0
+    store.codec.decode = value => { decoded++; return decode(value) }
+    assert.deepEqual(store.waitingFor('owner', ['active_task:body:perception:locomotion']).map(x => x.executionId), [locomotion])
+    assert.equal(decoded, 1)
+    decoded = 0
+    assert.deepEqual(new Set(store.waitingFor('owner', ['active_task:body:perception', 'active_task:body:perception:locomotion']).map(x => x.executionId)), new Set([camera, locomotion]))
+    assert.equal(decoded, 2)
+    decoded = 0
+    assert.deepEqual(store.waitingFor('owner', ['active_task:missing:perception']), [])
+    assert.equal(decoded, 0, 'unrelated historical executions never enter decoding')
+  } finally { store.close() }
+})
 
 test('event bursts share one pending wake without losing inputs or changing admitted payloads', async () => {
   const f = fixture()
@@ -157,8 +434,9 @@ test('Robot Status selects the same current task without decoding unrelated exec
       store.db.prepare('INSERT INTO execution_task VALUES (?, ?, ?)').run(record.executionId, 'checkpoint', store.codec.encode(task));
       return { ...task, executionStatus: status };
     };
-    assert.equal(store.projectedTask('first-user'), null);
+    assert.equal(store.projectedTasks('first-user').currentTask, null);
     const active = add('first-user', 'waiting', '2026-01-01T00:00:01.000Z');
+    const parked = add('first-user', 'idle', '2026-01-01T00:00:20.000Z', 'wait');
     const complete = add('first-user', 'completed', '2026-01-01T00:00:09.000Z', 'continue', true);
     add('first-user', 'running', '2026-01-01T00:00:08.000Z', 'abandon');
     add('first-user', 'waiting', '2026-01-01T00:00:07.000Z', 'cancel');
@@ -172,14 +450,16 @@ test('Robot Status selects the same current task without decoding unrelated exec
     let decodes = 0;
     store.db.prepare = ((sql: string) => { queries++; return prepare(sql); }) as typeof store.db.prepare;
     store.codec.decode = ((value: string) => { decodes++; return decode(value); }) as typeof store.codec.decode;
-    assert.deepEqual(store.projectedTask('first-user'), active);
+    assert.deepEqual(store.projectedTasks('first-user').currentTask, active);
     assert.equal(queries, 1);
-    assert.equal(decodes, 6, "only this profile's task records need decoding");
+    assert.equal(decodes, 6, "only this profile's unfinished task records need decoding");
+    assert.deepEqual(store.projectedTasks('first-user').parkedGoals, [parked]);
     const latest = add('first-user', 'running', '2026-01-01T00:00:02.000Z');
-    assert.deepEqual(store.projectedTask('first-user'), latest);
+    assert.deepEqual(store.projectedTasks('first-user').currentTask, latest);
     prepare("UPDATE executions SET status='completed' WHERE username=?").run('first-user');
-    assert.deepEqual(store.projectedTask('first-user'), complete, 'newest task wins when no unfinished task remains');
-    assert.equal(store.projectedTask('unknown-user'), null);
+    assert.equal(store.projectedTasks('first-user').currentTask, null, 'No active task must not select completed history');
+    assert.equal(store.task(complete.executionId)?.updatedAt, complete.updatedAt, 'Completed history remains available by its execution identity');
+    assert.equal(store.projectedTasks('unknown-user').currentTask, null);
   } finally { store.close(); }
 });
 
@@ -1130,7 +1410,7 @@ test('child writer ownership migrates existing graph records and recovers expire
     const lease = store.claim(execution.executionId, definition)
     store.pinGraph(lease, 'saved-child', definition)
     store.release(lease)
-    store.db.exec('ALTER TABLE execution_graphs DROP COLUMN owner; ALTER TABLE execution_graphs DROP COLUMN owner_generation; ALTER TABLE execution_graphs DROP COLUMN lease_until')
+    store.db.exec('ALTER TABLE execution_graphs DROP COLUMN owner; ALTER TABLE execution_graphs DROP COLUMN owner_generation; ALTER TABLE execution_graphs DROP COLUMN lease_until; PRAGMA user_version=0')
     store.close()
     store = new ExecutionStore(filename)
     const expired = store.claimGraph(execution.executionId, 'saved-child', definition, randomUUID(), -1)
@@ -1186,4 +1466,28 @@ test('latest execution readers decode only consumed records and lookup preserves
     assert.throws(() => store.get('not-retained'), /Unknown execution not-retained/)
     assert.deepEqual(store.list('fixture').map(record => record.executionId), [older.executionId, latest.executionId])
   } finally { store.close() }
+})
+
+
+test('opening an initialized execution store for reading does not claim the database writer lock', () => {
+  const directory = fs.mkdtempSync(path.join(os.tmpdir(), 'metahuman-store-reader-'))
+  const filename = path.join(directory, 'execution.sqlite')
+  const writer = new ExecutionStore(filename)
+  const execution = writer.create('read-owner', definition)
+  let reader: ExecutionStore | undefined
+  try {
+    writer.db.exec('BEGIN IMMEDIATE')
+    const ordinary = new Database(filename, { readonly: true, timeout: 0 })
+    try {
+      assert.equal((ordinary.prepare('SELECT username FROM executions WHERE execution_id=?').get(execution.executionId) as { username: string }).username, 'read-owner')
+    } finally { ordinary.close() }
+    reader = new ExecutionStore(filename)
+    assert.equal(reader.get(execution.executionId).username, 'read-owner')
+    assert.equal(writer.db.inTransaction, true, "Opening a reader cannot release another connection's writer")
+  } finally {
+    reader?.close()
+    if (writer.db.inTransaction) writer.db.exec('ROLLBACK')
+    writer.close()
+    fs.rmSync(directory, { recursive: true, force: true })
+  }
 })

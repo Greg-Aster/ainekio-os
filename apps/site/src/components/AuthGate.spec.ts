@@ -117,3 +117,60 @@ test('unified login routes credentials to the chosen machine, while local login 
     }
   }
 });
+
+test('session restoration publishes the verified user and clears it on expiry or failed restoration', async () => {
+  const { get } = await import('svelte/store');
+  const { currentUserStore, statusStore, userDisplayNameStore } = await import('../stores/navigation.js');
+  const selected = source.statements.filter(statement => ts.isFunctionDeclaration(statement)
+    && ['checkAuth', 'handleApiAuthFailure', 'clearStoredSession', 'clearServerSessionCookie'].includes(statement.name!.text));
+  const handlerCode = ts.transpileModule(selected.map(statement => statement.getText(source)).join('\n'), {
+    compilerOptions: { target: ts.ScriptTarget.ES2022 },
+  }).outputText;
+  let user: unknown = { id: 'owner', username: 'fixture', role: 'owner', metadata: { displayName: 'Fixture' } };
+  const requests: string[] = [];
+  let policyLoads = 0;
+  let encryptionLocked = false;
+  let networkFailure = false;
+  const state = vm.createContext({
+    currentUserStore, statusStore,
+    apiFetch: async (url: string) => {
+      requests.push(url);
+      if (networkFailure) throw new Error('Connection lost');
+      return new Response(JSON.stringify(encryptionLocked ? { data: { encryptionLocked: true, username: 'fixture' } } : { user }), { status: user ? 200 : 401 });
+    },
+    fetchSecurityPolicy: async () => { policyLoads++; }, clearSecurityPolicy() {},
+    localStorage: { removeItem() {} }, console: { log() {}, warn() {} },
+    isAuthenticated: false, isCheckingAuth: true, handlingAuthFailure: false,
+    error: '', view: 'login', username: '',
+  });
+  vm.runInContext(handlerCode, state);
+  await state.checkAuth();
+  assert.deepEqual(get(currentUserStore), user);
+  assert.equal(get(userDisplayNameStore), 'Fixture');
+  assert.equal(policyLoads, 1);
+  assert.deepEqual(requests, ['/api/auth/me']);
+  assert.equal(state.isAuthenticated, true);
+
+  statusStore.set({ identity: { name: 'Fixture' } });
+  await state.handleApiAuthFailure({ detail: { status: 401 } });
+  assert.equal(get(statusStore), null);
+  assert.equal(get(currentUserStore), null);
+  assert.equal(state.isAuthenticated, false);
+
+  user = { id: 'guest', username: 'visitor', role: 'anonymous', metadata: { sourceProfile: 'fixture' } };
+  await state.checkAuth();
+  assert.deepEqual(get(currentUserStore), user, 'guest restoration uses the same published session');
+  assert.equal(get(userDisplayNameStore), 'Guest: fixture');
+  user = null;
+  await state.checkAuth();
+  assert.equal(get(currentUserStore), null, 'failed restoration must not retain the previous user');
+  assert.equal(state.isAuthenticated, false);
+  encryptionLocked = true;
+  await state.checkAuth();
+  assert.match(state.error, /encrypted storage is locked/);
+  assert.equal(get(currentUserStore), null);
+  networkFailure = true;
+  await state.checkAuth();
+  assert.equal(get(currentUserStore), null);
+  assert.equal(state.isCheckingAuth, false);
+});

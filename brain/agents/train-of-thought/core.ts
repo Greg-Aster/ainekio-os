@@ -16,7 +16,6 @@ import {
 } from '@metahuman/core'
 
 const MAX_EXECUTION_ID_CHARS = 400
-const MAX_SEED_CHARS = 12_000
 const AGENT_ID_PATTERN = /^[a-z0-9]+(?:-[a-z0-9]+)*$/
 
 export interface TrainOfThoughtOptions {
@@ -109,9 +108,6 @@ function validateTimestamp(value: string): string {
 function validateSeed(value: string | undefined): string | undefined {
   const seed = value?.trim()
   if (!seed) return undefined
-  if (seed.length > MAX_SEED_CHARS) {
-    throw new Error(`Train of Thought seed must not exceed ${MAX_SEED_CHARS} characters`)
-  }
   return seed
 }
 

@@ -17,7 +17,6 @@ import {
   robotOperatorChildGraph,
   loadRobotOperatorConfig,
 } from './robot-operator.js'
-import { summarizeRobotAutonomyActivity } from './nodes/robot-operator/autonomy-activity-history.node.js'
 import { environmentSendActionNode } from './nodes/environment/send-action.node.js'
 import { environmentActionParserNode } from './nodes/environment/action-parser.node.js'
 import { robotOperatorInputNode } from './nodes/robot-operator/input.node.js'
@@ -35,7 +34,7 @@ test('manual observer cycles remain available while autonomous cycles require se
 })
 
 test('full autonomy admits the controller instead of rotating child workflows', () => {
-  const serviceSource = fs.readFileSync(path.join(ROOT, 'brain/agents/active-operator/index.ts'), 'utf8')
+  const serviceSource = fs.readFileSync(path.join(ROOT, 'brain/agents/active-operator/core.ts'), 'utf8')
   assert.match(serviceSource, /CONTROLLER[^\n]+robot-autonomy-controller/)
   assert.match(serviceSource, /activeRobotExecutions/)
   assert.doesNotMatch(serviceSource, /armSemiChild|randomizedChildIdleMs|RETRY_DELAY_MS/)
@@ -150,34 +149,6 @@ test('active task summaries report successful and failed objectives from the exe
   }
 })
 
-test('Autonomy activity retains a controller no-task decision without inventing downstream work', () => {
-  const receipts = summarizeRobotAutonomyActivity([{
-    id: 'controller-none',
-    handler: 'workflow.robot-autonomy-controller',
-    state: 'completed',
-    source: 'autonomy',
-    username: 'owner',
-    createdAt: '2026-09-05T00:02:00.000Z',
-    completedAt: '2026-09-05T00:02:01.000Z',
-    correlationId: 'cycle-none',
-    input: { agentId: 'robot-autonomy-controller' },
-    result: {
-      decision: {
-        taskId: 'none',
-        reason: 'No available task is useful in the current context.',
-        observationSummary: 'No objective or new stimulus is present.',
-        responseAuthored: false,
-      },
-      dispatch: { queued: false, taskId: '', status: 'none_selected' },
-    },
-  }] as any, 'owner')
-
-  assert.equal(receipts.length, 1)
-  assert.equal(receipts[0].capabilityId, 'none')
-  assert.equal((receipts[0].result?.dispatch as any)?.queued, false)
-  assert.equal((receipts[0].result?.decision as any)?.responseAuthored, false)
-})
-
 test('Robot Operator context is kept separate from the bridge observation', () => {
   const observation = sanitizeEnvironmentBridgeObservation({
     environmentId: 'ainekio',
@@ -185,7 +156,7 @@ test('Robot Operator context is kept separate from the bridge observation', () =
     sessionId: 'robot-1',
     timestamp: '2026-08-23T12:00:00.000Z',
     capabilities: {
-      actions: ['robotCommand', 'robotMotionPlan', 'captureImage'],
+      actions: ['robotCommand', 'requestMotion', 'captureImage'],
       robotCommands: ['gesture_alpha', 'gesture_beta'],
       movement: true,
       visual: true,
@@ -212,7 +183,7 @@ test('Robot Operator context is kept separate from the bridge observation', () =
   assert.deepEqual(observation.state, { stale: true })
   assert.deepEqual(observation.capabilities.actions, [
     'robotCommand',
-    'robotMotionPlan',
+    'requestMotion',
     'captureImage',
   ])
   assert.deepEqual(observation.capabilities.robotCommands, ['gesture_alpha', 'gesture_beta'])
@@ -311,7 +282,7 @@ test('Robot Operator owns scheduling while Robot Status and boredom children own
   assert.equal(AGENT_CATALOG_DEFINITIONS['boredom-reflection'].lifecycle, 'workflow')
   assert.equal(AGENT_CATALOG_DEFINITIONS['boredom-reflection'].handler, 'workflow.boredom-reflection')
   assert.equal(AGENT_CATALOG_DEFINITIONS['robot-operator'].lifecycle, 'service')
-  assert.equal(AGENT_CATALOG_DEFINITIONS['robot-operator'].servicePath, 'agents/active-operator/index.ts')
+  assert.equal(AGENT_CATALOG_DEFINITIONS['robot-operator'].servicePath, 'agents/active-operator/cli.ts')
 
   const agents = JSON.parse(fs.readFileSync(path.join(ROOT, 'etc', 'agents.json'), 'utf8'))
   const services = JSON.parse(fs.readFileSync(path.join(ROOT, 'etc', 'services.json'), 'utf8'))
@@ -390,7 +361,7 @@ test('Robot Operator owns scheduling while Robot Status and boredom children own
 
   const engine = fs.readFileSync(path.join(ROOT, 'packages/core/src/queue/execution-engine.ts'), 'utf8')
   const observerHandler = fs.readFileSync(path.join(ROOT, 'packages/core/src/queue/robot-autonomy-trigger-handler.ts'), 'utf8')
-  const controller = fs.readFileSync(path.join(ROOT, 'brain/agents/active-operator/index.ts'), 'utf8')
+  const controller = fs.readFileSync(path.join(ROOT, 'brain/agents/active-operator/core.ts'), 'utf8')
   assert.equal(fs.existsSync(path.join(ROOT, 'packages/core/src/queue/boredom-movement-handler.ts')), false)
   assert.match(engine, /workflow\.robot-status/)
   assert.match(engine, /workflow\.robot-goal-review/)
@@ -399,7 +370,7 @@ test('Robot Operator owns scheduling while Robot Status and boredom children own
   assert.match(engine, /workflow\.boredom-reflection/)
   assert.doesNotMatch(observerHandler, /hasActiveRobotAutonomyCycle/)
   assert.match(observerHandler, /const observation = session\.latestObservation/)
-  assert.match(observerHandler, /actions\.includes\('robotMotionPlan'\)/)
+  assert.match(observerHandler, /actions\.includes\('requestMotion'\)/)
   assert.doesNotMatch(observerHandler, /actions\.filter\(/)
   assert.match(observerHandler, /graph: robotOperatorChildGraph\(config, agentId\)/)
   assert.doesNotMatch(observerHandler, /enqueueEnvironmentAction|type: 'captureImage'/)
@@ -409,7 +380,6 @@ test('Robot Operator owns scheduling while Robot Status and boredom children own
   assert.doesNotMatch(observerHandler, /enqueueEnvironmentObservation|enqueueRobotOperatorEnvironment/)
   assert.doesNotMatch(observerHandler, /type: 'robotCommand'|chooseBoredomMovementCommand/)
   assert.match(controller, /isSleepRuntimeActive\(\)/)
-  assert.match(controller, /loadQueueState\(\)\?\.items/)
   assert.match(controller, /getQueueStateDir\(\)/)
   assert.match(controller, /fs\.watch\(getQueueStateDir\(\)/)
   assert.match(controller, /\$\{SERVICE_ID\}:assessment:/)

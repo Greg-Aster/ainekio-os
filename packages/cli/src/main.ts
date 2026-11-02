@@ -63,7 +63,6 @@ import {
   submitMemoryIndexRefresh,
 } from '@metahuman/core/queue';
 import { personaCommand } from './commands/persona.js';
-import { sovitsCommand } from './commands/sovits.js';
 import { rvcCommand } from './commands/rvc.js';
 import { kokoroCommand } from './commands/kokoro.js';
 import { voiceServerCommand } from './commands/voice-server.js';
@@ -71,7 +70,6 @@ import { profileCommand } from './commands/profile.js';
 import {
   backendCommand,
   ollamaCommand,
-  vllmCommand,
 } from './commands/model-backends.js';
 import { printHelp } from './help.js';
 
@@ -286,23 +284,16 @@ async function startServices(options: { restart?: boolean; force?: boolean } = {
     console.log('   Boot-managed agents will resume when headless mode is disabled');
   }
 
-  const sleep = (ms: number) => Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, ms);
-
   if (restart) {
     const running = getRunningAgents();
     const toRestart = running.filter(agent => defaults.includes(agent.name));
     if (toRestart.length > 0) {
       console.log('• Restarting background agents...');
       for (const agent of toRestart) {
-        const result = stopAgent(agent.name, force);
-        if (result.success) {
-          // Wait up to 5 seconds for the agent to fully stop
-          for (let attempt = 0; attempt < 25; attempt += 1) {
-            if (!isAgentRunning(agent.name)) break;
-            sleep(200);
-          }
-        } else {
-          console.log(result.message);
+        const result = await stopAgent(agent.name, force);
+        if (!result.success) {
+          console.error(result.message);
+          process.exitCode = 1;
         }
       }
     }
@@ -321,12 +312,14 @@ async function startServices(options: { restart?: boolean; force?: boolean } = {
     if (result.alreadyRunning) {
       console.log(`• ${agentName} already running`);
     } else if (!result.started) {
-      console.warn(`Skipping ${agentName}: ${result.error || 'failed to start'}`);
+      console.error(`Failed to start ${agentName}: ${result.error || 'unknown error'}`);
+      process.exitCode = 1;
     }
   };
 
   await Promise.all(defaults.map(spawnAgent));
-  console.log('Background services started (if not already running).');
+  if (process.exitCode) console.error('Some background services failed to start.');
+  else console.log('Background services started (if not already running).');
 }
 
 function capture(args: string[]): void {
@@ -787,12 +780,13 @@ async function chat(): Promise<void> {
         process.exit(1);
       }
 
-      const stopOne = (name: string) => {
-        const result = stopAgent(name, force);
+      const stopOne = async (name: string) => {
+        const result = await stopAgent(name, force);
         if (result.success) {
           console.log(`${result.message} (pid ${result.pid})`);
         } else {
-          console.log(result.message);
+          console.error(result.message);
+          process.exitCode = 1;
         }
       };
 
@@ -801,10 +795,10 @@ async function chat(): Promise<void> {
         if (running.length === 0) {
           console.log('No agents currently running.');
         } else {
-          running.forEach(agent => stopOne(agent.name));
+          await Promise.all(running.map(agent => stopOne(agent.name)));
         }
       } else {
-        stopOne(target);
+        await stopOne(target);
       }
       break;
     }
@@ -1472,9 +1466,6 @@ async function main() {
       case 'ollama':
         await ollamaCommand(args);
         break;
-      case 'vllm':
-        await vllmCommand(args);
-        break;
       case 'backend':
         await backendCommand(args);
         break;
@@ -1486,9 +1477,6 @@ async function main() {
         break;
       case 'persona':
         await personaCommand(args);
-        break;
-      case 'sovits':
-        await sovitsCommand(args);
         break;
       case 'rvc':
         await rvcCommand(args);

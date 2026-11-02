@@ -44,6 +44,8 @@ export function compareEnvironmentSpecialistReports(current: EnvironmentSpeciali
   return {
     promote: noRegression && improves,
     noRegression, improves,
-    latencyMeasurement: 'Transformers batch-duration-per-item proxy; not llama.cpp serving latency',
+    latencyMeasurement: candidate.providers.every(provider => provider === 'llama-cpp')
+      ? 'Measured llama.cpp request duration; not end-to-end workflow latency'
+      : 'Transformers batch-duration-per-item proxy; not llama.cpp serving latency',
   }
 }

@@ -1,22 +1,5 @@
 {
   "addons": {
-    "gpt-sovits": {
-      "name": "GPT-SoVITS TTS",
-      "description": "Few-shot voice cloning backed by the upstream GPT-SoVITS runtime.",
-      "category": "tts",
-      "size": "~2.5 GB",
-      "requirements": {
-        "python": ">=3.9",
-        "gpu": "recommended",
-        "vram": "12 GB+ recommended"
-      },
-      "dependencies": {
-        "system": [
-          "ffmpeg"
-        ]
-      },
-      "note": "Requires pretrained models and a reference voice sample."
-    },
     "rvc": {
       "name": "RVC Voice Conversion",
       "description": "Voice conversion backed by the upstream Applio command-line runtime.",

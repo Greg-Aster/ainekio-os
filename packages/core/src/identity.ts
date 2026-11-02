@@ -603,7 +603,6 @@ export function setTrustLevel(level: string): void {
  * explicitly points to core.json; it is not an implicit recovery path.
  */
 export function loadPersonaWithFacet(): PersonaCore | null {
-  console.log(`${LOG_PREFIX} ========== loadPersonaWithFacet HIT ==========`);
   try {
     // Resolve persona directory via storage router
     const personaResult = storageClient.resolvePath({

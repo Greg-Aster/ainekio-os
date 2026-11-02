@@ -1,5 +1,5 @@
 import fs from 'node:fs';
-import { runRemoteForwarder } from './forwarder.js';
+import { runBodyConnection } from './connections.js';
 import path from 'node:path';
 import WebSocket, { type RawData } from 'ws';
 import {
@@ -34,7 +34,6 @@ import { encodeRobotSpeechMessage } from './speech-transport.js';
 
 const LOG_PREFIX = '[environment-bridge]';
 const PROTOCOL_VERSION = 1;
-const RECONNECT_DELAY_MS = 2_000;
 const MAX_PENDING_AUDIO_UTTERANCES = 2;
 const DIAGNOSTIC_TELEMETRY_INTERVAL_MS = 1_000;
 const MAX_DIAGNOSTIC_EVENTS_PER_WINDOW = 20;
@@ -85,6 +84,10 @@ interface DiagnosticWindow {
 
 export interface BridgeConfig {
   adapterUrl: string;
+  transport?: 'local' | 'ssh' | 'cloudflare';
+  followRobot?: boolean;
+  remoteAdapterUrl?: string;
+  robotId?: string;
   adapterToken: string;
   coreUrl: string;
   serviceToken: string;
@@ -100,14 +103,14 @@ function configValue(config: Record<string, unknown>, key: string): string {
   return typeof value === 'string' ? value.trim() : '';
 }
 
-export function readConfig(agentId = 'environment-bridge-local'): BridgeConfig {
+export function readConfig(): BridgeConfig {
   let serviceConfig: ServiceConfig = {};
   try {
     serviceConfig = JSON.parse(
       fs.readFileSync(path.join(ROOT, 'etc', 'services.json'), 'utf8'),
     ) as ServiceConfig;
   } catch {}
-  const service = serviceConfig.services?.[agentId] ?? {};
+  const service = serviceConfig.services?.['environment-bridge'] ?? {};
   const adapterUrl = configValue(service, 'adapterUrl');
   const graph = process.env.MH_ENVIRONMENT_GRAPH?.trim()
     || configValue(service, 'graph')
@@ -130,6 +133,10 @@ export function readConfig(agentId = 'environment-bridge-local'): BridgeConfig {
 
   return {
     adapterUrl: parsed.toString(),
+    followRobot: service.followRobot === true,
+    transport: (configValue(service, 'transport') || 'local') as BridgeConfig['transport'],
+    remoteAdapterUrl: configValue(service, 'remoteAdapterUrl') || undefined,
+    robotId: configValue(service, 'robotId') || undefined,
     adapterToken,
     coreUrl: new URL(coreUrl).toString().replace(/\/$/, ''),
     serviceToken,
@@ -137,18 +144,7 @@ export function readConfig(agentId = 'environment-bridge-local'): BridgeConfig {
   };
 }
 
-function waitForAbort(signal: AbortSignal, milliseconds: number): Promise<void> {
-  if (signal.aborted) return Promise.resolve();
-  return new Promise((resolve) => {
-    const timer = setTimeout(finish, milliseconds);
-    function finish() {
-      clearTimeout(timer);
-      signal.removeEventListener('abort', finish);
-      resolve();
-    }
-    signal.addEventListener('abort', finish, { once: true });
-  });
-}
+
 
 export function websocketMessageIsBinary(
   raw: RawData | string,
@@ -238,6 +234,7 @@ export async function consumeActionStream(
   signal: AbortSignal,
   cancelAction?: (cancellation: Record<string, unknown>) => void,
   readVisual?: (request: Record<string, unknown>) => void,
+  ready?: () => void,
 ): Promise<void> {
   const url = new URL('/api/environment-bridge/stream', config.coreUrl);
   url.searchParams.set('sessionId', sessionId);
@@ -253,6 +250,7 @@ export async function consumeActionStream(
     throw new Error(`Environment action stream failed (${response.status})`);
   }
 
+  ready?.();
   const reader = response.body.getReader();
   const decoder = new TextDecoder();
   let buffer = '';
@@ -293,7 +291,8 @@ export async function consumeActionStream(
   }
 }
 
-async function connectOnce(config: BridgeConfig, signal: AbortSignal): Promise<void> {
+async function connectOnce(config: BridgeConfig, signal: AbortSignal, ready?: () => void): Promise<void> {
+  if (signal.aborted) return;
   const websocket = new WebSocket(config.adapterUrl, {
     maxPayload: 0,
     perMessageDeflate: false,
@@ -302,14 +301,24 @@ async function connectOnce(config: BridgeConfig, signal: AbortSignal): Promise<v
   let diagnosticTimer: NodeJS.Timeout | undefined;
   const abort = () => {
     localAbort.abort();
-    websocket.close(1000, 'environment bridge stopping');
+    if (websocket.readyState === WebSocket.CONNECTING) websocket.terminate();
+    else websocket.close(1000, 'environment bridge stopping');
   };
   signal.addEventListener('abort', abort, { once: true });
 
   try {
     await new Promise<void>((resolve, reject) => {
-      websocket.once('open', resolve);
-      websocket.once('error', reject);
+      const opened = () => { cleanup(); resolve(); };
+      const failed = (error: Error) => { cleanup(); reject(error); };
+      const closed = () => failed(new Error('Environment connection closed before opening'));
+      const cleanup = () => {
+        websocket.removeListener('open', opened);
+        websocket.removeListener('error', failed);
+        websocket.removeListener('close', closed);
+      };
+      websocket.once('open', opened);
+      websocket.once('error', failed);
+      websocket.once('close', closed);
     });
     let actionStream: Promise<void> | undefined;
     let pendingFeedback: EnvironmentFeedback | undefined;
@@ -372,28 +381,7 @@ async function connectOnce(config: BridgeConfig, signal: AbortSignal): Promise<v
       diagnostics.outboundMessages += 1;
       if (message.type === 'environment.action' && message.action && typeof message.action === 'object') {
         const action = message.action as Record<string, unknown>;
-        if (action.type === 'robotMotionPlan') {
-          const frames = Array.isArray(action.frames) ? action.frames : [];
-          const durationMs = frames.reduce((total, frame) => {
-            if (!frame || typeof frame !== 'object') return total;
-            const duration = (frame as Record<string, unknown>).durationMs;
-            return total + (typeof duration === 'number' && Number.isFinite(duration) ? duration : 0);
-          }, 0);
-          diagnostics.movementPlan = {
-            actionId: typeof action.id === 'string' ? action.id : undefined,
-            status: 'dispatched',
-            frameCount: frames.length,
-            durationMs,
-            activeFrame: 0,
-            updatedAt: new Date().toISOString(),
-          };
-          diagnosticEvent({
-            timestamp: diagnostics.movementPlan.updatedAt,
-            kind: 'movement.plan',
-            status: 'dispatched',
-            message: `${diagnostics.movementPlan.actionId || 'unidentified'} frames=${frames.length} durationMs=${durationMs}`,
-          });
-        } else if (action.type === 'stop') {
+        if (action.type === 'stop') {
           diagnosticEvent({
             timestamp: new Date().toISOString(),
             kind: 'movement.stop',
@@ -844,7 +832,7 @@ async function connectOnce(config: BridgeConfig, signal: AbortSignal): Promise<v
             if (!actionStream) {
               actionStream = consumeActionStream(config, sessionId, sendAction, localAbort.signal,
                 cancellation => sendMessage({ type: 'environment.cancel', version: PROTOCOL_VERSION, ...cancellation }),
-                request => sendMessage(request))
+                request => sendMessage(request), ready)
                 .catch((error) => {
                   if (!localAbort.signal.aborted) reject(error);
                 });
@@ -1060,7 +1048,10 @@ async function connectOnce(config: BridgeConfig, signal: AbortSignal): Promise<v
   }
 }
 
-export async function runEnvironmentBridgeAgent(signal: AbortSignal, config = readConfig()): Promise<void> {
+export async function runEnvironmentBridgeAgent(
+  signal: AbortSignal,
+  config = readConfig(),
+): Promise<void> {
   let lock;
   try {
     lock = acquireLock('agent-environment-bridge', { exitOnSignal: false });
@@ -1069,34 +1060,28 @@ export async function runEnvironmentBridgeAgent(signal: AbortSignal, config = re
   }
 
   try {
-    console.log(`${LOG_PREFIX} starting mode=event-driven adapter=${config.adapterUrl} graph=${config.graph}`);
-    while (!signal.aborted) {
-      try {
-        await connectOnce(config, signal);
-      } catch (error) {
-        if (!signal.aborted) {
-          console.error(`${LOG_PREFIX} connection failed: ${(error as Error).message}`);
-        }
-      }
-      if (!signal.aborted) await waitForAbort(signal, RECONNECT_DELAY_MS);
-    }
-  } finally {
-    lock.release();
-  }
+    const remote = config.transport === 'ssh' || config.transport === 'cloudflare';
+    await runBodyConnection({
+      endpoints: config.followRobot
+        ? [{ url: config.adapterUrl }, ...(remote && config.remoteAdapterUrl
+          ? [{ url: config.remoteAdapterUrl, remote: true }] : [])]
+        : [{ url: remote ? config.remoteAdapterUrl! : config.adapterUrl, remote }],
+      token: config.adapterToken,
+      robotId: config.robotId,
+      connect: (adapterUrl, connectionSignal, ready) => connectOnce({ ...config, adapterUrl }, connectionSignal, ready),
+      changed: connections => postJson(config, '/api/environment-bridge/telemetry', { connections }).then(() => undefined),
+    }, signal);
+  } finally { lock.release(); }
 }
 
-export async function run(agentId: 'environment-bridge-local' | 'environment-bridge-remote' = 'environment-bridge-local'): Promise<void> {
+export async function run(): Promise<void> {
   const controller = new AbortController();
   const stop = () => controller.abort();
   process.once('SIGINT', stop);
   process.once('SIGTERM', stop);
   try {
-    const config = readConfig(agentId);
-    if (agentId === 'environment-bridge-remote') {
-      await runRemoteForwarder(config.adapterUrl, controller, () => runEnvironmentBridgeAgent(controller.signal, config));
-    } else {
-      await runEnvironmentBridgeAgent(controller.signal, config);
-    }
+    const config = readConfig();
+    await runEnvironmentBridgeAgent(controller.signal, config);
   } finally {
     process.removeListener('SIGINT', stop);
     process.removeListener('SIGTERM', stop);

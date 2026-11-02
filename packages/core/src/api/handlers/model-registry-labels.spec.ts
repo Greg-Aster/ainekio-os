@@ -8,7 +8,7 @@ process.env.METAHUMAN_ROOT = root
 const backend = await import('../../llm-backend.js')
 mock.module('../../llm-backend.js', { namedExports: { ...backend,
   getBackendStatus: async () => ({ backend: 'llama-cpp', resolvedBackend: 'llama-cpp', model: 'shared' }),
-  detectAvailableBackends: async () => ({ vllm: { running: false }, ollama: { running: false }, llamaCpp: { running: false } }),
+  detectAvailableBackends: async () => ({ ollama: { running: false }, llamaCpp: { running: false } }),
 } })
 const { migrateModelRegistry, parseModelRegistry } = await import('../../model-resolver.js')
 const { handleGetModelRegistry } = await import('./model-registry.js')

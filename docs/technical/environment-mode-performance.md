@@ -187,6 +187,12 @@ The active execution and its feedback deadlines retain their existing owners.
 Detached provider calls can still retain backend or client resources until they
 return or the provider enforces its own timeout.
 
+### Paired software qualification
+
+The [companion qualification map](../robot/QUALIFICATION.md) places this suite
+within whole-robot scenarios and distinguishes software evidence from live
+model decisions and physical results.
+
 Paired software qualification runs the real Environment routing graph, Coordinator,
 Core receipt ingestion, gateway adapter admission and dashboard manual-command
 route against a simulated body. Run with `AINEKIO_SOFTWARE_TEST_GATEWAY` pointing
@@ -542,7 +548,7 @@ LoRA conclusions:
 - Use one adapter per coherent role, not one adapter per node or boolean field. The environment classifier should emit its related typed routing fields in one pass.
 - An adapter is tied to the exact base model family and revision from which it was trained. A 9B adapter cannot be attached to the 2B or 0.8B base.
 - Persona adapters remain profile-owned. System routing and ranking adapters must use sanitized, system-owned datasets and artifacts.
-- Frequent multi-adapter serving is a runtime capability question. vLLM supports named per-request LoRA serving; Ollama supports model adapters through a Modelfile but requires exact base compatibility. Do not add a second backend solely to gain adapter switching without a measured system-level benefit.
+- Frequent multi-adapter serving uses the existing llama.cpp service and registered request adapters. Each adapter requires its matching base; training and export do not load it or change a model-role assignment.
 
 Target responsibility split:
 
@@ -966,10 +972,6 @@ Training evidence:
 Serving findings:
 
 - Ollama 0.20.7 accepted Modelfiles referencing the converted Qwen3.5 LoRA, but model initialization failed with `loras are not yet implemented`. A merged GGUF fallback was started and then deliberately stopped because it duplicates the full base and is inferior to the repository's existing native LoRA serving path.
-- The repository's vLLM owner already supports PEFT safetensors adapters through named `--lora-modules`; no profile discovery or duplicate adapter registry is needed for this system benchmark.
-- The installed vLLM 0.18.1 registry recognizes `Qwen3_5ForConditionalGeneration`. Evaluation must load the exact 2B base used for training; the configured 9B AWQ vLLM base cannot accept a 2B adapter.
-- The shared benchmark now supports `--provider ollama|vllm` and uses wall-clock latency as the provider-neutral timing measure. It retains one corpus, one Core validator, one prompt renderer, and one report format. The deployment gate now correctly fails on unnecessary vision admission as well as unsafe action authorization.
-- Do not keep independently loaded Ollama and vLLM models active on this 16 GB GPU during acceptance measurements. An idle Ollama daemon is harmless, but loaded weights compete for the same VRAM. The repository's operational backend switch already follows the single-active-runtime rule.
 
 Contract-drift finding:
 
@@ -1170,7 +1172,7 @@ Merged Ollama development benchmark:
 - A later live-system snapshot found `start.sh` active and Ollama serving both `qwen3.5:9b` and `qwen3.5:2b`; vLLM was not running. Their compute allocations were 8,102 MiB and 3,828 MiB respectively, or 11,930 MiB combined. Replacing the generic 2B resident role with the merged classifier would reduce that second allocation to approximately 1,420 MiB, saving roughly 2.4 GiB of measured compute VRAM while leaving the 9B general model unchanged. The live 9B/2B models were not unloaded because MetaHuman had been restarted and was actively processing user turns.
 - The 461 ms median is approximately 4.6 times faster than the original 9B Ollama held-out reference of 2,135 ms. Split differences prevent treating that ratio as a model-quality comparison, but it clears the intended latency objective by a large margin while preserving zero unsafe action errors and zero excess-vision admissions on development data.
 - Under the user-approved practical floor, the merged Ollama artifact qualified for a controlled Environment Router canary: 97.9% development exact routing exceeds 62.5%, safety remained clean, and latency was materially below 9B. It did not satisfy the earlier absolute 100% gate, and the completed 75% held-out result remains the only locked generalization evidence.
-- Runtime decision: use one Ollama inference owner for the 9B general model and the merged 0.8B classifier, with residency controlled by role and demand. Do not run a second persistent vLLM service for this adapter. Keep the BF16 merge and LoRA artifacts as reproducibility/training evidence, not live runtime choices.
+- Historical runtime decision: the canary used Ollama for the 9B general model and merged 0.8B classifier. The BF16 merge and LoRA artifacts remain reproducibility/training evidence; this dated result does not describe the current llama.cpp deployment.
 
 Live Environment Router canary:
 
@@ -1502,7 +1504,6 @@ it does not prove what a physical camera frame contains.
 - Model-role resolution: `packages/core/src/model-resolver.ts` and `packages/core/src/model-router.ts`
 - Ollama concurrency behavior: <https://docs.ollama.com/faq#how-does-ollama-handle-concurrent-requests>
 - Ollama adapter contract: <https://docs.ollama.com/modelfile#adapter>
-- vLLM LoRA serving: <https://docs.vllm.ai/en/stable/features/lora/>
 - Qwen3.5 0.8B model card: <https://huggingface.co/Qwen/Qwen3.5-0.8B>
 - Qwen3 embedding model: <https://huggingface.co/Qwen/Qwen3-Embedding-0.6B>
 - Qwen3 reranker model: <https://huggingface.co/Qwen/Qwen3-Reranker-0.6B>

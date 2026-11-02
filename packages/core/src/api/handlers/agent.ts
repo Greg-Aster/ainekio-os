@@ -9,7 +9,6 @@ import { ensureQueueSystemStarted } from '../../queue/index.js';
 import {
   clearAgentFailure,
   isAgentRunning,
-  waitForProcessExit,
   stopAgent,
 } from '../../agent-monitor-registry.js';
 
@@ -107,18 +106,15 @@ export async function handleAgentsControl(req: UnifiedRequest): Promise<UnifiedR
       }
 
       if (action === 'stop') {
-        const result = stopAgent(agent);
+        const result = await stopAgent(agent);
         return json({ success: result.success, agent, message: result.message, result }, result.success ? 200 : 409);
       }
 
       const wasRunning = isAgentRunning(agent);
       if (wasRunning) {
-        const stopResult = stopAgent(agent);
+        const stopResult = await stopAgent(agent);
         if (!stopResult.success) {
           return json({ success: false, agent, message: stopResult.message, result: stopResult }, 409);
-        }
-        if (stopResult.pid && !await waitForProcessExit(stopResult.pid)) {
-          return json({ success: false, agent, message: `${agent} did not stop in time` }, 409);
         }
       }
 
@@ -131,7 +127,7 @@ export async function handleAgentsControl(req: UnifiedRequest): Promise<UnifiedR
       }, result.success ? 200 : (result.alreadyRunning ? 409 : 400));
     }
 
-    const stopSummary = stopAllAgents(false);
+    const stopSummary = await stopAllAgents(false);
     audit({
       level: 'info',
       category: 'system',
@@ -142,8 +138,8 @@ export async function handleAgentsControl(req: UnifiedRequest): Promise<UnifiedR
 
     if (action === 'stop-all') {
       return json({
-        success: true,
-        message: `Sent stop signal to ${stopSummary.total} agent(s)`,
+        success: stopSummary.failed.length === 0,
+        message: `Stopped ${stopSummary.stopped.length}/${stopSummary.total} agent(s)`,
         summary: stopSummary,
       });
     }

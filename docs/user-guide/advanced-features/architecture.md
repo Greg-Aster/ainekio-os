@@ -66,7 +66,7 @@ Runtime data must not be committed, imported as source, or hardcoded into an app
 or worker.
 
 Curator owns accepted training records. Training orchestrators consume that
-store and produce one runtime artifact per run. Ollama and vLLM backend owners
+store and produce one runtime artifact per run. The configured backend owners
 control activation and loading.
 
 ## Extending The System

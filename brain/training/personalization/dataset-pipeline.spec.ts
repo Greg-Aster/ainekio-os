@@ -8,6 +8,7 @@ import { CURATOR_POLICY_VERSION, episodicSourceHash, setAuditEnabled, selectRevi
   type ReviewedPersonalizationDataset, type CuratedMemory, type EpisodicEvent } from '@metahuman/core'
 import { parseTrainingDataSettings } from '@metahuman/core/training-schema'
 import { parsePositiveInteger, parseCognitiveMode, preparePersonalizationDataset, type PersonalizationProgram } from './dataset-pipeline.js'
+import { buildCompanionExamples } from './companion-examples.js'
 
 const cutoff = '2026-09-09T00:00:00Z'
 setAuditEnabled(false)
@@ -49,6 +50,36 @@ test('reviewed examples retain author and family independence including previous
   assert.throws(() => selectReviewedPersonalizationDataset(sameFamily, settings, cutoff), /share a family/)
   assert.throws(() => selectReviewedPersonalizationDataset(reviewed, settings, cutoff,
     { assignments: { 'group:eval-family': 'train' }, completedSampleIds: [] }), /previously frozen/)
+})
+
+test('companion examples retain runtime instructions and freeze through the existing reviewed-data owner', async t => {
+  const persona = JSON.parse(fs.readFileSync(path.resolve('persona/core.json.template'), 'utf8'))
+  const reviewedDataset = await buildCompanionExamples(persona)
+  const selected = selectReviewedPersonalizationDataset(reviewedDataset, settings, cutoff)
+  assert.equal(selected.train.length, 108)
+  assert.equal(selected.evaluation.length, 36)
+  const environment = JSON.parse(fs.readFileSync(path.resolve('etc/cognitive-graphs/environment-mode.json'), 'utf8'))
+  const wake = JSON.parse(fs.readFileSync(path.resolve('etc/cognitive-graphs/robot-wake-up-mode.json'), 'utf8'))
+  const prompts = new Set([environment.nodes.find((node: any) => node.id === 'conversation-context').data.properties.systemPrompt.trim(),
+    wake.nodes.find((node: any) => node.id === 'context').data.properties.systemPrompt.trim()])
+  for (const row of [...selected.train, ...selected.evaluation]) {
+    assert.ok(prompts.has(row.messages[0]!.content))
+    const payload = JSON.parse(row.messages[1]!.content)
+    assert.equal(row.metadata.targetAuthor, 'assistant')
+    assert.equal(row.metadata.synthetic, true)
+    assert.equal(row.messages.at(-1)!.role, 'assistant')
+    if (row.id.endsWith('-personal-recall')) assert.equal(payload.recentConversation.length, 2)
+    if (row.id.endsWith('-unknown-person-wake')) {
+      assert.deepEqual(payload.recentConversation, [])
+      assert.doesNotMatch(row.messages.at(-1)!.content, /Greg|Avery|Morgan|Casey/)
+    }
+  }
+  const result = await preparePersonalizationDataset({ ...options(t), reviewedDataset }, {
+    settings, inspection: { records: [], sources: [], cutoff, errors: [] },
+    runProgram: async () => { throw new Error('Reviewed examples must retain their exact model context') },
+  })
+  assert.equal(result.sampleCount, selected.train.length)
+  assert.equal(result.evaluationCount, selected.evaluation.length)
 })
 function inputs() {
   const sources: EpisodicEvent[] = Array.from({ length: 40 }, (_, i) => ({

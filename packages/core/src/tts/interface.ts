@@ -65,17 +65,6 @@ export interface PiperConfig {
   outputFormat: 'wav';
 }
 
-export interface SoVITSConfig {
-  serverUrl: string;
-  referenceAudioDir: string;
-  speakerId: string;
-  temperature: number;
-  speed: number;
-  outputFormat: 'wav';
-  timeout: number;
-  autoFallbackToPiper: boolean;
-}
-
 export interface RVCConfig {
   referenceAudioDir: string;
   modelsDir: string;
@@ -103,19 +92,11 @@ export interface KokoroConfig {
   outputFormat: 'wav';
 }
 
-export interface KittenConfig {
-  voice: string;
-  speed: number;
-  outputFormat: 'wav';
-}
-
 export interface TTSConfig {
-  provider: 'piper' | 'gpt-sovits' | 'rvc' | 'kokoro' | 'kitten';
+  provider: 'piper' | 'rvc' | 'kokoro';
   piper: PiperConfig;
-  sovits: SoVITSConfig;
   rvc?: RVCConfig;
   kokoro?: KokoroConfig;
-  kitten?: KittenConfig;
 }
 
 export interface CacheConfig {

@@ -32,17 +32,6 @@ function validGraph(value: unknown, fallback: string): string {
   return /^[a-zA-Z0-9_-]{1,80}$/.test(graph) ? graph : fallback;
 }
 
-function sampledMemoryContent(value: unknown): string[] {
-  if (!Array.isArray(value)) return [];
-  return [...new Set(value.map(memory => (
-    typeof memory === 'string'
-      ? cleanText(memory, 800)
-      : isRecord(memory)
-        ? cleanText(memory.content, 800)
-        : ''
-  )).filter(Boolean))].slice(0, 3);
-}
-
 function currentMode(context: Record<string, unknown>): AutonomyMode {
   const override = context.operatorMode;
   return override === 'reactive' || override === 'semi' || override === 'full'
@@ -128,10 +117,10 @@ export const robotOperatorEnvironmentDispatchNode = defineNode({
       innerEntry: null,
     });
     if (!decision) return reject('no_decision');
-    const observed = cleanText(decision.observed, 500);
-    const instruction = cleanText(decision.instruction, 1_000);
-    const reason = cleanText(decision.reason, 500);
-    if (!observed || !instruction || !reason) {
+    const observed = typeof decision.observed === 'string' ? decision.observed : '';
+    const instruction = typeof decision.instruction === 'string' ? decision.instruction : '';
+    const reason = typeof decision.reason === 'string' ? decision.reason : '';
+    if (!observed.trim() || !instruction.trim() || !reason.trim()) {
       return reject('invalid_decision');
     }
     if (!observation?.sessionId) return reject('missing_observation_session', instruction);
@@ -146,7 +135,7 @@ export const robotOperatorEnvironmentDispatchNode = defineNode({
     );
     const cycle = delegatedCycle(observation, robotObserver, source, graph);
     const timestamp = new Date().toISOString();
-    const delegatedMemories = sampledMemoryContent(inputs.memories);
+    const delegatedMemories = Array.isArray(inputs.memories) ? inputs.memories : [];
     const frames = inputs.frames as EnvironmentVisualFrame[] | undefined;
     const nextObservation: EnvironmentObservation = sanitizeEnvironmentBridgeObservation({
       ...observation,

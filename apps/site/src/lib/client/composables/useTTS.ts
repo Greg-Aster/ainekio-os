@@ -499,7 +499,7 @@ function createTTS() {
         }
         const provider = options.provider ?? await fetchVoiceProvider();
         controller.signal.throwIfAborted();
-        const streaming = provider === 'rvc' || provider === 'kokoro' || provider === 'kitten';
+        const streaming = provider === 'rvc' || provider === 'kokoro';
         const speechText = normalizeTextForSpeech(text);
         const response = streaming
           ? await requestStreamingSpeech(speechText, { ...options, provider }, controller.signal)
@@ -1010,7 +1010,7 @@ function createTTS() {
         if (!playbackRequests.isActive(playbackRequest)) return 'interrupted';
         // RVC is slow (especially on CPU) - always use streaming for lower latency
         // KokoroService releases ordered phrases while later synthesis continues.
-        useStreaming = provider === 'rvc' || provider === 'kokoro' || provider === 'kitten';
+        useStreaming = provider === 'rvc' || provider === 'kokoro';
         if (useStreaming) {
           console.log(`[useTTS] Auto-selecting streaming mode for ${provider} provider`);
         }

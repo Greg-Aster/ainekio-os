@@ -16,8 +16,37 @@ pnpm build
 
 `start.sh` is the canonical startup owner. It validates Node, starts configured
 background services, and runs the prebuilt web server in the foreground. It
-never installs packages or builds source. Press Ctrl+C to stop what it started,
-or use `./stop.sh` for a full repository-scoped shutdown.
+never installs packages or builds source. Background launchers run concurrently;
+dispatch does not mean readiness. The application starts while its dispatcher
+owns the unfinished launch commands. Failed launchers print their exit code and
+log path in the terminal. Details remain in `logs/run/<service>.launcher.log`.
+Stopping the application cancels unfinished startup commands before stopping
+their services, so a late launch cannot recreate a stopped service.
+
+Assigned model endpoints start through Core after authentication selects an
+unlocked, available profile, including restoration of a surviving browser
+session. Unauthenticated boot does not select a default profile or load models.
+
+Normal Ctrl+C delegates service shutdown to `stop.sh --services-only`, including
+on-demand agents and terminal sessions. Use `--app-only` below when another
+lifecycle owns the services. Full `./stop.sh` first asks the launcher to stop only
+its application and unfinished startup commands, then dispatches service stops
+once. The internal `USR2` signal selects that existing application-only cleanup.
+The full command also removes the optional PM2 registration. Each service releases
+its own processes and state; the scripts do not
+rewrite agent registries or scan for service names to kill. Failed owners are
+reported, remaining shutdown steps run, and full shutdown returns a failure code.
+
+Local-model shell start/stop and API controls share the Core lifecycle manager,
+`logs/run/local-models.pid`, and `etc/llm-backend.json`. Boot selection reads
+`localModels.enabled` and `localModels.autoStart`. Both the prebuilt service and
+source-mode service start without loading model weights. Shared voice boot
+selection belongs to `etc/voice-servers.json`; an enabled provider can remain
+available on request without being selected for system boot.
+
+Event-bus shell and API controls share the process lifecycle in Core's existing
+event-bus server module and `logs/run/event-bus.pid`. Stop terminates the recorded
+process and its client connections; it does not kill arbitrary port listeners.
 
 After building an update, replace only the running web application with:
 

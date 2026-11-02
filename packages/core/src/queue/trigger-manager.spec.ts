@@ -1,4 +1,5 @@
 import assert from 'node:assert/strict';
+import { mock } from 'node:test';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
@@ -148,6 +149,27 @@ try {
     /owned by Robot Operator/i,
   );
 
+  const realNow = Date.now;
+  try {
+    for (const [timezone, schedule, now, expected] of [
+      ['UTC', '02:00', '2026-10-30T02:01:00Z', '2026-10-31T02:00:00.000Z'],
+      ['America/New_York', '02:30', '2026-03-08T06:59:00Z', '2026-03-09T06:30:00.000Z'],
+      ['America/New_York', '01:30', '2026-11-01T05:31:00Z', '2026-11-01T06:30:00.000Z'],
+    ]) {
+      Date.now = () => Date.parse(now);
+      const daily = new TriggerManager(new UnifiedQueueManager(), {
+        ...config, globalSettings: { ...config.globalSettings, timezone },
+        agents: { daily: { ...config.agents.organizer,
+          id: 'daily', type: 'time-of-day', schedule } },
+      });
+      try {
+        daily.start();
+        assert.equal(daily.getTriggerState('daily')?.nextRun?.toISOString(), expected,
+          'Daily scheduling preserves timezone, skipped-hour and repeated-hour semantics');
+      } finally { daily.dispose(); }
+    }
+  } finally { Date.now = realNow; }
+
   manager.start();
   assert.equal(manager.getSnapshot().lifecycle, 'running');
   assert.ok(manager.getSnapshot().triggers.find(trigger => trigger.id === 'curiosity-researcher')?.nextRun);
@@ -286,6 +308,35 @@ try {
     () => new TriggerConfigService(invalidConfigPath).load(),
     /Unknown trigger configuration field/,
   );
+
+  const foreignTemporary = `${configPath}.tmp-foreign-owner`;
+  fs.writeFileSync(foreignTemporary, 'unrelated temporary data');
+  const publishedConfig = fs.readFileSync(configPath, 'utf8');
+  const write = fs.writeFileSync;
+  const rename = fs.renameSync;
+  for (const failure of ['write', 'rename']) {
+    const fault = failure === 'write'
+      ? mock.method(fs, 'writeFileSync', (file: fs.PathOrFileDescriptor, data: string | NodeJS.ArrayBufferView, options?: fs.WriteFileOptions) => {
+        if (String(file).startsWith(`${configPath}.tmp-`)) {
+          write(file, 'partial configuration');
+          throw new Error('Fixture partial write failed');
+        }
+        return write(file, data, options);
+      })
+      : mock.method(fs, 'renameSync', (source: fs.PathLike, destination: fs.PathLike) => {
+        if (String(destination) === configPath) throw new Error('Fixture rename failed');
+        return rename(source, destination);
+      });
+    try {
+      assert.throws(() => service.update({ agents: { organizer: { enabled: false } } }, 'fixture'),
+        failure === 'write' ? /Fixture partial write failed/ : /Fixture rename failed/);
+    } finally { fault.mock.restore(); }
+    assert.equal(fs.readFileSync(configPath, 'utf8'), publishedConfig,
+      'A failed update leaves the complete published configuration unchanged');
+    assert.deepEqual(fs.readdirSync(tempRoot).filter(name => name.startsWith('agents.json.tmp-')),
+      [path.basename(foreignTemporary)], 'Failed updates remove only their own temporary file');
+    assert.equal(fs.readFileSync(foreignTemporary, 'utf8'), 'unrelated temporary data');
+  }
 
   const manualTaskId = manager.triggerManual('organizer', 'owner', ['--dry-run']);
   assert.ok(manualTaskId);

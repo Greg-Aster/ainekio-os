@@ -47,6 +47,26 @@ test('prior spoken descriptions, recorded observations and current images retain
   }
 })
 
+test('conversational personal references include dialogue while explicit archive searches remain independent', async () => {
+  const records = (await recordsPromise).filter(record => record.metadata.suite.startsWith('memory-dialogue-'))
+  assert.ok(records.length > 0)
+  for (const split of ['development', 'evaluation']) {
+    const rows = records.filter(record => record.metadata.sourceSplit === split)
+    assert.ok(rows.some(row => row.metadata.suite.endsWith('-personal')))
+    assert.ok(rows.some(row => row.metadata.suite.endsWith('-archive')))
+    for (const row of rows) {
+      const output = JSON.parse(row.output)
+      if (row.metadata.suite.endsWith('-archive')) {
+        assert.deepEqual(output.conversationContext, ['memory'])
+      } else {
+        assert.ok(output.conversationContext.includes('conversationHistory'))
+      }
+      assert.equal(output.needsAction, false)
+      assert.doesNotMatch(row.user, /Gregory Aster|Aster Visual|DnDIY/)
+    }
+  }
+})
+
 test('memory scope covers supported types, chronological retrieval and cycle combinations in both splits', async () => {
   const records = await recordsPromise
   for (const split of ['development', 'evaluation']) {

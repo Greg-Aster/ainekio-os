@@ -138,69 +138,75 @@ test('the main speech disable state blocks server-owned robot synthesis', async 
   assert.equal(rendered, 0);
 });
 
-test('robot output rejects non-execution TTS nodes', async () => {
-  let queued = 0;
-  let rendered = 0;
-  const result = await deliverTTSOutput(
-    { ...request, source: 'reflection' },
-    {
-      getSettings: () => ({
-        provider: 'kokoro',
-        outputTarget: 'robot',
-        speechDisabled: false,
-      }),
-      queue: () => {
-        queued += 1;
-        return null;
-      },
-      renderRobot: async () => {
-        rendered += 1;
-        return { actionId: 'unexpected', requestId: 'unexpected', totalChunks: 1 };
-      },
-    },
-  );
-
-  assert.equal(result.accepted, false);
-  assert.match(result.reason || '', /robot execution workflows/i);
-  assert.equal(queued, 0);
-  assert.equal(rendered, 0);
+test('every workflow follows destination changes without a source or dialogue-mode override', async () => {
+  for (const source of ['reflector', 'daydreamer', 'environment-mode', 'fast-body-event']) {
+    for (const mode of ['inner', 'conversation'] as const) {
+      let destination: 'local' | 'robot' = 'robot';
+      let disabled = false;
+      const deliveries: string[] = [];
+      const dependencies = {
+        getSettings: () => ({ provider: 'kokoro', outputTarget: destination, speechDisabled: disabled }),
+        queue: (_username: string, text: string, deliveredMode: string, deliveredSource?: string): TTSQueueItem => {
+          assert.equal(deliveredMode, mode);
+          assert.equal(deliveredSource, source);
+          deliveries.push('browser');
+          return { id: 'browser-speech', text, mode, source, timestamp: 1 };
+        },
+        renderRobot: async (options: { text: string; requestId: string }) => {
+          assert.equal(options.text, request.text);
+          deliveries.push('body-control');
+          return { actionId: 'robot-speech', requestId: options.requestId, totalChunks: 1 };
+        },
+      };
+      const input = { ...request, source, mode };
+      assert.equal((await deliverTTSOutput(input, dependencies)).route, 'robot');
+      destination = 'local';
+      assert.equal((await deliverTTSOutput(input, dependencies)).route, 'local');
+      disabled = true;
+      assert.equal((await deliverTTSOutput(input, dependencies)).accepted, false);
+      destination = 'robot';
+      assert.equal((await deliverTTSOutput(input, dependencies)).accepted, false);
+      disabled = false;
+      assert.equal((await deliverTTSOutput(input, dependencies)).route, 'robot');
+      assert.deepEqual(deliveries, ['body-control', 'browser', 'body-control']);
+    }
+  }
 });
 
-test('Inner Dialogue speech remains local when outward speech targets the robot', async () => {
-  let queued = 0;
-  let rendered = 0;
-  const result = await deliverTTSOutput(
-    {
-      username: 'test-user',
-      text: 'I notice the room is dark.',
-      mode: 'inner',
-      source: 'environment-mode',
+test('a reflection stages speech through the same durable owner as conversation', async () => {
+  const effects: any[] = [];
+  const execution = {
+    occurrenceId: 'reflection-tts',
+    dispatch: (effect: unknown) => {
+      effects.push(effect);
+      return { effectId: 'reflection-delivery' };
     },
-    {
-      getSettings: () => ({
-        provider: 'kokoro',
-        outputTarget: 'robot',
-        speechDisabled: false,
-      }),
-      queue: (_username, text, mode, source): TTSQueueItem => {
-        queued += 1;
-        return { id: 'tts-inner', text, mode, source, timestamp: 1 };
-      },
-      renderRobot: async () => {
-        rendered += 1;
-        return { actionId: 'unexpected', requestId: 'unexpected', totalChunks: 1 };
-      },
-    },
-  );
-
-  assert.deepEqual(result, {
-    accepted: true,
-    deliveryId: 'tts-inner',
-    route: 'local',
-    reason: undefined,
+  } as NonNullable<Parameters<typeof deliverTTSOutput>[0]['execution']>;
+  const result = await deliverTTSOutput({
+    ...request, mode: 'inner', source: 'reflector', sessionId: 'origin-body', execution,
+  }, {
+    getSettings: () => ({ provider: 'kokoro', outputTarget: 'robot', speechDisabled: false }),
+    queue: () => { throw new Error('Must not also enqueue browser playback'); },
+    renderRobot: async () => { throw new Error('Durable work must own rendering'); },
   });
-  assert.equal(queued, 1);
-  assert.equal(rendered, 0);
+  assert.deepEqual(result, { accepted: true, route: 'robot', deliveryId: 'reflection-delivery' });
+  assert.equal(effects.length, 1);
+  assert.equal(effects[0].kind, 'coordinator_work');
+  assert.equal(effects[0].payload.handler, 'tts.robot-speech');
+  assert.equal(effects[0].payload.input.sessionId, 'origin-body');
+  assert.equal(effects[0].payload.input.text, request.text);
+  assert.equal(effects[0].payload.input.requestId, 'reflection-tts');
+});
+
+test('Body Control failure is reported without falling back to browser playback', async () => {
+  const result = await deliverTTSOutput({ ...request, mode: 'inner', source: 'reflector' }, {
+    getSettings: () => ({ provider: 'kokoro', outputTarget: 'robot', speechDisabled: false }),
+    queue: () => { throw new Error('Must not substitute a different destination'); },
+    renderRobot: async () => { throw new Error('Body Control disconnected'); },
+  });
+  assert.equal(result.accepted, false);
+  assert.equal(result.route, 'robot');
+  assert.equal(result.reason, 'Body Control disconnected');
 });
 
 test('server-owned robot speech strips non-speakable model formatting', () => {

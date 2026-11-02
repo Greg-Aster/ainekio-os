@@ -162,6 +162,14 @@ function environmentBridgeReadiness(
     };
   }
 
+  const connections = getEnvironmentBridgeDiagnosticsSnapshot().connections ?? [];
+  if (connections.length && !connections.some(connection => connection.ready)) {
+    return { readiness: 'not-ready', dependencyHealth: 'connecting',
+      latestTask: connections.find(connection => connection.active && connection.error)?.error
+        || connections.find(connection => connection.error)?.error
+        || 'No robot control connection is ready; voice is not reaching MetaHuman.' };
+  }
+
   if (activeSessions.length === 0) {
     return {
       readiness: 'not-ready',
@@ -186,7 +194,7 @@ function environmentBridgeReadiness(
 }
 
 function dataPanelForAgent(card: AgentMonitorCard, descriptor: AgentDescriptor): AgentDataPanel {
-  const bridgeStatus = (card.name === 'environment-bridge-local' || card.name === 'environment-bridge-remote')
+  const bridgeStatus = (card.name === 'environment-bridge')
     ? environmentBridgeReadiness(card.status, descriptor, card.errors)
     : undefined;
   return {
@@ -202,14 +210,14 @@ function dataPanelForAgent(card: AgentMonitorCard, descriptor: AgentDescriptor):
     latestTask: bridgeStatus?.latestTask,
     variables: descriptor.variables,
     errors: [],
-    diagnostics: (card.name === 'environment-bridge-local' || card.name === 'environment-bridge-remote')
+    diagnostics: (card.name === 'environment-bridge')
       ? getEnvironmentBridgeDiagnosticsSnapshot()
       : undefined,
   };
 }
 
 function dataPanelForFailure(card: AgentMonitorCard, descriptor: AgentDescriptor, failure: AgentFailureEntry): AgentDataPanel {
-  const bridgeStatus = (card.name === 'environment-bridge-local' || card.name === 'environment-bridge-remote')
+  const bridgeStatus = (card.name === 'environment-bridge')
     ? environmentBridgeReadiness('error', descriptor, [failure.error, failure.stderr ?? ''])
     : undefined;
   return {
@@ -224,7 +232,7 @@ function dataPanelForFailure(card: AgentMonitorCard, descriptor: AgentDescriptor
     latestTask: bridgeStatus?.latestTask ?? failure.error,
     variables: descriptor.variables,
     errors: [errorFromFailure(failure)],
-    diagnostics: (card.name === 'environment-bridge-local' || card.name === 'environment-bridge-remote')
+    diagnostics: (card.name === 'environment-bridge')
       ? getEnvironmentBridgeDiagnosticsSnapshot()
       : undefined,
   };
@@ -599,7 +607,7 @@ export function setAgentVariable(agentName: string, key: string, rawValue: unkno
 
   const value = coerceAgentVariable(rawValue, variable);
 
-  if ((agentName === 'environment-bridge-local' || agentName === 'environment-bridge-remote') && ENVIRONMENT_BRIDGE_FIELDS.has(key)) {
+  if ((agentName === 'environment-bridge') && ENVIRONMENT_BRIDGE_FIELDS.has(key)) {
     updateEnvironmentBridgeVariable(key, value);
   } else {
     if (!SERVICE_LIFECYCLE_FIELDS.has(key)) {
@@ -623,10 +631,6 @@ export function setAgentVariable(agentName: string, key: string, rawValue: unkno
       ...config.services,
       [agentName]: { ...agent, ...serviceUpdates },
     };
-    if ((agentName === 'environment-bridge-local' || agentName === 'environment-bridge-remote') && key === 'startOnSystemBoot' && value === true) {
-      const other = config.services[agentName === 'environment-bridge-local' ? 'environment-bridge-remote' : 'environment-bridge-local'];
-      if (other) other.startOnSystemBoot = false;
-    }
     writeServiceConfig(config);
   }
 

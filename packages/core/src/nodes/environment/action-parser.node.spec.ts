@@ -6,7 +6,7 @@ import { buildEnvironmentSelectorJsonSchema, validateEnvironmentSelectorOutput }
 
 const observation: EnvironmentObservation = {
   environmentId: 'fixture', adapter: 'fixture', sessionId: 'robot-1', timestamp: new Date().toISOString(),
-  capabilities: { actions: ['robotCommand', 'robotMotionPlan', 'captureImage', 'move'],
+  capabilities: { actions: ['robotCommand', 'requestMotion', 'captureImage', 'move'],
     robotCommands: ['stand', 'wave', '#1'], visual: true, movement: true },
 }
 const taskDecision = { objective: 'Perform the requested expression.', completionCriteria: 'All requested motions completed.',
@@ -70,15 +70,16 @@ test('conversation has no physical program; obsolete and empty outputs are rejec
 
 test('generated motion and preset actions share one program without dropping gesture detail', async () => {
   const description = 'Extend the left front leg in two deliberate pulses, then return it.'
-  const result = await parse({ response: '', program: { steps: [action('stand'), { kind: 'generatedMotion', description }, action('wave')] },
+  const result = await parse({ response: '', program: { steps: [action('stand'), { kind: 'action', action: { type: 'requestMotion', description } }, action('wave')] },
     taskDecision: { ...taskDecision, motionClass: 'body_local', actionPurpose: 'expression' } })
   assert.equal(result.valid, true)
-  assert.deepEqual(result.program.steps[1], { kind: 'generatedMotion', description })
+  assert.equal(result.program.steps[1].action.type, 'requestMotion')
+  assert.equal(result.program.steps[1].action.description, description)
   assert.equal(result.taskDecision.actionPurpose, 'expression')
-  const unavailable = await parse({ response: '', program: { steps: [{ kind: 'generatedMotion', description }] }, taskDecision },
+  const unavailable = await parse({ response: '', program: { steps: [{ kind: 'action', action: { type: 'requestMotion', description } }] }, taskDecision },
     { ...observation, capabilities: { ...observation.capabilities, actions: ['robotCommand'] } })
   assert.equal(unavailable.program, null)
-  assert.match(unavailable.error, /does not advertise robotMotionPlan/)
+  assert.match(unavailable.error, /does not advertise/i)
 })
 
 test('existing capability admission rejects an unavailable command without dispatch or invented speech', async () => {
@@ -148,9 +149,9 @@ test('move generation requires the same direction or vector as the existing acti
 
 test('switching robot catalogs retains V1 gestures and exposes V2 commands without V1 joint generation', async () => {
   for (const [commands, actions] of [
-    [['#1', '#2', 'walk_slow', 'crab'], ['robotCommand', 'robotMotionPlan']],
+    [['#1', '#2', 'walk_slow', 'crab'], ['robotCommand', 'requestMotion']],
     [['turn_left_15', 'turn_right_15', 'crawl', 'crab_right', 'crab_forward', 'crab_backward', 'crab_turn_left', 'crab_turn_right', 'upright'], ['robotCommand']],
-    [['#1', '#2', 'walk_slow', 'crab'], ['robotCommand', 'robotMotionPlan']],
+    [['#1', '#2', 'walk_slow', 'crab'], ['robotCommand', 'requestMotion']],
   ] as const) {
     const current: EnvironmentObservation = { ...observation, capabilities: { actions: [...actions], robotCommands: [...commands] } }
     const result = await parse({ response: '', program: { steps: commands.map(action) }, taskDecision }, current)
@@ -159,7 +160,8 @@ test('switching robot catalogs retains V1 gestures and exposes V2 commands witho
     const unavailable = await parse({ response: '', program: { steps: [action(commands.some(command => command === '#1') ? 'crawl' : '#1')] }, taskDecision }, current)
     assert.equal(unavailable.actionAdmission.reason, 'robot_command_unavailable')
     const schema = JSON.stringify(buildEnvironmentSelectorJsonSchema({ actions, robotCommands: commands }))
-    assert.equal(schema.includes('generatedMotion'), actions.length === 2)
+    assert.equal(schema.includes('generatedMotion'), false)
+    assert.equal(schema.includes('requestMotion'), actions.length === 2)
   }
 })
 

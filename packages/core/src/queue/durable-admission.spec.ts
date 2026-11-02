@@ -408,3 +408,33 @@ test('stop admission and supersession commit together or roll back together', ()
   manager.complete(admitted.id, true, { fakeStopTerminal: true })
   assert.equal(manager.getNextExecutable(), null, 'Pre-stop queued movements cannot run afterward')
 })
+
+
+test('clearing pending work affects only its profile and preserves running work', async () => {
+  const { QueueSystem } = await import('./queue-system.js')
+  const { eventBus } = await import('../infrastructure/event-bus/client.js')
+  eventBus.disconnect()
+  const manager = new UnifiedQueueManager()
+  const tasks = ['first-profile', 'other-profile'].map(username => {
+    const enqueue = (name: string) => manager.enqueue({ type: 'generic', handler: 'fixture',
+      resource: `fixture:${username}:${name}`, username, input: {} })
+    const queued = enqueue('queued')
+    const waiting = enqueue('waiting'); manager.wait(waiting.id, 'awaiting fixture')
+    const running = enqueue('running'); assert.ok(manager.claim(running.id))
+    return { queued, waiting, running }
+  })
+  const system = Object.assign(Object.create(QueueSystem.prototype), {
+    queueManager: manager,
+    getExecutions: () => [],
+  }) as InstanceType<typeof QueueSystem>
+  assert.equal(system.cancelPending('first-profile', 'Clear this profile'), 2)
+  assert.equal(tasks[0]!.queued.state, 'cancelled')
+  assert.equal(tasks[0]!.waiting.state, 'cancelled')
+  assert.equal(tasks[0]!.running.state, 'leased')
+  assert.equal(tasks[1]!.queued.state, 'queued')
+  assert.equal(tasks[1]!.waiting.state, 'waiting')
+  assert.equal(tasks[1]!.running.state, 'leased')
+  assert.equal(system.cancelPending('first-profile', 'Repeated clear'), 0)
+  assert.equal(system.cancelPending('other-profile', 'Clear other profile'), 2)
+  assert.equal(tasks[1]!.running.state, 'leased')
+})

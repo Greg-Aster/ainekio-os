@@ -1,0 +1,385 @@
+{
+  "version": "1.0",
+  "format": "svelte-flow",
+  "name": "Robot Wake-Up",
+  "description": "Body Control supplies startup evidence. Explicit Robot Status, context and Persona nodes generate one greeting; Conversation Buffer, Memory, Conversation Output and TTS deliver it.",
+  "cognitiveMode": "environment",
+  "scheduler": {
+    "version": 1,
+    "activation": "demand",
+    "skippedState": "explicit",
+    "sideEffectOrder": "serial-topological",
+    "maxLoopIterations": 0
+  },
+  "nodes": [
+    {
+      "id": "input",
+      "type": "default",
+      "position": {
+        "x": 0,
+        "y": 0
+      },
+      "width": 340,
+      "data": {
+        "label": "Environment Bridge Input",
+        "nodeType": "environment_bridge_input",
+        "properties": {},
+        "comment": "Receives the autonomous wake event, photo and body status from Body Control."
+      }
+    },
+    {
+      "id": "photo",
+      "type": "default",
+      "position": {
+        "x": 500,
+        "y": 0
+      },
+      "width": 340,
+      "data": {
+        "label": "Camera Image Input",
+        "nodeType": "environment_image_input",
+        "properties": {},
+        "comment": "Formats the supplied image for the model; sends no capture request."
+      }
+    },
+    {
+      "id": "persona",
+      "type": "default",
+      "position": {
+        "x": 500,
+        "y": -820
+      },
+      "width": 340,
+      "data": {
+        "label": "Persona Loader",
+        "nodeType": "persona_loader",
+        "properties": {
+          "formatContext": false
+        },
+        "comment": "Loads the active persona from settings."
+      }
+    },
+    {
+      "id": "context",
+      "type": "default",
+      "position": {
+        "x": 1000,
+        "y": 0
+      },
+      "width": 340,
+      "data": {
+        "label": "Conversation Context",
+        "nodeType": "environment_context_builder",
+        "properties": {
+          "purpose": "conversation",
+          "systemPrompt": "You are the robot described by activePersona. This is your autonomous startup, not a message from the user. Greet the people around you and say something relevant to the supplied fresh camera image. event identifies why this workflow began; actionResults records what the body reported. Missing measurements remain unknown."
+        },
+        "comment": "Combines event, personality, supplied image and recorded body status."
+      }
+    },
+    {
+      "id": "greeting",
+      "type": "default",
+      "position": {
+        "x": 1500,
+        "y": 0
+      },
+      "width": 340,
+      "data": {
+        "label": "Persona Model",
+        "nodeType": "environment_conversation",
+        "properties": {
+          "role": "persona",
+          "enableThinking": false,
+          "metadata": {
+            "source": "autonomy",
+            "dialogueSource": "robot-wake-up",
+            "tags": [
+              "robot-wake-up",
+              "autonomy-trigger"
+            ]
+          }
+        },
+        "comment": "Calls the model assigned to Persona."
+      }
+    },
+    {
+      "id": "status",
+      "type": "default",
+      "position": {
+        "x": 500,
+        "y": 820
+      },
+      "width": 340,
+      "data": {
+        "label": "Robot Status",
+        "nodeType": "robot_status",
+        "properties": {},
+        "comment": "Reads current robot state, task, last action and dated live status."
+      }
+    },
+    {
+      "id": "result",
+      "type": "default",
+      "position": {
+        "x": 2000,
+        "y": 0
+      },
+      "width": 340,
+      "data": {
+        "label": "Persona Response",
+        "nodeType": "environment_conversation_result",
+        "properties": {},
+        "comment": "Receives the model result and source metadata; publishes nothing."
+      }
+    },
+    {
+      "id": "buffer",
+      "type": "default",
+      "position": {
+        "x": 2500,
+        "y": 0
+      },
+      "width": 340,
+      "data": {
+        "label": "Conversation Buffer",
+        "nodeType": "conversation_buffer",
+        "properties": {},
+        "comment": "Saves the greeting and publishes its single conversation-feed entry."
+      }
+    },
+    {
+      "id": "memory",
+      "type": "default",
+      "position": {
+        "x": 3000,
+        "y": -720
+      },
+      "width": 340,
+      "data": {
+        "label": "Save Conversation Memory",
+        "nodeType": "memory_capture",
+        "properties": {},
+        "comment": "Saves the exact admitted greeting with its timestamp and autonomy metadata."
+      }
+    },
+    {
+      "id": "tts",
+      "type": "default",
+      "position": {
+        "x": 3000,
+        "y": 0
+      },
+      "width": 340,
+      "data": {
+        "label": "TTS Output",
+        "nodeType": "tts",
+        "properties": {
+          "source": "environment-mode",
+          "defaultMode": "conversation"
+        },
+        "comment": "Uses the configured audio destination without waiting for playback."
+      }
+    },
+    {
+      "id": "feed",
+      "type": "default",
+      "position": {
+        "x": 3000,
+        "y": 720
+      },
+      "width": 340,
+      "data": {
+        "label": "Conversation Output",
+        "nodeType": "stream_writer",
+        "properties": {},
+        "comment": "Returns the admitted greeting to the interface; buffer admission owns feed publication."
+      }
+    }
+  ],
+  "edges": [
+    {
+      "id": "input-observation-context-sourceObservation",
+      "source": "input",
+      "sourceHandle": "observation",
+      "target": "context",
+      "targetHandle": "sourceObservation",
+      "type": "default",
+      "data": { "kind": "data" }
+    },
+    {
+      "id": "input-current-context-observationCurrent",
+      "source": "input",
+      "sourceHandle": "isTriggeringObservation",
+      "target": "context",
+      "targetHandle": "observationCurrent",
+      "type": "default",
+      "data": { "kind": "data" }
+    },
+    {
+      "id": "input-bodyEvent-context-event",
+      "source": "input",
+      "sourceHandle": "bodyEvent",
+      "target": "context",
+      "targetHandle": "event",
+      "type": "default",
+      "data": {
+        "kind": "data"
+      }
+    },
+    {
+      "id": "persona-persona-context-persona",
+      "source": "persona",
+      "sourceHandle": "persona",
+      "target": "context",
+      "targetHandle": "persona",
+      "type": "default",
+      "data": {
+        "kind": "data"
+      }
+    },
+    {
+      "id": "photo-images-context-images",
+      "source": "photo",
+      "sourceHandle": "images",
+      "target": "context",
+      "targetHandle": "images",
+      "type": "default",
+      "data": {
+        "kind": "data"
+      }
+    },
+    {
+      "id": "photo-frames-context-frames",
+      "source": "photo",
+      "sourceHandle": "frames",
+      "target": "context",
+      "targetHandle": "frames",
+      "type": "default",
+      "data": {
+        "kind": "data"
+      }
+    },
+    {
+      "id": "context-messages-greeting-messages",
+      "source": "context",
+      "sourceHandle": "messages",
+      "target": "greeting",
+      "targetHandle": "messages",
+      "type": "default",
+      "data": {
+        "kind": "data"
+      }
+    },
+    {
+      "id": "input-visual-photo-visual",
+      "source": "input",
+      "sourceHandle": "visual",
+      "target": "photo",
+      "targetHandle": "visual",
+      "type": "default",
+      "data": {
+        "kind": "data"
+      }
+    },
+    {
+      "id": "input-visuals-photo-visuals",
+      "source": "input",
+      "sourceHandle": "visuals",
+      "target": "photo",
+      "targetHandle": "visuals",
+      "type": "default",
+      "data": {
+        "kind": "data"
+      }
+    },
+    {
+      "id": "input-isTriggeringObservation-photo-observationCurrent",
+      "source": "input",
+      "sourceHandle": "isTriggeringObservation",
+      "target": "photo",
+      "targetHandle": "observationCurrent",
+      "type": "default",
+      "data": {
+        "kind": "data"
+      }
+    },
+    {
+      "id": "status-context-context-robotStatus",
+      "source": "status",
+      "sourceHandle": "context",
+      "target": "context",
+      "targetHandle": "robotStatus",
+      "type": "default",
+      "data": {
+        "kind": "data"
+      }
+    },
+    {
+      "id": "greeting-work-result-work",
+      "source": "greeting",
+      "sourceHandle": "work",
+      "target": "result",
+      "targetHandle": "work",
+      "type": "default",
+      "data": {
+        "kind": "data"
+      }
+    },
+    {
+      "id": "result-response-buffer-response",
+      "source": "result",
+      "sourceHandle": "response",
+      "target": "buffer",
+      "targetHandle": "response",
+      "type": "default",
+      "data": {
+        "kind": "data"
+      }
+    },
+    {
+      "id": "result-metadata-buffer-metadata",
+      "source": "result",
+      "sourceHandle": "metadata",
+      "target": "buffer",
+      "targetHandle": "metadata",
+      "type": "default",
+      "data": {
+        "kind": "data"
+      }
+    },
+    {
+      "id": "buffer-entries-memory-entries",
+      "source": "buffer",
+      "sourceHandle": "entries",
+      "target": "memory",
+      "targetHandle": "entries",
+      "type": "default",
+      "data": {
+        "kind": "data"
+      }
+    },
+    {
+      "id": "buffer-response-tts-conversation",
+      "source": "buffer",
+      "sourceHandle": "response",
+      "target": "tts",
+      "targetHandle": "conversation",
+      "type": "default",
+      "data": {
+        "kind": "data"
+      }
+    },
+    {
+      "id": "buffer-response-feed-response",
+      "source": "buffer",
+      "sourceHandle": "response",
+      "target": "feed",
+      "targetHandle": "response",
+      "type": "default",
+      "data": {
+        "kind": "data"
+      }
+    }
+  ]
+}

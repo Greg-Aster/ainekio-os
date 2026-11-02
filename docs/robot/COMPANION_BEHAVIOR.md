@@ -1,6 +1,6 @@
 # Companion behavior and lifecycle
 
-[Modes and sleep](#modes-and-lifecycle) · [Memory and persona](#memory-persona-and-inner-dialogue) · [Goals and autonomy](#goals-desires-and-autonomy) · [Interaction flow](#workflows-and-interaction-examples)
+[Companion guidelines](#companion-design-guidelines) · [Modes and sleep](#modes-and-lifecycle) · [Memory and persona](#memory-persona-and-inner-dialogue) · [Goals and autonomy](#goals-desires-and-autonomy) · [Interaction flow](#workflows-and-interaction-examples)
 
 [Start with the robot design core](ROBOT_BIBLE.md). Read the relevant subsection for modes, memory, identity, goals, autonomy or interaction flow.
 
@@ -15,6 +15,61 @@ Dated deployments, comparisons and incidents are retained in the
 reference history (retained locally).
 A historical success or failure is evidence under its recorded conditions;
 refresh those conditions before treating it as the present state.
+
+## Companion design guidelines
+
+The [design core](ROBOT_BIBLE.md#purpose) defines Ainekio as a companion, friend,
+familiar and assistant. These guidelines describe the qualities that make those
+roles observable in everyday life. Conversation, shared exploration, play,
+practical assistance and a continuing familiar presence can all have value.
+Evaluate the developing interaction and relationship as well as individual tasks.
+
+These are product design and review criteria, synthesized from the research below.
+They are not a validated universal standard, a runtime prompt or an activity
+script. The models retain interpretation, personality expression, context
+selection and behavior choices through the existing workflows and owners.
+
+| Principle | Design expectation | Observable evidence |
+| --- | --- | --- |
+| Responsiveness | Current human input and relevant events can meaningfully influence the next contribution. Interaction uses the supplied evidence and acknowledges uncertainty. | A correction, answer or changed situation affects what follows; the exchange develops rather than repeating a generic contribution. |
+| Shared context | The companion can participate in the situation shared with the person, drawing on selected observations, conversation and memories with their source and time. | It can discuss a shared object or project using relevant evidence, distinguish what it observed from what it inferred, and use the person's explanation. |
+| Continuity | Persistent identity and shared experience support familiarity across encounters. Remembering is useful when retrieved experience appropriately informs later behavior. | An earlier topic, preference or unfinished pursuit can be resumed with accurate attribution; a correction remains useful in a later encounter. |
+| Initiative | Within the selected autonomy mode, the companion can originate and pursue model-chosen interests, questions, play or assistance through its available capabilities. | It contributes a relevant pursuit without a person supplying every next step, and subsequent choices reflect actual progress or outcomes. |
+| Reciprocity | Both person and companion can contribute direction. Responses and feedback influence how an exchange or shared activity develops. | Turn-taking, elaboration, questions and changes of direction form a connected interaction; the person can steer, correct or end the activity through the existing controls. |
+| Coherence | Speech, expression, action, identity and remembered experience support a consistent account of what is happening and what the companion can do. | Its statements agree with observed actions and known capabilities; attempted work, completed execution and achieved outcomes remain distinguishable. |
+| Personal fit | Participation develops around the individual person's preferences, attention and situation while preserving the companion's identity and model-selected choices. | Across encounters, timing and contributions become more appropriate for the person; the person reports feeling understood, enjoying the interaction or receiving worthwhile support. |
+
+These principles apply through the existing mode contracts. Reactive behavior
+remains responsive to admitted inputs and events; Semi and Full retain their
+defined initiative. Full Auto's meaningful self-directed work can include
+reasoning, curiosity or an ongoing pursuit without every assessment producing
+outward speech or movement. Its activity requirement and approved scheduling
+remain as defined in the [Full Auto contract](#full-auto-continuity--owner-contract).
+
+Examples illustrate acceptance rather than prescribe behavior. While the person
+works on a project, the companion might relate an observation to an earlier
+conversation, ask a relevant question, and use the answer in a later contribution.
+Another appropriate interaction could develop through play or shared exploration.
+The evidence is the connected exchange and its value to the person. No particular
+line, gesture, emotion, fixed task rotation or frequency of interruption follows
+from these examples. Assess the relevant qualities through
+[everyday companion evaluation](QUALIFICATION.md#everyday-companion-evaluation).
+
+### Research basis and limits
+
+| Reference | Contribution to these guidelines | Evidence boundary |
+| --- | --- | --- |
+| Kerstin Dautenhahn, [Socially intelligent robots: dimensions of human–robot interaction](https://pmc.ncbi.nlm.nih.gov/articles/PMC2346526/) (2007) | Personalized domestic companions combine useful capabilities, socially appropriate conduct, consistency and adaptation over repeated encounters; the paper discusses household "robotiquette." | An HRI design reference and account of companion research, rather than a complete recipe or qualification of Ainekio. |
+| Timothy Bickmore and Rosalind Picard, [Establishing and maintaining long-term human-computer relationships](https://doi.org/10.1145/1067860.1067867) (2005; [authors' summary and preprint](https://www.media.mit.edu/publications/establishing-and-maintaining-long-term-human-computer-relationships/)) | Relational agents support relationship development across interactions. In a month-long study with 101 participants, the relational agent received better relationship evaluations than a task-oriented comparison. | A screen-based exercise agent and a bounded study; this does not establish lifelong relationships or physical robot performance. |
+| Cynthia Breazeal, [Toward sociable robots](https://www.sciencedirect.com/science/article/pii/S0921889002003731) (2003) | Sociable robotics treats embodied social exchange as a design concern; Kismet's vocal turn-taking provides a concrete case. | Evidence about particular social interaction mechanisms, rather than proof of a complete companion architecture. |
+| Eric Horvitz, [Principles of mixed-initiative user interfaces](https://www.microsoft.com/en-us/research/publication/principles-mixed-initiative-user-interfaces/) (1999) | Initiative considers human attention, uncertain intentions, the value of contributions and opportunities for direct steering and correction. | An interface design framework. Its application here is a design interpretation, not a replacement for the approved autonomy contracts. |
+| Richard Ryan and Edward Deci, [Self-determination theory and the facilitation of intrinsic motivation, social development, and well-being](https://selfdeterminationtheory.org/SDT/documents/2000_RyanDeci_SDT.pdf) (2000) | Human autonomy, competence and relatedness offer questions for personal fit: can the person steer the exchange, receive useful support and feel understood or connected? | A theory of human motivation. Applying it to companion evaluation is our synthesis; it does not establish psychological needs or subjective experience in the robot. |
+
+Apply these criteria through the existing context, memory, decision, execution
+and delivery owners in the [software architecture](SYSTEM_ARCHITECTURE.md).
+Future implementation follows the repository's change-authorization rules and
+qualification paths. Source, software tests, model decisions and observed
+companionship retain their separate [evidence levels](QUALIFICATION.md#evidence-levels).
 
 ## Modes and lifecycle
 
@@ -226,12 +281,13 @@ Recent attributed recall remains available. Full can additionally select a topic
 Activity context now reads canonical execution outcomes after temporary queue receipts have been released. The graph's existing Task Receipt Limit selects completed activities; all linked running, waiting and idle objectives remain available. Robot Status separates its current running/waiting task from `parkedGoals`: unfinished idle objectives retain their identity, source, decision and timestamps without claiming current work. Activity outcomes pair the task’s selected action ID with its correlated receipt and retain the latest activity result separately. Later speech playback cannot replace that action’s evidence. Full ordered events remain available through execution context. Selected work, its returned receipt, and evidence that its objective succeeded are separate facts. The controller can use those facts for another decision; a completed movement receipt alone does not prove a visual or conversational goal succeeded.
 
 The shared Core Robot Operator body-connection reader identifies the selected
-body for admission, assessment and dispatch. Physical actions require the actual
-body connection; a gateway connection alone is insufficient. Available
-non-physical activity must continue in Full Auto when the body is unavailable.
-Whether the running admission path makes that distinction is a separate
-qualification question. Already-admitted actions retain their actual receipts
-and uncertain outcomes.
+body. Its connection state is included in the assessment's activation state;
+disconnection does not prevent assessment or dispatch of model-selected
+nonphysical activity. Physical execution still depends on the actual body
+connection; a gateway connection alone is insufficient. Already-admitted actions
+retain their actual receipts and uncertain outcomes. Tests cover disconnected
+assessment and nonphysical dispatch; useful live activity remains a separate
+qualification question.
 
 An assessment's finite camera read must not remain stranded after its Bridge connection ends or the application restarts. The Bridge owner resolves a disconnected read with its actual failure; authenticated Coordinator recovery applies that same rule to restored requests and delivers the correlated result to the waiting execution. Stream teardown releases its subscription and owned work even when the consumer is paused, and failed stream setup leaves no subscriber behind. This is connection-lifecycle reconciliation, not a camera timeout, a retry loop or evidence that physical work completed. Persistent depth acquisition retains its separate existing reconnect lifecycle.
 

@@ -10,7 +10,6 @@ const centerContent = read('apps/site/src/components/CenterContent.svelte');
 const queueConsumer = read('apps/site/src/components/TTSQueueConsumer.svelte');
 const ttsComposable = read('apps/site/src/lib/client/composables/useTTS.ts');
 const speechPreference = read('apps/site/src/lib/client/assistant-speech-preference.ts');
-const innerSpeechVisibility = read('apps/site/src/lib/client/inner-dialogue-speech-visibility.ts');
 const queueHandler = read('packages/core/src/api/handlers/tts-queue-stream.ts');
 const synthesisStreamHandler = read('packages/core/src/api/handlers/tts-stream.ts');
 const deliveryQueue = read('packages/core/src/tts/delivery-queue.ts');
@@ -96,24 +95,9 @@ assert.match(
   /readAssistantSpeechEnabled\(\)[\s\S]*?ttsApi\.speak\(/,
   'the app-level consumer must honor the explicit speech disable preference before playback',
 );
-assert.match(
-  queueConsumer,
-  /shouldPlayAdmittedSpeech\(item\.mode\)[\s\S]*?updateDelivery\(item, 'suppress'\)[\s\S]*?ttsApi\.speak\(/,
-  'the shared playback consumer must suppress closed Inner-view speech before synthesis',
-);
-assert.match(
-  innerSpeechVisibility,
-  /mode !== 'inner' \|\| innerDialogueVisible/,
-  'only Inner Dialogue deliveries may depend on the Inner view being visible',
-);
-assert.match(
-  chat,
-  /setInnerDialogueSpeechVisible\(isTabVisible && selectedViews\.has\('inner'\)\)/,
-  'the conversation interface must publish the real Inner-view visibility to the shared playback gate',
-);
 assert.doesNotMatch(
   queueConsumer,
-  /viewDependency|document\.hidden/,
+  /viewDependency|document\.hidden|shouldPlayAdmittedSpeech|innerDialogueVisible/,
   'automatic playback must not stop when Chat unmounts, the tab hides, or passive Chat streams suspend',
 );
 assert.match(
@@ -210,8 +194,8 @@ assert.match(
 );
 assert.match(
   ttsNode,
-  /request\.mode === 'inner' \? 'local' : settings\.outputTarget[\s\S]*?if \(route === 'robot'\)[\s\S]*?renderRobot\([\s\S]*?dependencies\.queue/,
-  'the standard TTS node must keep Inner Dialogue local and route outward robot output before the browser queue',
+  /const route = settings\.outputTarget[\s\S]*?if \(route === 'robot'\)[\s\S]*?renderRobot\([\s\S]*?dependencies\.queue/,
+  'the standard TTS node must use the saved destination for all workflow speech before browser admission',
 );
 
 const apiHandlerRoot = path.join(ROOT, 'packages/core/src/api/handlers');

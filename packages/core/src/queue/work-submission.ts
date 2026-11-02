@@ -81,7 +81,6 @@ export interface AgentFollowOnSubmission {
 
 const AGENT_ID_PATTERN = /^[a-z0-9]+(?:-[a-z0-9]+)*$/;
 const PROFILE_USERNAME_PATTERN = /^[a-zA-Z0-9_-]{1,50}$/;
-const MAX_FOLLOW_ON_SEED_CHARS = 12_000;
 
 /**
  * Admit one agent follow-on through the server-owned Work Coordinator.
@@ -102,9 +101,6 @@ export function buildAgentFollowOnTaskInput(input: AgentFollowOnSubmission): Tas
   if (!executionId) throw new Error('Follow-on executionId is required');
   if (!idempotencyKey) throw new Error('Follow-on idempotencyKey is required');
   if (!seed) throw new Error('Follow-on seed is required');
-  if (seed.length > MAX_FOLLOW_ON_SEED_CHARS) {
-    throw new Error(`Follow-on seed must not exceed ${MAX_FOLLOW_ON_SEED_CHARS} characters`);
-  }
   if (!resolveAgentExecutablePath(agentId)) {
     throw new Error(`No maintained executable for follow-on agent: ${agentId}`);
   }

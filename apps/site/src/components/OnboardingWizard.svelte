@@ -185,7 +185,6 @@
         />
       {:else if currentStep === 5}
         <Step5Complete
-          state={state}
           onComplete={completeOnboarding}
           onBack={prevStep}
         />

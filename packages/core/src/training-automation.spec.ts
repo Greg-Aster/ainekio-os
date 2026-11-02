@@ -21,7 +21,10 @@ function selection(count = 300, evaluation = 30) {
 
 test('automatic training is disabled by default and shares trainer target support', () => {
   assert.equal(parseAutomaticTrainingConfig(undefined).enabled, false)
-  assert.equal(parseAutomaticTrainingConfig({ ...DEFAULT_AUTOMATIC_TRAINING_CONFIG, method: 'local-lora', trainingTarget: 'vllm' }).trainingTarget, 'vllm')
+  for (const trainingTarget of ['llama-cpp', 'ollama']) {
+    assert.equal(parseAutomaticTrainingConfig({ trainingTarget }).trainingTarget, trainingTarget)
+  }
+  assert.throws(() => parseAutomaticTrainingConfig({ ...DEFAULT_AUTOMATIC_TRAINING_CONFIG, method: 'local-lora', trainingTarget: 'retired-provider' }), /trainingTarget must be llama-cpp or ollama/)
   assert.throws(
     () => parseAutomaticTrainingConfig({ ...DEFAULT_AUTOMATIC_TRAINING_CONFIG, learningRate: 0 }),
     /learning_rate/,
@@ -160,7 +163,7 @@ test('automatic policy maps every launch control into the shared training reques
   const configured = {
     ...DEFAULT_AUTOMATIC_TRAINING_CONFIG,
     method: 'remote-lora' as const,
-    trainingTarget: 'vllm' as const,
+    trainingTarget: 'ollama' as const,
     baseModel: 'custom/model',
     epochs: 9,
     maxSamples: null,
@@ -199,7 +202,7 @@ test('automatic policy maps every launch control into the shared training reques
     gradient_accumulation_steps: 12,
     max_seq_length: 4096,
     quantization: 'Q5_K_M',
-    skipGguf: true,
+    skipGguf: false,
   })
   assert.deepEqual(request.advancedSettings, {
     enablePreprocessing: false,

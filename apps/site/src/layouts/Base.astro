@@ -1,5 +1,6 @@
 ---
 import ThemeToggle from "../components/ThemeToggle.astro";
+import ThemeInit from "../components/ThemeInit.astro";
 import BackendConnectionStatus from '../components/BackendConnectionStatus.svelte';
 import '../styles/tailwind.css';
 const { title = 'MetaHuman', description = 'MetaHuman Dashboard' } = Astro.props;
@@ -11,15 +12,7 @@ const { title = 'MetaHuman', description = 'MetaHuman Dashboard' } = Astro.props
     <meta name="viewport" content="width=device-width, initial-scale=1" />
     <meta name="description" content={description} />
     <title>{title}</title>
-    <script>
-      (function(){
-        try{
-          const pref=localStorage.getItem('metahuman-theme');
-          const sys=window.matchMedia('(prefers-color-scheme: dark)').matches?'dark':'light';
-          const mode=pref||sys; if(mode==='dark') document.documentElement.classList.add('dark');
-        }catch{}
-      })();
-    </script>
+    <ThemeInit />
   </head>
   <body class="container-page flex flex-col">
     <BackendConnectionStatus client:only="svelte" />

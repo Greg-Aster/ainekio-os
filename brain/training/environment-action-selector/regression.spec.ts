@@ -20,7 +20,7 @@ const observation: EnvironmentObservation = {
   timestamp: '2030-01-15T12:00:00.000Z',
   state: {},
   capabilities: {
-    actions: ['robotCommand', 'robotMotionPlan', 'captureImage'],
+    actions: ['robotCommand', 'requestMotion', 'captureImage'],
     robotCommands: ['turn_right_90', 'turn_left_90'],
     motionClasses: ['body_local', 'open_loop_displacement'],
     movement: true,
@@ -39,7 +39,7 @@ const observation: EnvironmentObservation = {
 }
 const expected: EnvironmentModelOutput = {
   response: 'I will make one curious head tilt and inspect the returned view.',
-  program: { steps: [{ kind: 'generatedMotion', description: 'Tilt the head gently toward the visible object.' }] },
+  program: { steps: [{ kind: 'action', action: { type: 'requestMotion', description: 'Tilt the head gently toward the visible object.' } }] },
   taskDecision: {
     objective: 'Inspect the visible object from a slightly different viewpoint.',
     completionCriteria: 'A new image shows the object from a different viewpoint.',
@@ -73,7 +73,7 @@ test('the spiky-friend head-tilt regression exercises the generic information-ga
     sessionId: observation.sessionId,
   }, {} as never, {} as never)
   assert.equal(parsed.valid, true)
-  assert.equal(parsed.program?.steps[0]?.description, 'Tilt the head gently toward the visible object.')
+  assert.equal(parsed.program?.steps[0]?.action?.description, 'Tilt the head gently toward the visible object.')
 
   const envelope = JSON.parse(buildEnvironmentSelectorEnvelope({
     instruction,

@@ -8,8 +8,6 @@ MetaHuman keeps recordings and trained artifacts in the active user profile. The
   trainer and does not require source audio for selection.
 - **Kokoro:** select a built-in or imported voicepack. MetaHuman has no custom
   Kokoro trainer and does not require source audio for selection.
-- **GPT-SoVITS:** record or select one clean reference clip for zero-shot
-  synthesis. This does not train a new model.
 - **RVC:** curate a dataset, train a model, and use it for voice conversion. The
   maintained readiness gate requires at least 50 exported samples, at least 600
   seconds of audio, and average sample quality of at least `0.7`.
@@ -24,12 +22,6 @@ The application does not claim to train Piper or Kokoro models. Importing an exi
 4. Review the saved samples before exporting them.
 
 Recordings remain profile-owned data. Do not move them into maintained source directories or commit them.
-
-## GPT-SoVITS reference audio
-
-Choose GPT-SoVITS, record or select a clean clip, then copy the selected sample or use **Export best samples**. The reference is consumed at synthesis time; this workflow does not train a new model.
-
-After preparing the reference, enable GPT-SoVITS under Voice Settings and use the test control to verify synthesis.
 
 ## RVC model training
 
@@ -58,7 +50,6 @@ The storage router resolves these logical profile locations:
 - collected recordings: the profile voice-training area;
 - RVC exported samples: `out/voices/rvc/SPEAKER`;
 - RVC models: `out/voices/rvc-models/SPEAKER`;
-- GPT-SoVITS references: `out/voices/sovits/SPEAKER`;
 - status and logs: machine runtime files under
   `logs/run/rvc-training-SPEAKER.json` and
   `logs/run/rvc-training-SPEAKER.log`.

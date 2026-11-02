@@ -1,43 +1,6 @@
 import { readRobotStatusLive } from '../../robot-status-live.js'
-import { loadRobotStatus } from '../../robot-status.js'
+import { loadRobotStatus, projectRobotStatusContext } from '../../robot-status.js'
 import { defineNode } from '../types.js'
-
-function decisionContext(
-  status: NonNullable<ReturnType<typeof loadRobotStatus>>,
-  historyLimit: number,
-): Record<string, unknown> {
-  return {
-    version: status.version,
-    updatedAt: status.updatedAt,
-    sourceUpdatedAt: status.sourceUpdatedAt,
-    body: status.body
-      ? {
-          sessionId: status.body.sessionId,
-          identity: status.body.state?.body ?? null,
-          environmentId: status.body.environmentId,
-          connectionStatus: status.body.connectionStatus,
-          observationAt: status.body.observationAt,
-          telemetryAt: status.body.telemetryAt,
-          battery: status.body.battery,
-          motion: status.body.motion,
-        }
-      : null,
-    lastAction: status.lastAction,
-    lastBodyAction: status.lastBodyAction ?? null,
-    task: status.task,
-    situation: status.situation,
-    ...(status.latestVisualObservation ? { latestVisualObservation: status.latestVisualObservation } : {}),
-    agency: {
-      activeDesires: status.agency.activeDesires.map(desire => ({
-        id: desire.id,
-        title: desire.title,
-        status: desire.status,
-        nextAction: desire.nextAction,
-      })),
-    },
-    history: historyLimit > 0 ? status.history.slice(-historyLimit) : [],
-  }
-}
 
 export const robotStatusNode = defineNode({
   id: 'robot_status',
@@ -76,7 +39,8 @@ export const robotStatusNode = defineNode({
     const historyLimit = Number.isInteger(configuredHistoryLimit)
       ? Math.max(0, Math.min(8, Number(configuredHistoryLimit)))
       : 3
-    const boundedContext: Record<string, unknown> = { ...decisionContext(status, historyLimit), live }
+    const { history: _history, ...snapshot } = status
+    const boundedContext = { ...projectRobotStatusContext(snapshot, false), live }
     return {
       status,
       context: boundedContext,
@@ -85,7 +49,7 @@ export const robotStatusNode = defineNode({
         updatedAt: status.updatedAt,
         task: status.task,
         situation: status.situation,
-        history: boundedContext.history,
+        history: historyLimit > 0 ? status.history.slice(-historyLimit) : [],
       },
       summary: status.situation.situationalSummary,
       updatedAt: status.updatedAt,

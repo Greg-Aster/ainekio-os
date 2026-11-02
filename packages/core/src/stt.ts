@@ -9,6 +9,9 @@ import { systemPaths } from './path-builder.js';
 import { audit } from './audit.js';
 import { WhisperService } from './stt/providers/whisper-service.js';
 import type { WhisperConfig } from './stt/providers/whisper-service.js';
+import { getUserContext } from './context.js';
+import { getCurrentlyActiveUser } from './sessions.js';
+import { loadPersonaCore } from './identity.js';
 
 export interface STTConfig {
   provider: 'whisper';
@@ -53,7 +56,9 @@ export async function transcribeAudio(audioBuffer: Buffer, audioFormat: 'wav' | 
     throw new Error('Whisper service not initialized. Check voice.json configuration.');
   }
 
-  return whisperService.transcribe(audioBuffer, audioFormat);
+  const username = getUserContext()?.username ?? getCurrentlyActiveUser()?.username;
+  const hotwords = username ? loadPersonaCore(username).identity.name : undefined;
+  return whisperService.transcribe(audioBuffer, audioFormat, hotwords);
 }
 
 /**

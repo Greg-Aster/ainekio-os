@@ -42,8 +42,8 @@ function audio(index: number, total = 2) {
 async function begin(id: string, provider = 'kokoro') {
   const requestReady = new Promise<void>(resolve => { requested = resolve; });
   const outcome = tts.speak('Hello! The second phrase is still being synthesized.', {
-    provider, voice: provider === 'kitten' ? 'Jasper' : 'af_heart', langCode: 'a', speed: 0.9,
-    streaming: provider === 'kitten' ? undefined : true, requestId: id,
+    provider, voice: 'af_heart', langCode: 'a', speed: 0.9,
+    streaming: true, requestId: id,
   });
   await requestReady;
   return { outcome };
@@ -131,18 +131,7 @@ try {
     controller.close();
     assert.equal(await failed.outcome, 'failed', `${failure} must fail visibly without hanging or acknowledging success`);
   }
-  const kitten = await begin('kitten-auto-stream', 'kitten');
-  const kittenScheduled = new Promise<void>(resolve => { started = resolve; });
-  audio(0, 1);
-  await kittenScheduled;
-  assert.equal(requests.at(-1)?.provider, 'kitten', 'Kitten automatically uses the existing streaming endpoint');
-  assert.equal(requests.at(-1)?.voice, 'Jasper');
-  emit({ event: 'complete', total_chunks: 1 });
-  controller.close();
-  await turn();
-  sources.at(-1)!.onended?.();
-  assert.equal(await kitten.outcome, 'completed');
-  console.log('useTTS-streaming.spec.ts: first audio, buffering, event completion, cancellation, isolation, failures and Kitten passed');
+  console.log('useTTS-streaming.spec.ts: first audio, buffering, event completion, cancellation, isolation and failures passed');
 } finally {
   tts.cleanup();
   globalThis.fetch = originalFetch;

@@ -1,7 +1,7 @@
 import fs from 'node:fs';
 import path from 'node:path';
 import { systemPaths } from '../paths.js';
-import { getQueueManager } from '../queue/index.js';
+import { getQueueManager, type UnifiedQueueManager } from '../queue/unified-queue-manager.js';
 import type { QueuedTask } from '../queue/types.js';
 import type { TaskInput } from '../queue/types.js';
 import { randomUUID } from 'node:crypto';
@@ -26,12 +26,6 @@ import type {
 import { environmentActionHasEnded } from './types.js';
 import { validEnvironmentJpegDataUrl } from './visual-correlation.js';
 import {
-  commandedPoseAfterCompletedAction,
-  assertBoundedMotionPlanEncoding,
-  normalizeEnvironmentCommandedPose,
-  normalizeEnvironmentMotionPlanFields,
-} from './motion-plan.js';
-import {
   attachEnvironmentObservationTiming,
   environmentActionStageDurations,
   mergeEnvironmentActionTiming,
@@ -48,10 +42,9 @@ const STALE_AFTER_MS = 45_000;
 const FUTURE_CLOCK_SKEW_MS = 5_000;
 const MAX_FEEDBACK = 200;
 const MAX_PROCESSED_TEXT_EVENTS = 1_000;
-const MAX_ORIGINATING_INSTRUCTION_CHARS = 4_000;
 const DEFAULT_MAX_ACTION_DURATION_MS = 1_500;
 const ACTION_TYPES = new Set<EnvironmentActionType>([
-  'move', 'look', 'jump', 'interact', 'stop', 'captureImage', 'robotCommand', 'faceExpression', 'robotMotionPlan', 'inspect', 'visualApproach', 'speak', 'sendText',
+  'move', 'look', 'jump', 'interact', 'stop', 'captureImage', 'robotCommand', 'requestMotion', 'faceExpression', 'inspect', 'visualApproach', 'speak', 'sendText',
 ]);
 
 type ActionSubscriber = () => void;
@@ -73,7 +66,9 @@ function environmentBodyEpoch(observation: EnvironmentObservation | undefined): 
   const epoch = typeof robot?.epoch === 'number' || typeof robot?.epoch === 'string'
     ? String(robot.epoch)
     : '';
-  return robotId && epoch ? `${robotId}:${epoch}` : undefined;
+  const movement = isRecord(observation?.state?.activeMovementUpdates) ? observation.state.activeMovementUpdates : null;
+  const gatewayInstance = typeof movement?.gatewayInstance === 'string' ? movement.gatewayInstance : '';
+  return robotId && epoch ? `${gatewayInstance}:${robotId}:${epoch}` : undefined;
 }
 
 function carryEnvironmentState(
@@ -81,56 +76,20 @@ function carryEnvironmentState(
   existing: EnvironmentObservation | undefined,
 ): EnvironmentObservation {
   const state = { ...(observation.state ?? {}) };
-  delete state.commandedPose;
-  const body = isRecord(state.body) ? state.body : null;
-  const bodyOffline = body?.authenticated === false;
-  const prior = normalizeEnvironmentCommandedPose(existing?.state?.commandedPose);
-  const currentBodyEpoch = environmentBodyEpoch(observation);
-  const sameBodyEpoch = prior?.bodyEpoch === currentBodyEpoch;
-  if (prior && !bodyOffline && sameBodyEpoch) state.commandedPose = prior;
   const perception = currentEnvironmentPerception(observation, state.perception ?? existing?.state?.perception);
   delete state.perception;
   if (perception) state.perception = perception;
   return { ...observation, state };
 }
 
-function updateCommandedPoseFromFeedback(
-  action: EnvironmentCommandWork,
-  feedback: EnvironmentFeedback,
-): void {
-  const state = readEnvironmentBridgeState();
-  const sessionId = action.sessionId ?? '';
-  const session = sessionId ? state.sessions[sessionId] : undefined;
-  if (!session?.latestObservation) return;
-  const nonMotion = action.type === 'captureImage' || action.type === 'sendText' || action.type === 'speak' || action.type === 'faceExpression';
-  const next = feedback.type === 'completed'
-    ? commandedPoseAfterCompletedAction(
-        action,
-        feedback.timestamp,
-        environmentBodyEpoch(session.latestObservation),
-      )
-    : (feedback.type === 'cancelled' || feedback.type === 'failed') && !nonMotion
-      ? null
-      : undefined;
-  if (next === undefined) return;
-  const observationState = { ...(session.latestObservation.state ?? {}) };
-  if (next) observationState.commandedPose = next;
-  else delete observationState.commandedPose;
-  session.latestObservation = { ...session.latestObservation, state: observationState };
-  state.sessions[sessionId] = session;
-  writeEnvironmentBridgeState(state);
-}
-
 function nowIso(): string {
   return new Date().toISOString();
 }
 
-function boundedOriginatingInstruction(value: unknown): string | undefined {
+function normalizeOriginatingInstruction(value: unknown): string | undefined {
   if (typeof value !== 'string') return undefined;
   const instruction = value.trim();
-  return instruction
-    ? instruction.slice(0, MAX_ORIGINATING_INSTRUCTION_CHARS)
-    : undefined;
+  return instruction || undefined;
 }
 
 function defaultState(): EnvironmentBridgeState {
@@ -168,6 +127,50 @@ function sessionStatus(session: EnvironmentSessionState, now = Date.now()): Envi
   const lastSeen = sessionLastSeenMs(session);
   if (!lastSeen || lastSeen - now > FUTURE_CLOCK_SKEW_MS || now - lastSeen > STALE_AFTER_MS) return 'stale';
   return session.status;
+}
+
+function connectionFacts(session: EnvironmentSessionState): unknown {
+  const source = session.latestObservation?.state;
+  const body = isRecord(source?.body) ? source.body : null;
+  const gateway = isRecord(source?.gateway) ? source.gateway : null;
+  const robots = isRecord(gateway?.robots) ? gateway.robots : null;
+  const selectedRobot = typeof body?.robotId === 'string' ? robots?.[body.robotId] : null;
+  const robot = isRecord(selectedRobot) ? selectedRobot : null;
+  const movement = isRecord(source?.activeMovementUpdates) ? source.activeMovementUpdates : null;
+  return { sessionId: session.sessionId, environmentId: session.environmentId, adapter: session.adapter,
+    transport: sessionStatus(session), adapterConnected: source?.adapterConnected,
+    gatewayInstance: movement?.gatewayInstance, robotId: body?.robotId, authenticated: body?.authenticated,
+    epoch: robot?.epoch, bodyConnection: robot?.connection_state };
+}
+
+function connectionRevision(previous: EnvironmentSessionState | undefined, current: EnvironmentSessionState): number {
+  return (previous?.connectionRevision ?? 0)
+    + (previous && contentHash(connectionFacts(previous)) !== contentHash(connectionFacts(current)) ? 1 : 0);
+}
+
+function retainedBodyEvent(observation: EnvironmentObservation,
+  previous?: EnvironmentSessionState['latestBodyEvent']): EnvironmentSessionState['latestBodyEvent'] {
+  const source = observation.state;
+  const event = isRecord(source?.bodyEvent) ? source.bodyEvent : null;
+  if (!event) return previous;
+  const body = isRecord(source?.body) ? source.body : null;
+  const gateway = isRecord(source?.gateway) ? source.gateway : null;
+  const robots = isRecord(gateway?.robots) ? gateway.robots : null;
+  const robotId = typeof event.robot_id === 'string' ? event.robot_id
+    : typeof body?.robotId === 'string' ? body.robotId : undefined;
+  const selectedRobot = robotId ? robots?.[robotId] : null;
+  const robot = isRecord(selectedRobot) ? selectedRobot : null;
+  const epoch = event.epoch ?? robot?.epoch;
+  const movement = isRecord(source?.activeMovementUpdates) ? source.activeMovementUpdates : null;
+  const attribution = {
+    ...(robotId !== undefined ? { robotId } : {}),
+    ...(typeof epoch === 'string' || typeof epoch === 'number' ? { epoch } : {}),
+    ...(typeof movement?.gatewayInstance === 'string' ? { gatewayInstance: movement.gatewayInstance } : {}),
+  };
+  const identity = contentHash({ sessionId: observation.sessionId, ...attribution,
+    event: typeof event.event_id === 'string' && event.event_id ? event.event_id
+      : { event, observationId: observation.id, observedAt: observation.timestamp } });
+  return previous?.identity === identity ? previous : { identity, observedAt: observation.timestamp, ...attribution };
 }
 
 function commandStatus(task: QueuedTask): EnvironmentCommandWork['status'] {
@@ -224,7 +227,14 @@ export function readEnvironmentBridgeState(): EnvironmentBridgeState {
 export function writeEnvironmentBridgeState(state: EnvironmentBridgeState): EnvironmentBridgeState {
   fs.mkdirSync(path.dirname(STATE_FILE), { recursive: true });
   const next = normalizeState({ ...state, updatedAt: nowIso() });
-  fs.writeFileSync(STATE_FILE, `${JSON.stringify(next, null, 2)}\n`);
+  const temporary = `${STATE_FILE}.${process.pid}.${randomUUID()}.tmp`;
+  try {
+    fs.writeFileSync(temporary, `${JSON.stringify(next, null, 2)}\n`);
+    fs.renameSync(temporary, STATE_FILE);
+  } catch (error) {
+    try { fs.unlinkSync(temporary); } catch {}
+    throw error;
+  }
   notifyEnvironmentBridgeStateSubscribers();
   return next;
 }
@@ -306,7 +316,7 @@ export function getEnvironmentActionContext(
     ? task.input.metadata
     : null;
   const taskMetadata = isRecord(task.metadata) ? task.metadata : null;
-  const originatingInstruction = boundedOriginatingInstruction(
+  const originatingInstruction = normalizeOriginatingInstruction(
     taskMetadata?.originatingInstruction,
   );
   const resultFeedback = isRecord(task.result?.feedback) ? task.result.feedback : null;
@@ -381,7 +391,7 @@ function persistEnvironmentObservation(
     ...(poseAwareObservation.visuals ?? []),
   ].filter(frame => validEnvironmentJpegDataUrl(frame.dataUrl))
     .sort((a, b) => (b.timestamp ?? '').localeCompare(a.timestamp ?? ''))[0];
-  state.sessions[poseAwareObservation.sessionId] = {
+  const session: EnvironmentSessionState = {
     sessionId: poseAwareObservation.sessionId,
     environmentId: poseAwareObservation.environmentId,
     adapter: poseAwareObservation.adapter,
@@ -389,9 +399,13 @@ function persistEnvironmentObservation(
     firstSeenAt: existing?.firstSeenAt ?? poseAwareObservation.timestamp ?? now,
     lastSeenAt: poseAwareObservation.timestamp ?? now,
     latestObservation: poseAwareObservation,
+    latestBodyEvent: retainedBodyEvent(poseAwareObservation, existing?.latestBodyEvent),
     latestVisual,
     processedTextEventIds: existing?.processedTextEventIds ?? [],
+    depthDemands: existing?.depthDemands,
   };
+  session.connectionRevision = connectionRevision(existing, session);
+  state.sessions[poseAwareObservation.sessionId] = session;
   if (poseAwareObservation.feedback?.length) {
     state.feedback = boundedFeedback([...state.feedback, ...poseAwareObservation.feedback]);
   }
@@ -483,9 +497,9 @@ async function wakeEnvironmentSensorWaiters(sessionId: string, event: NewExecuti
   const executions = openExecutionStore(username);
   try {
     const locomotionOnly = isRecord(event.payload) && event.payload.locomotionMeasurement !== undefined;
-    for (const execution of executions.list(username).filter(record => record.status === 'waiting'
-      && (record.waitingReason === `active_task:${sessionId}:perception:locomotion`
-        || (!locomotionOnly && record.waitingReason === `active_task:${sessionId}:perception`)))) {
+    const reasons = [`active_task:${sessionId}:perception:locomotion`,
+      ...(!locomotionOnly ? [`active_task:${sessionId}:perception`] : [])];
+    for (const execution of executions.waitingFor(username, reasons)) {
       // Sensor wakes read the latest state; retain one immutable outstanding event.
       if (!executions.events(execution.executionId, execution.lastProcessedSequence)
         .some(pending => pending.kind === 'perception_received')) {
@@ -635,9 +649,9 @@ export function touchEnvironmentSession(sessionId: string): EnvironmentBridgeSum
   const state = readEnvironmentBridgeState();
   const session = state.sessions[sessionId];
   if (!session) return summarizeEnvironmentBridgeState(state);
-  session.lastSeenAt = nowIso();
-  session.status = 'connected';
-  state.sessions[sessionId] = session;
+  const next = { ...session, lastSeenAt: nowIso(), status: 'connected' as const };
+  next.connectionRevision = connectionRevision(session, next);
+  state.sessions[sessionId] = next;
   return summarizeEnvironmentBridgeState(writeEnvironmentBridgeState(state));
 }
 
@@ -707,6 +721,7 @@ function normalizeAction(
   }
   if (action.type === 'sendText' && !action.text?.trim()) throw new Error('Environment sendText action requires text');
   if (action.type === 'robotCommand' && !action.command?.trim()) throw new Error('Environment robotCommand action requires a semantic command');
+  if (action.type === 'requestMotion' && !action.description?.trim()) throw new Error('Environment requestMotion action requires a description');
   if (action.type === 'faceExpression') {
     if (action.displayRelease !== true && !action.expression?.trim()) throw new Error('Environment faceExpression action requires an expression identifier');
     if ((action.displayRelease === true || action.displayToken !== undefined)
@@ -736,14 +751,6 @@ function normalizeAction(
       throw new Error('Environment speech must be a tts-out renderer action');
     }
   }
-  const motionPlan = action.type === 'robotMotionPlan'
-    ? normalizeEnvironmentMotionPlanFields(action)
-    : undefined;
-  if (motionPlan) assertBoundedMotionPlanEncoding({
-    type: action.type,
-    frames: motionPlan.frames,
-    endPose: motionPlan.endPose,
-  });
   const inspectionTarget = action.type === 'inspect'
     ? normalizeEnvironmentVisualInspectionTarget(action.inspectionTarget)
     : undefined;
@@ -764,6 +771,7 @@ function normalizeAction(
     vector: action.vector,
     direction: action.direction,
     command: type === 'robotCommand' ? command : undefined,
+    description: type === 'requestMotion' ? action.description?.trim() : undefined,
     expression: type === 'faceExpression' ? action.expression?.trim() : undefined,
     ...(type === 'faceExpression' ? {
       displayToken: action.displayToken, displayIfToken: action.displayIfToken, displayTimeoutMs: action.displayTimeoutMs,
@@ -776,8 +784,6 @@ function normalizeAction(
     continuous: action.continuous, speed: action.speed, stride: action.stride, rate: action.rate,
     gait: action.gait, forward: action.forward, turn: action.turn, lateral: action.lateral,
     target: action.target,
-    frames: motionPlan?.frames,
-    endPose: motionPlan?.endPose,
     inspectionTarget,
     visualTarget,
     speechArtifactId: action.speechArtifactId,
@@ -811,7 +817,7 @@ export function prepareEnvironmentCommand(
     metadata: {
       producer: 'environment-interface',
       sessionId,
-      originatingInstruction: boundedOriginatingInstruction(options.originatingInstruction),
+      originatingInstruction: normalizeOriginatingInstruction(options.originatingInstruction),
     },
   };
 }
@@ -899,8 +905,45 @@ export function dispatchEnvironmentActions(sessionId: string, limit = 10, owner 
 }
 
 /** Read requests use Coordinator work identity, without a physical command or body lease. */
+export function reconcileEnvironmentDepthDemands(executionId?: string): void {
+  const state = readEnvironmentBridgeState();
+  const manager = getQueueManager();
+  for (const session of Object.values(state.sessions)) {
+    if (!getEnvironmentActionSubscriberCount(session.sessionId)) continue;
+    for (const [consumerId, demand] of Object.entries(session.depthDemands ?? {})) {
+      if (executionId && demand.executionId !== executionId) continue;
+      const store = openExecutionStore(demand.username);
+      let ended: boolean;
+      try { const execution = store.find(demand.executionId); ended = !execution || ['completed', 'failed', 'cancelled'].includes(execution.status); }
+      finally { store.close(); }
+      if (!ended) continue;
+      manager.enqueue({ type: 'generic', handler: 'environment.visual-read',
+        resource: `environment-depth-release:${consumerId}`, username: demand.username,
+        source: 'environment', maxAttempts: 1,
+        idempotencyKey: `depth-release:${consumerId}:${demand.readOwner}`,
+        input: { sessionId: session.sessionId, vision: { operation: 'depthDemand', consumerId, enabled: false } } });
+    }
+  }
+}
+
 export function dispatchEnvironmentVisualReads(sessionId: string, owner = `environment-adapter:${sessionId}`): Record<string, unknown>[] {
   const manager = getQueueManager();
+  reconcileEnvironmentDepthDemands();
+  const state = readEnvironmentBridgeState();
+  const session = state.sessions[sessionId];
+  for (const [consumerId, demand] of Object.entries(session?.depthDemands ?? {})) {
+    if (demand.readOwner === owner) continue;
+    const pending = manager.getTask(demand.requestId);
+    if (pending && ['queued', 'leased', 'waiting'].includes(pending.state)) continue;
+    const store = openExecutionStore(demand.username);
+    let active: boolean;
+    try { active = ['running', 'waiting'].includes(store.find(demand.executionId)?.status ?? ''); }
+    finally { store.close(); }
+    if (active) manager.enqueue({ type: 'generic', handler: 'environment.visual-read',
+      resource: `environment-depth-acquire:${consumerId}`, username: demand.username, source: 'environment', maxAttempts: 1,
+      idempotencyKey: `depth-reconnect:${consumerId}:${owner}`,
+      input: { sessionId, depthExecutionId: demand.executionId, vision: { operation: 'depthDemand', consumerId, enabled: true } } });
+  }
   const requests: Record<string, unknown>[] = [];
   for (;;) {
     const next = manager.getNextExecutable(task => task.handler === 'environment.visual-read'
@@ -908,6 +951,12 @@ export function dispatchEnvironmentVisualReads(sessionId: string, owner = `envir
     if (!next) break;
     const task = manager.claim(next.id, owner);
     if (!task) break;
+    if (session && task.input.vision?.operation === 'depthDemand' && task.input.vision.enabled === true) {
+      const executionId = task.durable?.executionId ?? task.input.depthExecutionId;
+      if (typeof executionId !== 'string' || !task.username) throw new Error('Depth demand requires an execution owner');
+      (session.depthDemands ??= {})[task.input.vision.consumerId] = { executionId, username: task.username, readOwner: owner, requestId: task.id };
+      writeEnvironmentBridgeState(state);
+    }
     requests.push({ ...(isRecord(task.input.vision) ? task.input.vision : {}),
       type: 'environment.visual.read', version: 1, requestId: task.id, sessionId });
   }
@@ -919,6 +968,20 @@ export function recordEnvironmentVisualReadResult(result: Record<string, unknown
   const task = typeof result.requestId === 'string' ? manager.getTask(result.requestId) : undefined;
   if (!task || task.handler !== 'environment.visual-read' || task.input.sessionId !== result.sessionId) {
     throw new Error('Camera read result does not match a Coordinator request');
+  }
+  if (task.input.vision?.operation === 'depthDemand') {
+    const state = readEnvironmentBridgeState();
+    const session = state.sessions[String(result.sessionId)];
+    if (session && result.error === undefined && task.input.vision.enabled === false) {
+      delete session.depthDemands?.[task.input.vision.consumerId];
+      writeEnvironmentBridgeState(state);
+    }
+    const vision = isRecord(result.vision) ? result.vision : undefined;
+    if (session?.latestObservation && task.input.vision.enabled === true && isRecord(vision?.locomotionMeasurement)) {
+      session.latestObservation = { ...session.latestObservation,
+        state: { ...session.latestObservation.state, locomotionMeasurement: vision.locomotionMeasurement } };
+      writeEnvironmentBridgeState(state);
+    }
   }
   if (result.error !== undefined) {
     manager.complete(task.id, false, { code: 'camera_read_failed', message: String(result.error), retryable: false });
@@ -934,6 +997,20 @@ export function recordEnvironmentVisualReadResult(result: Record<string, unknown
   }
 }
 
+/** Restored finite reads have the same connection requirement as newly admitted reads. */
+export function reconcileEnvironmentVisualRead(task: QueuedTask, manager: UnifiedQueueManager): void {
+  if (task.handler !== 'environment.visual-read' || task.input.vision?.operation === 'depthDemand'
+    || !['queued', 'leased', 'waiting'].includes(task.state)) return;
+  const sessionId = String(task.input.sessionId);
+  if (readEnvironmentBridgeState().enabled && getEnvironmentActionSubscriberCount(sessionId)) return;
+  const message = 'Camera read requires the selected Environment Bridge connection';
+  if (task.state === 'queued' && !manager.claim(task.id, `environment-adapter:${sessionId}`)) {
+    manager.cancel(task.id, message);
+    return;
+  }
+  manager.complete(task.id, false, { code: 'bridge_disconnected', message, retryable: false });
+}
+
 export function releaseEnvironmentStreamWork(sessionId: string, owner?: string): void {
   const manager = getQueueManager();
   for (const task of manager.getAllTasks()) {
@@ -944,6 +1021,10 @@ export function releaseEnvironmentStreamWork(sessionId: string, owner?: string):
     if (task.handler === 'environment.visual-read' && task.input.sessionId === sessionId
       && ['queued', 'leased', 'waiting'].includes(task.state)
       && (!owner || task.leaseOwner === owner || task.state === 'queued' && !getEnvironmentActionSubscriberCount(sessionId))) {
+      if (task.input.vision?.operation === 'depthDemand') {
+        if (task.state !== 'queued') manager.releaseForRedelivery(task.id);
+        continue;
+      }
       if (task.state === 'queued') manager.cancel(task.id, 'Camera read interrupted by bridge disconnection');
       else manager.complete(task.id, false, { code: 'bridge_disconnected', message: 'Camera read interrupted by bridge disconnection', retryable: false });
     }
@@ -1087,7 +1168,6 @@ export function recordEnvironmentActionResult(feedback: EnvironmentFeedback): Re
     username: current.username,
     ...(feedback.type === 'accepted' ? { admitted } : {}),
   };
-  updateCommandedPoseFromFeedback(recorded.action, feedback);
   return recorded;
 }
 
@@ -1095,7 +1175,13 @@ getQueueManager().addEventListener(event => {
   if (!event.taskId) return;
   const task = getQueueManager().getTask(event.taskId);
   if (task?.type !== 'environment_command' && task?.handler !== 'environment.visual-read') return;
+  if (task.handler === 'environment.visual-read' && task.input.vision?.operation !== 'depthDemand'
+    && event.type === 'task_enqueued') {
+    reconcileEnvironmentVisualRead(task, getQueueManager());
+    if (task.state !== 'queued') return;
+  }
   if (task.handler === 'environment.visual-read' && event.type === 'task_enqueued'
+    && task.input.vision?.operation === 'depthDemand'
     && (!readEnvironmentBridgeState().enabled || !getEnvironmentActionSubscriberCount(String(task.input.sessionId)))) {
     const manager = getQueueManager();
     if (manager.claim(task.id, `environment-adapter:${task.input.sessionId}`)) {

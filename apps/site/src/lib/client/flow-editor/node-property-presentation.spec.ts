@@ -42,6 +42,8 @@ test('prompt detection covers prompt-like names and multiline schema fields', ()
 
 test('compact summaries remain readable across property types', () => {
   assert.equal(formatPropertySummary(true, schema('boolean')), 'On')
+  assert.equal(formatPropertySummary([{ type: 'robotCommand', command: 'stretch' }], schema('json')),
+    '{"type":"robotCommand","command":"stretch"}')
   assert.equal(formatPropertySummary(['one', 'two', 'three', 'four'], schema('multiselect')), '4 items')
   assert.equal(formatPropertySummary(
     'json',

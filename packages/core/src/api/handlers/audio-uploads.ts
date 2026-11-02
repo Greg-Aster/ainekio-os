@@ -1,8 +1,6 @@
 import type { UnifiedHandler } from '../types.js';
 import {
-  copyToSoVITS,
   saveVoiceSample,
-  setSoVITSReferenceSample,
 } from '../../voice-training.js';
 
 interface UploadedFile {
@@ -31,12 +29,8 @@ export const handleVoiceProfileUpload: UnifiedHandler = async (req) => {
   try {
     const audioFile = uploadedFile(req.body?.audio);
     const transcript = String(req.body?.transcript || '');
-    const providerRaw = String(req.body?.provider || '');
-    const provider = providerRaw === 'sovits' ? 'gpt-sovits' : providerRaw;
-    const speakerId = String(req.body?.speakerId || 'default');
     const duration = parseFloat(String(req.body?.duration));
     const quality = parseFloat(String(req.body?.quality)) || 1.0;
-    const copyToReference = req.body?.copyToReference === 'true' || req.body?.copyToReference === true;
 
     if (!audioFile) {
       return { status: 400, data: { success: false, error: 'No audio file provided' } };
@@ -62,20 +56,6 @@ export const handleVoiceProfileUpload: UnifiedHandler = async (req) => {
       };
     }
 
-    let copiedToReference = false;
-    let referencePath: string | undefined;
-    if (provider === 'gpt-sovits' && copyToReference) {
-      const copiedCount = copyToSoVITS([sample.id], speakerId);
-      copiedToReference = copiedCount > 0;
-      if (copiedToReference) {
-        try {
-          const result = setSoVITSReferenceSample(speakerId, sample.id);
-          referencePath = result.referencePath;
-        } catch (error) {
-          console.error('[api/voice-profile-upload] Failed to set SoVITS reference:', error);
-        }
-      }
-    }
 
     return {
       status: 200,
@@ -85,11 +65,7 @@ export const handleVoiceProfileUpload: UnifiedHandler = async (req) => {
         audioPath: sample.audioPath,
         duration: sample.duration,
         quality: sample.quality,
-        copiedToReference,
-        referencePath,
-        message: copiedToReference
-          ? `Voice profile saved and set as reference audio for ${speakerId}`
-          : 'Voice sample saved successfully',
+        message: 'Voice sample saved successfully',
       },
     };
   } catch (error) {

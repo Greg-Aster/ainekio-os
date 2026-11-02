@@ -1,5 +1,6 @@
 <script lang="ts">
   import { onDestroy, tick, untrack } from 'svelte'
+  import type { EditorNode } from '../../lib/client/flow-editor/template-converter'
   import {
     Handle,
     NodeResizer,
@@ -7,10 +8,10 @@
     type ResizeDragEvent,
     type ResizeParams,
     useNodeConnections,
-    useNodes,
+    useSvelteFlow,
     useUpdateNodeInternals,
   } from '@xyflow/svelte'
-  import type { NodeSchema } from '@metahuman/core/nodes/types'
+  import { getNodeFunctionalCategory, type NodeSchema } from '@metahuman/core/nodes/types'
   import NodePropertyField from './NodePropertyField.svelte'
   import { requireFlowEditorActions } from '../../lib/client/flow-editor/flow-editor-context'
   import {
@@ -57,7 +58,7 @@
     id: untrack(() => id),
     handleType: 'source',
   })
-  const flowNodes = useNodes()
+  const { getNodes } = useSvelteFlow<EditorNode>()
   const updateNodeInternals = useUpdateNodeInternals()
 
   const schema = $derived(data.schema)
@@ -81,10 +82,12 @@
   const isMuted = $derived(data.muted || false)
   const executionState = $derived(data.executionState || 'idle')
   const isUnconnected = $derived(data.isUnconnected || false)
+  const categoryLabels: Record<string, string> = { model: 'LLM', chat: 'LLM', control_flow: 'WORKFLOW' }
   const categoryBadge = $derived(
     schema?.id === 'graph_note'
       ? (isGroupFrame ? 'GROUP' : 'NOTE')
-      : (schema?.category?.slice(0, 3).toUpperCase() || 'NOD'),
+      : (schema ? (categoryLabels[getNodeFunctionalCategory(schema)]
+        || getNodeFunctionalCategory(schema).replaceAll('_', ' ').toUpperCase()) : 'NODE'),
   )
 
   const propertyGroups = $derived(groupCanvasProperties(schema?.propertySchemas))
@@ -92,7 +95,7 @@
   const settingProperties = $derived(propertyGroups.settings)
   const advancedProperties = $derived(propertyGroups.advanced)
   const compactSettingProperties = $derived(
-    [...settingProperties, ...advancedProperties].slice(0, 4),
+    settingProperties.slice(0, 4),
   )
   const remainingCompactSettings = $derived(
     settingProperties.length + advancedProperties.length - compactSettingProperties.length,
@@ -109,6 +112,7 @@
   let nodeInternalsFrame: number | null = null
   const activePrimaryProperty = $derived(
     primaryProperties.find(([key]) => key === requestedPrimaryKey)
+    ?? primaryProperties.find(([key]) => properties[key] !== undefined && properties[key] !== null && properties[key] !== '')
     ?? primaryProperties[0]
     ?? null,
   )
@@ -119,7 +123,7 @@
   )
   const promptSourceNode = $derived(
     promptSourceConnection
-      ? flowNodes.current.find((node) => node.id === promptSourceConnection.source) ?? null
+      ? getNodes().find((node) => node.id === promptSourceConnection.source) ?? null
       : null,
   )
   const promptSourceName = $derived(
@@ -138,22 +142,26 @@
     || schema?.id === 'output_viewer',
   )
   const hasOutput = $derived(isDisplayNode && Boolean(data.executionOutput))
-  const nodeInputs = $derived(schema?.inputs ?? [])
+  const nodeInputs = $derived([
+    ...(schema?.inputs ?? []),
+    ...(inputConnections.current.some(connection => connection.targetHandle === 'control')
+      && !schema?.inputs.some(input => input.name === 'control')
+      ? [{ name: 'control', type: 'any', label: 'After upstream step', optional: true,
+        description: 'Execution dependency from the connected step.' }] : []),
+  ])
   const nodeOutputs = $derived(schema?.outputs ?? [])
-  const hasPrimaryOutputHints = $derived(nodeOutputs.some((output) => output.primary))
-  const visibleNodeOutputs = $derived(
-    expanded || !hasPrimaryOutputHints
-      ? nodeOutputs
-      : nodeOutputs.filter((output) => (
-          output.primary
-          || outputConnections.current.some((connection) => connection.sourceHandle === output.name)
-        )),
-  )
-  const hiddenOutputCount = $derived(nodeOutputs.length - visibleNodeOutputs.length)
-  const maxSlots = $derived(Math.max(nodeInputs.length, visibleNodeOutputs.length, 1))
+  const visibleNodeInputs = $derived(expanded ? nodeInputs : nodeInputs.filter(input =>
+    !input.optional || inputConnections.current.some(connection => connection.targetHandle === input.name),
+  ))
+  const visibleNodeOutputs = $derived(expanded ? nodeOutputs : nodeOutputs.filter((output, index) =>
+    output.primary || outputConnections.current.some(connection => connection.sourceHandle === output.name)
+      || index === 0 && outputConnections.current.length === 0,
+  ))
+  const hiddenPortCount = $derived(nodeInputs.length - visibleNodeInputs.length + nodeOutputs.length - visibleNodeOutputs.length)
+  const maxSlots = $derived(Math.max(visibleNodeInputs.length, visibleNodeOutputs.length, 1))
   const portRows = $derived(
     Array.from({ length: maxSlots }, (_, index) => ({
-      input: nodeInputs[index],
+      input: visibleNodeInputs[index],
       output: visibleNodeOutputs[index],
     })),
   )
@@ -167,7 +175,7 @@
   ))
   const statusRows = $derived(getNodeStatusRows(presentation, data.executionOutput))
   const hasExpandableContent = $derived(
-    propertyCount > 0 || Boolean(nodePurpose) || Boolean(promptSourceConnection),
+    hiddenPortCount > 0 || propertyCount > 0 || Boolean(nodePurpose) || Boolean(promptSourceConnection),
   )
 
   function inputIsConnected(propertyKey: string): boolean {
@@ -319,8 +327,8 @@
     {/if}
 
     {#if !expanded}
-      {#if primaryProperties.length}
-        {@const [primaryKey, primarySchema] = primaryProperties[0]}
+      {#if activePrimaryProperty}
+        {@const [primaryKey, primarySchema] = activePrimaryProperty}
         <div class="prompt-preview" title={String(properties[primaryKey] ?? primarySchema.default ?? '')}>
           <div class="summary-heading">
             <span>
@@ -473,8 +481,8 @@
           {/if}
         </div>
       {/each}
-      {#if hiddenOutputCount > 0}
-        <div class="hidden-ports-summary">+{hiddenOutputCount} optional output{hiddenOutputCount === 1 ? '' : 's'}</div>
+      {#if hiddenPortCount > 0}
+        <div class="hidden-ports-summary">+{hiddenPortCount} more port{hiddenPortCount === 1 ? '' : 's'} · expand to connect</div>
       {/if}
     </div>
   </div>

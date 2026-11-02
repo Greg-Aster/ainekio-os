@@ -9,10 +9,10 @@
   "gradient_accumulation_steps": 16,
   "max_seq_length": 2048,
   "quantization": "Q4_K_M",
-  "skipGguf": true,
-  "trainingTarget": "vllm",
+  "skipGguf": false,
+  "trainingTarget": "llama-cpp",
   "gguf_conversion": {
-    "enabled": false,
+    "enabled": true,
     "quantization_type": "Q4_K_M"
   },
   "lora_dropout": 0,

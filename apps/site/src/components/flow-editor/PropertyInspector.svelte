@@ -1,5 +1,6 @@
 <script lang="ts">
-  import type { Edge, Node } from '@xyflow/svelte';
+  import type { EditorNode as Node } from '../../lib/client/flow-editor/template-converter';
+  import type { Edge } from '@xyflow/svelte';
   import type { NodeSlot, PropertySchema } from '@metahuman/core/nodes/types';
   import NodePropertyField from './NodePropertyField.svelte';
   import NodeActivationEditor from './NodeActivationEditor.svelte';

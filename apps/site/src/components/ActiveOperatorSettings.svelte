@@ -4,7 +4,7 @@
   import { AUTONOMY_MODES, type AutonomyMode } from '../lib/client/active-operator-modes';
 
   let autonomyMode: AutonomyMode = 'reactive';
-  let semiInactivityMinutes = 5;
+  let semiAssessmentMinutes = 5;
   let loading = false;
   let saving = false;
   let error = '';
@@ -21,7 +21,7 @@
       const config = await response.json();
       if (!response.ok) throw new Error(config.error || 'Failed to load Active Operator configuration');
       autonomyMode = config.autonomyMode || 'reactive';
-      semiInactivityMinutes = config.semiInactivityMinutes;
+      semiAssessmentMinutes = config.semiAssessmentMinutes;
     } catch (caught) {
       error = (caught as Error).message;
     } finally {
@@ -29,18 +29,18 @@
     }
   }
 
-  async function saveInactivity() {
+  async function saveAssessmentInterval() {
     saving = true;
     error = '';
     try {
       const response = await apiFetch('/api/active-operator/config', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ semiInactivityMinutes }),
+        body: JSON.stringify({ semiAssessmentMinutes }),
       });
       const result = await response.json();
-      if (!response.ok) throw new Error(result.error || 'Failed to save inactivity interval');
-      semiInactivityMinutes = result.semiInactivityMinutes;
+      if (!response.ok) throw new Error(result.error || 'Failed to save assessment interval');
+      semiAssessmentMinutes = result.semiAssessmentMinutes;
     } catch (caught) {
       error = (caught as Error).message;
     } finally {
@@ -92,7 +92,7 @@
     <span class="text-base font-semibold text-white">Active Operator</span>
     <span class="rounded bg-white/10 px-2 py-1 text-xs font-semibold uppercase text-white">{autonomyMode}</span>
   </div>
-  <p class="mb-4 text-sm text-gray-500">Select how the Active Operator agent coordinates robot activity. Reactive keeps it dormant; Semi triggers operations at 100%; Full selects the highest returned activation.</p>
+  <p class="mb-4 text-sm text-gray-500">Select how the Active Operator agent coordinates robot activity. Reactive keeps it dormant; Semi triggers operations at 100%; Full develops intentions and selects the highest positive returned activation.</p>
 
   {#if error}<div class="banner banner-error mb-4">{error}</div>{/if}
 
@@ -109,16 +109,16 @@
     {/each}
   </div>
 
-  <form class="mt-4" on:submit|preventDefault={saveInactivity}>
-    <label class="block text-sm text-white" for="semi-inactivity-minutes">Semi Auto inactivity (minutes)</label>
+  <form class="mt-4" on:submit|preventDefault={saveAssessmentInterval}>
+    <label class="block text-sm text-white" for="semi-assessment-minutes">Semi Auto assessment interval (minutes)</label>
     <div class="mt-2 flex items-center gap-2">
-      <input id="semi-inactivity-minutes" type="number" min="0" step="any" required
+      <input id="semi-assessment-minutes" type="number" min="0" step="any" required
         class="min-w-0 flex-1 rounded border border-white/10 bg-transparent p-2 text-white"
-        bind:value={semiInactivityMinutes} disabled={loading || saving} />
+        bind:value={semiAssessmentMinutes} disabled={loading || saving} />
       <button type="submit" class="rounded border border-white/10 px-3 py-2 text-white"
-        disabled={loading || saving || !(semiInactivityMinutes > 0)}>Save</button>
+        disabled={loading || saving || !(semiAssessmentMinutes > 0)}>Save</button>
     </div>
-    <p class="mt-2 text-xs text-gray-500">Default: 5 minutes. Recorded activity restarts the countdown. After an assessment finishes, Semi Auto waits another interval before assessing again. Full Auto does not use this interval.</p>
+    <p class="mt-2 text-xs text-gray-500">Default: 5 minutes between assessments. Conversation does not restart the interval. Selected tasks run independently. Full Auto does not use this interval.</p>
   </form>
 
   {#if autonomyMode === 'full'}

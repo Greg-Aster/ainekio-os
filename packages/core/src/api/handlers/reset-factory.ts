@@ -13,7 +13,6 @@ import type { UnifiedQueueManager } from '../../queue/unified-queue-manager.js'
 import { openExecutionStore } from '../../durable-execution/storage.js'
 import { ExecutionCheckpointer } from '../../durable-execution/checkpointer.js'
 import { clearBufferForUser, type CanonicalBufferMode } from '../../conversation-buffer.js'
-import { flushRecentToolCache } from '../../recent-tools-cache.js'
 import { clearIndexCache } from '../../vector-index.js'
 import { clearMemoryCaptureCache } from '../../memory.js'
 import { getAgencyHistoryResetPaths } from '../../agency/storage.js'
@@ -107,7 +106,6 @@ export async function handleResetFactory(req: UnifiedRequest, deps = dependencie
       try { checkpointer.assertProfileHistoryCanBeReset(username) }
       catch (error) { return { status: 409, error: (error as Error).message } }
     }
-    await flushRecentToolCache(configuredProfileRoot)
     assertStorageUnchanged()
     if (req.signal?.aborted) return { status: 409, error: 'Reset request was cancelled before deletion' }
     audit({ level: 'warn', category: 'security', event: 'profile_memory_reset_started', actor: username,

@@ -2,14 +2,12 @@
 /**
  * Maintenance Service
  *
- * Persistent owner for stale-lock cleanup, audit-log retention, and embedding
- * preload. Work admission remains exclusively owned by TriggerManager inside
+ * Persistent owner for stale-lock cleanup and audit-log retention. Work admission remains exclusively owned by TriggerManager inside
  * the core Work Coordinator.
  */
 
 import { audit, acquireLock, cleanupStaleLocks, initGlobalLogger, purgeOldAuditLogs } from '@metahuman/core';
 import { getAgentStatuses } from '@metahuman/core/agent-monitor';
-import { preloadEmbeddingModel } from '@metahuman/core/embeddings';
 
 const SERVICE_ID = 'maintenance-service';
 const HEALTH_CHECK_INTERVAL_MS = 5 * 60 * 1000;
@@ -67,8 +65,6 @@ export async function run() {
       console.warn(`[${SERVICE_ID}] Daily log cleanup failed:`, error);
     }
   }, LOG_CLEANUP_INTERVAL_MS);
-
-  preloadEmbeddingModel().catch(error => console.error(`[${SERVICE_ID}] Failed to preload embedding model:`, error));
 
   let finishShutdown: (() => void) | undefined;
   const shutdown = () => finishShutdown?.();

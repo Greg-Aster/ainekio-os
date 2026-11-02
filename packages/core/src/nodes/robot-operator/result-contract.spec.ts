@@ -87,7 +87,24 @@ test('Goal Review no longer offers or accepts a continue assessment', async () =
 test('Active Operator schema exposes the approved activation update contract', () => {
   const schema = buildRobotAutonomyControllerJsonSchema([{ id: 'daydreamer' }])
   assert.deepEqual(schema.required, ['updates'])
-  assert.deepEqual(schema.properties.updates.items.properties.operationId.enum, ['daydreamer'])
-  assert.deepEqual(schema.properties.updates.items.required, ['operationId', 'activation', 'reason', 'instruction'])
+  const item = schema.properties.updates.items
+  assert.ok('properties' in item, 'Semi uses its unchanged activation object')
+  assert.ok('enum' in item.properties.operationId)
+  assert.deepEqual(item.properties.operationId.enum, ['daydreamer'])
+  assert.deepEqual(item.required, ['operationId', 'activation', 'reason', 'instruction'])
   assert.equal('response' in schema.properties, false)
+})
+
+
+test('Full schema requires a positive activity and its assessment reason while Semi permits no selection', () => {
+  const schema = buildRobotAutonomyControllerJsonSchema([{ id: 'daydreamer' }], 'full')
+  assert.deepEqual(schema.required, ['updates', 'assessmentReason', 'memoryRequest'])
+  assert.deepEqual(schema.properties.assessmentReason, { type: 'string', minLength: 1 })
+  assert.equal(schema.properties.updates.minItems, 1)
+  assert.deepEqual(schema.properties.updates.contains, { type: 'object', required: ['activation'],
+    properties: { activation: { type: 'number', exclusiveMinimum: 0 } } })
+  const semi = buildRobotAutonomyControllerJsonSchema([], 'semi')
+  assert.equal('assessmentReason' in semi.properties, false)
+  assert.equal('minItems' in semi.properties.updates, false)
+  assert.equal('contains' in semi.properties.updates, false)
 })

@@ -1,56 +1,55 @@
 #!/usr/bin/env bash
-
 set -euo pipefail
-
-SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-REPO_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
+REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 SERVER_LOG="$REPO_ROOT/logs/server.log"
 LOG_DIR="$REPO_ROOT/logs/run"
 MODE="${1:-console}"
-
 mkdir -p "$REPO_ROOT/logs" "$LOG_DIR"
 
+declare -A launchers=()
 start_task() {
   local name="$1"
   shift
-  local log_file="$LOG_DIR/${name}.launcher.log"
-
-  {
-    echo "[$(date -Is)] starting $name"
-    set +e
-    "$@"
-    local exit_code=$?
-    set -e
-    echo "[$(date -Is)] $name launcher exited with code $exit_code"
-    exit "$exit_code"
-  } >> "$log_file" 2>&1 &
+  echo "[$(date -Is)] starting $name" >> "$LOG_DIR/$name.launcher.log"
+  setsid "$@" >> "$LOG_DIR/$name.launcher.log" 2>&1 &
+  launchers[$!]="$name"
 }
 
-start_background_services() {
+cancel_launchers() {
+  trap '' INT TERM HUP
+  local pid
+  # These are this dispatcher's child process groups, not service name matches.
+  for pid in $(jobs -pr); do kill -TERM -- "-$pid" 2>/dev/null || true; done
+  for pid in "${!launchers[@]}"; do wait "$pid" 2>/dev/null || true; done
+  exit 143
+}
+
+if [ "$MODE" = "--background" ]; then
+  trap cancel_launchers INT TERM HUP
   start_task event-bus "$REPO_ROOT/bin/start-event-bus"
-  start_task llama-cpp "$REPO_ROOT/bin/llama-cpp-services" start
-  start_task llm-backend "$REPO_ROOT/bin/mh" backend start
   start_task agents "$REPO_ROOT/bin/mh" start --no-restart
   start_task cloudflare pnpm --dir "$REPO_ROOT" exec tsx "$REPO_ROOT/bin/start-cloudflare"
   start_task voice-server "$REPO_ROOT/bin/start-voice-server"
   start_task local-models "$REPO_ROOT/bin/start-local-models"
-
-  echo "Background service launchers started. Logs: $LOG_DIR"
-}
-
-if [ "$MODE" = "--background" ]; then
-  start_background_services
-  exit 0
+  echo "Background service launchers dispatched; readiness is reported by each service. Logs: $LOG_DIR"
+  status=0
+  for pid in "${!launchers[@]}"; do
+    code=0
+    wait "$pid" || code=$?
+    name="${launchers[$pid]}"
+    unset 'launchers[$pid]'
+    echo "[$(date -Is)] $name launcher exited with code $code" >> "$LOG_DIR/$name.launcher.log"
+    if [ "$code" -ne 0 ]; then
+      echo "$name startup failed (exit $code). See $LOG_DIR/$name.launcher.log" >&2
+      status=1
+    fi
+  done
+  exit "$status"
 fi
 
 echo "MetaHuman service console"
-echo
 echo "Background services are started by ./start.sh."
 echo "To trigger them manually, run: ./bin/start-services --background"
 echo "To stop everything, run: ./stop.sh"
-echo
-echo "Tailing server log:"
-echo
-
 touch "$SERVER_LOG"
 tail -f "$SERVER_LOG"

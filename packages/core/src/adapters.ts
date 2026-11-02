@@ -1,12 +1,13 @@
 import fs from 'node:fs';
 import path from 'node:path';
 import { createHash } from 'node:crypto';
-import type { TrainingCandidateResult, TrainingCandidateReview, TrainingCandidateSummary, TrainingMessage } from './training-schema.js';
+import { isTrainingTarget, type TrainingCandidateResult, type TrainingCandidateReview, type TrainingCandidateSummary, type TrainingMessage, type TrainingTarget } from './training-schema.js';
 import { getProfilePaths } from './path-builder.js';
 import { getUserContext } from './context.js';
 import { safeWriteJSON } from './safe-file.js';
 import { acquireLock } from './locks.js';
 import { resolveModel, resolveModelForCognitiveMode } from './model-resolver.js';
+import type { ProviderOptions } from './providers/types.js';
 
 
 /** Shared receipt validation for local/remote training and candidate review. */
@@ -52,7 +53,7 @@ export async function trainingArtifactHash(file: string): Promise<string> {
 const verifiedArtifacts = new Map<string, { stamp: string; result: TrainingCandidateResult }>();
 export async function verifyTrainingCandidate(
   directory: string,
-  expected: { datasetId: string; baseModel: string; configPath: string; evaluationSha256: string; requireGguf: boolean },
+  expected: { datasetId: string; baseModel: string; configPath: string; evaluationSha256: string; requireGguf: boolean; ggufArtifact?: 'model.gguf' | 'adapter.gguf' },
 ): Promise<TrainingCandidateResult> {
   const root = fs.realpathSync(directory);
   const receiptPath = fs.realpathSync(path.join(root, 'training-result.json'));
@@ -66,7 +67,7 @@ export async function verifyTrainingCandidate(
   const cached = verifiedArtifacts.get(root);
   if (cached?.stamp === stamp) return cached.result;
   if (await trainingArtifactHash(expected.configPath) !== result.configSha256) throw new Error('Candidate configuration checksum differs from the submitted configuration');
-  if (expected.requireGguf && !result.artifacts['model.gguf']) throw new Error('Requested GGUF was not produced');
+  if (expected.requireGguf && !result.artifacts[expected.ggufArtifact ?? 'model.gguf']) throw new Error('Requested GGUF was not produced');
   for (const [name, expectedHash] of Object.entries(result.artifacts)) {
     const file = fs.realpathSync(path.join(root, name));
     if (path.dirname(file) !== root || !fs.statSync(file).isFile()) throw new Error('Candidate artifact escapes its run directory');
@@ -77,7 +78,7 @@ export async function verifyTrainingCandidate(
     throw new Error('Serialized-artifact evaluation differs from the candidate receipt');
   }
   if (!report.artifacts || typeof report.artifacts !== 'object' || Array.isArray(report.artifacts)) throw new Error('Serialized-artifact evaluation has no file inventory');
-  const evaluatedFiles = Object.keys(result.artifacts).filter(name => name !== 'model.gguf' && name !== 'artifact-evaluation.json').sort();
+  const evaluatedFiles = Object.keys(result.artifacts).filter(name => !['model.gguf', 'adapter.gguf', 'artifact-evaluation.json'].includes(name)).sort();
   if (JSON.stringify(Object.keys(report.artifacts).sort()) !== JSON.stringify(evaluatedFiles)
     || evaluatedFiles.some(name => report.artifacts[name] !== result.artifacts[name])) throw new Error('Evaluation did not load these exact weights and tokenizer files');
   verifiedArtifacts.set(root, { stamp, result });
@@ -98,7 +99,7 @@ export interface ActiveAdapterInfo {
   ggufAdapterPath?: string;
   baseModel?: string;
   activatedBy?: string;
-  target?: 'ollama' | 'vllm';
+  target?: string;
 }
 
 
@@ -129,7 +130,7 @@ export function listTrainingCandidates(username: string): TrainingCandidateSumma
       if (run.username !== username || run.runLabel !== entry.name) throw new Error('Training candidate profile identity is invalid');
       const configPath = path.join(directory, 'config.json');
       const target = fs.existsSync(configPath) ? readJSON(configPath).trainingTarget : run.trainingTarget;
-      if (target !== 'ollama' && target !== 'vllm') throw new Error('Training run has no recorded serving target: ' + entry.name);
+      if (typeof target !== 'string' || !target.trim()) throw new Error('Training run has no recorded serving target: ' + entry.name);
       const reviewPath = path.join(directory, 'review.json');
       candidates.push({
         runLabel: entry.name, status: run.status, method: run.method, baseModel: run.baseModel,
@@ -147,56 +148,73 @@ export function listTrainingCandidates(username: string): TrainingCandidateSumma
 async function candidateForReview(username: string, runLabel: string) {
   const summary = listTrainingCandidates(username).find(candidate => candidate.runLabel === runLabel);
   if (!summary || summary.status !== 'candidate') throw new Error('This run has no passing candidate to review');
+  if (!isTrainingTarget(summary.target)) throw new Error('This historical candidate uses a retired serving provider: ' + summary.target);
   const root = candidateRoot(username, runLabel);
   const manifest = readJSON(path.join(root, 'dataset-manifest.json'));
   const { datasetId, ...snapshot } = manifest;
   if (hashJSON(snapshot) !== datasetId || datasetId !== summary.datasetId) throw new Error('Candidate dataset manifest changed');
   const result = await verifyTrainingCandidate(summary.candidateDirectory, {
     datasetId, baseModel: summary.baseModel, configPath: path.join(root, 'config.json'),
-    evaluationSha256: manifest.evaluation.sha256, requireGguf: summary.target === 'ollama',
+    evaluationSha256: manifest.evaluation.sha256, requireGguf: true,
+    ggufArtifact: summary.target === 'llama-cpp' && summary.method !== 'fine-tune' ? 'adapter.gguf' : 'model.gguf',
   });
   if (result.qualityGate !== 'passed') throw new Error('The independent evaluation gate failed');
   return { summary, root, manifest, result };
 }
 
-export function trainingCandidateModelName(username: string, runLabel: string, target: 'ollama' | 'vllm'): string {
+export function trainingCandidateModelName(username: string, runLabel: string, target: string): string {
   if (!RUN_LABEL.test(runLabel)) throw new Error('Invalid training run label');
   return target === 'ollama' ? ('personalization-' + username + '-' + runLabel).toLowerCase() + ':candidate' : runLabel;
 }
 
-async function inspectCandidateServing(username: string, candidate: Awaited<ReturnType<typeof candidateForReview>>) {
+async function inspectCandidateServing(username: string, candidate: Awaited<ReturnType<typeof candidateForReview>>, signal?: AbortSignal,
+  configuration?: NonNullable<TrainingCandidateReview['servingConfiguration']>) {
   const { loadBackendConfig } = await import('./llm-backend.js');
   const config = loadBackendConfig();
   const { summary, result } = candidate;
-  const model = trainingCandidateModelName(username, summary.runLabel, summary.target);
+  const model = configuration?.model ?? trainingCandidateModelName(username, summary.runLabel, summary.target);
+  if (summary.target === 'llama-cpp') {
+    const { callLlamaCpp, getLlamaCppAdapters, getLlamaCppProperties } = await import('./providers/llama-cpp.js');
+    const selected = configuration ? undefined : resolveModel('persona', undefined, username);
+    const serving = { ...config.llamaCpp,
+      ...(selected?.provider === 'llama-cpp' ? { ...selected.options, model: selected.model } : {}),
+      ...(summary.method === 'fine-tune' ? { model } : {}),
+      ...(configuration ? { endpoint: configuration.endpoint, model: configuration.model } : {}), enableThinking: false };
+    const properties = await getLlamaCppProperties(serving, signal);
+    if (typeof properties.chat_template !== 'string' || !properties.chat_template.trim()) {
+      throw new Error('llama.cpp did not confirm an installed chat template');
+    }
+    const artifact = path.join(summary.candidateDirectory, summary.method === 'fine-tune' ? 'model.gguf' : 'adapter.gguf');
+    const loaded = summary.method === 'fine-tune' ? undefined
+      : (await getLlamaCppAdapters(serving, signal)).find(adapter => adapter.path === artifact);
+    if (summary.method === 'fine-tune'
+      ? properties.model_path !== artifact : !loaded) {
+      throw new Error('Load this exact candidate artifact through the existing llama.cpp service before review: ' + artifact);
+    }
+    const lora = loaded ? [{ path: artifact, scale: 1 }] : [];
+    return { model: serving.model, config: serving,
+      configuration: { endpoint: serving.endpoint, model: serving.model, lora },
+      identity: hashJSON({ endpoint: serving.endpoint, model: serving.model, modelPath: properties.model_path,
+        template: properties.chat_template, parameters: properties.default_generation_settings, lora,
+        artifact: result.artifacts[path.basename(artifact)] }),
+      chat: async (model: string, messages: TrainingMessage[]) => (await callLlamaCpp({ ...serving, model }, messages,
+        { temperature: 0, maxTokens: 512, enableThinking: false, lora })).content };
+  }
   if (summary.target === 'ollama') {
     const { OllamaClient } = await import('./ollama.js');
-    const client = new OllamaClient(config.ollama.endpoint);
+    const endpoint = configuration?.endpoint ?? config.ollama.endpoint;
+    const client = new OllamaClient(endpoint);
     const detail = await client.showModel(model);
     if (typeof detail.template !== 'string' || !detail.template.trim()
         || typeof detail.modelfile !== 'string' || !detail.modelfile.includes('sha256-' + result.artifacts['model.gguf'])) {
       throw new Error('Ollama did not confirm this exact GGUF and an installed chat template');
     }
-    return { model, identity: hashJSON({ endpoint: config.ollama.endpoint, model, template: detail.template,
+    return { model, configuration: { endpoint, model, lora: [] }, identity: hashJSON({ endpoint, model, template: detail.template,
       parameters: detail.parameters, modelfile: detail.modelfile }),
       chat: async (model: string, messages: TrainingMessage[]) => (await client.chat(model, messages,
         { temperature: 0, num_predict: 512, think: false })).message.content };
   }
-  const { VLLMClient } = await import('./vllm.js');
-  const client = new VLLMClient(config.vllm.endpoint);
-  const card = (await client.listModels()).find(item => item.root === summary.candidateDirectory);
-  if (!card || (summary.method !== 'fine-tune' && card.parent !== summary.baseModel)) {
-    throw new Error('Load this exact artifact in Server settings before review; the served artifact path and training base must match');
-  }
-  const tokenizer = await client.tokenizerInfo();
-  if (typeof tokenizer.chat_template !== 'string'
-      || createHash('sha256').update(tokenizer.chat_template).digest('hex') !== result.templateSha256) {
-    throw new Error('vLLM serving template differs from the training tokenizer template');
-  }
-  return { model: card.id, identity: hashJSON({ endpoint: config.vllm.endpoint, model: card.id, root: card.root,
-    parent: card.parent, template: tokenizer.chat_template }),
-    chat: async (model: string, messages: TrainingMessage[]) => (await client.chat(messages,
-      { model, temperature: 0, maxTokens: 512, enableThinking: false })).content };
+  throw new Error('Unsupported candidate serving provider: ' + summary.target);
 }
 
 /** Prepare the exact artifact, without changing a role or the backend's default model. */
@@ -212,20 +230,15 @@ export async function prepareTrainingCandidate(username: string, runLabel: strin
     if (candidate.summary.target === 'ollama') {
       const { createOllamaGgufModel } = await import('./ollama-lora.js');
       await createOllamaGgufModel(model, path.join(candidate.summary.candidateDirectory, 'model.gguf'), config.ollama.endpoint);
-    } else if (candidate.summary.method !== 'fine-tune') {
-      const { VLLMClient } = await import('./vllm.js');
-      const client = new VLLMClient(config.vllm.endpoint);
-      const loaded = (await client.listModels()).find(item => item.id === model);
-      if (!loaded) await client.loadLoraAdapter(model, candidate.summary.candidateDirectory, candidate.summary.baseModel);
     }
     return { model: (await inspectCandidateServing(username, candidate)).model };
   } finally { lock.release(); }
 }
 
 /** Compare bounded user-selected prompts on the actual serving backend. */
-export async function testTrainingCandidate(username: string, runLabel: string, input: { baselineModel: string; baselineProvider: 'ollama' | 'vllm'; prompts: string[] }): Promise<TrainingCandidateReview> {
+export async function testTrainingCandidate(username: string, runLabel: string, input: { baselineModel: string; baselineProvider: TrainingTarget; prompts: string[] }): Promise<TrainingCandidateReview> {
   candidateRoot(username, runLabel);
-  if (!['ollama', 'vllm'].includes(input.baselineProvider)) throw new Error('Select the backend that serves your baseline model');
+  if (!isTrainingTarget(input.baselineProvider)) throw new Error('Unsupported baseline serving provider');
   if (typeof input.baselineModel !== 'string' || !input.baselineModel.trim() || input.baselineModel.length > 300
       || !Array.isArray(input.prompts) || input.prompts.length < 3 || input.prompts.length > 8
       || input.prompts.some(prompt => typeof prompt !== 'string' || !prompt.trim() || prompt.length > 4000)
@@ -235,21 +248,22 @@ export async function testTrainingCandidate(username: string, runLabel: string, 
     const candidate = await candidateForReview(username, runLabel);
     if (candidate.summary.review?.decision === 'accepted') throw new Error('An accepted review is immutable; use Models to switch or roll back');
     const serving = await inspectCandidateServing(username, candidate);
-    if (input.baselineProvider === candidate.summary.target && input.baselineModel === serving.model) throw new Error('Baseline and candidate must be different models');
+    if (input.baselineProvider === candidate.summary.target && input.baselineModel === serving.model
+      && !(candidate.summary.target === 'llama-cpp' && candidate.summary.method !== 'fine-tune')) throw new Error('Baseline and candidate must be different models');
     const { loadBackendConfig } = await import('./llm-backend.js');
     const config = loadBackendConfig();
     let baselineChat: (messages: TrainingMessage[]) => Promise<string>;
-    if (input.baselineProvider === 'ollama') {
+    if (input.baselineProvider === 'llama-cpp') {
+      const { callLlamaCpp, getLlamaCppProperties } = await import('./providers/llama-cpp.js');
+      const baseline = { ...config.llamaCpp, ...('config' in serving ? serving.config : {}), model: input.baselineModel };
+      await getLlamaCppProperties(baseline);
+      baselineChat = async messages => (await callLlamaCpp(baseline, messages,
+        { temperature: 0, maxTokens: 512, enableThinking: false, lora: [] })).content;
+    } else {
       const { OllamaClient } = await import('./ollama.js');
       const client = new OllamaClient(config.ollama.endpoint);
       await client.showModel(input.baselineModel);
       baselineChat = async messages => (await client.chat(input.baselineModel, messages, { temperature: 0, num_predict: 512, think: false })).message.content;
-    } else {
-      const { VLLMClient } = await import('./vllm.js');
-      const client = new VLLMClient(config.vllm.endpoint);
-      const card = (await client.listModels()).find(model => model.id === input.baselineModel);
-      if (!card || card.root === candidate.summary.candidateDirectory) throw new Error('The selected baseline must be a different loaded vLLM model');
-      baselineChat = async messages => (await client.chat(messages, { model: input.baselineModel, temperature: 0, maxTokens: 512, enableThinking: false })).content;
     }
     const cases: TrainingCandidateReview['cases'] = [];
     for (const prompt of input.prompts) {
@@ -265,8 +279,9 @@ export async function testTrainingCandidate(username: string, runLabel: string, 
     if ((await inspectCandidateServing(username, candidate)).identity !== serving.identity) throw new Error('Serving configuration changed during review');
     const review: TrainingCandidateReview = {
       id: hashJSON({ runLabel, cases, identity: serving.identity, at: new Date().toISOString() }),
-      runLabel, datasetId: candidate.manifest.datasetId, provider: candidate.summary.target, model: serving.model,
+      runLabel, datasetId: candidate.manifest.datasetId, provider: candidate.summary.target as TrainingTarget, model: serving.model,
       baselineModel: input.baselineModel, baselineProvider: input.baselineProvider, servingIdentity: serving.identity,
+      servingConfiguration: serving.configuration,
       artifactReceiptHash: await trainingArtifactHash(path.join(candidate.summary.candidateDirectory, 'training-result.json')),
       createdAt: new Date().toISOString(), cases,
     };
@@ -310,26 +325,35 @@ export async function reopenTrainingCandidateReview(username: string, runLabel: 
 }
 
 /** Existing model-role assignment calls this gate for every known training artifact. */
-export async function assertTrainingModelApproved(username: string | undefined, provider: string, model: string): Promise<TrainingCandidateSummary | null> {
+export async function assertTrainingModelApproved(username: string | undefined, provider: string, model: string,
+  options: Pick<ProviderOptions, 'endpoint' | 'lora' | 'signal'> = {}, phase: 'assignment' | 'inference' = 'inference'): Promise<TrainingCandidateSummary | null> {
+  const adapterPaths = options.lora?.flatMap(adapter => adapter.path ? [adapter.path] : []) ?? [];
   const candidates = username ? listTrainingCandidates(username) : [];
-  let candidate = candidates.find(item => item.target === provider && [
+  const candidate = candidates.find(item => item.target === provider && (item.target === 'llama-cpp' && item.method !== 'fine-tune'
+    ? adapterPaths.includes(path.join(item.candidateDirectory, 'adapter.gguf')) : [
     trainingCandidateModelName(username!, item.runLabel, item.target), item.candidateDirectory, item.review?.model,
-  ].includes(model));
-  let servingRoot: string | undefined;
-  if (!candidate && provider === 'vllm') {
-    const { VLLMClient } = await import('./vllm.js');
-    const { loadBackendConfig } = await import('./llm-backend.js');
-    servingRoot = (await new VLLMClient(loadBackendConfig().vllm.endpoint).listModels()).find(item => item.id === model)?.root;
-    candidate = candidates.find(item => item.target === 'vllm' && item.candidateDirectory === servingRoot);
-  }
+  ].includes(model)));
   if (!candidate || !username) {
-    if (model.startsWith('personalization-') || RUN_LABEL.test(model) || model.includes('/out/adapters/') || servingRoot?.includes('/out/adapters/')) throw new Error('This personalization artifact has no review owned by your profile');
+    if (model.startsWith('personalization-') || RUN_LABEL.test(model) || [model, ...adapterPaths].some(value => value.includes('/out/adapters/'))) throw new Error('This personalization artifact has no review owned by your profile');
     return null;
   }
   if (candidate.review?.decision !== 'accepted') throw new Error('Review and accept this candidate in Training History before assigning a model role');
   const verified = await candidateForReview(username, candidate.runLabel);
-  if (candidate.review.artifactReceiptHash !== await trainingArtifactHash(path.join(candidate.candidateDirectory, 'training-result.json'))
-      || candidate.review.servingIdentity !== (await inspectCandidateServing(username, verified)).identity) throw new Error('Accepted training artifact or serving configuration changed');
+  const { loadBackendConfig } = await import('./llm-backend.js');
+  const backend = loadBackendConfig();
+  const requested = { endpoint: options.endpoint ?? (provider === 'llama-cpp' ? backend.llamaCpp.endpoint : backend.ollama.endpoint),
+    model, lora: provider === 'llama-cpp' ? (options.lora ?? []).map(adapter => adapter.path
+      ? { path: adapter.path, scale: adapter.scale } : { id: adapter.id, scale: adapter.scale }) : [] };
+  const recorded = candidate.review.servingConfiguration;
+  if (!recorded || hashJSON(recorded) !== hashJSON(requested)) {
+    throw new Error('Accepted training serving configuration changed or was not recorded; run a fresh serving comparison');
+  }
+  if (candidate.review.artifactReceiptHash !== await trainingArtifactHash(path.join(candidate.candidateDirectory, 'training-result.json'))) {
+    throw new Error('Accepted training artifact changed');
+  }
+  if (phase === 'assignment') return candidate;
+  const serving = await inspectCandidateServing(username, verified, options.signal, recorded);
+  if (candidate.review.servingIdentity !== serving.identity) throw new Error('Accepted training artifact or serving configuration changed');
   return candidate;
 }
 

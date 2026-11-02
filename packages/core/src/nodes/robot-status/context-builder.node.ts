@@ -1,6 +1,8 @@
 import { projectDesireAwareness } from '../../agency/lifecycle-policy.js'
 import type { RobotStatusAction, RobotStatusBody, RobotStatusSourceFacts } from '../../robot-status.js'
 import { ROBOT_STATUS_SEMANTIC_JSON_SCHEMA } from '../../robot-status.js'
+import { projectEnvironmentVisualFrame } from '../../environment-interface/perception.js'
+import type { EnvironmentVisualFrame } from '../../environment-interface/types.js'
 import { defineNode } from '../types.js'
 
 function isRecord(value: unknown): value is Record<string, unknown> {
@@ -58,9 +60,10 @@ function latestMessageTimestamp(value: unknown): string {
     .at(-1) ?? ''
 }
 
-function latestSession(summary: unknown): Record<string, unknown> | null {
+function latestSession(summary: unknown, sessionId?: string): Record<string, unknown> | null {
   if (!isRecord(summary) || !Array.isArray(summary.sessions)) return null
   const sessions = summary.sessions.filter(isRecord)
+  if (sessionId) return sessions.find(session => session.sessionId === sessionId) ?? null
   return sessions.sort((a, b) => {
     const connected = Number(b.status === 'connected') - Number(a.status === 'connected')
     return connected || cleanText(b.lastSeenAt, 80).localeCompare(cleanText(a.lastSeenAt, 80))
@@ -72,8 +75,8 @@ function matchingTelemetry(value: unknown, sessionId: string): Record<string, un
   return value.filter(isRecord).find(item => cleanText(item.sessionId, 160) === sessionId) ?? null
 }
 
-function environmentEvidence(summary: unknown): Record<string, unknown> | null {
-  const session = latestSession(summary)
+function environmentEvidence(summary: unknown, sessionId?: string): Record<string, unknown> | null {
+  const session = latestSession(summary, sessionId)
   if (!session) return null
   const observation = isRecord(session.latestObservation) ? session.latestObservation : null
   if (!observation) return null
@@ -98,13 +101,14 @@ function environmentEvidence(summary: unknown): Record<string, unknown> | null {
 function motionFacts(
   observation: Record<string, unknown> | null,
   robotTelemetry: Record<string, unknown>,
+  telemetryAt: string,
 ): RobotStatusBody['motion'] {
   const state = isRecord(observation?.state) ? observation.state : {}
   const body = isRecord(state.body) ? state.body : {}
   return {
     available: typeof body.motionAvailable === 'boolean' ? body.motionAvailable : null,
     activity: cleanText(robotTelemetry.state, 80),
-    observedAt: cleanText(observation?.timestamp, 80),
+    observedAt: telemetryAt,
   }
 }
 
@@ -120,8 +124,8 @@ function batteryFacts(
   }
 }
 
-function bodyFacts(summary: unknown, telemetry: unknown): RobotStatusBody | null {
-  const session = latestSession(summary)
+function bodyFacts(summary: unknown, telemetry: unknown, selectedSessionId?: string): RobotStatusBody | null {
+  const session = latestSession(summary, selectedSessionId)
   if (!session) return null
   const sessionId = cleanText(session.sessionId, 160)
   if (!sessionId) return null
@@ -137,7 +141,7 @@ function bodyFacts(summary: unknown, telemetry: unknown): RobotStatusBody | null
     observationAt: cleanText(observation?.timestamp, 80),
     telemetryAt,
     battery: batteryFacts(robotTelemetry, telemetryAt),
-    motion: motionFacts(observation, robotTelemetry),
+    motion: motionFacts(observation, robotTelemetry, telemetryAt),
     state: recordProjection(observation?.state, 40),
     telemetry: recordProjection(robotTelemetry, 32),
     capabilities: {
@@ -157,19 +161,7 @@ function actionDescription(action: Record<string, unknown> | null): string {
   if (motionSummary) return motionSummary
   const command = cleanText(action.command, 160)
   if (command) return command
-  if (action.type !== 'robotMotionPlan') return cleanText(action.type, 80)
-  const frames = Array.isArray(action.frames) ? action.frames.filter(isRecord) : []
-  const durationMs = frames.reduce((total, frame) => (
-    total + (typeof frame.durationMs === 'number' && Number.isFinite(frame.durationMs)
-      ? Math.max(0, frame.durationMs)
-      : 0)
-  ), 0)
-  const endPose = cleanText(action.endPose, 40)
-  return [
-    `Generated motion plan with ${frames.length} frame${frames.length === 1 ? '' : 's'}`,
-    durationMs > 0 ? `${durationMs} ms total` : '',
-    endPose ? `ending in ${endPose}` : '',
-  ].filter(Boolean).join(', ')
+  return (typeof action.description === 'string' ? action.description.trim() : '') || cleanText(action.type, 80)
 }
 
 function latestAction(value: unknown): RobotStatusAction | null {
@@ -214,6 +206,10 @@ export const robotStatusContextBuilderNode = defineNode({
   name: 'Robot Status Context Builder',
   category: 'context',
   inputs: [
+    { name: 'frames', type: 'array', optional: true, description: 'Selected camera frames with recognition metadata' },
+    { name: 'images', type: 'array', optional: true, description: 'Image content parts from camera selection' },
+    { name: 'plannerDecision', type: 'object', optional: true, description: 'The originating autonomy intention and source time' },
+    { name: 'sessionId', type: 'string', optional: true, description: 'Selected robot session' },
     { name: 'instruction', type: 'string', description: 'Editable Robot Status instructions' },
     { name: 'environmentSummary', type: 'object', optional: true, description: 'Current Environment Bridge summary' },
     { name: 'robotTelemetry', type: 'array', optional: true, description: 'Current bounded robot telemetry' },
@@ -233,10 +229,13 @@ export const robotStatusContextBuilderNode = defineNode({
   async execute(inputs) {
     const instruction = cleanText(inputs.instruction, 4_000)
     if (!instruction) throw new Error('Robot Status Context Builder requires editable instructions')
-    const body = bodyFacts(inputs.environmentSummary, inputs.robotTelemetry)
+    const sessionId = inputs.sessionId
+    const body = bodyFacts(inputs.environmentSummary, inputs.robotTelemetry, sessionId)
+    const visualFrames = ((inputs.frames ?? []) as EnvironmentVisualFrame[]).map(projectEnvironmentVisualFrame)
     const recentConversation = conversation(inputs.conversationHistory)
     const activeDesires = projectDesireAwareness(inputs.activeDesires)
     const sourceFacts: RobotStatusSourceFacts = {
+      visualFrames,
       sourceUpdatedAt: {
         environment: body?.observationAt ?? '',
         telemetry: body?.telemetryAt ?? '',
@@ -253,7 +252,8 @@ export const robotStatusContextBuilderNode = defineNode({
       : null
     const context = {
       sourceFacts,
-      environmentEvidence: environmentEvidence(inputs.environmentSummary),
+      environmentEvidence: environmentEvidence(inputs.environmentSummary, sessionId),
+      plannerDecision: inputs.plannerDecision ?? null,
       recentConversation,
       previousStatus,
       evidenceRules: {
@@ -266,7 +266,9 @@ export const robotStatusContextBuilderNode = defineNode({
     return {
       messages: [
         { role: 'system', content: instruction },
-        { role: 'user', content: JSON.stringify(context) },
+        { role: 'user', content: inputs.images?.length
+          ? [{ type: 'text', text: JSON.stringify(context) }, ...inputs.images]
+          : JSON.stringify(context) },
       ],
       jsonSchema: ROBOT_STATUS_SEMANTIC_JSON_SCHEMA,
       sourceFacts,

@@ -29,7 +29,7 @@ const { runEventTrigger } = await import('./core.js')
 
 test('manual body event invocation uses the same typed routing and preserves complete observation', async () => {
   for (const [kind, graph] of [['tipped', 'fast-body-event'], ['rapid_movement', 'fast-body-event'],
-    ['servo_stall', 'fast-body-event'], ['wake', 'body-event-trigger']]) {
+    ['servo_stall', 'fast-body-event'], ['wake', 'robot-wake-up']]) {
     const observation = { ...source, state: { ...source.state, bodyEvent: { name: 'body_event',
       event_id: `manual-${kind}`, data: { kind, reason: 'fixture', measurements: { roll: 71.2, acceleration: [1, 2, 3] } } } } }
     await runEventTrigger('fixture', observation)

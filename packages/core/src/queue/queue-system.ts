@@ -7,11 +7,10 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { randomUUID } from 'node:crypto';
 import { EventEmitter } from 'node:events';
-import { UnifiedQueueManager, getQueueManager, isDesireAgentAdmission } from './unified-queue-manager.js';
+import { UnifiedQueueManager, getQueueManager } from './unified-queue-manager.js';
 import { ExecutionEngine } from './execution-engine.js';
 import { TriggerManager } from './trigger-manager.js';
 import { getTriggerConfigService, type TriggerConfigRead } from './trigger-config-service.js';
-import { RemoteDispatcher } from './remote-dispatcher.js';
 import type {
   AutonomyMode,
   PersistedQueueState,
@@ -34,12 +33,12 @@ import {
 } from './queue-persister.js';
 import { isWorkCoordinatorOwner } from './work-coordinator-ownership.js';
 import { recoverDurableExecutions } from '../durable-execution/recovery.js';
+import { reconcileEnvironmentDepthDemands } from '../environment-interface/store.js';
 import { relayExecutionOutbox } from '../durable-execution/coordinator-outbox.js';
 import { openExecutionStore } from '../durable-execution/storage.js';
 import { resolvePath } from '../storage-client.js';
 import { getAuthenticatedRuntimeId, getCurrentlyActiveUser } from '../sessions.js';
 import { agentHandlerId, agentTaskType } from './agent-work-catalog.js';
-import { SLEEP_WORKFLOW_HANDLERS } from './sleep-workflow.js';
 import {
   readSleepRuntimeState,
   reconcileSleepRuntime,
@@ -121,7 +120,6 @@ export class QueueSystem extends EventEmitter {
   private readonly executionEngine: ExecutionEngine;
   private readonly triggerManager: TriggerManager;
   private readonly triggerConfig = getTriggerConfigService();
-  private readonly remoteDispatcher: RemoteDispatcher;
   private lifecycle: QueueLifecycleState = 'stopped';
   private initialized = false;
   private proactiveScheduling = false;
@@ -146,7 +144,6 @@ export class QueueSystem extends EventEmitter {
         this.queueConfig?.execution?.terminalExecutionRetentionDays ?? 30, dispatchReady),
     }, this.queueManager);
     this.triggerManager = new TriggerManager(this.queueManager);
-    this.remoteDispatcher = new RemoteDispatcher(this.queueManager);
     this.triggerManager.setHandlerInspector(config => ({
       registered: this.executionEngine.hasHandler(config.handler),
       sourceResolvable: config.handler.startsWith('agent.')
@@ -166,29 +163,6 @@ export class QueueSystem extends EventEmitter {
       }
     }
     this.triggerManager.applyConfig(read);
-    this.cancelLegacySleepAdmissions();
-    this.cancelLegacyDesireAdmissions();
-  }
-
-  private cancelLegacySleepAdmissions(): void {
-    for (const task of this.queueManager.getAllTasks()) {
-      const admittedByAwakeAutonomy = task.source === 'timer' || task.source === 'autonomy';
-      if (
-        admittedByAwakeAutonomy
-        && SLEEP_WORKFLOW_HANDLERS.has(task.handler)
-        && !task.input?.sleepWorkflow
-      ) {
-        this.queueManager.cancel(task.id, 'Automatic ownership moved to Sleep Workflow');
-      }
-    }
-  }
-
-  private cancelLegacyDesireAdmissions(): void {
-    for (const task of this.queueManager.getAllTasks()) {
-      if (!isDesireAgentAdmission(task)) {
-        this.queueManager.cancel(task.id, 'Desire System admission moved to Desire Agent');
-      }
-    }
   }
 
   private get configPath(): string {
@@ -245,13 +219,10 @@ export class QueueSystem extends EventEmitter {
           this.queueManager.importState(state);
           auditRecovery(
             this.queueManager.getAllTasks().length,
-            state.inFlightRemote?.length || 0,
             state.items?.find(task => task.error?.code === 'restart_recovery')?.id,
           );
         }
       }
-      this.cancelLegacySleepAdmissions();
-      this.cancelLegacyDesireAdmissions();
       if (shouldRestoreState()) persistQueueState(this.queueManager.exportState());
       reconcileSleepRuntime(this.queueManager.getAllTasks());
 
@@ -472,7 +443,7 @@ export class QueueSystem extends EventEmitter {
   private taskExecutions(task: QueuedTask): string[] {
     return [...new Set([
       ...(task.graphExecutions ?? []), ...(task.durable ? [task.durable.executionId] : []),
-      ...(task.handler === 'graph.signal' || task.handler === 'graph.resume' ? [task.input.executionId] : []),
+      ...(task.handler === 'graph.resume' ? [task.input.executionId] : []),
     ].filter((id): id is string => typeof id === 'string' && Boolean(id)))];
   }
 
@@ -488,6 +459,7 @@ export class QueueSystem extends EventEmitter {
     for (const task of this.queueManager.getAllTasks()) {
       if (task.username === username && this.taskExecutions(task).includes(executionId)) this.queueManager.cancel(task.id, reason);
     }
+    reconcileEnvironmentDepthDemands(executionId);
     this.emit('queue', { type: 'execution_cancelled', timestamp: new Date().toISOString(), details: { executionId } } satisfies QueueEvent);
   }
 
@@ -501,7 +473,7 @@ export class QueueSystem extends EventEmitter {
   cancelPending(username: string, reason: string): number {
     const tasks = this.queueManager.getAllTasks();
     const running = new Set(tasks.filter(task => task.state === 'leased').flatMap(task => this.taskExecutions(task)));
-    const pending = tasks.filter(task => ['queued', 'waiting'].includes(task.state)
+    const pending = tasks.filter(task => task.username === username && ['queued', 'waiting'].includes(task.state)
       && !this.taskExecutions(task).some(id => running.has(id)));
     const executions = this.getExecutions(username).filter(execution => execution.status === 'waiting'
       && !execution.liveWriter && !running.has(execution.executionId));
@@ -542,7 +514,6 @@ export class QueueSystem extends EventEmitter {
         'vector-index': this.queueManager.getLaneStatus('vector-index'),
         'remote-llm': this.queueManager.getLaneStatus('remote-llm'),
       },
-      inFlightRemote: this.queueManager.getInFlightRemote(),
       nextTriggers: this.triggerManager.getNextTriggers(),
       lastActivity: this.triggerManager.getLastActivity(),
       triggerManager: this.triggerManager.getSnapshot(),
@@ -563,10 +534,6 @@ export class QueueSystem extends EventEmitter {
 
   get triggerConfiguration() {
     return this.triggerConfig;
-  }
-
-  get remote(): RemoteDispatcher {
-    return this.remoteDispatcher;
   }
 
   getLifecycleState(): QueueLifecycleState {

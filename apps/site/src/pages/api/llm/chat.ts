@@ -1,7 +1,7 @@
 /**
  * LLM Chat API - Proxy chat requests to local LLM backend
  *
- * POST /api/llm/chat - Proxy chat to local backend (Ollama or vLLM)
+ * POST /api/llm/chat - Proxy chat to local backend (Ollama or llama.cpp)
  * Used by remote clients (mobile/laptop) to use the server's LLM.
  *
  * ONE LINE - calls unified handler via astroHandler.

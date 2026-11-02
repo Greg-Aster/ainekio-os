@@ -84,11 +84,11 @@ Backend Settings to change assignments and load artifacts; do not hand-edit
 generated adapter state.
 
 Each training run has one target artifact: an Ollama-targeted run produces a
-merged GGUF-backed model, while vLLM LoRA preserves an adapter and full fine-tuning
-preserves native weights. All remain candidates until reviewed in Training History
+merged GGUF-backed model. Full fine-tuning also retains its native weights.
+All remain candidates until reviewed in Training History
 and assigned through Model Settings. See [AI Training](/user-guide#ai-training).
 
-Profile `voice.json` selects Kokoro, Piper, GPT-SoVITS, or RVC and stores
+Profile `voice.json` selects Kokoro, Piper, or RVC and stores
 profile-specific values. Machine ports, commands, and auto-start policy remain
 in root `etc/voice-servers.json`. See [Voice Features](/user-guide#voice-features).
 

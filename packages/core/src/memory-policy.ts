@@ -1,11 +1,8 @@
 /**
  * Memory Policy Module
  *
- * Centralized policy enforcement for memory capture, retrieval, and visibility
- * across different cognitive modes and user roles.
- *
- * This module provides the single source of truth for mode-aware memory behavior,
- * ensuring consistent policy application across all APIs and agents.
+ * Memory capture and tool-output visibility policy for cognitive modes and user roles.
+ * Graph context nodes own retrieval and context assembly.
  */
 
 import { getModeDefinition, type CognitiveModeId } from './cognitive-mode.js';
@@ -127,89 +124,6 @@ export function shouldCaptureTool(mode: CognitiveModeId, toolName: string): bool
 }
 
 // ============================================================================
-// Context Retrieval Depth
-// ============================================================================
-
-/**
- * Determines the maximum number of memory results to retrieve based on
- * cognitive mode and user role.
- *
- * Policy Rules:
- * - Guest users: Always shallow (2-3 results)
- * - Dual mode (owner): Deep (12 results)
- * - Agent mode (owner): Normal (6 results)
- * - Emulation mode (owner): Shallow (3 results)
- *
- * @param mode - Current cognitive mode
- * @param role - User role (owner, member, guest, anonymous)
- * @returns Maximum number of memory results to retrieve
- */
-export function contextDepth(mode: CognitiveModeId, role: UserRole = 'owner'): number {
-  // Guest/anonymous users: always shallow (security constraint)
-  if (role === 'guest' || role === 'anonymous') {
-    return 2;
-  }
-
-  // Owner/member depth varies by mode
-  switch (mode) {
-    case 'dual':
-      return 12; // Deep context for full intelligence
-    case 'agent':
-      return 6; // Balanced for quick actions
-    case 'emulation':
-      return 3; // Shallow for demo/frozen snapshot
-    default:
-      return 3; // Conservative default
-  }
-}
-
-/**
- * Get search depth setting for vector index queries.
- *
- * Maps context depth to search depth labels used by context-builder.
- *
- * @param mode - Current cognitive mode
- * @param role - User role
- * @returns Search depth: 'shallow' | 'normal' | 'deep'
- */
-export function getSearchDepth(
-  mode: CognitiveModeId,
-  role: UserRole = 'owner'
-): 'shallow' | 'normal' | 'deep' {
-  const depth = contextDepth(mode, role);
-
-  if (depth <= 4) return 'shallow';
-  if (depth <= 8) return 'normal';
-  return 'deep';
-}
-
-/**
- * Get maximum character limit for memory context in prompts.
- *
- * @param mode - Current cognitive mode
- * @param role - User role
- * @returns Maximum characters for memory context
- */
-export function getContextCharLimit(mode: CognitiveModeId, role: UserRole = 'owner'): number {
-  // Guest/anonymous: very limited
-  if (role === 'guest' || role === 'anonymous') {
-    return 600;
-  }
-
-  // Mode-specific limits
-  switch (mode) {
-    case 'dual':
-      return 1500; // Rich context for deep reasoning
-    case 'agent':
-      return 900; // Moderate context
-    case 'emulation':
-      return 600; // Minimal context
-    default:
-      return 600;
-  }
-}
-
-// ============================================================================
 // Conversation Visibility
 // ============================================================================
 
@@ -267,36 +181,6 @@ export function conversationVisibility(role: UserRole): string[] {
  */
 export function hasCapability(role: UserRole, capability: string): boolean {
   return conversationVisibility(role).includes(capability);
-}
-
-// ============================================================================
-// Tool History Limits
-// ============================================================================
-
-/**
- * Get maximum number of recent tool invocations to include in context.
- *
- * @param mode - Current cognitive mode
- * @param role - User role
- * @returns Maximum number of tool invocations
- */
-export function getToolHistoryLimit(mode: CognitiveModeId, role: UserRole = 'owner'): number {
-  // Guest/anonymous: no tool history
-  if (role === 'guest' || role === 'anonymous') {
-    return 0;
-  }
-
-  // Mode-specific limits
-  switch (mode) {
-    case 'dual':
-      return 10; // Full tool history
-    case 'agent':
-      return 5; // Recent actions only
-    case 'emulation':
-      return 0; // No tools in emulation
-    default:
-      return 0;
-  }
 }
 
 // ============================================================================
@@ -480,12 +364,8 @@ export function getMaxMemoriesForRole(role: UserRole): number {
 export const MemoryPolicy = {
   canWriteMemory,
   shouldCaptureTool,
-  contextDepth,
-  getSearchDepth,
-  getContextCharLimit,
   conversationVisibility,
   hasCapability,
-  getToolHistoryLimit,
   redactSensitiveData,
   filterToolOutputs,
   canViewMemoryType,

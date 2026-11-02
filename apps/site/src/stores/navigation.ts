@@ -5,8 +5,25 @@ import {
   isGraphEditorLocation,
 } from '../lib/client/flow-editor/graph-editor-location';
 
+export const navigationItems = [
+  { id: 'chat', label: 'Chat', icon: '💬', description: 'Conversation interface' },
+  { id: 'dashboard', label: 'Dashboard', icon: '📊', description: 'System overview' },
+  { id: 'projects', label: 'Projects', icon: '📁', description: 'Task graph & projects' },
+  { id: 'agency', label: 'Agency', icon: '🎯', description: 'Desires and Active Operator' },
+  { id: 'persona', label: 'Persona', icon: '👤', description: 'Identity & personality' },
+  { id: 'voice', label: 'Voice', icon: '🎤', description: 'Audio & training' },
+  { id: 'training', label: 'AI Training', icon: '🧠', description: 'LoRA adapters' },
+  { id: 'terminal', label: 'Terminal', icon: '⌨', description: 'Shells & provider sessions' },
+  { id: 'system', label: 'System', icon: '⚙️', description: 'Settings & tools' },
+];
+
 // Views that shouldn't be restored (trigger expensive operations on mount)
 const HEAVY_VIEWS = ['training'];
+
+function restoredView(value: string | null, defaultValue: string): string {
+  return value && navigationItems.some(item => item.id === value) && !HEAVY_VIEWS.includes(value)
+    ? value : defaultValue;
+}
 
 // URL hash-based navigation persistence - most reliable across dev server reloads
 function createNavigationStore(defaultValue: string) {
@@ -21,21 +38,11 @@ function createNavigationStore(defaultValue: string) {
   const getInitialValue = (): string => {
     if (typeof window === 'undefined') return defaultValue;
 
-    // Check URL hash first (e.g., #view=memory)
-    const hash = window.location.hash;
-    if (hash) {
-      const match = hash.match(/view=([^&]+)/);
-      if (match && match[1] && !HEAVY_VIEWS.includes(match[1])) {
-        return match[1];
-      }
-    }
+    const view = new URLSearchParams(window.location.hash.slice(1)).get('view');
+    if (view !== null) return restoredView(view, defaultValue);
 
-    // Fall back to localStorage
     try {
-      const saved = localStorage.getItem('mh_active_view');
-      if (saved && !HEAVY_VIEWS.includes(saved)) {
-        return saved;
-      }
+      return restoredView(localStorage.getItem('mh_active_view'), defaultValue);
     } catch {}
 
     return defaultValue;
@@ -59,11 +66,8 @@ function createNavigationStore(defaultValue: string) {
 
     // Listen for browser back/forward navigation
     window.addEventListener('hashchange', () => {
-      const hash = window.location.hash;
-      const match = hash.match(/view=([^&]+)/);
-      if (match && match[1] && !HEAVY_VIEWS.includes(match[1])) {
-        store.set(match[1]);
-      }
+      const view = new URLSearchParams(window.location.hash.slice(1)).get('view');
+      store.set(restoredView(view, defaultValue));
     });
 
     // Cache store for HMR
@@ -105,12 +109,8 @@ export function openAgentCatalogSettings(): void {
   activeView.set('system');
 }
 
-// Check for bootstrap data from index.astro inline script
-const bootstrapStatus = typeof window !== 'undefined'
-  ? (window as any).__MH_BOOTSTRAP_STATUS__ || null
-  : null;
-
-export const statusStore = writable(bootstrapStatus);
+// ChatLayout publishes status after AuthGate mounts the authenticated app.
+export const statusStore = writable<any>(null);
 export const statusRefreshTrigger = writable<number>(0); // Increment to trigger refresh
 
 // Derived persona name from status store (for chat cards)
@@ -119,8 +119,23 @@ export const personaNameStore = derived(
   ($status) => $status?.identity?.name || 'MetaHuman'
 );
 
-// User display name store (set by ChatLayout when user is loaded)
-export const userDisplayNameStore = writable<string>('You');
+// AuthGate publishes the verified session; mounted components consume it.
+export interface CurrentUser {
+  id: string;
+  username: string;
+  role: 'owner' | 'standard' | 'guest' | 'anonymous';
+  metadata?: {
+    displayName?: string;
+    sourceProfile?: string;
+    activeProfile?: string;
+  };
+}
+export const currentUserStore = writable<CurrentUser | null>(null);
+export const userDisplayNameStore = derived(currentUserStore, user =>
+  user?.role === 'anonymous' && user.metadata?.sourceProfile
+    ? `Guest: ${user.metadata.sourceProfile}`
+    : user?.metadata?.displayName || user?.username || 'Anonymous'
+);
 
 // YOLO mode store - shared between components
 export const yoloModeStore = writable<boolean>(false);

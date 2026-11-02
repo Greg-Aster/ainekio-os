@@ -9,9 +9,6 @@ import {
   isVoiceServiceDeviceEnvironmentControlled,
   updateVoiceServiceDevice,
 } from '../../voice-service-manager.js';
-import { startSovitsServer, stopSovitsServer } from '../../tts/server-manager.js';
-import { KITTEN_VOICES, validateKittenPreferences } from '../../tts/providers/kitten-service.js';
-import type { KittenConfig } from '../../tts/interface.js';
 import * as fs from 'node:fs';
 import * as path from 'node:path';
 
@@ -179,13 +176,6 @@ type VoiceConfig = {
       speakingRate: number;
       outputFormat: string;
     };
-    sovits?: {
-      serverUrl: string;
-      speakerId: string;
-      temperature: number;
-      speed: number;
-      autoFallbackToPiper: boolean;
-    };
     rvc?: {
       referenceAudioDir?: string;
       modelsDir?: string;
@@ -200,7 +190,6 @@ type VoiceConfig = {
       device?: 'cuda' | 'cpu';
       outputFormat?: string;
     };
-    kitten?: KittenConfig;
     kokoro?: {
       langCode: string;
       voice: string;
@@ -242,13 +231,6 @@ function buildDefaultVoiceConfig(
         speakingRate: 1.0,
         outputFormat: 'wav',
       },
-      sovits: {
-        serverUrl: 'http://127.0.0.1:9880',
-        speakerId: 'default',
-        temperature: 0.6,
-        speed: 1.0,
-        autoFallbackToPiper: true,
-      },
       rvc: {
         referenceAudioDir: defaultRvcSamplesDir,
         modelsDir: defaultRvcModelsDir,
@@ -263,7 +245,6 @@ function buildDefaultVoiceConfig(
         f0Method: 'rmvpe',
         device: 'cuda',
       },
-      kitten: { voice: 'Jasper', speed: 1, outputFormat: 'wav' },
       kokoro: {
         langCode: 'a',
         voice: 'af_heart',
@@ -379,17 +360,6 @@ function ensureVoiceConfig(
     needsWrite = true;
   }
 
-  if (!config.tts.sovits) {
-    config.tts.sovits = {
-      serverUrl: 'http://127.0.0.1:9880',
-      speakerId: 'default',
-      temperature: 0.6,
-      speed: 1.0,
-      autoFallbackToPiper: true,
-    };
-    needsWrite = true;
-  }
-
   if (!config.tts.rvc) {
     config.tts.rvc = {
       referenceAudioDir: path.join(profileRoot, 'out', 'voices', 'rvc-samples'),
@@ -451,12 +421,6 @@ function ensureVoiceConfig(
   } catch (error) {
     console.warn('[voice-settings] Unable to ensure RVC directories:', error);
   }
-
-  if (!config.tts.kitten) {
-    config.tts.kitten = { voice: 'Jasper', speed: 1, outputFormat: 'wav' };
-    needsWrite = true;
-  }
-  validateKittenPreferences(config.tts.kitten.voice, config.tts.kitten.speed);
 
   // Ensure Kokoro config exists
   if (!config.tts.kokoro) {
@@ -614,7 +578,7 @@ export async function handleGetVoiceSettings(req: UnifiedRequest): Promise<Unifi
     const currentModelPath = config.tts.piper.model;
     const currentVoiceFile = path.basename(currentModelPath, '.onnx');
 
-    const providerForUI = config.tts.provider === 'gpt-sovits' ? 'sovits' : config.tts.provider;
+    const providerForUI = config.tts.provider;
     const kokoroVoices = loadKokoroVoices(rootDir, profileRoot);
     const rvcSpeakers = loadRvcSpeakers(profileRoot);
 
@@ -629,16 +593,13 @@ export async function handleGetVoiceSettings(req: UnifiedRequest): Promise<Unifi
 
     const activeProvider = config.tts?.provider || 'piper';
     const kokoroStatus = await getVoiceServiceStatus('kokoro');
-    const kittenStatus = await getVoiceServiceStatus('kitten');
     const kokoroSystemConfig = getVoiceServiceConfig('kokoro');
     const whisperSystemConfig = getVoiceServiceConfig('whisper');
     const ttsServerStatus = activeProvider === 'piper'
       ? 'not_needed'
       : activeProvider === 'kokoro'
         ? kokoroStatus.readiness === 'ready' ? 'running' : kokoroStatus.readiness
-        : activeProvider === 'kitten'
-          ? kittenStatus.readiness === 'ready' ? 'running' : kittenStatus.readiness
-          : 'unknown';
+        : 'unknown';
 
     return successResponse({
         systemVoiceControl: {
@@ -656,13 +617,6 @@ export async function handleGetVoiceSettings(req: UnifiedRequest): Promise<Unifi
           currentVoice: currentVoiceFile,
           speakingRate: config.tts.piper.speakingRate || 1.0,
         },
-        sovits: {
-          serverUrl: config.tts.sovits?.serverUrl || 'http://127.0.0.1:9880',
-          speakerId: config.tts.sovits?.speakerId || 'default',
-          temperature: config.tts.sovits?.temperature || 0.6,
-          speed: config.tts.sovits?.speed || 1.0,
-          autoFallbackToPiper: config.tts.sovits?.autoFallbackToPiper ?? true,
-        },
         rvc: {
           speakerId: config.tts.rvc?.speakerId || 'default',
           pitchShift: config.tts.rvc?.pitchShift || 0,
@@ -675,7 +629,6 @@ export async function handleGetVoiceSettings(req: UnifiedRequest): Promise<Unifi
           device: config.tts.rvc?.device || 'cuda',
           speakers: rvcSpeakers,
         },
-        kitten: { ...config.tts.kitten, voices: [...KITTEN_VOICES] },
         kokoro: {
           langCode: config.tts.kokoro?.langCode || 'a',
           // If using custom voicepack, prepend 'custom_' to the voice ID for the dropdown
@@ -728,12 +681,7 @@ export async function handleSaveVoiceSettings(req: UnifiedRequest): Promise<Unif
   try {
 
     const body = (req.body ?? {}) as any;
-    const { provider, outputTarget, speechDisabled, piper, sovits, rvc, kokoro, kitten, stt } = body;
-
-    if (kitten) {
-      try { validateKittenPreferences(kitten.voice ?? 'Jasper', kitten.speed ?? 1); }
-      catch (error) { return errorResponse((error as Error).message, 400); }
-    }
+    const { provider, outputTarget, speechDisabled, piper, rvc, kokoro, stt } = body;
 
     const requestedKokoroDevice = kokoro?.device;
     const requestedWhisperDevice = stt?.device;
@@ -758,7 +706,7 @@ export async function handleSaveVoiceSettings(req: UnifiedRequest): Promise<Unif
       return errorResponse('Whisper device is controlled by MH_WHISPER_DEVICE and cannot be changed here', 409);
     }
 
-    console.log('[voice-settings POST] Received body:', { provider, hasPiper: !!piper, hasSovits: !!sovits, hasRvc: !!rvc, hasKokoro: !!kokoro, hasStt: !!stt });
+    console.log('[voice-settings POST] Received body:', { provider, hasPiper: !!piper, hasRvc: !!rvc, hasKokoro: !!kokoro, hasStt: !!stt });
 
     // Get profile paths via storage router (handles external storage)
     const storageResult = storageClient.getProfileRoot(user.username);
@@ -772,22 +720,11 @@ export async function handleSaveVoiceSettings(req: UnifiedRequest): Promise<Unif
     const config = ensureVoiceConfig(voiceConfigPath, voicesDir, rootDir, voices);
     const previousProvider = config.tts.provider;
 
-    if (kitten) {
-      const preferences = {
-        voice: kitten.voice ?? config.tts.kitten!.voice,
-        speed: kitten.speed ?? config.tts.kitten!.speed,
-        outputFormat: 'wav' as const,
-      };
-      try { validateKittenPreferences(preferences.voice, preferences.speed); }
-      catch (error) { return errorResponse((error as Error).message, 400); }
-      config.tts.kitten = preferences;
-    }
-
     console.log('[voice-settings POST] Previous provider:', previousProvider, '→ New provider:', provider);
 
-    // Update provider (normalize sovits → sovits for internal storage)
+    // Update the selected provider
     if (provider) {
-      config.tts.provider = provider === 'sovits' ? 'gpt-sovits' : provider;
+      config.tts.provider = provider;
     }
     if (outputTarget === 'local' || outputTarget === 'robot') {
       config.tts.outputTarget = outputTarget;
@@ -810,19 +747,6 @@ export async function handleSaveVoiceSettings(req: UnifiedRequest): Promise<Unif
 
       if (typeof piper.speakingRate === 'number') {
         config.tts.piper.speakingRate = Math.max(0.5, Math.min(2.0, piper.speakingRate));
-      }
-    }
-
-    // Update GPT-SoVITS settings
-    if (sovits) {
-      config.tts.sovits = config.tts.sovits || {} as any;
-      const sovitsConfig = config.tts.sovits!;
-      if (sovits.serverUrl) sovitsConfig.serverUrl = sovits.serverUrl;
-      if (sovits.speakerId) sovitsConfig.speakerId = sovits.speakerId;
-      if (typeof sovits.temperature === 'number') sovitsConfig.temperature = sovits.temperature;
-      if (typeof sovits.speed === 'number') sovitsConfig.speed = sovits.speed;
-      if (typeof sovits.autoFallbackToPiper === 'boolean') {
-        sovitsConfig.autoFallbackToPiper = sovits.autoFallbackToPiper;
       }
     }
 
@@ -959,9 +883,9 @@ export async function handleSaveVoiceSettings(req: UnifiedRequest): Promise<Unif
         whisperRestarted = update.restarted;
       }
 
-      await syncTTSBackends(previousProvider, config.tts.provider, config);
+      await syncTTSBackends(previousProvider, config.tts.provider);
 
-      const responseProvider = config.tts.provider === 'gpt-sovits' ? 'sovits' : config.tts.provider;
+      const responseProvider = config.tts.provider;
       const restartedServices = [
         kokoroRestarted ? 'Kokoro' : undefined,
         whisperRestarted ? 'Whisper' : undefined,
@@ -980,14 +904,12 @@ export async function handleSaveVoiceSettings(req: UnifiedRequest): Promise<Unif
           kokoroFallbackReason: appliedKokoroStatus.health?.fallback_reason ?? null,
           whisperDevice: appliedWhisperConfig.device,
           whisperComputeType: appliedWhisperConfig.computeType,
-          message: responseProvider === 'sovits'
-            ? `Voice settings saved. SoVITS server started successfully.${deviceMessage}`
-            : `Voice settings saved.${deviceMessage}`,
+          message: `Voice settings saved.${deviceMessage}`,
         });
     } catch (serviceError) {
       // Profile preferences were saved, but the requested system service change failed.
       console.error('[voice-settings] Service orchestration failed:', serviceError);
-      const responseProvider = config.tts.provider === 'gpt-sovits' ? 'sovits' : config.tts.provider;
+      const responseProvider = config.tts.provider;
       return {
         status: 500,
         data: {
@@ -1003,74 +925,12 @@ export async function handleSaveVoiceSettings(req: UnifiedRequest): Promise<Unif
   }
 }
 
-async function syncTTSBackends(
-  previousProvider: string,
-  nextProvider: string,
-  config: VoiceConfig
-): Promise<void> {
-  const normalize = (provider: string) => provider === 'sovits' || provider === 'gpt-sovits' ? 'gpt-sovits' : provider;
-  const prev = normalize(previousProvider);
-  const next = normalize(nextProvider);
-
+async function syncTTSBackends(previousProvider: string, nextProvider: string): Promise<void> {
   // Device changes are applied separately through updateVoiceServiceDevice.
-  if (prev === next) {
-    return;
-  }
-
-  if (prev !== next) {
-    console.log(`[voice-settings] Provider switch: ${previousProvider} → ${nextProvider}`);
-  }
-
-  // Stop previous provider's services (only if provider actually changed)
-  if (prev !== next) {
-    if (prev === 'gpt-sovits') {
-      try {
-        console.log('[voice-settings] Stopping SoVITS server...');
-        await stopSovitsServer();
-      } catch (error) {
-        console.error('[voice-settings] Failed to stop SoVITS server:', error);
-      }
-    }
-
-    // Start new provider's services
-    if (next === 'gpt-sovits') {
-      const port = extractSovitsPort(config);
-      try {
-        console.log(`[voice-settings] Starting SoVITS server on port ${port}...`);
-        const result = await startSovitsServer(port);
-        if (!result.success) {
-          console.error('[voice-settings] Failed to start SoVITS server:', result.error);
-          throw new Error(result.error || 'Failed to start SoVITS server');
-        }
-        console.log(`[voice-settings] SoVITS server started successfully`);
-      } catch (error) {
-        console.error('[voice-settings] Error starting SoVITS server:', error);
-        throw error; // Propagate error so user knows the server didn't start
-      }
-    } else if (next === 'rvc') {
-      console.log('[voice-settings] Switched to RVC (server will auto-start on next use)');
-    } else if (next === 'kitten') {
-      await ensureVoiceServiceRunning('kitten');
-    } else if (next === 'kokoro') {
-      await ensureVoiceServiceRunning('kokoro');
-      console.log('[voice-settings] Switched to Kokoro (shared system service is running)');
-    } else if (next === 'piper') {
-      console.log('[voice-settings] Switched to Piper (no background service needed)');
-    }
-  }
-}
-
-function extractSovitsPort(config: VoiceConfig): number {
-  const serverUrl = config.tts.sovits?.serverUrl;
-  if (!serverUrl) return 9880;
-
-  try {
-    const parsed = new URL(serverUrl);
-    if (parsed.port) {
-      return Number(parsed.port);
-    }
-    return parsed.protocol === 'https:' ? 443 : 80;
-  } catch {
-    return 9880;
+  if (previousProvider === nextProvider) return;
+  console.log(`[voice-settings] Provider switch: ${previousProvider} → ${nextProvider}`);
+  if (nextProvider === 'kokoro') {
+    await ensureVoiceServiceRunning('kokoro');
+    console.log('[voice-settings] Switched to Kokoro (shared system service is running)');
   }
 }

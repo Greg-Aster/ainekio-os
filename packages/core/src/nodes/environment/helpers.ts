@@ -1,6 +1,7 @@
+import { projectRobotStatusContext } from '../../robot-status.js'
 import { normalizeLocomotionGoal } from '../../environment-interface/active-task.js'
 import { normalizeEnvironmentTargetBox } from '../../environment-interface/visual-approach.js'
-import { recognitionImageAssociation } from '../../environment-interface/perception.js'
+import { recognitionImageAssociation, projectEnvironmentVisualFrame } from '../../environment-interface/perception.js'
 import { projectDesireAwareness } from '../../agency/lifecycle-policy.js'
 import type { EnvironmentTaskProgram, EnvironmentTaskStep } from '../../environment-interface/active-task.js'
 import {
@@ -15,7 +16,7 @@ import {
   type EnvironmentVisualFrame,
 } from '../../environment-interface/index.js';
 
-// robotMotionPlan is intentionally excluded. Only Movement Generator may create it.
+// Joint trajectories are owned by Body Control, not the task selector.
 const DIRECT_ACTION_TYPES = new Set<EnvironmentActionType>([
   'move',
   'look',
@@ -24,18 +25,12 @@ const DIRECT_ACTION_TYPES = new Set<EnvironmentActionType>([
   'stop',
   'captureImage',
   'robotCommand',
+  'requestMotion',
   'faceExpression',
   'inspect',
   'visualApproach',
   'sendText',
 ]);
-export interface EnvironmentMovementRequest {
-  description: string;
-  sessionId?: string;
-  /** Environment LLM-owned motion reference; never authored by the movement model. */
-  motionClass: Extract<EnvironmentMotionClass, 'body_local'>;
-}
-
 export const ENVIRONMENT_TASK_OUTCOMES = [
   'complete',
   'observe',
@@ -161,11 +156,18 @@ export function projectSelectorState(value: unknown): unknown {
   const robots = isRecord(gateway?.robots) ? gateway.robots : null;
   const selected = typeof body?.robotId === 'string' ? robots?.[body.robotId] : null;
   const robot = isRecord(selected) ? selected : null;
+  const measurement = isRecord(state.locomotionMeasurement) ? state.locomotionMeasurement : null;
+  const position = isRecord(measurement?.position) ? measurement.position : null;
+  // A dashboard preview is image content, not a textual position measurement.
+  // Project old stored observations as well without mutating their source evidence.
+  const { depthPreview: _depthPreview, ...positionEvidence } = position ?? {};
   return {
     ...state,
+    ...(measurement && position ? { locomotionMeasurement: { ...measurement, position: positionEvidence } } : {}),
     ...(gateway && robots ? {
       gateway: { selectedRobot: robot ? {
         robotId: body!.robotId,
+        ...(robot.epoch !== undefined ? { epoch: robot.epoch } : {}),
         model: robot.model,
         profile: robot.profile,
         mode: robot.mode,
@@ -173,9 +175,10 @@ export function projectSelectorState(value: unknown): unknown {
         activeWalk: robot.active_walk,
         posture: robot.posture ?? null,
         lastTerminal: robot.last_terminal,
+        ...(isRecord(robot.status) ? { status: robot.status } : {}),
         motorOutput: isRecord(robot.status) ? {
           output_ready: robot.status.output_ready ?? null,
-          output_armed: robot.status.output_armed ?? null,
+          servoPwmOutputEnabled: robot.status.output_armed ?? null,
           output_fault: robot.status.output_fault ?? null,
           timestamp: robot.status.status_received_at ?? null,
         } : null,
@@ -188,69 +191,6 @@ export function projectSelectorState(value: unknown): unknown {
   };
 }
 
-export function projectRobotStatusContext(value: unknown): unknown {
-  if (!isRecord(value)) return null;
-  const body = isRecord(value.body) ? value.body : null;
-  const lastAction = isRecord(value.lastAction) ? value.lastAction : null;
-  const situation = isRecord(value.situation) ? value.situation : null;
-  const agency = isRecord(value.agency) ? value.agency : null;
-  const task = isRecord(value.task) ? value.task : null;
-  return {
-    ...(value.live ? { live: value.live } : {}),
-    projection: value.projection,
-    updatedAt: value.updatedAt,
-    sourceUpdatedAt: value.sourceUpdatedAt,
-    history: value.history,
-    lastBodyAction: value.lastBodyAction ?? null,
-    ...(value.latestVisualObservation ? { latestVisualObservation: value.latestVisualObservation } : {}),
-    body: body
-      ? {
-          sessionId: body.sessionId,
-          environmentId: body.environmentId,
-          connectionStatus: body.connectionStatus,
-          observationAt: body.observationAt,
-          telemetryAt: body.telemetryAt,
-          battery: body.battery,
-          motion: body.motion,
-        }
-      : null,
-    lastAction: lastAction
-      ? lastAction
-      : null,
-    task: task
-      ? {
-          objectiveId: task.objectiveId,
-          executionId: task.executionId,
-          executionStatus: task.executionStatus,
-          completionCriteria: task.completionCriteria,
-          objective: task.objective,
-          instruction: task.instruction,
-          source: task.source,
-          decision: task.decision,
-          selectedAction: task.selectedAction,
-          actionId: task.actionId,
-          actionStatus: task.actionStatus,
-          feedback: task.feedback,
-          baselineFrame: task.baselineFrame,
-          updatedAt: task.updatedAt,
-        }
-      : null,
-    situation: situation
-      ? {
-          situationalSummary: situation.situationalSummary,
-          environmentDescription: situation.environmentDescription,
-          currentGoal: situation.currentGoal,
-          currentIntent: situation.currentIntent,
-          userContext: situation.userContext,
-          uncertainties: situation.uncertainties,
-        }
-      : null,
-    agency: agency
-      ? { purpose: 'Pending work for Desire Agent; never a body instruction or permission to act.',
-          activeDesires: projectDesireAwareness(agency.activeDesires) }
-      : null,
-  };
-}
 
 /**
  * Preserve only descriptions for currently executable exact command names. The
@@ -352,18 +292,14 @@ function selectorCapabilityRules(capabilities: EnvironmentCapabilities, state: u
       : '',
     actions.has('robotCommand')
       ? Object.keys(commandDescriptions).length > 0
-        ? actions.has('robotMotionPlan')
-          ? 'robotCommand: robotCommandCatalog maps command identifiers to descriptions of their effects. The command field of a robotCommand action contains the chosen catalog identifier. A chosen physical activity is represented by ordered program steps. Its local executor advances through action receipts and ongoing behaviors without a model call for each movement. For a directly specified movement, preserve every target or body part, motion, direction, and timing detail; use a generatedMotion step only when no description covers that current movement.'
-          : 'robotCommand: robotCommandCatalog maps command identifiers to descriptions of their effects. The command field of a robotCommand action contains the chosen catalog identifier. A chosen physical activity is represented by ordered program steps. Its local executor advances through action receipts and ongoing behaviors without a model call for each movement. For a directly specified movement, preserve every target or body part, motion, direction, and timing detail.'
-        : actions.has('robotMotionPlan')
-          ? 'robotCommand: command descriptions are unavailable, so do not infer opaque or punctuation-only command effects; use a generatedMotion step when a named effect cannot be identified confidently.'
-          : 'robotCommand: command descriptions are unavailable, so do not infer opaque or punctuation-only command effects.'
+        ? 'robotCommand: robotCommandCatalog maps command identifiers to descriptions of their effects. The command field of a robotCommand action contains the chosen catalog identifier. A chosen physical activity is represented by ordered program steps. Its local executor advances through action receipts and ongoing behaviors without a model call for each movement. For a directly specified movement, preserve every target or body part, motion, direction, and timing detail.'
+        : 'robotCommand: command descriptions are unavailable, so do not infer opaque or punctuation-only command effects.'
+      : '',
+    actions.has('requestMotion')
+      ? 'requestMotion sends a movement description to the selected robot’s configured Body Control motion system. description states the requested movement; Body Control returns execution results.'
       : '',
     actions.has('move')
       ? 'Locomotion is selected with a locomotionGoal and gait controls. Select a distance, relativeTurn, approach, follow, or visual goal with its endpoint or continuation condition. Speed is a gait percentage, not measured velocity. Distance and angle progress use recorded estimates in metres and degrees with their source and uncertainty. Image-relative proximity is not metric distance. Bare gait starts are not available. Command acceptance, elapsed time, and gait-cycle counts do not establish arrival. The returned result distinguishes goal evidence from gait termination.'
-      : '',
-    actions.has('robotMotionPlan')
-      ? 'robotMotionPlan: request off-script body_local motion through a generatedMotion step; never author a motion plan directly.'
       : '',
     actions.has('captureImage')
       ? 'captureImage: request one fresh frame when current visual evidence is absent.'
@@ -388,26 +324,12 @@ function selectorCapabilityRules(capabilities: EnvironmentCapabilities, state: u
 export function buildEnvironmentSelectorEnvelope(
   input: EnvironmentSelectorEnvelopeInput,
 ): string {
+  const now = new Date(input.currentTime ?? Date.now());
   const observation = input.observation;
   const robotCommandDescriptions = observation
     ? projectRobotCommandDescriptions(observation.capabilities)
     : {};
-  const frames = (input.visualFrames ?? [])
-    .map(frame => ({
-      id: frame.id,
-      timestamp: frame.timestamp,
-      source: frame.source,
-      cameraFrame: frame.metadata ? {
-        robotId: frame.metadata.robotId, gatewayInstance: frame.metadata.gatewayInstance,
-        epoch: frame.metadata.epoch, counter: frame.metadata.counter,
-      } : undefined,
-      correlationId: typeof frame.metadata?.correlationId === 'string'
-        ? frame.metadata.correlationId
-        : undefined,
-      actionId: typeof frame.metadata?.actionId === 'string'
-        ? frame.metadata.actionId
-        : undefined,
-    }));
+  const frames = (input.visualFrames ?? []).map(projectEnvironmentVisualFrame);
   const recognition = isRecord(input.recognition) ? input.recognition : null;
   const sourceFrame = isRecord(recognition?.sourceFrame) ? recognition.sourceFrame : null;
   const association = recognitionImageAssociation(sourceFrame, input.visualFrames ?? []);
@@ -423,7 +345,9 @@ export function buildEnvironmentSelectorEnvelope(
   const location = projectSelectorEvidence(observation?.location, { remaining: 6 });
   const map = projectSelectorEvidence(observation?.map, { remaining: 6 });
   return JSON.stringify({
-    currentTime: input.currentTime ?? new Date().toISOString(),
+    currentTime: input.currentTime ?? now.toISOString(),
+    localTime: now.toString(),
+    timeZone: Intl.DateTimeFormat().resolvedOptions().timeZone,
     currentInstruction: input.instruction,
     inputSource: input.inputSource ?? 'user',
     selectedRoutes: input.routing ?? {},
@@ -479,7 +403,7 @@ export function buildEnvironmentSelectorEnvelope(
       ...(message.timestamp !== undefined ? { timestamp: message.timestamp } : {}),
     })),
     innerDialogue: input.innerDialogue ?? [],
-    memories: (input.memories ?? []).slice(0, 3),
+    memories: input.memories ?? [],
   });
 }
 
@@ -513,6 +437,7 @@ function normalizeAction(value: unknown, sessionId?: string): Partial<Environmen
     return null;
   }
 
+  if (type === 'requestMotion' && (typeof record.description !== 'string' || !record.description.trim())) return null;
   if (type === 'sendText' && (typeof record.text !== 'string' || !record.text.trim())) {
     return null;
   }
@@ -555,6 +480,7 @@ function normalizeAction(value: unknown, sessionId?: string): Partial<Environmen
     ...(type === 'faceExpression' ? { expression: (record.expression as string).trim() } : {}),
     type: type as EnvironmentActionType,
     locomotionGoal,
+    ...(type === 'requestMotion' ? { description: (record.description as string).trim() } : {}),
     text: typeof record.text === 'string' ? record.text : undefined,
     direction: typeof record.direction === 'string' ? record.direction as EnvironmentAction['direction'] : undefined,
     command: typeof record.command === 'string' ? record.command : undefined,
@@ -772,7 +698,7 @@ function selectorActionItemSchema(
   robotCommands: string[],
   expressions: string[],
 ): Record<string, unknown> {
-  const nonCommandTypes = directActionTypes.filter(type => type !== 'robotCommand' && type !== 'faceExpression' && type !== 'move');
+  const nonCommandTypes = directActionTypes.filter(type => type !== 'robotCommand' && type !== 'faceExpression' && type !== 'requestMotion' && type !== 'move');
   const { command: _command, locomotionGoal: _goal, ...nonCommandProperties } = SELECTOR_SCHEMA_ACTION_PROPERTIES;
   const nonCommandSchema = {
     type: 'object',
@@ -819,6 +745,10 @@ function selectorActionItemSchema(
     });
   }
   if (directActionTypes.includes('robotCommand')) variants.push(robotCommandSchema);
+  if (directActionTypes.includes('requestMotion')) variants.push({
+    type: 'object', additionalProperties: false, required: ['type', 'description'],
+    properties: { type: { type: 'string', enum: ['requestMotion'] }, description: { type: 'string', minLength: 1 } },
+  });
   if (directActionTypes.includes('faceExpression')) variants.push({
     type: 'object', additionalProperties: false, required: ['type', 'expression'],
     properties: { type: { type: 'string', enum: ['faceExpression'] },
@@ -869,8 +799,6 @@ export function buildEnvironmentSelectorJsonSchema(
     && (type !== 'robotCommand' || !capabilityBound || robotCommands.length > 0)
     && (type !== 'faceExpression' || !capabilityBound || expressions.length > 0)
   ));
-  const movementSupported = actionRouteSelected
-    && (!capabilityBound || advertisedActions.has('robotMotionPlan'));
   const nonActionOutcomes = ENVIRONMENT_TASK_OUTCOMES.filter(outcome => outcome !== 'act');
   const taskDecisionObjectSchema = {
     type: 'object',
@@ -880,7 +808,7 @@ export function buildEnvironmentSelectorJsonSchema(
       ...SELECTOR_SCHEMA_DECISION_PROPERTIES,
       outcome: {
         type: 'string',
-        enum: actionRouteSelected || directActionTypes.length > 0 || movementSupported
+        enum: actionRouteSelected || directActionTypes.length > 0
           ? [...ENVIRONMENT_TASK_OUTCOMES]
           : nonActionOutcomes,
       },
@@ -909,15 +837,13 @@ export function buildEnvironmentSelectorJsonSchema(
     required: [...Object.keys(executionProperties), 'taskDecision', 'program', ...Object.keys(responseProperties)],
     properties: { ...executionProperties, taskDecision: decision, program, ...responseProperties } });
   const alternatives: Record<string, unknown>[] = [];
-  if (!input.requireAction || (!directActionTypes.length && !movementSupported)) {
+  if (!input.requireAction || (!directActionTypes.length)) {
     alternatives.push(branch({ type: 'null' }, taskSchema({ outcome: { type: 'string', enum: nonActionOutcomes } })));
   }
   const steps: Record<string, unknown>[] = [];
   const action = selectorActionItemSchema(directActionTypes, robotCommands, expressions);
   if (directActionTypes.length) steps.push({ type: 'object', additionalProperties: false,
     required: ['kind', 'action'], properties: { kind: { const: 'action' }, action } });
-  if (movementSupported) steps.push({ type: 'object', additionalProperties: false,
-    required: ['kind', 'description'], properties: { kind: { const: 'generatedMotion' }, description: { type: 'string', minLength: 1, maxLength: 500 } } });
   const cameraSupported = actionRouteSelected && (!capabilityBound || advertisedActions.has('captureImage'));
   const visionOperations = new Set(input.visionOperations ?? []);
 
@@ -1080,7 +1006,8 @@ export function validateEnvironmentSelectorOutput(
   }
   const action = (value: unknown): Partial<EnvironmentAction> | null => {
     if (!isRecord(value)) return null;
-    const fields = value.type === 'faceExpression' ? new Set(['type', 'expression']) : SELECTOR_ACTION_FIELDS;
+    const fields = value.type === 'requestMotion' ? new Set(['type', 'description'])
+      : value.type === 'faceExpression' ? new Set(['type', 'expression']) : SELECTOR_ACTION_FIELDS;
     if (Object.keys(value).some(key => !fields.has(key))) return null;
     return normalizeAction(value, sessionId);
   };
@@ -1096,9 +1023,6 @@ export function validateEnvironmentSelectorOutput(
           if (normalized?.locomotionGoal && ['visual', 'follow'].includes(normalized.locomotionGoal.kind)) { errors.push('Visual and follow locomotion require a behavior step'); continue; }
           if (normalized) steps.push({ kind: 'action', action: normalized });
           else errors.push('action step requires a typed semantic action');
-        } else if (step.kind === 'generatedMotion' && Object.keys(step).every(key => ['kind', 'description'].includes(key))
-          && typeof step.description === 'string' && step.description.trim() && step.description.length <= 500) {
-          steps.push({ kind: 'generatedMotion', description: step.description.trim() });
         } else if (step.kind === 'vision') {
           const fields: Record<string, string[]> = { acquire: ['target', 'referenceFrameId'], search: ['labels'], select: ['frameId', 'box', 'description'], release: [] };
           try {

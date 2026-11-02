@@ -54,7 +54,7 @@ test('unconfirmed remote cleanup survives restart, blocks admission and is expli
   assert.equal(listUnconfirmedTrainingCleanup().length, 1)
   assert.deepEqual(listUnconfirmedTrainingCleanup('another-owner'), [])
   await assert.rejects(recoverTrainingCleanup('another-owner', label), /No unconfirmed/)
-  const request = { method: 'local-lora' as const, trainingTarget: 'vllm' as const, trainingConfig: {
+  const request = { method: 'local-lora' as const, trainingTarget: 'ollama' as const, trainingConfig: {
     base_model: 'fixture/model', num_train_epochs: 1, max_samples: 20, lora_rank: 16, lora_alpha: 32,
     learning_rate: 0.0001, per_device_train_batch_size: 1, gradient_accumulation_steps: 4, max_seq_length: 2048, quantization: 'Q8_0',
   } }

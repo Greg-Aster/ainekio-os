@@ -6,6 +6,13 @@ traced on **2026-10-26**; this is not a claim that every checkout change is depl
 The [design core](ROBOT_BIBLE.md) owns product intent; [V2 specifications](../../../Ainekio/docs/v2-12servo/SPECIFICATIONS.md)
 own the physical assembly. Read this page before changing robot software.
 
+The [companion design guidelines](COMPANION_BEHAVIOR.md#companion-design-guidelines)
+define the relational qualities this architecture should support.
+[Everyday companion evaluation](QUALIFICATION.md#everyday-companion-evaluation)
+connects those qualities to observed interactions across repeated encounters.
+Trace improvements through the existing context, memory, decision, execution and
+delivery owners below; a successful handoff alone does not establish companionship.
+
 ## Processes and connections
 
 ```mermaid
@@ -225,14 +232,25 @@ motion execution; MetaHuman owns cognition and durable objectives. Model-backed
 behavior selection remains with the relevant models. Transport and UI layers
 report observations and outcomes rather than choosing replacement behavior.
 
-One Environment Bridge connects only to the explicitly selected Local, SSH, or
-Cloudflare Body Control endpoint and follows its selected robot. Saved endpoints
-do not start discovery or forwarding. Separate Local/Remote bridge agents are
-retired. Remote forwarding belongs to the selected connection lifecycle; switching
-to Local closes it. WireGuard is an independently managed operating-system network
-interface, not a service started by MetaHuman. Already admitted work
-keeps correlated receipts across reconnect; reconnect is not permission to repeat
-a physical action. New unsolicited input requires a connected recipient.
+One Environment Bridge owns the connection. With **Follow the same robot across
+saved hosts** enabled, it watches the configured local host and saved SSH or
+Cloudflare route concurrently, and keeps exactly one action stream for the
+selected physical robot. A healthy connection remains selected; when that body
+leaves its host, the same owner reconnects to the host now advertising that robot.
+Select the robot identity to retain that choice across process restarts. Without
+an explicit identity, automatic mode follows the first available body for that
+process lifetime. It does not switch to another robot when the selected body is
+unavailable. Manual mode connects only to the explicitly selected host; manual
+Local closes the remote forwarder. Separate Local/Remote bridge agents are retired.
+WireGuard remains an independently managed operating-system interface.
+
+Availability of a gateway and readiness of the Core observation/action stream
+are reported separately. The conversation view shows disconnected delivery,
+status-stream failures and transcription errors; Body Control reports its bridge
+transport and voice commands that could not be forwarded. A firmware listening
+indicator proves capture, not delivery. Already admitted work retains correlated
+receipts across reconnect; reconnect does not authorize repeating physical actions.
+New unsolicited input requires a connected recipient.
 
 Q6A and larger remote hosts may share the compute workload. General migration of
 an active goal between MetaHuman installations, replicated durable state and

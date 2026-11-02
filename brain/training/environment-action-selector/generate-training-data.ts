@@ -1,7 +1,7 @@
 import { mkdir, readFile, writeFile } from 'node:fs/promises'
 import { resolve } from 'node:path'
 import { validateEnvironmentSelectorOutput } from '@metahuman/core'
-import { getNode, parseEnvironmentIntentRouting, isPlanningDelegation, ENVIRONMENT_REQUEST_INTENT_JSON_SCHEMA } from '@metahuman/core/nodes'
+import { getNode, parseEnvironmentIntentRouting, isPlanningDelegation, ENVIRONMENT_REQUEST_INTENT_JSON_SCHEMA, parseAutonomyContext, AUTONOMY_CONTEXT_JSON_SCHEMA } from '@metahuman/core/nodes'
 import { ACTION_SELECTOR_DIRECTORY, REPOSITORY_ROOT, loadPriorEvaluationEvidence, sha256 } from './corpus.js'
 import { cases, observation, COMMAND_DESCRIPTIONS, TIME, type IntentRequirements, type CaseSplit, type SpecialistCase } from './development-cases.js'
 import './intent-cases.js'
@@ -22,6 +22,7 @@ import './speech-action-boundary-cases.js'
 import './quoted-imperative-cases.js'
 import './locomotion-cases.js'
 import './intent-memory-cases.js'
+import './intent-autonomy-context-cases.js'
 import { migrateLocomotionReference, refreshLocomotionFixture } from './locomotion-contract.js'
 
 export const DEVELOPMENT_CASES = cases.filter(item => item.split === 'development')
@@ -44,6 +45,7 @@ export interface ActionSelectorTrainingRecord {
     developmentFold: number; suite: string; risk: string; instructionIndex: number
     contextVariation: string; systemOwned: true; contextRequirements?: IntentRequirements; responseOptional?: true
     inputSource?: 'user' | 'autonomy'
+    outputContract?: 'autonomy-context'
   }
 }
 // Equivalent catalog wording is data augmentation, not an instruction change.
@@ -88,6 +90,8 @@ function visualTaskReference(source: SpecialistCase, expected: Record<string, an
 export async function buildDevelopmentRecords(selected: SpecialistCase[] = DEVELOPMENT_CASES): Promise<ActionSelectorTrainingRecord[]> {
   const properties = await loadGraphProperties()
   const autonomyProperties = await loadGraphProperties('autonomy')
+  const autonomyGraph = JSON.parse(await readFile(resolve(REPOSITORY_ROOT, 'etc/cognitive-graphs/robot-autonomy-controller-mode.json'), 'utf8'))
+  const contextSelector = autonomyGraph.nodes.find((node: any) => node.id === 'intent-orchestrator').data.properties
   const records: ActionSelectorTrainingRecord[] = []
   const builder = getNode('environment_context_builder')!
   for (const source of selected) {
@@ -132,9 +136,10 @@ export async function buildDevelopmentRecords(selected: SpecialistCase[] = DEVEL
       }
       let system: string, user: string, jsonSchema: Record<string, unknown>
       if (source.specialist === 'intent') {
-        system = graphProperties['intent-orchestrator'].systemPrompt
-        user = graphProperties['intent-orchestrator'].userPromptTemplate.replace('{{userMessage}}', instruction)
-        jsonSchema = ENVIRONMENT_REQUEST_INTENT_JSON_SCHEMA
+        const selector = source.outputContract === 'autonomy-context' ? contextSelector : graphProperties['intent-orchestrator']
+        system = selector.systemPrompt
+        user = selector.userPromptTemplate.replace('{{userMessage}}', instruction).replace('{{suppliedContext}}', '{}')
+        jsonSchema = source.outputContract === 'autonomy-context' ? AUTONOMY_CONTEXT_JSON_SCHEMA : ENVIRONMENT_REQUEST_INTENT_JSON_SCHEMA
       } else {
         const instructionInput = source.inputSource === 'autonomy'
           ? { plannerDecision: { ...inputs.plannerDecision, instruction, decidedAt: TIME } }
@@ -156,6 +161,7 @@ export async function buildDevelopmentRecords(selected: SpecialistCase[] = DEVEL
         ...(source.contextRequirements ? { contextRequirements: structuredClone(source.contextRequirements) } : {}),
         ...(source.responseOptional ? { responseOptional: true } : {}),
         ...(source.inputSource ? { inputSource: source.inputSource } : {}),
+        ...(source.outputContract ? { outputContract: source.outputContract } : {}),
       } })
     }
   }
@@ -163,7 +169,7 @@ export async function buildDevelopmentRecords(selected: SpecialistCase[] = DEVEL
 }
 export function validateRecordOutput(record: ActionSelectorTrainingRecord): string[] {
   if (record.metadata.specialist === 'intent') {
-    try { parseEnvironmentIntentRouting(record.output); return [] } catch (error) { return [String(error)] }
+    try { (record.metadata.outputContract === 'autonomy-context' ? parseAutonomyContext : parseEnvironmentIntentRouting)(record.output); return [] } catch (error) { return [String(error)] }
   }
   if (isPlanningDelegation(JSON.parse(record.output))) return []
   const envelope = JSON.parse(record.user)
@@ -182,7 +188,7 @@ export function validateDevelopmentRecords(records: ActionSelectorTrainingRecord
     if (!source || forbiddenCaseIds.includes(record.metadata.sourceCaseId)) { errors.push(`${id}: unknown or retired source`); continue }
     if (record.metadata.sourceSplit !== source.split || record.metadata.specialist !== source.specialist
       || record.metadata.systemOwned !== true || record.metadata.responseOptional !== source.responseOptional
-      || record.metadata.inputSource !== source.inputSource) errors.push(`${id}: provenance mismatch`)
+      || record.metadata.inputSource !== source.inputSource || record.metadata.outputContract !== source.outputContract) errors.push(`${id}: provenance mismatch`)
     if (record.metadata.developmentFold !== source.fold) errors.push(`${id}: fold mismatch`)
     errors.push(...validateRecordOutput(record).map(error => `${id}: ${error}`))
     counts.set(source.id, (counts.get(source.id) ?? 0) + 1)
@@ -199,7 +205,7 @@ export async function buildDevelopmentManifest(records: ActionSelectorTrainingRe
   const evaluation = await buildDevelopmentRecords(EVALUATION_CASES)
   const regression = await buildDevelopmentRecords(REGRESSION_CASES)
   return {
-    version: 20, owner: 'environment-action-selector', sourceCaseCount: DEVELOPMENT_CASES.length,
+    version: 23, owner: 'environment-action-selector', sourceCaseCount: DEVELOPMENT_CASES.length,
     recordCount: records.length, foldCount: DEVELOPMENT_FOLD_COUNT,
     specialists: Object.fromEntries(['intent', 'task'].map(specialist => [specialist, {
       records: records.filter(item => item.metadata.specialist === specialist).length,

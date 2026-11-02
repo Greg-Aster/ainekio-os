@@ -2,14 +2,13 @@
   import { onMount, createEventDispatcher } from 'svelte';
   const dispatch = createEventDispatcher<{ history: void }>();
   import { apiFetch } from '../lib/client/api-config';
-  import { DEFAULT_TRAINING_MODEL, DEFAULT_VLLM_TRAINING_MODEL } from '../lib/client/model-defaults';
+  import { DEFAULT_TRAINING_MODEL, DEFAULT_FULL_TRAINING_MODEL } from '../lib/client/model-defaults';
   import TrainingDataControls from './TrainingDataControls.svelte';
-  import { parseTrainingDataSettings, type TrainingDataSettings } from '@metahuman/core/training-schema';
+  import { parseTrainingDataSettings, type TrainingDataSettings, type TrainingTarget } from '@metahuman/core/training-schema';
 
   // Wizard state machine
   type WizardStep = 1 | 2 | 3 | 4 | 5;
   type TrainingMethod = 'local-lora' | 'remote-lora' | 'fine-tune' | null;
-  type TrainingTarget = 'ollama' | 'vllm';
 
   interface SystemCapabilities {
     hasLocalGPU: boolean;
@@ -85,7 +84,7 @@
 
   let baseModelOptions: BaseModelOption[] = [];
 
-  const loraConfigPresetOllama: TrainingConfig = {
+  const loraConfigPreset: TrainingConfig = {
     base_model: DEFAULT_TRAINING_MODEL,
     num_train_epochs: 1,
     max_samples: 3000,
@@ -102,27 +101,10 @@
     skipGguf: false
   };
 
-  const loraConfigPresetVllm: TrainingConfig = {
-    base_model: DEFAULT_VLLM_TRAINING_MODEL,
-    num_train_epochs: 1,
-    max_samples: 3000,
-    monthly_training: true,
-    days_recent: 30,
-    old_samples: 3000,
-    lora_rank: 16,
-    lora_alpha: 32,
-    learning_rate: 0.0001,
-    per_device_train_batch_size: 1,
-    gradient_accumulation_steps: 16,
-    max_seq_length: 2048,
-    quantization: 'Q4_K_M',
-    skipGguf: true
-  };
 
-  const loraConfigPreset = loraConfigPresetOllama;
 
   const fineTuneConfigPreset: TrainingConfig = {
-    base_model: DEFAULT_VLLM_TRAINING_MODEL,
+    base_model: DEFAULT_FULL_TRAINING_MODEL,
     num_train_epochs: 2,
     max_samples: 5000,
     monthly_training: true,
@@ -141,7 +123,7 @@
   // State
   let currentStep: WizardStep = 1;
   let selectedMethod: TrainingMethod = null;
-  let trainingTarget: TrainingTarget = 'ollama';
+  let trainingTarget: TrainingTarget = 'llama-cpp';
   let systemCapabilities: SystemCapabilities = {
     hasLocalGPU: false,
     gpuModel: null,
@@ -233,7 +215,7 @@
   })();
 
   function applyPreset() {
-    trainingConfig = { ...(selectedMethod === 'fine-tune' ? fineTuneConfigPreset : trainingTarget === 'vllm' ? loraConfigPresetVllm : loraConfigPresetOllama) };
+    trainingConfig = { ...(selectedMethod === 'fine-tune' ? fineTuneConfigPreset : loraConfigPreset) };
     settingsMessage = 'Preset applied. Save these settings to use them from the CLI.';
   }
 
@@ -245,12 +227,12 @@
       const catalog = await apiFetch('/api/training-models');
       const models = await catalog.json();
       if (!catalog.ok || !models.success) throw new Error(models.error || 'Could not load training base models');
-      baseModelOptions = models.models.map((model: any) => ({ value: model.id, label: model.name, description: model.description, targets: ['ollama', 'vllm'] }));
+      baseModelOptions = models.models.map((model: any) => ({ value: model.id, label: model.name, description: model.description, targets: ['llama-cpp', 'ollama'] }));
       for (const key of Object.keys(trainingConfig)) {
         if (saved[key] !== undefined) (trainingConfig as any)[key] = saved[key];
       }
       trainingConfig = { ...trainingConfig };
-      trainingTarget = saved.trainingTarget === 'vllm' ? 'vllm' : 'ollama';
+      trainingTarget = saved.trainingTarget || 'llama-cpp';
       preferencesLoaded = true;
     } catch (err) { error = (err as Error).message; }
   }
@@ -595,7 +577,7 @@
         trainingTarget: trainingTarget,
         trainingConfig: {
           ...trainingConfig,
-          skipGguf: trainingTarget === 'vllm'
+          skipGguf: false
         },
         advancedSettings: {
           enableS3Upload: enableS3Upload && hasS3Configured,
@@ -734,6 +716,16 @@
           <div class="flex justify-center gap-4 flex-wrap">
             <button
               class="flex items-center gap-3 px-6 py-4 rounded-xl border-2 cursor-pointer transition-all min-w-[160px]
+                {trainingTarget === 'llama-cpp' ? 'border-emerald-600 bg-emerald-600/10' : 'border-gray-700 bg-gray-900 hover:border-emerald-600'}"
+              on:click={() => trainingTarget = 'llama-cpp'}
+            >
+              <div>
+                <h5 class="m-0 text-base text-white">llama.cpp</h5>
+                <span class="text-xs text-gray-500">LoRA adapter GGUF • Full model GGUF</span>
+              </div>
+            </button>
+            <button
+              class="flex items-center gap-3 px-6 py-4 rounded-xl border-2 cursor-pointer transition-all min-w-[160px]
                 {trainingTarget === 'ollama' ? 'border-emerald-600 bg-emerald-600/10' : 'border-gray-700 bg-gray-900 hover:border-emerald-600'}"
               on:click={() => trainingTarget = 'ollama'}
             >
@@ -744,26 +736,11 @@
               </div>
             </button>
 
-            <button
-              class="flex items-center gap-3 px-6 py-4 rounded-xl border-2 cursor-pointer transition-all min-w-[160px]
-                {trainingTarget === 'vllm' ? 'border-emerald-600 bg-emerald-600/10' : 'border-gray-700 bg-gray-900 hover:border-emerald-600'}"
-              on:click={() => trainingTarget = 'vllm'}
-            >
-              <div class="text-2xl">⚡</div>
-              <div>
-                <h5 class="m-0 text-base text-white">vLLM</h5>
-                <span class="text-xs text-gray-500">Safetensors format • High throughput</span>
-              </div>
-            </button>
+
 
           </div>
 
-          {#if trainingTarget === 'vllm'}
-            <div class="flex items-start gap-3 mt-6 p-4 bg-blue-500/10 border border-blue-500/30 rounded-lg text-sm text-gray-400">
-              <span class="shrink-0">ℹ️</span>
-              <span>vLLM training produces safetensors adapters from the maintained Qwen 3.5 base.</span>
-            </div>
-          {/if}
+
         </div>
 
         <!-- Training Method Selection -->
@@ -1149,13 +1126,7 @@
             <label class="form-label mt-3" for="customTrainingModel">Model identifier or local model directory</label>
             <input id="customTrainingModel" class="input-field" bind:value={trainingConfig.base_model} />
             <small class="block mt-2 text-sm text-gray-500">
-              {#if trainingTarget === 'vllm'}
-                Safetensors output. Serving must support this base model and adapter configuration.
-              {:else if trainingTarget === 'ollama'}
-                Models that convert to GGUF format for Ollama
-              {:else}
-                Models that work with both Ollama and vLLM
-              {/if}
+              Native training weights for llama.cpp or Ollama GGUF export
             </small>
           </div>
 
@@ -1220,9 +1191,9 @@
                 <small class="block mt-2 text-sm text-gray-500">Longer context = more VRAM required</small>
               </div>
 
-              {#if trainingTarget !== 'vllm'}
+
                 <div class="form-group">
-                  <label class="form-label" for="quantization">GGUF Quantization</label>
+                  <label class="form-label" for="quantization">{trainingTarget === 'llama-cpp' && selectedMethod !== 'fine-tune' ? 'Full-model quantization (adapter exports use F16)' : 'GGUF Quantization'}</label>
                   <select id="quantization" class="select-field w-full" bind:value={trainingConfig.quantization}>
                     {#if !['Q4_K_M', 'Q5_K_M', 'Q6_K', 'Q8_0'].includes(trainingConfig.quantization)}
                       <option value={trainingConfig.quantization}>{trainingConfig.quantization} (saved setting)</option>
@@ -1234,16 +1205,7 @@
                   </select>
                   <small class="block mt-2 text-sm text-gray-500">This controls the exported serving model. Training uses unquantized weights by default.</small>
                 </div>
-              {:else}
-                <div class="form-group">
-                  <div class="form-label">Output Format</div>
-                  <div class="flex items-center gap-3 p-3 bg-emerald-600/10 border border-emerald-600/30 rounded-lg text-emerald-500 font-medium">
-                    <span class="text-xl">⚡</span>
-                    <span>vLLM target: Safetensors format (no GGUF conversion)</span>
-                  </div>
-                  <small class="block mt-2 text-sm text-gray-500">LoRA adapters will be saved in safetensors format for direct use with vLLM</small>
-                </div>
-              {/if}
+
 
               <!-- Pipeline Settings -->
               <div class="col-span-2 border-t border-gray-700 pt-4 mt-4 flex flex-col gap-4">
@@ -1319,8 +1281,7 @@
                 <span class="font-semibold text-gray-100">Target:</span>
                 <span class="text-gray-400">
                   {#if trainingTarget === 'ollama'}🦙 Ollama (GGUF)
-                  {:else if trainingTarget === 'vllm'}⚡ vLLM (Safetensors)
-                  {:else}🔄 Both (GGUF + Safetensors)
+                  {:else}llama.cpp (GGUF)
                   {/if}
                 </span>
               </div>

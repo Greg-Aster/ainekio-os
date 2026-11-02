@@ -73,6 +73,11 @@ async function executeRobotStatusGraph(
         mode: 'system',
         dialogueType: 'system',
         environment: 'server',
+        robotOperatorContext: {
+          ...task.input.robotOperatorContext,
+          sessionId: requestedSessionId(task),
+          plannerDecision: task.input.plannerDecision,
+        },
         abortSignal: signal,
       },
     }),
@@ -209,7 +214,7 @@ export async function executeRobotAutonomyTriggerWork(
   if (
     agentId === 'boredom-movement'
     && (
-      !session.latestObservation.capabilities.actions.includes('robotMotionPlan')
+      !session.latestObservation.capabilities.actions.includes('requestMotion')
       && (
         !session.latestObservation.capabilities.actions.includes('robotCommand')
         || !session.latestObservation.capabilities.robotCommands?.length

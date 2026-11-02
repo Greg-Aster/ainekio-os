@@ -33,6 +33,7 @@ export interface SleepWorkflowMarker {
 export const SLEEP_WORKFLOW_STAGES: readonly SleepWorkflowStage[] = [
   { id: 'organize-memory', displayName: 'Organize memories', type: 'memory_curate', handler: 'agent.organizer', agentId: 'organizer', args: ['--limit=20'], maxAttempts: 2 },
   { id: 'curate-memory', displayName: 'Curate training memories', type: 'training_curate', handler: 'agent.curator', agentId: 'curator', maxAttempts: 2 },
+  { id: 'curate-environment-decisions', displayName: 'Propose Environment decision reviews', type: 'training_curate', handler: 'agent.environment-training-curator', agentId: 'environment-training-curator', maxAttempts: 2 },
   { id: 'train-personalization', displayName: 'Train a personalization candidate', type: 'generic', resource: 'local-llm', handler: 'training.personalization', maxAttempts: 1 },
   { id: 'run-desire-agent', displayName: 'Run Desire Agent', type: 'desire_generate', handler: 'agent.desire-generator', agentId: 'desire-agent', maxAttempts: 2 },
   { id: 'dream', displayName: 'Dream from memories', type: 'dream', handler: 'agent.dreamer', agentId: 'dreamer', maxAttempts: 2 },
@@ -40,7 +41,6 @@ export const SLEEP_WORKFLOW_STAGES: readonly SleepWorkflowStage[] = [
   { id: 'rebuild-index', displayName: 'Refresh memory index', type: 'index_build', handler: 'vector.index-build', maxAttempts: 2 },
 ]
 
-export const SLEEP_WORKFLOW_HANDLERS = new Set(SLEEP_WORKFLOW_STAGES.map(stage => stage.handler))
 
 function markerFor(task: QueuedTask): SleepWorkflowMarker | null {
   const value = task.input?.sleepWorkflow
@@ -99,6 +99,7 @@ function catalogStageEnabled(): SleepStageEnabled {
   const psychoanalyzer = agents.psychoanalyzer
   if (!psychoanalyzer) throw new Error('Sleep Workflow Psychoanalyzer stage has no Agent Catalog entry')
   return stage => {
+    if (stage.agentId === 'environment-training-curator') return agents[stage.agentId].enabled
     if (stage.agentId !== 'psychoanalyzer') return true
     return psychoanalyzer.enabled
   }

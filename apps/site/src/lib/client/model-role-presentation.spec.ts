@@ -1,7 +1,62 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
 import { MODEL_ROLES, MODEL_ROLE_OPTIONS } from '@metahuman/core/model-roles';
-import { buildModelRoleSections, type WorkflowModelSummary } from './model-role-presentation.js';
+import { buildModelRoleSections, buildBaseModelChoices, modelChoiceForAssignment, adapterChoiceForAssignment, type ModelInventoryEntry, type WorkflowModelSummary } from './model-role-presentation.js';
+
+const base: ModelInventoryEntry = { id: 'base', aliases: ['default.persona'], provider: 'llama-cpp',
+  model: 'qwen-small', adapters: [], options: { endpoint: 'http://localhost:8081', contextWindow: 8192, lora: [] } };
+const intent: ModelInventoryEntry = { ...base, id: 'intent', aliases: ['old-intent'],
+  baseModel: 'training/Qwen-small', adapters: ['/intent.gguf'],
+  options: { ...base.options, lora: [{ path: '/intent.gguf', scale: 1 }] } };
+const task: ModelInventoryEntry = { ...intent, id: 'task', aliases: [], adapters: ['/task.gguf'],
+  options: { ...base.options, lora: [{ path: '/task.gguf', scale: 1 }] } };
+
+test('base selection contains one model while each adapter retains its exact assignment', () => {
+  const choices = buildBaseModelChoices([intent, task, base, { ...base, id: 'base-alias' }]);
+  assert.equal(choices.length, 1);
+  assert.equal(choices[0].base.id, 'base');
+  assert.equal(choices[0].label, 'Qwen-small');
+  assert.deepEqual(choices[0].adapters.map(model => model.id), ['intent', 'task']);
+  assert.equal(modelChoiceForAssignment(choices, 'old-intent'), choices[0]);
+  assert.equal(adapterChoiceForAssignment(choices[0], 'old-intent')?.id, 'intent');
+  assert.equal(adapterChoiceForAssignment(choices[0], 'task')?.id, 'task');
+  assert.equal(adapterChoiceForAssignment(choices[0], 'default.persona'), undefined);
+});
+
+test('turning off an adapter-only deployment prepares a plain base without training metadata', () => {
+  const snapshot = JSON.stringify(intent);
+  const [choice] = buildBaseModelChoices([intent, task]);
+  assert.equal(choice.registeredBase, false);
+  assert.equal(choice.base.id, 'llama-cpp.qwen-small');
+  assert.equal(choice.base.model, intent.model);
+  assert.equal(choice.base.options?.endpoint, intent.options?.endpoint);
+  assert.equal(choice.base.options?.contextWindow, intent.options?.contextWindow);
+  assert.deepEqual(choice.base.adapters, []);
+  assert.deepEqual(choice.base.options?.lora, []);
+  assert.equal(choice.base.metadata, undefined);
+  assert.equal(JSON.stringify(intent), snapshot);
+});
+
+test('distinct providers and endpoints remain distinct model deployments', () => {
+  const choices = buildBaseModelChoices([base, intent,
+    { ...base, id: 'other-server', options: { ...base.options, endpoint: 'http://localhost:8082' } },
+    { ...base, id: 'ollama-model', provider: 'ollama', options: {} }]);
+  assert.equal(choices.length, 3);
+  assert.deepEqual(choices.map(choice => choice.adapters.length), [1, 0, 0]);
+});
+
+test('duplicate adapter aliases display once without losing the currently assigned alias', () => {
+  const [choice] = buildBaseModelChoices([base, intent, { ...intent, id: 'intent-copy', aliases: ['old-copy'] }]);
+  assert.equal(choice.adapters.length, 1);
+  assert.equal(adapterChoiceForAssignment(choice, 'old-copy')?.id, 'intent');
+});
+
+test('the canonical base entry supplies options instead of an older role-specific alias', () => {
+  const canonical = { ...base, id: 'llama-cpp.qwen-small', options: { ...base.options, contextWindow: 262144 } };
+  const [choice] = buildBaseModelChoices([base, canonical, intent]);
+  assert.equal(choice.base.id, canonical.id);
+  assert.equal(choice.base.options?.contextWindow, 262144);
+});
 
 const workflows: WorkflowModelSummary[] = [
   { key: 'environment', name: 'Environment Mode', models: [

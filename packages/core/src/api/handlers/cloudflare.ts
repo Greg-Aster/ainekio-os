@@ -12,7 +12,7 @@ import { successResponse } from '../types.js';
 let tunnelFunctions: {
   getTunnelStatus?: () => any;
   startTunnel?: () => boolean;
-  stopTunnel?: () => boolean;
+  stopTunnel?: () => Promise<boolean>;
   isCloudflaredInstalled?: () => boolean;
   saveCloudflareConfig?: (config: { enabled: boolean; autoStart: boolean }) => void;
   syncTunnelExposure?: (enabled: boolean) => any;
@@ -96,7 +96,7 @@ export async function handleCloudflareStop(req: UnifiedRequest): Promise<Unified
       return { status: 501, error: 'Cloudflare tunnel module not available' };
     }
 
-    const success = tunnelFunctions.stopTunnel();
+    const success = await tunnelFunctions.stopTunnel();
 
     if (success) {
       return successResponse({ success: true, message: 'Tunnel stopped successfully' });

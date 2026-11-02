@@ -1,11 +1,11 @@
 <script lang="ts">
+  import type { EditorNode as Node } from '../../lib/client/flow-editor/template-converter';
   import { onMount, onDestroy } from 'svelte';
   import {
     SvelteFlow,
     Controls,
     Background,
     MiniMap,
-    type Node,
     type Edge,
     type Connection,
     type NodeTypes,
@@ -274,15 +274,12 @@
     }
   }
 
-  /**
-   * Handle new connections
-   */
-  function handleConnect(connection: Connection) {
-    if (!connection.source || !connection.target) return;
-    if (connectionProblem(nodes, edges, connection)) return;
+  // XYFlow owns edge insertion. Decorate and capture undo before it mutates
+  // bound state; the completion callback publishes the resulting graph.
+  function handleBeforeConnect(connection: Connection): Edge | false {
+    if (connectionProblem(nodes, edges, connection)) return false;
     recordHistory('connect');
-
-    const newEdge: Edge = decorateEdge({
+    return decorateEdge({
       id: `e-${connection.source}-${connection.sourceHandle}-${connection.target}-${connection.targetHandle}`,
       source: connection.source,
       target: connection.target,
@@ -290,37 +287,6 @@
       targetHandle: connection.targetHandle || undefined,
       data: { kind: 'data' },
     });
-
-    edges = [...edges, newEdge];
-    notifyGraphChange();
-  }
-
-  /**
-   * Handle edge deletion
-   */
-  function handleEdgesDelete(event: CustomEvent<Edge[]>) {
-    const deletedEdges = 'detail' in event ? event.detail : event as unknown as Edge[];
-    const deletedIds = new Set(deletedEdges.map((e) => e.id));
-    edges = edges.filter((e) => !deletedIds.has(e.id));
-    notifyGraphChange();
-  }
-
-  /**
-   * Handle node deletion
-   */
-  function handleNodesDelete(event: CustomEvent<Node[]>) {
-    const deletedNodes = 'detail' in event ? event.detail : event as unknown as Node[];
-    const deletedIds = new Set(deletedNodes.map((n) => n.id));
-
-    // Remove nodes
-    nodes = nodes.filter((n) => !deletedIds.has(n.id));
-
-    // Remove edges connected to deleted nodes
-    edges = edges.filter(
-      (e) => !deletedIds.has(e.source) && !deletedIds.has(e.target)
-    );
-
-    notifyGraphChange();
   }
 
   /**
@@ -333,7 +299,7 @@
     onSelectionChange?.(selectedNode, selectedEdge);
   }
 
-  function handleBeforeDelete(): boolean {
+  async function handleBeforeDelete(): Promise<boolean> {
     recordHistory('delete');
     return true;
   }
@@ -343,22 +309,13 @@
   }
 
   function isConnectionValid(connection: Connection | Edge): boolean {
-    return connectionProblem(nodes, edges, connection as Connection) === null;
+    return connectionProblem(nodes, edges, connection) === null;
   }
 
-  function handleReconnect(oldEdge: Edge, connection: Connection): void {
-    if (connectionProblem(nodes, edges, connection, oldEdge.id)) return;
+  function handleBeforeReconnect(newEdge: Edge, oldEdge: Edge): Edge | false {
+    if (connectionProblem(nodes, edges, newEdge, oldEdge.id)) return false;
     recordHistory('reconnect');
-    edges = edges.map(edge => edge.id === oldEdge.id
-      ? decorateEdge({
-          ...edge,
-          source: connection.source!,
-          target: connection.target!,
-          sourceHandle: connection.sourceHandle || undefined,
-          targetHandle: connection.targetHandle || undefined,
-        })
-      : edge);
-    notifyGraphChange();
+    return decorateEdge(newEdge);
   }
 
   function restoreGraphViewport(nextViewport: SvelteFlowGraph['viewport']) {
@@ -659,7 +616,7 @@
     nodes = nodes.map((node) => {
       const nodeType = node.data?.schema?.id || node.data?.nodeType?.replace('cognitive/', '');
 
-      if (displayNodeTypes.includes(nodeType)) {
+      if (nodeType && displayNodeTypes.includes(nodeType)) {
         // Get node-specific output if available, otherwise use the main response
         let output = response;
         if (nodeOutputs && nodeOutputs[node.id]) {
@@ -910,31 +867,31 @@
         colorMode="dark"
         fitView={!hasStoredViewport}
         initialViewport={hasStoredViewport ? viewport : undefined}
-        snapToGrid
         snapGrid={[15, 15]}
         minZoom={0.1}
         maxZoom={2}
         onlyRenderVisibleElements
         selectionOnDrag
-        deleteKeyCode={['Delete', 'Backspace']}
-        selectionKeyCode="Shift"
-        multiSelectionKeyCode="Shift"
-        onconnect={handleConnect}
-        onedgesdelete={handleEdgesDelete}
-        onnodesdelete={handleNodesDelete}
+        deleteKey={['Delete', 'Backspace']}
+        selectionKey="Shift"
+        multiSelectionKey="Shift"
+        onbeforeconnect={handleBeforeConnect}
+        onconnect={notifyGraphChange}
+        ondelete={notifyGraphChange}
         onselectionchange={handleSelectionChange}
         onbeforedelete={handleBeforeDelete}
         onnodedragstart={handleNodeDragStart}
-        onreconnect={handleReconnect}
+        onbeforereconnect={handleBeforeReconnect}
+        onreconnect={notifyGraphChange}
         isValidConnection={isConnectionValid}
         onmove={handleViewportMove}
         onmoveend={handleViewportMoveEnd}
       >
-        <Background variant={BackgroundVariant.Dots} gap={20} color="#333" />
+        <Background variant={BackgroundVariant.Dots} gap={20} patternColor="#333" />
         <Controls />
         {#if miniMapVisible}
           <MiniMap
-            nodeColor={(node) => node.data?.schema?.bgColor || '#475569'}
+            nodeColor={(node: Node) => node.data?.schema?.bgColor || '#475569'}
             maskColor="rgba(0, 0, 0, 0.8)"
             pannable
             zoomable

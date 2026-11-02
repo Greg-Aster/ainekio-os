@@ -3,6 +3,7 @@ import {
   robotStatusPath,
   loadRobotStatus,
   buildRobotStatusProjection,
+  ROBOT_STATUS_PROSE_FIELDS,
   type RobotStatusSnapshot,
   type RobotStatusSourceFacts,
 } from '../../robot-status.js'
@@ -92,7 +93,16 @@ export const robotStatusWriterNode = defineNode({
     }
     const situation = parseRobotStatusSituation(parsed)
     const supplied = inputs.sourceFacts as RobotStatusSourceFacts | undefined
-    const sources = supplied && { ...supplied, generatedAt: new Date().toISOString() }
+    const recordedAt = new Date().toISOString()
+    const sources = supplied && {
+      ...supplied,
+      generatedAt: recordedAt,
+      situationEvidence: Object.fromEntries(ROBOT_STATUS_PROSE_FIELDS.map(field => [field, {
+        recordedAt,
+        sourceUpdatedAt: supplied.sourceUpdatedAt,
+        visualFrames: supplied.visualFrames ?? [],
+      }])),
+    }
     if (!sources?.sourceUpdatedAt || !Array.isArray(sources.activeDesires)) {
       throw new Error('Robot Status Writer requires deterministic source facts')
     }
@@ -100,7 +110,7 @@ export const robotStatusWriterNode = defineNode({
     context.graphExecution.dispatch({ kind: 'robot_status', payload: { situation, sources } })
     const store = openExecutionStore(username)
     let status: RobotStatusSnapshot
-    try { status = buildRobotStatusProjection(loadRobotStatus(username), store.projectedTask(username), situation, sources) }
+    try { status = buildRobotStatusProjection(loadRobotStatus(username), store.projectedTasks(username), situation, sources) }
     finally { store.close() }
     return {
       status,

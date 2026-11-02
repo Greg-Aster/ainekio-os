@@ -28,7 +28,7 @@ export interface ParsedBigBrotherEvent {
   reasoningSteps: ReasoningStep[]
 }
 
-/** Per-invocation settings; ordinary chat escalation keeps its configured defaults. */
+/** Per-invocation model and diagnostic settings passed to the terminal provider. */
 export interface TerminalProviderOptions extends EscalationOptions {
   diagnostic?: { model?: string; reasoning: boolean; threadId?: string }
 }
@@ -40,6 +40,7 @@ export interface BigBrotherCLIInvocation {
   resultFile?: string
   tempDir: string
   timeout: number
+  appServer?: { model?: string; reasoning: string; cwd?: string; ephemeral?: boolean }
 }
 
 function textFromContent(content: unknown): string {
@@ -232,13 +233,12 @@ function setModelArg(args: string[], model: string): void {
   args.push('--model', model)
 }
 
-function ensureConfigOverride(args: string[], key: string, value: string): void {
-  for (let index = 0; index < args.length - 1; index += 1) {
+function ensureConfigOverride(args: string[], key: string, value: string | number | boolean): void {
+  for (let index = args.length - 1; index >= 0; index--) {
     if ((args[index] === '--config' || args[index] === '-c')
       && args[index + 1]?.startsWith(`${key}=`)) {
-      args[index + 1] = `${key}=${JSON.stringify(value)}`
-      return
-    }
+      args.splice(index, 2)
+    } else if (args[index].startsWith(`--config=${key}=`) || args[index].startsWith(`-c=${key}=`)) args.splice(index, 1)
   }
   args.push('--config', `${key}=${JSON.stringify(value)}`)
 }
@@ -288,6 +288,50 @@ export function buildBigBrotherCLIInvocation(
 
   const tempDir = fs.mkdtempSync(path.join(jobRoot, 'metahuman-big-brother-cli-'))
   const args = [...(backend.args || [])]
+  const reasoning = options.enableThinking === true || options.diagnostic?.reasoning ? 'high'
+    : !options.diagnostic && options.enableThinking === false ? 'none'
+    : (bigBrother?.provider === provider ? bigBrother.reasoningEffort : undefined) || backend.reasoningEffort
+
+  if (provider === 'codex' && options.modelRequest && !options.diagnostic) {
+    const appArgs = ['app-server', '--listen', 'stdio://']
+    let cwd = options.workingDirectory
+    let ephemeral = false
+    // Translate exec presentation/selection options; retain configured provider
+    // overrides, authentication and tool permissions in the same process owner.
+    for (let index = 0; index < args.length; index++) {
+      const arg = args[index]
+      if (arg === 'exec' || arg === 'e' || arg === '--json' || arg === '--skip-git-repo-check') continue
+      if (arg === '--color' || arg === '--output-last-message' || arg === '-o') { index++; continue }
+      if (arg.startsWith('--color=') || arg.startsWith('--output-last-message=')) continue
+      if (arg === '--ephemeral') { ephemeral = true; continue }
+      if (arg === '--model' || arg === '-m') { ensureConfigOverride(appArgs, 'model', args[++index]); continue }
+      if (arg.startsWith('--model=') || arg.startsWith('-m=')) { ensureConfigOverride(appArgs, 'model', arg.slice(arg.indexOf('=') + 1)); continue }
+      if (arg === '--cd' || arg === '-C') { cwd = args[++index]; continue }
+      if (arg.startsWith('--cd=')) { cwd = arg.slice('--cd='.length); continue }
+      if (arg === '--sandbox' || arg === '-s') { ensureConfigOverride(appArgs, 'sandbox_mode', args[++index]); continue }
+      if (arg === '--dangerously-bypass-approvals-and-sandbox') {
+        ensureConfigOverride(appArgs, 'approval_policy', 'never')
+        ensureConfigOverride(appArgs, 'sandbox_mode', 'danger-full-access')
+        continue
+      }
+      appArgs.push(arg)
+    }
+    if (backend.dangerouslySkipPermissions) {
+      ensureConfigOverride(appArgs, 'approval_policy', 'never')
+      ensureConfigOverride(appArgs, 'sandbox_mode', 'danger-full-access')
+    }
+    ensureConfigOverride(appArgs, 'developer_instructions', '')
+    ensureConfigOverride(appArgs, 'project_doc_max_bytes', 0)
+    ensureConfigOverride(appArgs, 'memories.use_memories', false)
+    ensureConfigOverride(appArgs, 'memories.generate_memories', false)
+    ensureConfigOverride(appArgs, 'skills.include_instructions', false)
+    ensureConfigOverride(appArgs, 'model_reasoning_effort', reasoning || 'low')
+    if (options.modelRequest.contextWindow !== undefined) {
+      ensureConfigOverride(appArgs, 'model_context_window', options.modelRequest.contextWindow)
+    }
+    return { command: backend.command || 'codex', args: appArgs, stdin: '', tempDir, timeout: 0,
+      appServer: { model, reasoning: reasoning || 'low', cwd, ephemeral } }
+  }
 
   if (provider === 'claude-code') {
     if (!args.includes('--print') && !args.includes('-p')) args.unshift('--print')
@@ -311,8 +355,6 @@ export function buildBigBrotherCLIInvocation(
   if (options.diagnostic?.threadId) args.push('resume', options.diagnostic.threadId, '-')
   ensureArg(args, '--json')
   if (model) setModelArg(args, model)
-  const reasoning = options.enableThinking === true || options.diagnostic?.reasoning ? 'high'
-    : (bigBrother?.provider === provider ? bigBrother.reasoningEffort : undefined) || backend.reasoningEffort
   if (reasoning || !options.diagnostic) ensureConfigOverride(args, 'model_reasoning_effort', reasoning || 'low')
   const colorIndex = args.indexOf('--color')
   if (colorIndex >= 0 && colorIndex + 1 < args.length) args[colorIndex + 1] = 'never'

@@ -1,3 +1,4 @@
+import type { Priority } from '../queue/types.js'
 import type { SvelteFlowGraph } from '../cognitive-graph-schema.js'
 import Database from 'better-sqlite3'
 import { createHash, randomUUID } from 'node:crypto'
@@ -11,6 +12,9 @@ import {
   type ExecutionDefinition, type ExecutionEvent, type ExecutionLease,
   type ExecutionRecord, type NewExecutionEvent,
 } from './types.js'
+
+// Bump when the owned schema or migrations change. Publish only after migration commits.
+const EXECUTION_SCHEMA_VERSION = 1
 
 type ClaimedActionReceipt = Pick<import('../queue/types.js').QueuedTask,
   'id' | 'type' | 'handler' | 'state' | 'username' | 'input' | 'durable' | 'startedAt' | 'bodyLease'>
@@ -60,6 +64,8 @@ export class ExecutionStore {
     this.db.pragma('synchronous = NORMAL')
     this.db.pragma('foreign_keys = ON')
     this.db.pragma('busy_timeout = 5000')
+    const schemaVersion = this.db.pragma('user_version', { simple: true }) as number
+    if (schemaVersion === EXECUTION_SCHEMA_VERSION) return
     this.db.exec(`
       CREATE TABLE IF NOT EXISTS executions (
         execution_id TEXT PRIMARY KEY, username TEXT NOT NULL, definition TEXT NOT NULL,
@@ -116,7 +122,8 @@ export class ExecutionStore {
         execution_id TEXT NOT NULL REFERENCES executions(execution_id) ON DELETE CASCADE,
         checkpoint_id TEXT NOT NULL, kind TEXT NOT NULL, payload TEXT NOT NULL,
         identity TEXT NOT NULL, action_id TEXT UNIQUE,
-        status TEXT NOT NULL DEFAULT 'pending', work_item_id TEXT, attempt_generation INTEGER
+        status TEXT NOT NULL DEFAULT 'pending', work_item_id TEXT, attempt_generation INTEGER,
+        producer TEXT, requested_by TEXT, triggered_by TEXT
       );
       CREATE TABLE IF NOT EXISTS execution_blobs (
         hash TEXT PRIMARY KEY, value TEXT NOT NULL
@@ -126,7 +133,11 @@ export class ExecutionStore {
         hash TEXT NOT NULL REFERENCES execution_blobs(hash), PRIMARY KEY(execution_id, hash)
       );
       CREATE INDEX IF NOT EXISTS execution_event_order ON execution_events(execution_id, sequence);
+      CREATE INDEX IF NOT EXISTS execution_wait_reason ON execution_waits(reason, execution_id);
       CREATE INDEX IF NOT EXISTS execution_dispatch_state ON execution_outbox(execution_id, status);
+      CREATE INDEX IF NOT EXISTS execution_dispatch_work ON execution_outbox(work_item_id);
+      CREATE INDEX IF NOT EXISTS execution_status_updated ON executions(status, updated_at);
+      CREATE INDEX IF NOT EXISTS execution_dispatch_recovery ON execution_outbox(status, kind, execution_id);
       CREATE TABLE IF NOT EXISTS execution_observations (
         observation_id TEXT PRIMARY KEY, username TEXT NOT NULL, environment_id TEXT NOT NULL,
         adapter TEXT NOT NULL, robot_id TEXT NOT NULL, session_id TEXT NOT NULL,
@@ -145,6 +156,19 @@ export class ExecutionStore {
       for (const [name, type] of [['graph', 'TEXT'], ['owner', 'TEXT'], ['owner_generation', 'INTEGER NOT NULL DEFAULT 0'], ['lease_until', 'INTEGER']]) {
         if (!graphColumns.some(column => column.name === name)) this.db.exec(`ALTER TABLE execution_graphs ADD COLUMN ${name} ${type}`)
       }
+      if (!(this.db.pragma('table_info(executions)') as { name: string }[]).some(column => column.name === 'priority')) {
+        this.db.exec('ALTER TABLE executions ADD COLUMN priority TEXT')
+        // Existing question-only continuations retain their checkpoint and goal,
+        // but have no processing left until a new input is actually admitted.
+        this.db.prepare(`UPDATE executions SET status='idle' WHERE status='waiting'
+          AND execution_id IN (SELECT execution_id FROM execution_waits WHERE reason='user_or_autonomy')
+          AND (owner IS NULL OR lease_until<=?)
+          AND NOT EXISTS (SELECT 1 FROM execution_outbox o WHERE o.execution_id=executions.execution_id
+            AND o.status IN ('pending','admitted','accepted','outcome_unknown'))
+          AND NOT EXISTS (SELECT 1 FROM execution_events v WHERE v.execution_id=executions.execution_id
+            AND v.sequence>executions.processed_sequence AND v.kind IN ('user_steering','autonomy_trigger'))`)
+          .run(Date.now())
+      }
       if (!(this.db.pragma('table_info(executions)') as { name: string }[]).some(column => column.name === 'origin_runtime_id')) {
         this.db.exec('ALTER TABLE executions ADD COLUMN origin_runtime_id TEXT')
       }
@@ -154,6 +178,38 @@ export class ExecutionStore {
       if (!(this.db.pragma('table_info(execution_outbox)') as { name: string }[]).some(column => column.name === 'work_result_identity')) {
         this.db.exec('ALTER TABLE execution_outbox ADD COLUMN work_result_identity TEXT')
       }
+      const outboxColumns = this.db.pragma('table_info(execution_outbox)') as { name: string }[]
+      const originColumns = ['producer', 'requested_by', 'triggered_by']
+      if (originColumns.some(name => !outboxColumns.some(column => column.name === name))) {
+        for (const name of originColumns) {
+          if (!outboxColumns.some(column => column.name === name)) this.db.exec(`ALTER TABLE execution_outbox ADD COLUMN ${name} TEXT`)
+        }
+        const update = this.db.prepare('UPDATE execution_outbox SET producer=?, requested_by=?, triggered_by=? WHERE effect_id=?')
+        for (const row of this.db.prepare('SELECT effect_id, payload FROM execution_outbox').all() as { effect_id: string; payload: string }[]) {
+          const origins = [['metadata', 'producer'], ['metadata', 'requestedBy'], ['input', 'triggeredBy']]
+            .map(field => this.decodeDocument(row.payload, field)).map(value => typeof value === 'string' ? value : null)
+          update.run(...origins, row.effect_id)
+        }
+      }
+      this.db.exec(`CREATE INDEX IF NOT EXISTS execution_dispatch_producer ON execution_outbox(producer, execution_id);
+        CREATE INDEX IF NOT EXISTS execution_dispatch_requestor ON execution_outbox(requested_by, execution_id);
+        CREATE INDEX IF NOT EXISTS execution_dispatch_trigger ON execution_outbox(triggered_by, execution_id);
+        CREATE INDEX IF NOT EXISTS execution_dispatch_kind ON execution_outbox(kind, execution_id);`)
+      if (!this.db.prepare("SELECT 1 FROM sqlite_master WHERE type='table' AND name='execution_nodes'").get()) {
+        this.db.exec(`CREATE TABLE execution_nodes (
+          execution_id TEXT NOT NULL REFERENCES executions(execution_id) ON DELETE CASCADE,
+          username TEXT NOT NULL, node_type TEXT NOT NULL, created_at INTEGER NOT NULL,
+          PRIMARY KEY(execution_id, node_type)
+        );
+        CREATE INDEX execution_node_history ON execution_nodes(username, node_type, created_at);`)
+        // Derive membership once from canonical definitions, including retained
+        // executions. Routine reads never decode unrelated graph definitions.
+        for (const row of this.db.prepare('SELECT execution_id, username, definition, created_at FROM executions ORDER BY rowid').all() as any[]) {
+          this.indexExecutionNodes(row.execution_id, row.username, this.codec.decode(row.definition), row.created_at)
+        }
+      }
+      this.db.exec('DROP INDEX IF EXISTS execution_work_receipt_pending')
+      if (schemaVersion < EXECUTION_SCHEMA_VERSION) this.db.pragma(`user_version = ${EXECUTION_SCHEMA_VERSION}`)
     }).immediate()
   }
 
@@ -177,7 +233,7 @@ export class ExecutionStore {
     return row?.execution_id ?? null
   }
 
-  enter(username: string, definition: ExecutionDefinition, admissionKey: string, bootstrap: unknown): ExecutionRecord {
+  enter(username: string, definition: ExecutionDefinition, admissionKey: string, bootstrap: unknown, priority?: Priority): ExecutionRecord {
     return this.db.transaction(() => {
       const key = `${username}:${admissionKey}`
       const previous = this.db.prepare('SELECT execution_id FROM execution_entries WHERE admission_key = ?').get(key) as any
@@ -185,7 +241,7 @@ export class ExecutionStore {
         this.assertDefinition(previous.execution_id, definition)
         return this.get(previous.execution_id)
       }
-      const record = this.create(username, definition)
+      const record = this.create(username, definition, undefined, priority)
       this.db.prepare('INSERT INTO execution_entries VALUES (?, ?, ?)')
         .run(record.executionId, key, this.encodeDocument(record.executionId, bootstrap))
       return record
@@ -193,9 +249,14 @@ export class ExecutionStore {
   }
 
   entry(executionId: string): any {
-    const entry = this.db.prepare('SELECT bootstrap FROM execution_entries WHERE execution_id = ?').get(executionId) as any
-    if (!entry) throw new Error(`Execution ${executionId} has no admitted input`)
-    return this.decodeDocument(entry.bootstrap)
+    const row = this.db.prepare('SELECT bootstrap FROM execution_entries WHERE execution_id = ?').get(executionId) as { bootstrap: string } | undefined
+    if (!row) throw new Error(`Execution ${executionId} has no admitted input`)
+    return this.decodeDocument(row.bootstrap)
+  }
+
+  entryOrNull(executionId: string): any | null {
+    const row = this.db.prepare('SELECT bootstrap FROM execution_entries WHERE execution_id = ?').get(executionId) as { bootstrap: string } | undefined
+    return row ? this.decodeDocument(row.bootstrap) : null
   }
 
   task(executionId: string): import('./types.js').ExecutionObjective | null {
@@ -203,20 +264,20 @@ export class ExecutionStore {
     return row ? this.decodeDocument(row.task) : null
   }
 
-  /** Dashboard selection only. Task meaning remains in the execution checkpoint. */
-  projectedTask(username: string): import('./types.js').ExecutionObjective | null {
+  /** Read projection only: idle goals are retained without claiming current work. */
+  projectedTasks(username: string): { currentTask: import('./types.js').ExecutionObjective | null; parkedGoals: import('./types.js').ExecutionObjective[] } {
     const rows = this.db.prepare(`SELECT e.status, t.task FROM executions e
-      JOIN execution_task t USING(execution_id) WHERE e.username = ? ORDER BY e.created_at`)
+      JOIN execution_task t USING(execution_id) WHERE e.username = ? AND e.status IN ('running', 'waiting', 'idle') ORDER BY e.created_at`)
       .all(username) as { status: ExecutionRecord['status']; task: string }[]
     const candidates = rows.map(record => ({ record,
       task: { ...this.decodeDocument(record.task) as import('./types.js').ExecutionObjective, executionStatus: record.status },
-    }))
-    candidates.sort((a, b) => {
-      const active = (candidate: typeof a) => ['running', 'waiting'].includes(candidate.record.status)
-        && !candidate.task.decision.objectiveComplete && !['abandon', 'cancel', 'complete', 'failed'].includes(candidate.task.decision.outcome)
-      return Number(active(b)) - Number(active(a)) || b.task.updatedAt.localeCompare(a.task.updatedAt)
-    })
-    return candidates[0]?.task ?? null
+    })).filter(({ task }) => !task.decision.objectiveComplete
+      && !['abandon', 'cancel', 'complete', 'failed'].includes(task.decision.outcome))
+    candidates.sort((a, b) => b.task.updatedAt.localeCompare(a.task.updatedAt))
+    return {
+      currentTask: candidates.find(({ record }) => record.status !== 'idle')?.task ?? null,
+      parkedGoals: candidates.filter(({ record }) => record.status === 'idle').map(({ task }) => task),
+    }
   }
 
   frame(executionId: string, frameId: string): import('../environment-interface/types.js').EnvironmentVisualFrame | null {
@@ -274,8 +335,10 @@ export class ExecutionStore {
           && (effect.payload as { executionScope?: string }).executionScope === 'independent'))
       const pendingInput = this.hasPendingInput(lease.executionId)
       this.db.prepare('UPDATE executions SET status = ?, updated_at = ? WHERE execution_id = ?')
-        .run(status === 'completed' && (pending || pendingInput) ? 'waiting' : status, Date.now(), lease.executionId)
-      if (this.get(lease.executionId).status === 'waiting') {
+        .run(status === 'completed' && (pending || pendingInput) ? 'waiting'
+          : status === 'waiting' && waitingReason === 'user_or_autonomy' && !pending && !pendingInput ? 'idle' : status,
+          Date.now(), lease.executionId)
+      if (['waiting', 'idle'].includes(this.get(lease.executionId).status)) {
         this.db.prepare('INSERT INTO execution_waits VALUES (?, ?) ON CONFLICT(execution_id) DO UPDATE SET reason=excluded.reason')
           .run(lease.executionId, waitingReason ?? (pendingInput ? 'pending_input' : 'effect_delivery'))
       } else this.db.prepare('DELETE FROM execution_waits WHERE execution_id=?').run(lease.executionId)
@@ -283,14 +346,22 @@ export class ExecutionStore {
     }).immediate()
   }
 
-  create(username: string, definition: ExecutionDefinition, executionId = randomUUID()): ExecutionRecord {
+  create(username: string, definition: ExecutionDefinition, executionId = randomUUID(), priority?: Priority): ExecutionRecord {
     if (!username.trim() || !definition.graphId || !definition.graphHash || !definition.runtimeVersion
       || !Number.isInteger(definition.checkpointSchemaVersion)) throw new Error('Incomplete execution identity')
-    const now = Date.now()
-    this.db.prepare(`INSERT INTO executions
-      (execution_id, username, definition, status, created_at, updated_at, origin_runtime_id) VALUES (?, ?, ?, 'running', ?, ?, ?)`)
-      .run(executionId, username, this.codec.encode(definition), now, now, this.originRuntimeId ?? null)
-    return this.get(executionId)
+    return this.db.transaction(() => {
+      const now = Date.now()
+      this.db.prepare(`INSERT INTO executions
+        (execution_id, username, definition, status, created_at, updated_at, origin_runtime_id, priority) VALUES (?, ?, ?, 'running', ?, ?, ?, ?)`)
+        .run(executionId, username, this.codec.encode(definition), now, now, this.originRuntimeId ?? null, priority ?? null)
+      this.indexExecutionNodes(executionId, username, definition, now)
+      return this.get(executionId)
+    }).immediate()
+  }
+
+  private indexExecutionNodes(executionId: string, username: string, definition: ExecutionDefinition, createdAt: number): void {
+    const insert = this.db.prepare('INSERT INTO execution_nodes (execution_id, username, node_type, created_at) VALUES (?, ?, ?, ?)')
+    for (const nodeType of Object.keys(definition.nodeVersions)) insert.run(executionId, username, nodeType, createdAt)
   }
 
   get(executionId: string): ExecutionRecord {
@@ -308,6 +379,7 @@ export class ExecutionStore {
     return {
       executionId: row.execution_id, username: row.username, definition: this.codec.decode(row.definition),
       originRuntimeId: row.origin_runtime_id ?? undefined,
+      ...(row.priority ? { priority: row.priority as Priority } : {}),
       status: row.status, waitingReason: row.waiting_reason ?? undefined, checkpointVersion: row.checkpoint_version, lastSequence: row.last_sequence,
       lastProcessedSequence: row.processed_sequence, createdAt: row.created_at, updatedAt: row.updated_at,
       cancelledAt: row.cancelled_at, owner: row.owner, ownerGeneration: row.owner_generation,
@@ -319,6 +391,48 @@ export class ExecutionStore {
     return [...this.iterate(username)]
   }
 
+  /** Current context needs active work, not decoded historical executions. */
+  active(username: string): ExecutionRecord[] {
+    const rows = this.db.prepare(`SELECT e.*, w.reason AS waiting_reason
+      FROM executions e LEFT JOIN execution_waits w USING(execution_id)
+      WHERE e.username = ? AND e.status IN ('running', 'waiting', 'idle') ORDER BY e.created_at`)
+      .all(username)
+    return rows.map(row => this.executionRecord(row))
+  }
+
+  /** Select unfinished handoffs before decoding; dormant goals and settled history need no sweep. */
+  recoveryExecutions(unfinishedExecutionIds: string[]): ExecutionRecord[] {
+    const rows = this.db.prepare(`SELECT e.*, w.reason AS waiting_reason
+      FROM executions e LEFT JOIN execution_waits w USING(execution_id)
+      WHERE e.execution_id IN (
+        SELECT execution_id FROM executions WHERE status='running'
+        UNION
+        SELECT e.execution_id FROM execution_waits w JOIN executions e USING(execution_id)
+          WHERE e.status='waiting' AND w.reason IN ('interrupted', 'effect_delivery')
+        UNION
+        SELECT o.execution_id FROM execution_outbox o JOIN executions e USING(execution_id)
+          WHERE o.status='pending' AND e.status IN ('running', 'waiting', 'idle')
+        UNION
+        SELECT o.execution_id FROM execution_outbox o JOIN executions e USING(execution_id)
+          WHERE e.status IN ('failed', 'cancelled') AND o.kind='coordinator_work'
+            AND o.status IN ('pending', 'admitted', 'cancelled')
+            AND (o.status!='cancelled' OR o.work_result_identity IS NULL)
+            AND NOT EXISTS (SELECT 1 FROM execution_events v
+              WHERE v.execution_id=o.execution_id AND v.event_id='work:' || o.work_item_id || ':undispatched')
+        UNION SELECT value FROM json_each(?)
+      ) ORDER BY e.created_at`).all(JSON.stringify(unfinishedExecutionIds))
+    return rows.map(row => this.executionRecord(row))
+  }
+
+  /** Resolve subscriptions before decoding; completed history is not sensor work. */
+  waitingFor(username: string, reasons: string[]): ExecutionRecord[] {
+    const rows = this.db.prepare(`SELECT e.*, w.reason AS waiting_reason
+      FROM execution_waits w JOIN executions e USING(execution_id)
+      WHERE w.reason IN (SELECT value FROM json_each(?)) AND e.username=? AND e.status='waiting'
+      ORDER BY e.created_at`).all(JSON.stringify(reasons), username)
+    return rows.map(row => this.executionRecord(row))
+  }
+
   /** Decode history on demand so a latest-state reader can stop at its record. */
   *iterate(username?: string, newestFirst = false): Generator<ExecutionRecord> {
     const query = 'SELECT e.*, w.reason AS waiting_reason FROM executions e LEFT JOIN execution_waits w USING(execution_id)'
@@ -327,6 +441,51 @@ export class ExecutionStore {
       ? this.db.prepare(`${query} WHERE e.username = ? ORDER BY e.created_at ${order}`).iterate(username)
       : this.db.prepare(`${query} ORDER BY e.created_at ${order}`).iterate()
     for (const row of rows) yield this.executionRecord(row)
+  }
+
+  /** Select graph membership before decoding retained execution definitions. */
+  *iterateNodeExecutions(username: string, nodeType: string, newestFirst = false,
+    dispatchFilter?: { originatingAgent: string; includeExecutionEvents?: boolean }): Generator<ExecutionRecord> {
+    const order = newestFirst ? 'DESC' : 'ASC'
+    const activity = dispatchFilter ? `AND e.execution_id IN (
+      SELECT execution_id FROM execution_outbox WHERE producer=?
+      UNION SELECT execution_id FROM execution_outbox WHERE requested_by=?
+      UNION SELECT execution_id FROM execution_outbox WHERE triggered_by=?
+      ${dispatchFilter.includeExecutionEvents ? "UNION SELECT execution_id FROM execution_outbox WHERE kind='execution_event'" : ''}
+    )` : ''
+    const rows = this.db.prepare(`SELECT e.*, w.reason AS waiting_reason
+      FROM execution_nodes n JOIN executions e USING(execution_id)
+      LEFT JOIN execution_waits w USING(execution_id)
+      WHERE n.username=? AND n.node_type=? ${activity} ORDER BY n.created_at ${order}, n.rowid ${order}`)
+      .iterate(username, nodeType, ...(dispatchFilter ? Array(3).fill(dispatchFilter.originatingAgent) : []))
+    for (const row of rows) yield this.executionRecord(row)
+  }
+
+  /** Independent root graphs retain the runtime's original work admission identity. */
+  workExecutions(username: string, workItemId: string): ExecutionRecord[] {
+    const prefix = `${username}:${workItemId}:graph:`
+    const rows = this.db.prepare(`SELECT e.*, w.reason AS waiting_reason
+      FROM execution_entries a JOIN executions e USING(execution_id)
+      LEFT JOIN execution_waits w USING(execution_id)
+      WHERE a.admission_key>=? AND a.admission_key<? AND e.username=?
+      ORDER BY e.created_at, e.rowid`).all(prefix, `${username}:${workItemId}:graph;`, username)
+    return rows.map(row => this.executionRecord(row))
+  }
+
+  /** Resolve a root's recorded work admission back to its retained parent dispatch. */
+  executionWork(executionId: string): DispatchRecord | null {
+    const entry = this.db.prepare(`SELECT a.admission_key, e.username FROM execution_entries a
+      JOIN executions e USING(execution_id) WHERE a.execution_id=?`).get(executionId) as
+      { admission_key: string; username: string } | undefined
+    if (!entry) return null
+    const prefix = `${entry.username}:`
+    const admission = entry.admission_key.slice(prefix.length)
+    const suffix = /:graph:\d+$/.exec(admission)
+    if (!entry.admission_key.startsWith(prefix) || !suffix) return null
+    const workItemId = admission.slice(0, suffix.index)
+    const row = this.db.prepare(`SELECT o.effect_id FROM execution_outbox o JOIN executions e USING(execution_id)
+      WHERE o.work_item_id=? AND e.username=?`).get(workItemId, entry.username) as { effect_id: string } | undefined
+    return row ? this.dispatch(row.effect_id) : null
   }
 
   /** Queue projection: read history and its optional task selection together. */
@@ -521,6 +680,16 @@ export class ExecutionStore {
       .all(executionId, afterSequence) as any[]).map(row => this.readEvent(row))
   }
 
+  /** Activity's latest result plus its selected action's receipt, if different.
+   * Full ordered evidence remains available through events/execution context. */
+  activityResults(executionId: string, actionId?: string): ExecutionEvent[] {
+    return (this.db.prepare(`SELECT * FROM execution_events WHERE execution_id=? AND sequence IN (
+      SELECT MAX(sequence) FROM execution_events WHERE execution_id=? AND kind IN ('work_result','physical_result')
+      UNION
+      SELECT MAX(sequence) FROM execution_events WHERE execution_id=? AND kind='physical_result' AND action_id=?
+    ) ORDER BY sequence`).all(executionId, executionId, executionId, actionId ?? null) as any[]).map(row => this.readEvent(row))
+  }
+
   /** Called only inside the saver's checkpoint transaction. */
   commitTransition(executionId: string, checkpointId: string, transition: CheckpointTransition): void {
     if (!this.db.inTransaction) throw new Error('Checkpoint transition requires the checkpoint transaction')
@@ -608,11 +777,14 @@ export class ExecutionStore {
       if (previous.identity !== identity) throw new ExecutionConflictError('Effect ID reused with different content')
       return
     }
+    const source = intent.payload as { metadata?: { producer?: unknown; requestedBy?: unknown }; input?: { triggeredBy?: unknown } } | null
+    const origins = [source?.metadata?.producer, source?.metadata?.requestedBy, source?.input?.triggeredBy]
+      .map(value => typeof value === 'string' ? value : null)
     this.db.prepare(`INSERT INTO execution_outbox
-      (effect_id, execution_id, checkpoint_id, kind, payload, identity, action_id, attempt_generation)
-      VALUES (?, ?, ?, ?, ?, ?, ?, ?)`)
+      (effect_id, execution_id, checkpoint_id, kind, payload, identity, action_id, attempt_generation, producer, requested_by, triggered_by)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`)
       .run(intent.effectId, executionId, checkpointId, intent.kind, this.encodeDocument(executionId, intent.payload), identity,
-        intent.actionId ?? null, intent.kind === 'graph_resume' ? this.get(executionId).ownerGeneration : null)
+        intent.actionId ?? null, intent.kind === 'graph_resume' ? this.get(executionId).ownerGeneration : null, ...origins)
   }
 
   dispatch(effectId: string): DispatchRecord {
@@ -671,9 +843,11 @@ export class ExecutionStore {
     }).immediate()
   }
 
-  pendingDispatches(): DispatchRecord[] {
+  pendingDispatches(executionId?: string): DispatchRecord[] {
     return (this.db.prepare(`SELECT o.effect_id FROM execution_outbox o JOIN executions e USING(execution_id)
-      WHERE o.status = 'pending' AND e.cancelled_at IS NULL AND e.status IN ('running', 'waiting')`).all() as any[])
+      WHERE o.status = 'pending' AND e.cancelled_at IS NULL AND e.status IN ('running', 'waiting', 'idle')
+        ${executionId === undefined ? '' : 'AND o.execution_id=?'}`)
+      .all(...(executionId === undefined ? [] : [executionId])) as any[])
       .map(row => this.dispatch(row.effect_id))
   }
 
@@ -683,7 +857,7 @@ export class ExecutionStore {
     if (execution.cancelledAt !== null || dispatch.status === 'cancelled') throw new ExecutionCancelledError(dispatch.executionId)
     const independent = dispatch.kind === 'coordinator_work'
       && (dispatch.payload as { executionScope?: string }).executionScope === 'independent'
-    if (!(['running', 'waiting'].includes(execution.status) || independent && execution.status === 'completed')
+    if (!(['running', 'waiting', 'idle'].includes(execution.status) || independent && execution.status === 'completed')
       || !['pending', 'admitted'].includes(dispatch.status)) {
       throw new ExecutionConflictError(`Dispatch ${effectId} is not eligible (${dispatch.status})`)
     }
@@ -841,7 +1015,7 @@ export class ExecutionStore {
       const effect = this.assertDispatchable(effectId)
       const input = effect.payload as { executionId: string; kind: string; context: Record<string, unknown> }
       if (this.get(input.executionId).username !== this.get(effect.executionId).username) throw new Error('Execution input belongs to a different profile')
-      if (input.kind === 'user_steering' && !this.entry(input.executionId).graph?.scheduler?.eventInputNodeId) {
+      if (['user_steering', 'autonomy_trigger'].includes(input.kind) && !this.entry(input.executionId).graph?.scheduler?.eventInputNodeId) {
         throw new ExecutionConflictError('Selected execution has no input route')
       }
       const event = { eventId: effectId, kind: input.kind, payload: input.context }
@@ -891,6 +1065,11 @@ export class ExecutionStore {
     const execution = this.get(event.executionId)
     if (execution.cancelledAt !== null || ['completed', 'failed'].includes(execution.status)
       || event.sequence <= execution.lastProcessedSequence) return
+    if (execution.status === 'idle') {
+      this.db.prepare("UPDATE executions SET status='running', updated_at=? WHERE execution_id=?")
+        .run(Date.now(), event.executionId)
+      this.db.prepare('DELETE FROM execution_waits WHERE execution_id=?').run(event.executionId)
+    }
     if (this.coalescePendingEventResumes(event.executionId, event.sequence)) return
     const effectId = `${event.executionId}:resume:${event.eventId}`
     const previous = this.db.prepare('SELECT payload FROM execution_outbox WHERE effect_id=?').get(effectId) as { payload: string } | undefined
@@ -960,7 +1139,15 @@ export class ExecutionStore {
     }).immediate()
   }
 
-  /** Coordinator receipts are facts about jobs, not decisions that an objective succeeded. */
+  /** Physical delivery remains owned by correlated body evidence, not a worker's return. */
+  hasActionResultReceipt(effectId: string, workItemId: string): boolean {
+    return Boolean(this.db.prepare(`SELECT 1 FROM execution_outbox o
+      WHERE o.effect_id=? AND o.work_item_id=? AND o.status IN ('completed', 'cancelled')
+        AND EXISTS (SELECT 1 FROM execution_events e WHERE e.execution_id=o.execution_id
+          AND e.work_item_id=o.work_item_id AND e.kind IN ('physical_result', 'dispatch_cancelled'))`)
+      .get(effectId, workItemId))
+  }
+
   hasWorkResultReceipt(effectId: string, workItemId: string, payload: unknown): boolean {
     const row = this.db.prepare(`SELECT work_result_identity FROM execution_outbox
       WHERE effect_id=? AND work_item_id=? AND status IN ('completed', 'cancelled')`)

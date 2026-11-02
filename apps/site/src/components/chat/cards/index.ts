@@ -25,7 +25,12 @@ import CuriosityCard from './CuriosityCard.svelte';
 import ReasoningCard from './ReasoningCard.svelte';
 import SystemMessageCard from './SystemMessageCard.svelte';
 
+import type { Component } from 'svelte';
 import type { BaseCardProps, CardComponent } from '../card-types';
+
+// Svelte checks the native component signature; Astro projects framework
+// components as props-only functions. Both must accept the same card props.
+type CardRenderer = Component<BaseCardProps> | ((props: BaseCardProps) => unknown);
 
 export const cardComponents = {
   UserMessageCard,
@@ -37,4 +42,4 @@ export const cardComponents = {
   CuriosityCard,
   ReasoningCard,
   SystemMessageCard,
-} satisfies Record<CardComponent, (props: BaseCardProps) => unknown>;
+} satisfies Record<CardComponent, CardRenderer>;

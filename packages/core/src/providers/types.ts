@@ -180,8 +180,7 @@ export interface ProviderOptions {
   signal?: AbortSignal;
   executionTarget?: 'remote';
   model?: string;
-  /** Preserve an explicit registry choice instead of substituting the global backend model. */
-  explicitModel?: boolean;
+  /** Serving endpoint for the selected deployment. */
   endpoint?: string;
   /** Preloaded llama.cpp adapters and scales, scoped to this request. */
   lora?: Array<{ id?: number; path?: string; scale: number }>;
@@ -262,10 +261,10 @@ export interface ProviderConfig {
 /**
  * Provider type - determines where requests are routed
  *
- * Local providers: ollama, vllm, mock, local-models (handled by core bridge)
+ * Local providers: ollama, mock, local-models (handled by core bridge)
  * Cloud providers: runpod_serverless, huggingface
  */
-export type ProviderType = 'big-brother' | 'llama-cpp' | 'ollama' | 'vllm' | 'mock' | 'runpod_serverless' | 'huggingface' | 'openai' | 'local' | 'remote-server' | 'local-models';
+export type ProviderType = 'big-brother' | 'llama-cpp' | 'ollama' | 'mock' | 'runpod_serverless' | 'huggingface' | 'openai' | 'local' | 'remote-server' | 'local-models';
 
 /**
  * Check if a provider is a cloud provider.
@@ -287,7 +286,7 @@ export function isRemoteServerProvider(provider: ProviderType): boolean {
  * Check if a provider is a local provider (handled by core)
  */
 export function isLocalProvider(provider: ProviderType): boolean {
-  return provider === 'llama-cpp' || provider === 'ollama' || provider === 'vllm' || provider === 'mock' || provider === 'local-models';
+  return provider === 'llama-cpp' || provider === 'ollama' || provider === 'mock' || provider === 'local-models';
 }
 
 /**

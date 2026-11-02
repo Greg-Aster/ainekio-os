@@ -38,7 +38,7 @@ interface OwnedSession {
 export class TerminalRuntime extends EventEmitter {
   private sessions = new Map<string, OwnedSession>()
   private status: TerminalState['status'] = 'running'
-  private providerActive = false
+  private diagnosticActive = false
   constructor(readonly receipts: string) { super() }
   state(): TerminalState { return { status: this.status, sessions: [...this.sessions.values()].map(s => ({ ...s.info })) } }
   private changed(): void { this.emit('event', { type: 'state', state: this.state() } satisfies TerminalEvent) }
@@ -136,15 +136,15 @@ export class TerminalRuntime extends EventEmitter {
 
   async execute(provider: TerminalProvider, prompt: string, options: EscalationOptions, signal: AbortSignal,
     observe: (event: ParsedBigBrotherEvent) => void): Promise<BigBrotherSessionResult> {
-    if (this.providerActive) throw new TerminalError('Big Brother already has an active execution', 409)
-    this.admit()
-    // Reserve synchronously before any cleanup or initialization can yield.
-    this.providerActive = true
+    if (this.status !== 'running') throw new TerminalError('Terminal agent is stopping', 409)
     const cancellation = new AbortController()
     const combined = AbortSignal.any([signal, cancellation.signal])
     let session: OwnedSession | undefined
     try {
-      for (const old of this.sessions.values()) if (old.info.kind === 'provider' && !old.diagnostic) await this.close(old.info.id)
+      for (const old of this.sessions.values()) {
+        if (old.info.kind === 'provider' && !old.diagnostic && !old.closing
+          && (old.info.phase === 'completed' || old.info.phase === 'failed')) await this.close(old.info.id)
+      }
       combined.throwIfAborted()
       if (this.status !== 'running') throw new TerminalError('Terminal agent is stopping', 409)
       const id = randomUUID()
@@ -176,7 +176,7 @@ export class TerminalRuntime extends EventEmitter {
     } catch (error) {
       if (session) { session.info.phase = 'failed'; session.info.error = (error as Error).message }
       throw error
-    } finally { this.providerActive = false; this.changed(); this.pumpDiagnostics() }
+    } finally { this.changed() }
   }
 
   async submitDiagnostic(request: DiagnosticRequest, complete?: (result: BigBrotherSessionResult) => void): Promise<DiagnosticReceipt> {
@@ -219,7 +219,13 @@ export class TerminalRuntime extends EventEmitter {
         child.stderr.on('data', chunk => { stderr = (stderr + chunk).slice(-8192) })
         await new Promise<void>((resolve, reject) => { child.once('spawn', resolve); child.once('error', reject) })
         desktop = TerminalProcess.record(child.pid!, this.receipts)
-        child.once('close', code => {
+        child.once('close', (code, signal) => {
+          audit({ level: code === 0 || current.closing ? 'info' : 'error', category: 'system',
+            event: 'big_brother_desktop_exited', actor: request.username || 'terminal',
+            details: { sessionId: id, taskId: request.toolTaskId,
+              submissionId: current.info.diagnostic?.submissionId, threadId: current.info.diagnostic?.threadId,
+              desktopPid: child.pid, exitCode: code, signal, stderr: stderr.trim(),
+              ownerClosing: !!current.closing, sessionRetained: this.sessions.has(id) } })
           if (current.closing || !this.sessions.has(id)) return
           if (code !== 0) {
             current.info.error = stderr.trim() || `Desktop terminal exited with code ${code}`
@@ -252,9 +258,15 @@ export class TerminalRuntime extends EventEmitter {
     let complete!: (result: BigBrotherSessionResult) => void
     const finished = new Promise<BigBrotherSessionResult>(resolve => { complete = resolve })
     const receipt = await this.submitDiagnostic(request, complete)
-    const cancel = () => { void this.close(receipt.sessionId).catch(error => {
-      complete({ success: false, output: '', error: String(error), executionTime: 0, metadata: {} })
-    }) }
+    const cancel = () => {
+      audit({ level: 'info', category: 'system', event: 'big_brother_tool_request_cancelled',
+        actor: request.username || 'terminal', details: { sessionId: receipt.sessionId,
+          taskId: request.toolTaskId, submissionId: receipt.submissionId,
+          reason: signal.reason instanceof Error ? signal.reason.message : String(signal.reason) } })
+      void this.close(receipt.sessionId).catch(error => {
+        complete({ success: false, output: '', error: String(error), executionTime: 0, metadata: {} })
+      })
+    }
     signal.addEventListener('abort', cancel, { once: true })
     if (signal.aborted) cancel()
     try { return await finished } finally { signal.removeEventListener('abort', cancel) }
@@ -267,7 +279,7 @@ export class TerminalRuntime extends EventEmitter {
   }
 
   private pumpDiagnostics(): void {
-    if (this.providerActive || this.status !== 'running') return
+    if (this.diagnosticActive || this.status !== 'running') return
     const session = [...this.sessions.values()].find(item => item.diagnostic?.pending.length && !item.closing)
     if (!session) return
     const diagnostic = session.diagnostic!
@@ -277,7 +289,7 @@ export class TerminalRuntime extends EventEmitter {
     state.submissionId = submission.id
     session.info.phase = 'running'
     session.info.error = undefined
-    this.providerActive = true
+    this.diagnosticActive = true
     this.changed()
     diagnostic.finished = (async () => {
       try {
@@ -310,7 +322,7 @@ export class TerminalRuntime extends EventEmitter {
         submission.complete?.({ success: false, output: '', error: session.info.error, executionTime: 0, metadata: {} })
         await this.write(session, terminalHeading(session.info.error!, 'error'))
       } finally {
-        this.providerActive = false
+        this.diagnosticActive = false
         this.changed()
       }
     })()

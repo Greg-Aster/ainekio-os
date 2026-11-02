@@ -1,7 +1,7 @@
 # LLM Backend Configuration
 
 MetaHuman routes model requests through the deployment backend owner and model
-provider bridge. Supported target families include Ollama, vLLM, llama.cpp, the maintained
+provider bridge. Supported target families include llama.cpp, Ollama, the maintained
 local-model service, configured remote providers, and automatic selection.
 
 ## Configuration owner
@@ -13,9 +13,8 @@ CLI instead of creating provider-specific routing files.
 
 Important fields include:
 
-- `activeBackend`: `ollama`, `vllm`, `llama-cpp`, `local-models`, `remote`, or the supported automatic mode;
+- `activeBackend`: `ollama`, `llama-cpp`, `local-models`, `remote`, or the supported automatic mode;
 - `ollama.endpoint` and `ollama.defaultModel`;
-- `vllm.endpoint`, model identity, context length, and memory controls;
 - `llamaCpp.endpoint`, served model name, context/output limits and capabilities;
 - `remote.serverUrl` and remote model identity;
 - `preferredLocalBackend` for automatic local routing.
@@ -29,7 +28,6 @@ Do not store credentials in this tracked seed file. Use the credential owner exp
 ./bin/mh backend detect
 ./bin/mh backend start
 ./bin/mh backend switch ollama
-./bin/mh backend switch vllm
 ```
 
 The switch command updates the canonical configuration. Do not run parallel router implementations or edit call sites to bypass it.
@@ -37,10 +35,9 @@ The switch command updates the canonical configuration. Do not run parallel rout
 ## Image-capable requests
 
 Images travel through the same model-role, backend, and provider path as text.
-There is no separate vision backend setting. When a role-selected model is
-explicitly text-only, the router may use the configured orchestrator-role model;
-the final model and provider adapter must support image input or the request
-fails with a visible error. Configure image capability in the model catalog
+There is no separate vision backend setting. The selected model and provider
+adapter must support image input or the request fails with a visible error.
+Image input does not substitute another role or model. Configure image capability in the model catalog
 instead of adding a second backend or a call-site-specific override.
 
 ## Ollama
@@ -56,19 +53,6 @@ Start Ollama using the installation's normal service mechanism or `ollama serve`
 
 The model named by `ollama.defaultModel` must be installed. Role-specific model selection remains owned by the model catalog/router; changing a single call site is not a supported routing mechanism.
 
-## vLLM
-
-Use the vLLM lifecycle owner so startup parameters, model identity, adapters, and memory limits stay consistent:
-
-```bash
-./bin/mh vllm status
-./bin/mh vllm start
-./bin/mh vllm stop
-./bin/mh vllm restart
-```
-
-Run `./bin/mh vllm` for supported overrides. If startup fails, reduce configured GPU utilization or context length and inspect the reported log rather than launching a second unmanaged server.
-
 ## llama.cpp
 
 In **System → Backend**, choose **llama.cpp** or use its **Save and use llama.cpp**
@@ -83,11 +67,14 @@ its health and model identity; it does not start a competing process or download
 weights. `mh backend start` verifies an externally managed llama.cpp server is
 ready. Connection failures and model mismatches remain visible errors.
 
-Selecting llama.cpp overrides local chat and action-role model assignments on
-this installation. Synced profile registries retain their original assignments;
-embedding services and explicitly chosen cloud/remote-server roles retain their
-own providers. The model inventory displays the effective local model. Automatic
-selection can prefer llama.cpp through `preferredLocalBackend`.
+Assign models and adapters to roles in the **Status** widget. The selected profile
+and cognitive mode determine which assignments apply. Backend settings describe
+serving deployments; they do not replace assigned providers or models.
+Application startup (`mh backend start --assigned`) and Status assignment changes
+prepare only the selected installation-owned llama.cpp listeners. They start
+unloaded; actual requests load weights. Unassigned models in the inventory do not
+start. The bundled embedding service also starts unloaded and uses the selected
+Embedder on actual requests.
 
 Server Status refreshes when opened, when the page becomes visible, after a
 control action, on backend-change events, or with its refresh button. It has no
@@ -105,7 +92,7 @@ Configure the server URL and credentials in Backend Settings. Test the connectio
 
 - **Backend unavailable:** run `./bin/mh backend status`, then the selected provider's status command.
 - **Model not found:** compare the configured model identity with the provider's installed or served model name.
-- **GPU out of memory:** stop competing GPU work or lower vLLM memory/context settings.
+- **GPU out of memory:** stop competing GPU work or adjust the selected backend’s memory/context settings.
 - **Remote connection fails:** verify the URL, credentials, TLS, and remote health endpoint.
 - **A role uses an unexpected model:** inspect the model catalog and role routing; do not patch the consumer.
 

@@ -1,6 +1,7 @@
 import fs from 'node:fs'
 import path from 'node:path'
 import { randomUUID } from 'node:crypto'
+import Database from 'better-sqlite3'
 import { audit } from './audit.js'
 import { storageClient } from './storage-client.js'
 import { cosineSimilarity } from './embeddings.js'
@@ -191,7 +192,7 @@ export function indexFilePath(model?: string, username?: string): string {
   fs.mkdirSync(indexDir, { recursive: true })
   const modelName = model || DEFAULT_INDEX_MODEL
   const safe = modelName.replace(/[^a-z0-9_.-]/gi, '_')
-  return path.join(indexDir, `embeddings-${safe}.json`)
+  return path.join(indexDir, `embeddings-${safe}.sqlite`)
 }
 
 function readJSON<T>(p: string): T | null {
@@ -205,7 +206,7 @@ function readJSON<T>(p: string): T | null {
 function listLegacyIndexes(model?: string, username?: string): LegacyMemoryIndex[] {
   const canonicalPath = indexFilePath(model, username)
   const indexDir = path.dirname(canonicalPath)
-  const canonicalName = path.basename(canonicalPath)
+  const canonicalName = path.basename(canonicalPath).replace(/\.sqlite$/, '.json')
   const legacyIndexes: LegacyMemoryIndex[] = []
 
   for (const fileName of fs.readdirSync(indexDir).sort()) {
@@ -227,15 +228,54 @@ function readRequiredJSON<T>(p: string): T {
   return JSON.parse(fs.readFileSync(p, 'utf8')) as T
 }
 
-function writeIndexFile(dest: string, index: VectorIndexFile): void {
-  const tempPath = `${dest}.${randomUUID()}.tmp`
+function openIndex(dest: string): Database.Database {
+  const db = new Database(dest)
   try {
-    fs.writeFileSync(tempPath, JSON.stringify(index, null, 2))
-    fs.renameSync(tempPath, dest)
-  } catch (error) {
-    try { fs.unlinkSync(tempPath) } catch {}
-    throw error
-  }
+    db.pragma('journal_mode = WAL')
+    db.pragma('synchronous = FULL')
+    db.exec(`CREATE TABLE IF NOT EXISTS index_meta (id INTEGER PRIMARY KEY CHECK(id=1), revision TEXT NOT NULL, document TEXT NOT NULL);
+      CREATE TABLE IF NOT EXISTS index_items (position INTEGER PRIMARY KEY, id TEXT NOT NULL, document TEXT NOT NULL);
+      CREATE INDEX IF NOT EXISTS index_item_identity ON index_items(id);`)
+    return db
+  } catch (error) { db.close(); throw error }
+}
+
+function replaceIndex(db: Database.Database, index: VectorIndexFile): void {
+  db.transaction(() => {
+    db.prepare('DELETE FROM index_items').run()
+    const put = db.prepare('INSERT INTO index_items VALUES (?, ?, ?)')
+    index.data.forEach((item, position) => put.run(position, item.id, JSON.stringify(item)))
+    db.prepare('INSERT OR REPLACE INTO index_meta VALUES (1, ?, ?)').run(randomUUID(), JSON.stringify(index.meta))
+  }).immediate()
+}
+
+/** The same owner handles full rebuilds and incremental memory admission. */
+export function saveIndex(index: VectorIndexFile, model?: string, username?: string): void {
+  const dest = indexFilePath(model, username)
+  const db = openIndex(dest)
+  try { replaceIndex(db, index) } finally { db.close() }
+  fs.rmSync(dest.replace(/\.sqlite$/, '.json'), { force: true })
+  clearIndexCache()
+}
+
+/** Import the prior canonical file once, and retire it only after the database commit. */
+function existingIndex(dest: string): Database.Database | null {
+  const legacy = dest.replace(/\.sqlite$/, '.json')
+  if (!fs.existsSync(dest) && !fs.existsSync(legacy)) return null
+  const db = openIndex(dest)
+  try {
+    if (!db.prepare('SELECT 1 FROM index_meta WHERE id=1').get()) {
+      const present = db.transaction(() => {
+        if (db.prepare('SELECT 1 FROM index_meta WHERE id=1').get()) return true
+        if (!fs.existsSync(legacy)) return false
+        replaceIndex(db, readRequiredJSON<VectorIndexFile>(legacy))
+        return true
+      }).immediate()
+      if (!present) { db.close(); return null }
+    }
+    fs.rmSync(legacy, { force: true })
+    return db
+  } catch (error) { db.close(); throw error }
 }
 
 // ============================================================================
@@ -243,9 +283,8 @@ function writeIndexFile(dest: string, index: VectorIndexFile): void {
 // ============================================================================
 interface IndexCacheEntry {
   path: string
-  mtimeMs: number
+  revision: string
   index: VectorIndexFile
-  loadedAt: number
 }
 
 let indexCache: IndexCacheEntry | null = null
@@ -522,7 +561,7 @@ async function buildMemoryIndex(options: {
   // The canonical index filename is a stable role slot. The actual configured
   // model and provider are recorded in metadata and may change between builds.
   const dest = indexFilePath(undefined, username)
-  writeIndexFile(dest, out)
+  saveIndex(out, undefined, username)
 
   // Clear cache so next query loads fresh index
   clearIndexCache()
@@ -534,43 +573,24 @@ async function buildMemoryIndex(options: {
 
 export function loadIndex(model?: string, username?: string): VectorIndexFile | null {
   const p = indexFilePath(model, username)
-
-  // Check cache validity
-  if (indexCache && indexCache.path === p) {
-    try {
-      const stats = fs.statSync(p)
-      if (stats.mtimeMs === indexCache.mtimeMs) {
-        // Cache hit - file hasn't changed
-        return indexCache.index
-      }
-      console.log('[vector-index] Index file changed, reloading...')
-    } catch {
-      // File may have been deleted
-      indexCache = null
-    }
+  let db: Database.Database | null
+  try { db = existingIndex(p) }
+  catch (error) {
+    if (error instanceof SyntaxError || ['SQLITE_CORRUPT', 'SQLITE_NOTADB'].includes((error as { code?: string }).code ?? '')) return null
+    throw error
   }
-
-  // Cache miss - load from disk
-  const loadStart = Date.now()
-  const index = readJSON<VectorIndexFile>(p)
-
-  if (index) {
-    try {
-      const stats = fs.statSync(p)
-      indexCache = {
-        path: p,
-        mtimeMs: stats.mtimeMs,
-        index,
-        loadedAt: Date.now(),
-      }
-      const loadTime = Date.now() - loadStart
-      console.log(`[vector-index] ✓ Index loaded and cached (${index.meta.items} items, ${loadTime}ms)`)
-    } catch {
-      // Couldn't get stats, still return the index
-    }
-  }
-
-  return index
+  if (!db) return null
+  try {
+    return db.transaction(() => {
+      const row = db.prepare('SELECT revision, document FROM index_meta WHERE id=1').get() as { revision: string; document: string }
+      if (indexCache?.path === p && indexCache.revision === row.revision) return indexCache.index
+      const index: VectorIndexFile = { meta: JSON.parse(row.document), data:
+        (db.prepare('SELECT document FROM index_items ORDER BY position').all() as Array<{ document: string }>)
+          .map(item => JSON.parse(item.document)) }
+      indexCache = { path: p, revision: row.revision, index }
+      return index
+    }).deferred()
+  } finally { db.close() }
 }
 
 /**
@@ -913,7 +933,7 @@ export async function appendEventToIndex(event: {
     throw new MemoryIndexIncompatibleError()
   }
   const vector = embedding.embeddings
-  idx.data.push({
+  const item: VectorIndexItem = {
     id: event.id,
     path: event.path || '',
     type: 'episodic',
@@ -924,18 +944,31 @@ export async function appendEventToIndex(event: {
     timestamp: event.timestamp,
     text,
     vector,
-  })
-  idx.meta.items = idx.data.length
+  }
 
   const indexPath = indexFilePath(options.model, options.username)
-  writeIndexFile(indexPath, idx)
-
-  // Update cache in place (avoid full reload for single append)
-  if (indexCache && indexCache.path === indexPath) {
-    const stats = fs.statSync(indexPath)
-    indexCache.mtimeMs = stats.mtimeMs
-    // idx is already the cached index, so it's updated in place
-  }
+  const db = existingIndex(indexPath)
+  if (!db) throw new MemoryIndexUnavailableError({ exists: false, reason: 'missing' })
+  try {
+    const committed = db.transaction(() => {
+      const current = db.prepare('SELECT revision, document FROM index_meta WHERE id=1').get() as { revision: string; document: string }
+      const meta: VectorIndexMeta = JSON.parse(current.document)
+      if (embedding.model !== meta.model || embedding.provider !== meta.provider
+        || (meta.dimensions && embedding.dimensions !== meta.dimensions)) throw new MemoryIndexIncompatibleError()
+      if (db.prepare('SELECT 1 FROM index_items WHERE id=?').get(item.id)) return null
+      db.prepare('INSERT INTO index_items SELECT COALESCE(MAX(position), -1)+1, ?, ? FROM index_items')
+        .run(item.id, JSON.stringify(item))
+      meta.items++
+      const revision = randomUUID()
+      db.prepare('UPDATE index_meta SET revision=?, document=? WHERE id=1').run(revision, JSON.stringify(meta))
+      return { priorRevision: current.revision, revision, meta }
+    }).immediate()
+    if (committed && indexCache?.path === indexPath && indexCache.revision === committed.priorRevision) {
+      indexCache.index.data.push(item)
+      indexCache.index.meta = committed.meta
+      indexCache.revision = committed.revision
+    }
+  } finally { db.close() }
 
   return true
 }

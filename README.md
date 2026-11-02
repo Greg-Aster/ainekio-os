@@ -4,6 +4,11 @@ MetaHuman OS is a local-first operating system for a persistent personal AI iden
 
 It is not a single chatbot wrapper. It is a development system for building a digital counterpart: one that can talk with you, maintain an inner dialogue, remember what matters, generate goals, run background work, train adapters from your history, and connect to external environments.
 
+**Working on Ainekio:** start with the shared [robot design core](docs/robot/ROBOT_BIBLE.md)
+for the companion's purpose, architecture, ownership and maintenance approach.
+Human and agent contributors then follow the contract and qualification scenario
+relevant to their task. [AGENTS.md](AGENTS.md) governs repository work.
+
 ![MetaHuman OS interface](docs/images/metahuman-os-ui-2026-02-27.png)
 
 ## What It Is For
@@ -16,7 +21,7 @@ MetaHuman OS is built for long-running personal AI operation:
 - **Learning**: curation, dataset building, LoRA/fine-tune workflows, and backend-owned model activation from the user's own memories and persona data.
 - **Agency**: supervised autonomous desire generation, planning, review, execution, outcome review, and goal proposal.
 - **Tools**: trust-aware skills for files, tasks, calendar, memory search, shell-safe commands, agents, code changes, and remote/operator escalation.
-- **Voice**: local STT/TTS, voice chat, transcript ingestion, Kokoro voices, GPT-SoVITS, RVC, and voice-training workflows.
+- **Voice**: local STT/TTS, voice chat, transcript ingestion, Kokoro voices, RVC, and voice-training workflows.
 - **Embodiment**: an in-development environment mode that reads observations from games, simulators, robots, or other surfaces and queues bounded semantic actions.
 
 The design assumption is local ownership. Runtime identity, profiles, memories, logs, generated adapters, browser state, and local agent data are user data, not maintained source.
@@ -58,7 +63,6 @@ MetaHuman OS routes LLM calls through a role-aware model router instead of bindi
 Supported backend paths include:
 
 - **Ollama** for simple local model serving.
-- **vLLM** for larger local models and higher-throughput GPU inference.
 - **local-models service** for lighter CPU/mobile-friendly model and embedding work.
 - **remote/server providers** for connected MetaHuman servers or cloud-backed inference.
 - **Big Brother/operator backends** such as Claude Code, Codex, Aider, Qwen Code, or Gemini CLI for escalated reasoning and coding workflows.

@@ -80,7 +80,7 @@ def main() -> None:
 
     if config.get("owner") != "environment-action-selector":
         raise ValueError("config owner must be environment-action-selector")
-    if config.get("base_model") not in {"unsloth/Qwen3.5-0.8B", "unsloth/Qwen3.5-2B"}:
+    if config.get("base_model") not in {"unsloth/Qwen3.5-0.8B", "unsloth/Qwen3.5-2B", "unsloth/Qwen3.5-9B"}:
         raise ValueError("evaluator requires a recorded supported Qwen3.5 base")
     if not args.base and (not adapter_path.is_dir() or not (adapter_path / "adapter_config.json").is_file()):
         raise ValueError(f"adapter checkpoint is incomplete: {adapter_path}")

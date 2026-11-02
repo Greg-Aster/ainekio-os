@@ -9,10 +9,11 @@ import {
 import { UnifiedQueueManager } from './unified-queue-manager.js'
 
 test('Agent follow-on submission builds one coordinator-owned finite task contract', () => {
+  const seed = 'Original cause. ' + 'x'.repeat(12_100) + ' Full final evidence. 🤖'
   assert.deepEqual(buildAgentFollowOnTaskInput({
     agentId: 'train-of-thought',
     username: 'test-user',
-    seed: 'A persisted result.',
+    seed,
     sourceAgent: 'reflector',
     executionId: 'reflector:test-user:execution-1',
     idempotencyKey: 'agent-follow-on:reflector:train-of-thought:execution-1',
@@ -25,7 +26,7 @@ test('Agent follow-on submission builds one coordinator-owned finite task contra
     priority: 'low',
     input: {
       agentId: 'train-of-thought',
-      seed: 'A persisted result.',
+      seed,
       sourceAgent: 'reflector',
       executionId: 'reflector:test-user:execution-1',
       triggeredBy: 'agent-follow-on',
@@ -43,7 +44,7 @@ test('Agent follow-on submission builds one coordinator-owned finite task contra
   })
 })
 
-test('Agent follow-on submission rejects unsupported targets and unbounded seeds', () => {
+test('Agent follow-on submission rejects unsupported targets and invalid identity', () => {
   const base = {
     agentId: 'train-of-thought',
     username: 'test-user',
@@ -55,10 +56,6 @@ test('Agent follow-on submission rejects unsupported targets and unbounded seeds
   assert.throws(
     () => buildAgentFollowOnTaskInput({ ...base, agentId: 'missing-agent' }),
     /No maintained executable/,
-  )
-  assert.throws(
-    () => buildAgentFollowOnTaskInput({ ...base, seed: 'x'.repeat(12_001) }),
-    /must not exceed 12000 characters/,
   )
   assert.throws(
     () => buildAgentFollowOnTaskInput({ ...base, sourceAgent: 'Not Valid' }),

@@ -3,11 +3,11 @@
  *
  * Delivers text through the configured Text-to-Speech output.
  * Has two input handles: conversation and innerDialogue
- * Local playback uses the client queue; Environment Mode robot playback is
+ * Browser playback uses the client queue; Body Control playback is
  * rendered server-side and sent through the existing Environment Bridge.
  *
- * The main ChatInterface speaker control owns global enablement. The shared
- * playback consumer additionally gates Inner Dialogue by visible UI state.
+ * The main ChatInterface speaker control owns enablement and destination for
+ * every workflow, independently of source, dialogue mode, or visible UI panel.
  */
 
 import { defineNode, type NodeDefinition } from '../types.js';
@@ -39,11 +39,6 @@ interface TTSOutputDependencies {
   createRequestId: () => string;
 }
 
-const ROBOT_SPEECH_WORKFLOW_SOURCES = new Set([
-  'environment-mode',
-  'fast-body-event',
-]);
-
 const defaultTTSOutputDependencies: TTSOutputDependencies = {
   getSettings: getSpeechOutputSettings,
   queue: queueTTS,
@@ -66,7 +61,7 @@ export async function deliverTTSOutput(
 ): Promise<TTSOutputDelivery> {
   const dependencies = { ...defaultTTSOutputDependencies, ...dependencyOverrides };
   const settings = dependencies.getSettings(request.username);
-  const route = request.mode === 'inner' ? 'local' : settings.outputTarget;
+  const route = settings.outputTarget;
 
   if (settings.speechDisabled) {
     return {
@@ -77,20 +72,9 @@ export async function deliverTTSOutput(
     };
   }
 
-  // Inner Dialogue is a local interface surface whose audible state is gated
-  // by the visible Inner view. Outward robot speech remains limited to the two
-  // explicit robot execution workflows rather than becoming a general TTS path.
   if (route === 'robot') {
     if (request.generation !== undefined && request.generation !== getTTSQueueState(request.username).generation) {
       return { accepted: false, deliveryId: '', route, reason: 'Speech belongs to an interrupted user turn' };
-    }
-    if (!ROBOT_SPEECH_WORKFLOW_SOURCES.has(request.source)) {
-      return {
-        accepted: false,
-        deliveryId: '',
-        route: 'robot',
-        reason: 'Robot speech is limited to robot execution workflows',
-      };
     }
     if (settings.provider !== 'kokoro') {
       return {

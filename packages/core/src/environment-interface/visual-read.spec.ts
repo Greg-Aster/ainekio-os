@@ -15,7 +15,8 @@ setAuditEnabled(false);
 const { getQueueManager } = await import('../queue/index.js');
 const manager = getQueueManager();
 const { dispatchEnvironmentVisualReads, recordEnvironmentVisualReadResult, releaseEnvironmentStreamWork,
-  subscribeEnvironmentActions, writeEnvironmentBridgeState } = await import('./store.js');
+  subscribeEnvironmentActions, writeEnvironmentBridgeState, readEnvironmentBridgeState,
+  recordEnvironmentObservation, reconcileEnvironmentDepthDemands } = await import('./store.js');
 const { environmentImageInputNode } = await import('../nodes/environment/image-input.node.js');
 const { runDurableGraph, withGraphWork } = await import('../durable-execution/runtime.js');
 const { ExecutionEngine } = await import('../queue/execution-engine.js');
@@ -42,6 +43,50 @@ function connect() {
   writeEnvironmentBridgeState({ enabled: true, updatedAt: new Date().toISOString(), sessions: {}, feedback: [] });
   return subscribeEnvironmentActions(sessionId, () => {});
 }
+
+test('depth registration survives observations and reconnect, and cancellation releases its resource', () => {
+  const disconnect = connect();
+  const store = openExecutionStore(username);
+  const record = store.create(username, { graphId: 'depth-fixture', graphHash: 'depth-v1', runtimeVersion: 'fixture',
+    checkpointSchemaVersion: 1, nodeVersions: {} });
+  store.db.prepare("UPDATE executions SET status='waiting' WHERE execution_id=?").run(record.executionId);
+  const observed = { environmentId: 'fixture', adapter: 'ainekio-gateway', sessionId,
+    timestamp: new Date().toISOString(), capabilities: { actions: [] }, state: {} };
+  try {
+    recordEnvironmentObservation(observed);
+    manager.enqueue({ type: 'generic', handler: 'environment.visual-read', resource: 'environment-depth-acquire:depth-consumer',
+      source: 'environment', username, input: { sessionId, depthExecutionId: record.executionId,
+        vision: { operation: 'depthDemand', consumerId: 'depth-consumer', enabled: true } } });
+    const [first] = dispatchEnvironmentVisualReads(sessionId, 'connection-one');
+    assert.equal(first.operation, 'depthDemand');
+    manager.enqueue({ type: 'generic', handler: 'environment.visual-read', resource: `environment-visual-read:${sessionId}`,
+      source: 'environment', username, input: { sessionId } });
+    const [cameraRead] = dispatchEnvironmentVisualReads(sessionId, 'connection-one');
+    assert.ok(cameraRead, 'ordinary camera reads proceed while depth is still loading');
+    recordEnvironmentVisualReadResult({ ...cameraRead, visual });
+    releaseEnvironmentStreamWork(sessionId, 'connection-one');
+    const replayed = dispatchEnvironmentVisualReads(sessionId, 'connection-one-reconnected');
+    assert.equal(replayed.length, 1, 'pending acquisition reuses its original work identity on reconnect');
+    assert.equal(replayed[0].requestId, first.requestId);
+    recordEnvironmentVisualReadResult({ ...first, vision: { enabled: true, locomotionMeasurement: { position: { available: true } } } });
+    recordEnvironmentObservation(observed);
+    assert.equal(readEnvironmentBridgeState().sessions[sessionId].depthDemands?.['depth-consumer'].executionId, record.executionId);
+    assert.deepEqual(dispatchEnvironmentVisualReads(sessionId, 'connection-one-reconnected'), []);
+    releaseEnvironmentStreamWork(sessionId, 'connection-one-reconnected');
+    const [reconnected] = dispatchEnvironmentVisualReads(sessionId, 'connection-two');
+    assert.equal(reconnected.consumerId, first.consumerId);
+    assert.equal(reconnected.enabled, true);
+    recordEnvironmentVisualReadResult({ ...reconnected, vision: { enabled: true } });
+    store.cancel(record.executionId, { eventId: 'cancel-depth-fixture', kind: 'user_cancelled', payload: {} });
+    reconcileEnvironmentDepthDemands(record.executionId);
+    const [release] = dispatchEnvironmentVisualReads(sessionId, 'connection-two');
+    assert.equal(release.consumerId, first.consumerId);
+    assert.equal(release.enabled, false);
+    recordEnvironmentVisualReadResult({ ...release, vision: { enabled: false } });
+    assert.deepEqual(readEnvironmentBridgeState().sessions[sessionId].depthDemands, {});
+    assert.deepEqual(dispatchEnvironmentVisualReads(sessionId, 'connection-two'), []);
+  } finally { store.close(); disconnect(); }
+});
 
 async function run(executionId?: string) {
   const work = manager.enqueue({ type: 'generic', handler: 'graph.resume', source: 'user', username, input: { id: randomUUID() } });

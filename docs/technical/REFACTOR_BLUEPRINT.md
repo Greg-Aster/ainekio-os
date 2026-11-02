@@ -1,53 +1,71 @@
-# System Refactor Blueprint
+# Architecture and Repair Design
 
-- **Status:** Baseline program complete; protocol active
-- **Started:** 2026-08-24
-- **Baseline completed:** 2026-08-25
-- **Scope:** Repository-wide baseline plus continuing owner-by-owner consolidation
+This is the design authority for repairs and consolidation in MetaHuman OS.
+[AGENTS.md](../../AGENTS.md) owns scope and approval; [Maintained Surface](MAINTAINED_SURFACE.md)
+owns executable-source policy and live runtime boundaries. Use [Audit Protocol](AUDIT_PROTOCOL.md)
+for an explicitly requested audit. Dated baseline plans and the consolidation ledger
+are historical evidence, not an instruction to begin another repository-wide rewrite.
 
-This is the canonical protocol and baseline plan for MetaHuman OS refactoring.
-The completion date records the initial repository-wide pass; it does not imply
-that later feature work or newly discovered ownership debt is already resolved.
-Detailed audit findings belong under `docs/audits/`; chronological implementation
-evidence belongs in `docs/audits/consolidation-progress.md`.
+## Repair Design
 
-This protocol does not reopen the baseline program for each repair. Apply the
-bounded workflow, task scope, and validation reuse rules in root `AGENTS.md`.
-The progress ledger is searchable historical evidence, not current architecture
-authority or authorization to execute its old plans.
+A repair changes the implementation that violates the intended contract. It may
+require coordinated edits across an owner and its callers; minimizing the number
+of touched files is not the same as minimizing system complexity. Preserving a
+faulty producer and adding a consumer-side workaround is usually a smaller patch
+but leaves more responsibilities and failure modes behind.
 
-## Engineering Principles
+For robot work, begin with the affected capability in the shared
+[design core](../robot/ROBOT_BIBLE.md). Trace the concrete path from admission
+to result, including persisted state and both sides of any Ainekio/MetaHuman
+handoff. Select the relevant [qualification scenario](../robot/QUALIFICATION.md);
+a local repair must preserve the interacting companion capabilities. The
+[maintenance walkthroughs](../robot/QUALIFICATION.md#maintenance-walkthroughs)
+show concrete owner paths and focused commands for common cross-repository changes.
+Use the existing code and failing behavior to answer these questions in the task's
+short plan; do not create a separate registry or document for each repair:
 
-1. **Production quality.** Correct the canonical owner. Do not leave patches,
-   workarounds, cruft, avoidable debt, orphan code, hidden fallbacks, or misleading
-   completion claims.
-2. **Discover before creating.** Search maintained source, exports, callers,
-   routes, configuration, tests, and documentation. Reuse, repair, or consolidate
-   the existing owner before adding code.
-3. **One system per responsibility.** Do not create duplicate or competing queues,
-   schedulers, stores, validators, policies, services, or execution paths.
-4. **Separation of concerns.** Preserve dependency direction and keep behavior
-   behind a narrow owner contract so optional utilities can be removed cleanly.
-5. **Lean implementation.** Use the smallest complete design. Delete superseded
-   code, wiring, configuration, dependencies, tests, and docs in the same change.
-6. **Evidence before completion.** Run focused validation and search for stale
-   references, duplicate paths, and unused artifacts. Report unverified behavior
-   honestly.
+| Design question | Evidence needed |
+| --- | --- |
+| What should the user or caller observe? | Requested behavior and existing public/capability contract |
+| Where does actual behavior first diverge? | Failing test, correlated trace, or producer/transition source evidence |
+| Who owns that responsibility, and who consumes its result? | Existing entrypoint, callers, registration and maintained owner on each affected side of the handoff |
+| What changes, and what becomes unnecessary? | Before/after transition and removal of obsolete paths and consumers |
+| Why is each retained piece of state needed? | Identified reader/delivery obligation and release transition |
+| How can the original defect be detected again? | Regression exercised through the real failing boundary |
 
-## Refactor Scope
+Prefer correction within the owner, then consolidation of competing implementations.
+New infrastructure is a design change requiring the Owner's explicit authorization,
+not an automatic consequence of a bug. A helper that completes the owner's existing
+responsibility is ordinary implementation. An independent sweep, retry service,
+registry, or second execution route is another mechanism regardless of its filename.
+Do not use line-count quotas, arbitrary function-size splits, or generic abstractions
+as substitutes for understanding responsibility.
 
-The maintained boundary is defined by `docs/technical/MAINTAINED_SURFACE.md`, not
-by directory size or convenience. Excluded runtime, personal, generated, vendor,
-archive, and legacy bulk areas are not normal refactor targets. Remote-safety
-checks still apply to the complete tracked tree.
+## State and Lifecycle
 
-Existing worktree changes belong to their current authors. Before editing an
-overlapping file, attribute the change, understand its intended owner and
-validation state, and preserve unrelated work.
+Treat creation, transition, consumption and release as one owner's responsibility.
+Persist only the facts that an identified consumer needs; distinguish these cases:
 
-The program is behavior-preserving unless the Installation Owner explicitly
-requests a product change. An audit finding may support a proposed scoped ticket;
-implementation still needs authorization in the current task.
+| Kind of state | Lifetime and access |
+| --- | --- |
+| Active operation | Until its real work and result handoff are resolved |
+| Undelivered result | Until its consumer durably records it; replay preserves identity |
+| Domain memory or evidence | Its domain's deliberate retention policy, queried when needed |
+| Derived view/index/cache | Rebuildable projection of its canonical source, not another decision owner |
+
+One result may cross several owners, but each handoff needs an explicit transfer
+of responsibility. Commit the receiving fact before releasing the sender's temporary
+copy. If interrupted between those steps, recover that same delivery by identity;
+do not rerun the action or manufacture a successful result. Do not retain full
+payloads merely to keep an identifier. Durable goals, conversation context and finite
+worker jobs have different lifetimes; one being unfinished does not make all of them
+active work or block independent speech, sensing, movement or new admission.
+
+For storage/performance failures, inspect both the write path and the read path.
+An index can repair a necessary query; it cannot justify retaining unnecessary
+records. A faster sweep cannot repair a missing release transition. Migration of
+old debris is finite deployment work, separate from steady-state behavior. Preserve
+intentional domain evidence rather than relabeling it as unwanted queue history.
 
 ## Target Architecture
 
@@ -86,82 +104,84 @@ packages/core
 - Runtime data is resolved through profile, path, and storage owners. Do not
   hardcode profile, persona, memory, or user paths.
 
-## Owner-by-Owner Method
+## Contracts and Consolidation
 
-For each explicitly scoped owner group (a repair does not require auditing
-unrelated owners or restarting the repository-wide order below):
+A maintained component contract states the observable purpose, owning entrypoint,
+input/output meaning (including units and identity), failure/cancellation behavior,
+state creation/consumption/release, and the relevant checks. Record why a significant
+boundary exists and what was replaced. Put missing details in that owner's existing
+reference, not in another master inventory. Link executable schemas and settings
+instead of transcribing their values. Label intended behavior, inspected source and
+deployed/physical evidence separately.
 
-1. inventory its entrypoints, public contracts, callers, registrations,
-   configuration, state, side effects, tests, and runtime evidence;
-2. record keep, repair, merge, move, split, or delete findings using
-   `docs/technical/AUDIT_PROTOCOL.md`;
-3. identify duplicate ownership, inverted dependencies, bypasses, compatibility
-   residue, dead paths, and missing validation;
-4. define one bounded implementation slice with a baseline, deletion set if any, and
-   acceptance evidence;
-5. change the canonical owner and affected consumers; remove what is superseded,
-   without requiring artificial deletions for missing behavior in that owner;
-6. obtain focused tests plus applicable type, build, architecture, remote-safety,
-   and runtime evidence, reusing valid results under `AGENTS.md`;
-7. record a concise result and remaining limitations in the progress ledger,
-   linking detailed findings instead of copying them. Stop at slice acceptance;
-   unrelated findings remain proposals for separately authorized work.
+During review, follow one affected input through every producer/consumer handoff
+and its interacting capability. Confirm that each necessary responsibility still
+exists exactly once and every retired route is gone from callers and registrations.
+Changing a file count or passing import checks alone does not answer that question.
 
-Auditing and implementation remain separate passes. Suspected orphan code is
-deleted only after static references and real entrypoints or registrations agree.
+- Keep policy, state transitions and side effects behind the canonical owner.
+  Adapters translate transport; graph nodes compose functions; UI projects state.
+  A second layer must not independently reinterpret the same lifecycle.
+- Use typed inputs/results that distinguish requested, admitted, running, observed,
+  failed and unknown outcomes. Preserve source, time, speaker and correlation across
+  handoffs. A transport acknowledgement does not prove physical completion.
+- Existing tests and comments can preserve mistakes. Compare them with the user
+  contract and evidence before preserving an assertion or copying a pattern.
+- Delete the replaced path, callers, exports, registrations, settings, tests and
+  docs together after confirming real references/entrypoints. Preserve useful test
+  coverage by moving its behavioral assertions to the surviving owner.
+- Prefer the current library/owner contract over a local framework. Add configuration
+  only for an actual user decision; do not create flags for abandoned designs.
+- Record the reason for a significant cross-owner choice alongside its existing
+  maintained contract: which owner survives, why, and which path was retired.
+  Do not create a parallel architecture catalog, approval service or recurring audit
+  process. An accepted temporary coexistence needs its explicit removal condition.
 
-## Repository-Wide Audit Order
+## Executable Evidence
 
-Use this order only for an explicitly requested repository-wide audit/refactor.
+Behavior tests belong beside the owner; their maintained commands belong in existing
+package scripts. Structural dependency rules belong in the existing architecture
+checker. Neither is a runtime limiter or an instruction to add another framework.
 
-1. Maintained-source boundary, remote safety, workspace entrypoints, and guardrails.
-2. Root package metadata, dependency ownership, lockfiles, and build configuration.
-3. `packages/core` foundations: paths, storage, auth, policy, models, providers,
-   memory, and shared infrastructure.
-4. `packages/core` domain owners: queues, triggers, agents, autonomy, environment,
-   speech, training, and other services.
-5. Core API handlers, graph execution, nodes, schemas, and public exports.
-6. `packages/agent-runtime`, `packages/cli`, and the local model service package.
-7. `apps/site` transport, client stores, components, and public assets.
-8. `brain/*` agents, services, and training.
-9. React Native and other maintained interface applications.
-10. `etc`, `scripts`, `bin`, `docker`, plugins, tests, fixtures, and maintained docs.
-11. Final cross-repository orphan, duplicate-owner, dependency, configuration,
-    documentation, and end-to-end validation pass.
+For each changed contract, choose the smallest evidence that distinguishes correct
+behavior from the actual defect. Exercise the real producer/consumer boundary;
+mock external models or actuators when necessary, not the transition under test.
+Verify that the regression fails before the repair when practical. If only a
+counterfactual or source trace is possible, state that limitation.
 
-Do not begin a later owner group merely to avoid resolving a finding in the
-current group. A high-risk dependency may be audited early when it blocks proof,
-but its ownership must be recorded.
+Persistence tests inspect actual stored rows after normal consumption, then reopen
+the store. Lifecycle tests repeat operations and cover interruption on either side
+of the handoff, delayed results, cancellation and replay where relevant. Assert
+both that required evidence survives and that unnecessary copies do not accumulate.
+A fixture that calls a cleanup method explicitly does not prove ordinary operation
+releases state. Performance evidence uses representative records/payloads and the
+actual query/handoff; cheap synthetic happy paths alone do not qualify a latency fix.
 
-## Slice Record
+Use existing structural checks for deterministic boundaries. Design review examines
+whether a responsibility belongs here at all, whether a dependency is justified,
+and whether the old cause has been removed. Do not replace that judgment with
+keyword bans, a blanket ban on new lines, or tests that merely search for a newly
+chosen function name. Do not weaken a failing expectation simply to make a repair
+pass; changing an obsolete assertion requires the explicit intended contract and
+replacement behavioral proof.
 
-Every implementation entry in the progress ledger includes:
+## Why This Approach
 
-- scope and canonical owner;
-- baseline behavior and evidence;
-- duplication, debt, and boundary findings;
-- decision and non-goals;
-- files changed, moved, merged, and deleted;
-- validation commands and results;
-- remaining unverified behavior or blockers.
+Research does not establish that longer agent instructions produce better repairs.
+[Evaluating AGENTS.md](https://arxiv.org/abs/2602.11988) found no general success
+improvement and higher inference cost in its evaluated settings; [another study](https://arxiv.org/abs/2601.20404)
+found efficiency improvements on a different sample. These results support testing
+repository-specific outcomes, not treating more prose as a proven remedy.
 
-## Program Completion Criteria
+[OpenAI's engineering account](https://openai.com/index/harness-engineering/) describes
+using a short instruction map, maintained design knowledge, and executable
+architecture checks. [Google's review guidance](https://google.github.io/eng-practices/review/reviewer/looking-for.html)
+prioritizes overall design, present needs, complexity and useful tests.
+[Its testing guidance](https://testing.googleblog.com/2013/08/testing-on-toilet-test-behavior-not.html)
+explains why behavior-based assertions survive implementation changes better.
 
-The repository-wide refactor is complete only when:
-
-- every maintained owner group has an audit disposition and recorded evidence;
-- architecture and remote-safety checks pass without stale or unexplained drift;
-- dependency direction and critical runtime ownership match the maintained
-  contracts;
-- no known duplicate owner, bypass path, obsolete compatibility path, orphan
-  implementation, or avoidable touched-scope debt remains;
-- replaced dependencies, configuration, tests, generated artifacts, and docs are
-  removed or updated;
-- package-level type, build, and focused behavior checks pass;
-- runtime, external, and physical claims are supported by matching evidence;
-- current architecture and user documentation describe the surviving system;
-- the final diff is scoped, reviewable, remote-safe, and free of stale references.
-
-An unresolved item may be recorded for owner judgment, but it cannot be silently
-treated as completed. Guardrail baselines must not be refreshed merely to hide
-new drift.
+Applied here: keep repository instructions focused, maintain one contract per owner,
+use the existing test/check commands to detect demonstrated regressions, and review
+whether each change removes the cause. These are development practices; they do
+not authorize runtime restrictions, additional background services or autonomous
+cleanup work.

@@ -14,20 +14,23 @@ eventBus.disconnect()
 after(() => fs.rmSync(root, { recursive: true, force: true }))
 
 test('five-minute default and interval edits persist without changing the selected mode', async () => {
-  assert.deepEqual(loadConfig(), { autonomyMode: 'reactive', semiInactivityMinutes: 5 })
+  assert.deepEqual(loadConfig(), { autonomyMode: 'reactive', semiAssessmentMinutes: 5 })
   fs.mkdirSync(path.join(root, 'etc'), { recursive: true })
   fs.writeFileSync(path.join(root, 'etc/active-operator.json'), JSON.stringify({ autonomyMode: 'semi' }))
-  assert.deepEqual(loadConfig(), { autonomyMode: 'semi', semiInactivityMinutes: 5 })
+  assert.deepEqual(loadConfig(), { autonomyMode: 'semi', semiAssessmentMinutes: 5 })
+  fs.writeFileSync(path.join(root, 'etc/active-operator.json'), JSON.stringify({ autonomyMode: 'semi', semiInactivityMinutes: 1.5 }))
+  assert.deepEqual(loadConfig(), { autonomyMode: 'semi', semiAssessmentMinutes: 1.5 })
   const request = (value: unknown) => ({ user: { isAuthenticated: true, role: 'owner', username: 'fixture' },
-    body: { semiInactivityMinutes: value } }) as any
+    body: { semiAssessmentMinutes: value } }) as any
   const result = await handleUpdateActiveOperatorConfig(request(2.5))
   assert.equal(result.status, 200)
-  assert.deepEqual(loadConfig(), { autonomyMode: 'semi', semiInactivityMinutes: 2.5 })
+  assert.deepEqual(loadConfig(), { autonomyMode: 'semi', semiAssessmentMinutes: 2.5 })
+  assert.equal('semiInactivityMinutes' in JSON.parse(fs.readFileSync(path.join(root, 'etc/active-operator.json'), 'utf8')), false)
   const response = await handleGetActiveOperatorConfig()
-  assert.equal((response.data as any).semiInactivityMinutes, 2.5)
+  assert.equal((response.data as any).semiAssessmentMinutes, 2.5)
   for (const invalid of [0, -1, NaN, Infinity, '5']) {
     assert.equal((await handleUpdateActiveOperatorConfig(request(invalid))).status, 400)
-    assert.equal(loadConfig().semiInactivityMinutes, 2.5)
+    assert.equal(loadConfig().semiAssessmentMinutes, 2.5)
   }
-  assert.deepEqual(updateConfig({ autonomyMode: 'full' }), { autonomyMode: 'full', semiInactivityMinutes: 2.5 })
+  assert.deepEqual(updateConfig({ autonomyMode: 'full' }), { autonomyMode: 'full', semiAssessmentMinutes: 2.5 })
 })

@@ -4,12 +4,13 @@ import os from 'node:os'
 import path from 'node:path'
 import { createHash } from 'node:crypto'
 import { after, test } from 'node:test'
+import { createServer } from 'node:http'
+import { once } from 'node:events'
 
 const root = fs.mkdtempSync(path.join(os.tmpdir(), 'metahuman-candidate-review-'))
 process.env.METAHUMAN_ROOT = root
 const adapters = await import('./adapters.js')
 const { OllamaClient } = await import('./ollama.js')
-const { VLLMClient } = await import('./vllm.js')
 const { eventBus } = await import('./infrastructure/event-bus/client.js')
 eventBus.disconnect()
 const { setAuditEnabled } = await import('./audit.js')
@@ -21,7 +22,7 @@ const { migrateModelRegistry } = await import('./model-resolver.js')
 after(() => { eventBus.disconnect(); fs.rmSync(root, { recursive: true, force: true }) })
 
 const hash = (value: string) => createHash('sha256').update(value).digest('hex')
-function fixture(username: string, target: 'ollama' | 'vllm' = 'ollama', method = 'local-lora') {
+function fixture(username: string, target = 'ollama', method = 'local-lora') {
   const runLabel = '2026-09-09T01-02-03-000Z'
   const directory = path.join(getProfilePaths(username).out, 'adapters', runLabel.slice(0, 10), runLabel)
   const artifact = path.join(directory, method === 'fine-tune' ? 'model' : 'adapter')
@@ -37,8 +38,9 @@ function fixture(username: string, target: 'ollama' | 'vllm' = 'ollama', method 
   const evaluation = JSON.stringify({ version: 1, loss: 1, count: 3, evaluationSha256: manifest.evaluation.sha256, artifacts: { ...inventory } })
   fs.writeFileSync(path.join(artifact, 'artifact-evaluation.json'), evaluation)
   inventory['artifact-evaluation.json'] = hash(evaluation)
-  fs.writeFileSync(path.join(artifact, 'model.gguf'), 'GGUFfixture')
-  inventory['model.gguf'] = hash('GGUFfixture')
+  const ggufName = target === 'llama-cpp' && method !== 'fine-tune' ? 'adapter.gguf' : 'model.gguf'
+  fs.writeFileSync(path.join(artifact, ggufName), 'GGUFfixture')
+  inventory[ggufName] = hash('GGUFfixture')
   const result = { version: 1, status: 'candidate', datasetId, baseModel: manifest.baseModel, configSha256: hash(config),
     templateSha256: hash('fixture template'), trainingMode: method === 'fine-tune' ? 'full_finetune' : 'lora',
     trainingSamples: 30, evaluationSamples: 3, supervisedTokens: 100, baselineLoss: 2, candidateLoss: 1, qualityGate: 'passed',
@@ -53,6 +55,8 @@ function fixture(username: string, target: 'ollama' | 'vllm' = 'ollama', method 
 
 test('actual review and role assignment require verified files, serving identity and an explicit decision', async t => {
   const run = fixture('review-owner')
+  // Serving startup is outside candidate approval; never start a host service in this fixture.
+  t.mock.method(OllamaClient.prototype, 'isRunning', async () => true)
   let template = 'fixture template'
   t.mock.method(OllamaClient.prototype, 'showModel', async (model: string) => ({
     template, modelfile: model === run.model ? 'FROM sha256-' + run.result.artifacts['model.gguf'] : 'FROM baseline',
@@ -115,75 +119,10 @@ test('actual review and role assignment require verified files, serving identity
   await assert.rejects(adapters.assertTrainingModelApproved('other-owner', 'ollama', run.model), /no review owned/)
 })
 
-test('vLLM preparation loads the exact adapter and full candidates can compare with an Ollama baseline', async t => {
-  const run = fixture('vllm-owner', 'vllm')
-  const cards = [{ id: 'fixture/base', root: 'fixture/base', parent: null as string | null }]
-  t.mock.method(VLLMClient.prototype, 'listModels', async () => cards)
-  t.mock.method(VLLMClient.prototype, 'tokenizerInfo', async () => ({ chat_template: 'fixture template' }))
-  t.mock.method(VLLMClient.prototype, 'loadLoraAdapter', async (name: string, directory: string, base: string) => {
-    assert.deepEqual([name, directory, base], [run.model, run.artifact, 'fixture/base'])
-    cards.push({ id: name, root: directory, parent: base })
-  })
-  assert.deepEqual(await adapters.prepareTrainingCandidate(run.username, run.runLabel), { model: run.model })
-  const full = fixture('full-owner', 'vllm', 'fine-tune')
-  cards.push({ id: 'full-candidate', root: full.artifact, parent: null })
-  t.mock.method(VLLMClient.prototype, 'chat', async (_messages: any[], options: any) => ({ model: options.model, content: 'Candidate answer' }))
-  t.mock.method(OllamaClient.prototype, 'showModel', async () => ({ template: 'baseline template' }))
-  t.mock.method(OllamaClient.prototype, 'chat', async () => ({ message: { content: 'Baseline answer' } }))
-  const review = await adapters.testTrainingCandidate(full.username, full.runLabel, { baselineProvider: 'ollama', baselineModel: 'baseline:latest', prompts: ['One', 'Two', 'Three'] })
-  assert.equal(review.model, 'full-candidate')
-  assert.equal(review.baselineProvider, 'ollama')
-  await adapters.decideTrainingCandidate(full.username, full.runLabel, { reviewId: review.id, decision: 'rejected', notes: 'Does not meet fixture criteria', checks: [] })
-  await assert.rejects(adapters.assertTrainingModelApproved(full.username, 'vllm', 'full-candidate'), /Review and accept/)
-})
-
-test('canonical provider dispatch selects the approved LoRA and blocks unreviewed backend aliases', async t => {
-  const run = fixture('dispatch-owner', 'vllm')
-  const cards = [{ id: 'fixture/base', root: 'fixture/base', parent: null }, { id: run.model, root: run.artifact, parent: 'fixture/base' }]
-  const { vllm } = await import('./vllm.js')
-  const { loadBackendConfig } = await import('./llm-backend.js')
-  const { callProvider } = await import('./providers/bridge.js')
-  fs.mkdirSync(path.join(root, 'etc'), { recursive: true })
-  const configFile = path.join(root, 'etc', 'llm-backend.json')
-  const configure = (model: string) => {
-    fs.writeFileSync(configFile, JSON.stringify({ activeBackend: 'vllm', vllm: { endpoint: 'http://fixture.invalid', model, servedModelName: model } }))
-    loadBackendConfig(true)
-  }
-  configure('fixture/base')
-  t.mock.method(VLLMClient.prototype, 'listModels', async () => cards)
-  t.mock.method(VLLMClient.prototype, 'tokenizerInfo', async () => ({ chat_template: 'fixture template' }))
-  t.mock.method(VLLMClient.prototype, 'isRunning', async () => true)
-  t.mock.method(VLLMClient.prototype, 'getLoadedModel', async () => 'fixture/base')
-  const sent: string[] = []
-  t.mock.method(VLLMClient.prototype, 'chat', async (_messages: any[], options: any) => {
-    sent.push(options.model)
-    return { model: options.model, content: 'Fixture response' }
-  })
-  const context = { username: run.username, userId: run.username, role: 'owner' as const }
-  fs.mkdirSync(getProfilePaths(run.username).etc, { recursive: true })
-  fs.writeFileSync(path.join(getProfilePaths(run.username).etc, 'operator.json'), JSON.stringify({ bigBrotherMode: { enabled: false, delegateAll: false } }))
-  const call = (provider: 'vllm' | 'ollama', model: string) => withUserContext(context,
-    () => callProvider(provider, [{ role: 'user', content: 'Fixture prompt' }], { model }))
-  await assert.rejects(call('vllm', run.model), /Review and accept/)
-  assert.deepEqual(sent, [])
-  const review = await adapters.testTrainingCandidate(run.username, run.runLabel, { baselineProvider: 'vllm', baselineModel: 'fixture/base', prompts: ['One', 'Two', 'Three'] })
-  await adapters.decideTrainingCandidate(run.username, run.runLabel, { reviewId: review.id, decision: 'accepted', notes: 'Fixture criteria passed', checks: [true, true, true] })
-  sent.length = 0
-  assert.equal((await call('vllm', run.model)).model, run.model)
-  assert.equal((await call('ollama', 'ordinary:latest')).model, 'fixture/base')
-  assert.deepEqual(sent, [run.model, 'fixture/base'])
-  await adapters.reopenTrainingCandidateReview(run.username, run.runLabel)
-  cards.push({ id: 'backend-alias', root: run.artifact, parent: 'fixture/base' })
-  configure('backend-alias')
-  await assert.rejects(call('ollama', 'ordinary:latest'), /Review and accept/)
-  await assert.rejects(callProvider('vllm', [{ role: 'user', content: 'No profile' }], { model: 'backend-alias' }), /no review owned/)
-  assert.deepEqual(sent, [run.model, 'fixture/base'])
-  assert.ok(vllm)
-})
-
 test('legacy adapter toggles cannot bypass role selection and persona controls share one profile owner', async () => {
   const username = 'settings-owner'
   const { loadBackendConfig } = await import('./llm-backend.js')
+  fs.mkdirSync(path.join(root, 'etc'), { recursive: true })
   fs.writeFileSync(path.join(root, 'etc', 'llm-backend.json'), JSON.stringify({ activeBackend: 'ollama' }))
   loadBackendConfig(true)
   const paths = getProfilePaths(username)
@@ -217,4 +156,141 @@ test('legacy adapter toggles cannot bypass role selection and persona controls s
   assert.deepEqual(final.globalSettings, { includePersonaSummary: true })
   assert.deepEqual(final.defaults, JSON.parse(initial).defaults)
   assert.equal((await handleGetPersonaToggle({ user: { isAuthenticated: false } } as any)).status, 401)
+})
+
+test('historical candidates from retired providers remain readable without becoming launchable', async () => {
+  const run = fixture('historical-owner', 'retired-provider');
+  assert.equal(adapters.listTrainingCandidates(run.username)[0].target, 'retired-provider');
+  await assert.rejects(adapters.prepareTrainingCandidate(run.username, run.runLabel), /retired serving provider/);
+  assert.equal(fs.existsSync(run.artifact), true);
+});
+
+test('llama.cpp review compares the exact loaded adapter against its unadapted base', async t => {
+  const run = fixture('llama-review-owner', 'llama-cpp')
+  const adapterPath = path.join(run.artifact, 'adapter.gguf')
+  let loaded = false
+  let template = 'fixture-native-template'
+  let heldRoute: string | undefined
+  let heldResponse: import('node:http').ServerResponse | undefined
+  let onHeld: (() => void) | undefined
+  const requests: Array<{ url: string; body: any }> = []
+  const server = createServer((request, response) => {
+    void (async () => {
+      let text = ''
+      for await (const chunk of request) text += chunk
+      const body = text ? JSON.parse(text) : null
+      requests.push({ url: request.url!, body })
+      response.setHeader('Content-Type', 'application/json')
+      if (heldRoute && request.url?.startsWith(heldRoute)) {
+        heldResponse = response
+        onHeld?.()
+        return
+      }
+      if (request.url?.startsWith('/props?model=')) {
+        response.end(JSON.stringify({ model_path: '/fixture/base.gguf', model_alias: 'fixture-base',
+          chat_template: template, default_generation_settings: { n_ctx: 4096 }, is_sleeping: false }))
+      } else if (request.url?.startsWith('/lora-adapters?model=')) {
+        response.end(JSON.stringify(loaded ? [{ id: 7, path: adapterPath, scale: 0 }] : []))
+      } else if (request.url === '/v1/chat/completions') {
+        response.end(JSON.stringify({ choices: [{ message: { content: (body.lora?.length ? 'candidate: ' : 'base: ') + body.messages.at(-1).content } }] }))
+      } else { response.writeHead(404); response.end('{}') }
+    })().catch(error => { response.writeHead(500); response.end(JSON.stringify({ error: error.message })) })
+  })
+  server.listen(0, '127.0.0.1')
+  await once(server, 'listening')
+  t.after(() => new Promise<void>(resolve => { server.closeAllConnections(); server.close(() => resolve()) }))
+  const endpoint = `http://127.0.0.1:${(server.address() as import('node:net').AddressInfo).port}`
+  const etc = getProfilePaths(run.username).etc
+  fs.mkdirSync(etc, { recursive: true })
+  fs.writeFileSync(path.join(etc, 'models.json'), JSON.stringify(migrateModelRegistry({ version: '1.0.0', description: 'Synthetic llama.cpp review',
+    defaults: { persona: 'base' }, models: { base: { provider: 'llama-cpp', model: 'fixture-base', description: 'Fixture base', roles: ['persona'],
+      capabilities: ['text'], adapters: [], options: { endpoint } },
+      trained: { provider: 'llama-cpp', model: 'fixture-base', description: 'Fixture adapter', roles: [], capabilities: ['text'],
+        adapters: [adapterPath], options: { endpoint, lora: [{ path: adapterPath, scale: 1 }] } } } } as any).registry))
+  // Observe the existing launcher boundary inside this temporary fixture only.
+  fs.mkdirSync(path.join(root, 'bin'), { recursive: true })
+  fs.writeFileSync(path.join(root, 'bin', 'llama-cpp-services'), '#!/bin/sh\nexit 0\n', { mode: 0o755 })
+  const user = { username: run.username, userId: run.username, role: 'owner', isAuthenticated: true }
+  const assign = () => withUserContext(user, () => handleAssignModelRole({ user, body: { role: 'persona', modelId: 'trained' } } as any))
+  assert.match((await assign()).error ?? '', /Review and accept/)
+  assert.equal(await adapters.assertTrainingModelApproved(run.username, 'llama-cpp', 'fixture-base'), null)
+  await assert.rejects(adapters.assertTrainingModelApproved(run.username, 'llama-cpp', 'fixture-base', { endpoint, lora: [{ path: adapterPath, scale: 1 }] }), /Review and accept/)
+  await assert.rejects(adapters.prepareTrainingCandidate(run.username, run.runLabel), /Load this exact candidate/)
+  loaded = true
+  assert.equal((await adapters.prepareTrainingCandidate(run.username, run.runLabel)).model, 'fixture-base')
+  const review = await adapters.testTrainingCandidate(run.username, run.runLabel, { baselineProvider: 'llama-cpp',
+    baselineModel: 'fixture-base', prompts: ['Greet someone', 'Explain a correction', 'Discuss an unfamiliar topic'] })
+  assert.ok(review.cases.every(row => row.baseline === 'base: ' + row.prompt && row.candidate === 'candidate: ' + row.prompt))
+  const chats = requests.filter(request => request.url === '/v1/chat/completions')
+  assert.equal(chats.length, 6)
+  assert.ok(chats.every((request, index) => JSON.stringify(request.body.lora) === JSON.stringify(index % 2 ? [{ id: 7, scale: 1 }] : [])))
+  assert.ok(chats.every(request => request.body.chat_template_kwargs.enable_thinking === false))
+  template = 'changed-template'
+  await assert.rejects(adapters.decideTrainingCandidate(run.username, run.runLabel,
+    { reviewId: review.id, decision: 'accepted', notes: 'fixture', checks: [true, true, true] }), /identity changed/)
+  template = 'fixture-native-template'
+  await adapters.decideTrainingCandidate(run.username, run.runLabel,
+    { reviewId: review.id, decision: 'accepted', notes: 'synthetic fixture review', checks: [true, true, true] })
+  const options = { endpoint, lora: [{ path: adapterPath, scale: 1 }] }
+  assert.equal((await adapters.assertTrainingModelApproved(run.username, 'llama-cpp', 'fixture-base', options))?.runLabel, run.runLabel)
+  loaded = false
+  const beforeAssignment = requests.length
+  assert.equal((await adapters.assertTrainingModelApproved(run.username, 'llama-cpp', 'fixture-base',
+    { endpoint, lora: [{ scale: 1, path: adapterPath }] }, 'assignment'))?.runLabel, run.runLabel)
+  assert.equal((await assign()).status, 200)
+  assert.equal(requests.length, beforeAssignment, 'Cold assignment validates saved approval without serving discovery or loading')
+  assert.equal(adapters.getActiveAdapter(run.username)?.runLabel, run.runLabel)
+  await assert.rejects(adapters.assertTrainingModelApproved(run.username, 'llama-cpp', 'fixture-base',
+    { endpoint, lora: [{ path: adapterPath, scale: 2 }] }), /serving configuration changed/)
+  await assert.rejects(adapters.assertTrainingModelApproved(run.username, 'llama-cpp', 'fixture-base',
+    { endpoint: endpoint + '/other', lora: options.lora }), /serving configuration changed/)
+  const beforeStaticRejection = requests.length
+  await assert.rejects(adapters.assertTrainingModelApproved(run.username, 'llama-cpp', 'fixture-base',
+    { endpoint: endpoint + '/other', lora: options.lora }, 'assignment'), /serving configuration changed/)
+  assert.equal(requests.length, beforeStaticRejection, 'Changed assignment config is rejected without network discovery')
+  loaded = true
+  const { callProvider } = await import('./providers/bridge.js')
+  const context = { username: run.username, userId: run.username, role: 'owner' }
+  const answer = await withUserContext(context, () => callProvider('llama-cpp', [{ role: 'user', content: 'Dispatch fixture' }],
+    { ...options, model: 'fixture-base' }))
+  assert.equal(answer.content, 'candidate: Dispatch fixture')
+  const baseAnswer = await withUserContext(context, () => callProvider('llama-cpp', [{ role: 'user', content: 'Base fixture' }],
+    { endpoint, model: 'fixture-base', lora: [] }))
+  assert.equal(baseAnswer.content, 'base: Base fixture')
+  for (const route of ['/props?', '/lora-adapters?']) {
+    heldRoute = route
+    const reached = new Promise<void>(resolve => { onHeld = resolve })
+    const controller = new AbortController()
+    const before = requests.filter(request => request.url === '/v1/chat/completions').length
+    const pending = withUserContext(context, () => callProvider('llama-cpp', [{ role: 'user', content: 'Cancelled fixture' }],
+      { ...options, model: 'fixture-base', signal: controller.signal })).then(
+      () => ({ status: 'fulfilled' as const }), error => ({ status: 'rejected' as const, error }))
+    let deadline: ReturnType<typeof setTimeout> | undefined
+    try {
+      await reached
+      controller.abort(new Error('fixture caller stopped'))
+      const result = await Promise.race([pending, new Promise<{ status: 'pending' }>(resolve => {
+        deadline = setTimeout(() => resolve({ status: 'pending' }), 1000)
+      })])
+      assert.equal(result.status, 'rejected', 'caller cancellation must stop ' + route + ' during approval')
+      if (result.status === 'rejected') assert.match(result.error.message, /fixture caller stopped/)
+      assert.equal(requests.filter(request => request.url === '/v1/chat/completions').length, before)
+    } finally {
+      clearTimeout(deadline)
+      heldResponse?.destroy()
+      heldRoute = undefined
+      await pending
+    }
+  }
+  await assert.rejects(withUserContext({ ...context, username: 'another-profile' }, () => callProvider('llama-cpp',
+    [{ role: 'user', content: 'Dispatch fixture' }], { ...options, model: 'fixture-base' })), /no review owned/)
+  assert.equal(await adapters.assertTrainingModelApproved(run.username, 'llama-cpp', 'fixture-base'), null)
+  await assert.rejects(adapters.assertTrainingModelApproved('another-profile', 'llama-cpp', 'fixture-base', { endpoint, lora: [{ path: adapterPath, scale: 1 }] }), /no review owned/)
+  assert.ok(requests.every(request => request.url.startsWith('/props?model=fixture-base')
+    || request.url.startsWith('/lora-adapters?model=fixture-base') || request.url === '/v1/chat/completions'))
+  fs.writeFileSync(adapterPath, 'tampered')
+  const beforeTamperedAssignment = requests.length
+  assert.match((await assign()).error ?? '', /checksum mismatch/)
+  assert.equal(requests.length, beforeTamperedAssignment, 'Tampered assignment artifact is rejected without network discovery')
+  await assert.rejects(adapters.assertTrainingModelApproved(run.username, 'llama-cpp', 'fixture-base', { endpoint, lora: [{ path: adapterPath, scale: 1 }] }), /checksum mismatch/)
 })

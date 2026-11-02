@@ -82,7 +82,7 @@ async function acknowledgeControls(f: ReturnType<typeof fixture>, body: Awaited<
   assert.equal(f.received.length, 0, 'Acknowledged unchanged controls do not generate another update')
 }
 
-const physicalRoute = {"needsResponse": false, "needsAction": true, "taskContext": ["environment"], "conversationContext": []}
+const physicalRoute = {"needsGoalReview": false, "needsToolUse": false, "taskPlanner": "specialist", "needsResponse": false, "needsAction": true, "taskContext": ["environment"], "conversationContext": []}
 const wave = { kind: 'action', action: { type: 'robotCommand', command: 'wave' } }
 const turnGoal = { type: 'move', direction: 'left', continuous: true, durationMs: 0, speed: 40, locomotionGoal: { kind: 'relativeTurn', degrees: 90, tolerance: 2 } }
 
@@ -97,7 +97,7 @@ async function interpretedProgram(body: Awaited<ReturnType<typeof simulatedBody>
   await body.request('action', { action: bootstrap })
   await body.request('complete', { actionId: bootstrap.id })
   for (const userMessage of ['Wave again.', 'Then carry out the second instruction.']) {
-    replies.push({"needsResponse": false, "needsAction": true, "taskContext": ["environment", "executionContext"], "conversationContext": []}, { program: null, taskDecision: null,
+    replies.push({"needsGoalReview": false, "needsToolUse": false, "taskPlanner": "specialist", "needsResponse": false, "needsAction": true, "taskContext": ["environment", "executionContext"], "conversationContext": []}, { program: null, taskDecision: null,
       executionDisposition: 'steer', targetExecutionId: id })
     assert.equal((await f.run(undefined, { userMessage })).status, 'completed')
   }
@@ -177,6 +177,9 @@ for (const disposition of ['cancel', 'steer'] as const) {
         await body.request('measurement', { measurement: { yaw: { degrees: 0 } } })
       const f = fixture(body.snapshot.observation.sessionId, false, body.snapshot.observation)
       try {
+        assert.ok(body.snapshot.observation.capabilities.actions.includes('move'), 'The real adapter advertises its implemented goal-directed walking route')
+        assert.ok(body.snapshot.observation.capabilities.actions.includes('requestMotion'), 'Freestyle remains the gesture owner')
+        assert.equal(body.snapshot.observation.capabilities.actions.includes('robotCommand'), false)
         const { beginAuthenticatedRuntime, createSession, selectAuthenticatedSession } = await import('../sessions.js')
         const { getUserByUsername } = await import('../users.js')
         const { recoverDurableExecutions } = await import('../durable-execution/recovery.js')
@@ -186,12 +189,17 @@ for (const disposition of ['cancel', 'steer'] as const) {
           action: turnGoal }] }, taskDecision: decision })
         const initial = await f.run(); const id = initial.executionId!
         const motion = f.received.shift()!
+        assert.equal(motion.type, 'move')
+        assert.deepEqual(motion.locomotionGoal, turnGoal.locomotionGoal)
         await body.request('action', { action: motion })
+        const walk = body.snapshot.wire.at(-1)
+        assert.equal(walk.name, 'walk')
         await body.request('complete', { actionId: motion.id, kind: 'ack' })
         await f.run(id)
         await acknowledgeControls(f, body, id)
+        assert.ok(body.snapshot.wire.some((command: any) => command.update === walk.seq), 'Goal steering updates the original Walk owner')
         const beforeStop = body.snapshot.wire.length
-        replies.push({"needsResponse": false, "needsAction": true, "taskContext": ["environment", "executionContext"], "conversationContext": []}, { program: null, taskDecision: null,
+        replies.push({"needsGoalReview": false, "needsToolUse": false, "taskPlanner": "specialist", "needsResponse": false, "needsAction": true, "taskContext": ["environment", "executionContext"], "conversationContext": []}, { program: null, taskDecision: null,
           executionDisposition: disposition, targetExecutionId: id })
         await f.run(undefined, { userMessage: 'Stop what you are doing' })
         const owned = manager.findTask(task => task.type === 'environment_command' && task.input.id === motion.id)!
@@ -278,7 +286,7 @@ test('paired manual takeover invalidates a still-pending provider and its late S
       await body.request('complete', { actionId: motion.id, kind: 'ack' }); await f.run(id)
       await acknowledgeControls(f, body, id)
         const beforeStop = body.snapshot.wire.length
-      replies.push({"needsResponse": false, "needsAction": true, "taskContext": ["environment", "executionContext"], "conversationContext": []}, { program: null, taskDecision: null,
+      replies.push({"needsGoalReview": false, "needsToolUse": false, "taskPlanner": "specialist", "needsResponse": false, "needsAction": true, "taskContext": ["environment", "executionContext"], "conversationContext": []}, { program: null, taskDecision: null,
         executionDisposition: 'steer', targetExecutionId: id })
       await f.run(undefined, { userMessage: 'Stop what you are doing' })
       await f.run(id)

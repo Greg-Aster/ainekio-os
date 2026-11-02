@@ -47,7 +47,7 @@ const routes = (selected: string[] = []) => {
   const entries = Object.entries({ needsConversationHistory: 'conversationHistory', needsExecutionContext: 'executionContext',
     needsPersona: 'persona.personality', needsMemory: 'memory', needsRobotStatus: 'robotStatus', needsEnvironment: 'environment', needsVision: 'vision' })
     .filter(([field]) => selected.includes(field)).map(([, entry]) => entry)
-  return { needsResponse: selected.includes('needsResponse'), needsAction: selected.includes('needsAction'),
+  return { needsResponse: selected.includes('needsResponse'), needsAction: selected.includes('needsAction'), needsGoalReview: false,
     taskContext: entries, conversationContext: selected.includes('needsResponse') ? entries : [] }
 }
 
@@ -90,7 +90,7 @@ async function run(request: string, selected: string[], response = { response: '
   awaitTask?: boolean; taskResult?: any; observation?: any; returnedObservation?: any; execution?: any;
 } = {}) {
   calls.length = 0
-  routing = options.routing ?? routes(selected)
+  routing = options.routing ? { needsGoalReview: false, ...options.routing } : routes(selected)
   const { response: conversation, ...taskChoice } = response
   delegatedPlan = options.delegatedPlan
   choice = taskChoice
@@ -116,7 +116,7 @@ async function run(request: string, selected: string[], response = { response: '
     memory_router: async (_inputs: any, context: any) => {
       reads.push('memory')
       if (!options.memoryWork) return { memories: [{ content: 'retrieved-memory' }] }
-      return MemoryRouterNode.execute(_inputs, context, { dispatch: true, threshold: .65, topK: 3 })
+      return MemoryRouterNode.execute(_inputs, context, { dispatch: true, topK: 3 })
     },
     robot_status: async () => { reads.push('status'); return { context: { updatedAt: 'fixture-status', body: { sessionId: 'robot-1' } } } },
     execution_context: async () => { reads.push('execution'); return { context: options.execution ?? { executionId: 'current', task: null }, activeExecutions } },
@@ -212,7 +212,8 @@ async function run(request: string, selected: string[], response = { response: '
       const event = store.appendEvent(execution.executionId, { eventId: 'conversation-generated', kind: 'work_result',
         payload: { effectId: responseWork.effectId, result: receipt } })
       result = await executeGraph(graph, {}, undefined, undefined, { store, lease, resumeEventId: event.eventId })
-      assert.equal(result.status, 'completed', result.error?.stack)
+      assert.equal(result.status, options.failSpeech ? 'failed' : 'completed', result.error?.stack)
+      if (options.failSpeech) assert.match(result.error!.message, /Environment conversation failed/)
     }
     assert.equal(calls.length, options.failSpeech ? parentCalls : expectedCalls)
     const count = store.pendingDispatches().length
@@ -275,6 +276,34 @@ test('autonomy uses request-first intent and preserves the internal source attri
   assert.equal(prompt.includes('autonomy-task'), false)
   assert.deepEqual(result.analysis.taskContext, ['conversationHistory', 'executionContext'])
   assert.equal(Object.hasOwn(calls[0].options, 'repeatPenalty'), false)
+})
+
+test('body-event intentions select the existing autonomous prompts through the shared input join', async () => {
+  const { environmentEventRequestNode } = await import('./body-event.node.js')
+  const { environmentContextBuilderNode } = await import('./context-builder.node.js')
+  const timestamp = '2026-10-23T15:52:40Z'
+  const decision = { instruction: 'Perform the selected activity.', reason: 'An internally observed event.',
+    sourceObservationAt: timestamp, event: { data: { kind: 'wake', reason: 'boot' } } }
+  const joined = await environmentEventRequestNode.execute({}, { bodyEventDecision: decision } as any, {})
+  assert.equal(joined.autonomy, true)
+  assert.equal(joined.message, decision.instruction)
+  assert.equal(joined.sourceObservationAt, timestamp)
+  routing = routes(['needsResponse'])
+  calls.length = 0
+  const intent = await OrchestratorLLMNode.execute(joined, {}, intentProperties)
+  assert.match(JSON.stringify(calls[0].messages), /Internal planner intention:/)
+  assert.doesNotMatch(JSON.stringify(calls[0].messages), /Current user message:/)
+  for (const id of ['3', 'conversation-context']) {
+    const properties = fullGraph.nodes.find(node => node.id === id)!.data.properties!
+    const result = await environmentContextBuilderNode.execute({ ...joined,
+      routingAnalysis: intent.analysis, observation }, {}, properties)
+    assert.ok(result.messages[0].content.startsWith(properties.autonomySystemPrompt))
+    assert.equal(result.selectedContext.inputSource, 'autonomy')
+    assert.equal(result.selectedContext.plannerDecision.event.data.reason, 'boot')
+  }
+  const human = await environmentEventRequestNode.execute({ message: 'Hello.' }, { bodyEventDecision: decision } as any, {})
+  assert.equal(human.autonomy, false)
+  assert.equal(human.plannerDecision, null)
 })
 
 test('an action reads bridge capabilities without history, memories, status or task context', async () => {
@@ -476,7 +505,7 @@ test('selected motion starts before delayed speech and survives a failed convers
         'Slow inference starts only after the parent has been free to dispatch the selected program'),
     })
     assert.equal(result.reads.filter(value => value === 'physical-dispatch').length, 1)
-    assert.equal(result.result.status, 'completed')
+    assert.equal(result.result.status, failSpeech ? 'failed' : 'completed')
     if (failSpeech) assert.match(result.deliveryError!.message, /Simulated speech generation failure/)
     else assert.equal(result.reads.filter(value => value === 'speech:7:123').length, 1)
   }
@@ -690,17 +719,20 @@ test('input received during task recall reaches execution as well as final conti
   }, { memoryWork: true, routing: { needsResponse: false, needsAction: true, taskContext: ['memory'], conversationContext: [] } })
 })
 
-// Visual evidence selected by Intent belongs to the vision planner even if its
-// separate planner label contradicts that selection. No text keyword policy.
-test('selected task images route to vision while nonvisual task planning keeps the specialist', async () => {
-  for (const taskContext of [['environment', 'vision'], ['environment']]) {
-    routing = { needsResponse: false, needsAction: true, needsToolUse: false,
-      taskPlanner: 'specialist', taskContext, conversationContext: [] }
+test('Intent planner selection is preserved independently of selected visual context', async () => {
+  for (const [taskContext, taskPlanner] of [
+    [['environment', 'vision'], 'specialist'],
+    [['environment', 'vision'], 'vision'],
+    [['environment'], 'specialist'],
+    [['environment'], 'vision'],
+  ] as const) {
+    routing = { needsResponse: false, needsAction: true, needsGoalReview: false, needsToolUse: false,
+      taskPlanner, taskContext: [...taskContext], conversationContext: [] }
     const result = await OrchestratorLLMNode.execute({ message: 'Requested activity' }, {}, intentProperties)
-    assert.equal(result.useVisionPlanner, taskContext.includes('vision'))
+    assert.equal(result.useVisionPlanner, taskPlanner === 'vision')
     assert.deepEqual(result.analysis, routing)
   }
-  routing = { needsResponse: true, needsAction: true, needsToolUse: false,
+  routing = { needsResponse: true, needsAction: true, needsGoalReview: false, needsToolUse: false,
     taskPlanner: 'specialist', taskContext: ['environment'], conversationContext: ['vision'] }
   const result = await OrchestratorLLMNode.execute({ message: 'Requested activity' }, {}, intentProperties)
   assert.equal(result.useVisionPlanner, false, 'conversation has its own 9B image consumer')

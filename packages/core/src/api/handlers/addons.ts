@@ -11,10 +11,9 @@ import { spawn } from 'node:child_process'
 import type { UnifiedRequest, UnifiedResponse } from '../types.js'
 import { successResponse, streamResponse } from '../types.js'
 import { systemPaths } from '../../paths.js'
-import { stopServer } from '../../tts/server-manager.js'
 import { stopVoiceService } from '../../voice-service-manager.js'
 
-type AddonId = 'gpt-sovits' | 'rvc' | 'kokoro'
+type AddonId = 'rvc' | 'kokoro'
 
 interface AddonCatalogEntry {
   name: string
@@ -49,7 +48,7 @@ function loadCatalog(): AddonCatalog {
 }
 
 function isAddonId(value: string): value is AddonId {
-  return value === 'gpt-sovits' || value === 'rvc' || value === 'kokoro'
+  return value === 'rvc' || value === 'kokoro'
 }
 
 function isExecutable(filePath: string): boolean {
@@ -65,11 +64,6 @@ function isAddonInstalled(addonId: AddonId): boolean {
   const externalDir = path.join(systemPaths.root, 'external')
 
   switch (addonId) {
-    case 'gpt-sovits': {
-      const addonDir = path.join(externalDir, 'gpt-sovits')
-      return isExecutable(path.join(addonDir, 'venv', 'bin', 'python3'))
-        && fs.existsSync(path.join(addonDir, 'api.py'))
-    }
     case 'rvc': {
       const addonDir = path.join(externalDir, 'applio-rvc')
       return isExecutable(path.join(addonDir, 'venv', 'bin', 'python3'))
@@ -86,9 +80,7 @@ function isAddonInstalled(addonId: AddonId): boolean {
 
 function getInstaller(addonId: AddonId): Installer {
   const args = addonId === 'kokoro' ? ['--yes'] : []
-  const scriptName = addonId === 'gpt-sovits'
-    ? 'install-sovits.sh'
-    : addonId === 'rvc'
+  const scriptName = addonId === 'rvc'
       ? 'install-rvc.sh'
       : 'install-kokoro.sh'
 
@@ -214,14 +206,6 @@ export async function handleInstallAddonStream(req: UnifiedRequest): Promise<Uni
 
 async function uninstallAddon(addonId: AddonId): Promise<string> {
   switch (addonId) {
-    case 'gpt-sovits': {
-      await stopServer('gpt-sovits')
-      fs.rmSync(path.join(systemPaths.root, 'external', 'gpt-sovits'), {
-        recursive: true,
-        force: true,
-      })
-      return 'GPT-SoVITS uninstalled successfully'
-    }
     case 'rvc': {
       fs.rmSync(path.join(systemPaths.root, 'external', 'applio-rvc'), {
         recursive: true,

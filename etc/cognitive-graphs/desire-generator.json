@@ -39,7 +39,7 @@
         "label": "Generate or Reinforce Desires",
         "nodeType": "desire_generation",
         "properties": { "role": "psychotherapist",
-          "enableThinking": true },
+          "enableThinking": false },
         "schema": {
           "isOutputNode": true
         }

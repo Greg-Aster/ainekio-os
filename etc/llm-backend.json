@@ -28,44 +28,16 @@
     "keepAlive": "5m",
     "enableThinking": false
   },
-  "vllm": {
-    "endpoint": "http://localhost:8000",
-    "autoStart": false,
-    "model": "sanskar003/Qwen3.5-9B-AWQ",
-    "loadFormat": "safetensors",
-    "gpuMemoryUtilization": 0.75,
-    "gpuMemoryHeadroomGiB": 1.5,
-    "autoUtilizationMax": 0.95,
-    "maxModelLen": 4096,
-    "kvCacheMemoryGiB": null,
-    "cpuOffloadGiB": 0,
-    "kvOffloadingGiB": 0,
-    "kvOffloadingBackend": "native",
-    "tensorParallelSize": 1,
-    "dtype": "float16",
-    "quantization": "compressed-tensors",
-    "enforceEager": true,
-    "autoUtilization": false,
-    "startupTimeoutMs": 240000,
-    "servedModelName": "sanskar003/Qwen3.5-9B-AWQ",
-    "maxTokens": 2048,
-    "enableThinking": false,
-    "frequencyPenalty": 0.3,
-    "presencePenalty": 0.3,
-    "repetitionPenalty": 1.15
-  },
   "localModels": {
     "enabled": true,
     "endpoint": "http://127.0.0.1:4324",
     "autoStart": true,
     "downloadOnWifiOnly": true,
     "embeddings": {
-      "model": "qwen3-embedding-0.6b",
-      "preloadAtStartup": true
+      "model": "qwen3-embedding-0.6b"
     },
     "llm": {
-      "model": "qwen3-1.7b",
-      "preloadAtStartup": false
+      "model": "qwen3-1.7b"
     }
   },
   "preferredLocalBackend": "llama-cpp",
@@ -73,7 +45,7 @@
   "description": "LLM backend configuration - controls which local inference engine is used",
   "remote": {
     "provider": "runpod",
-    "serverUrl": "https://mh.dndiy.org",
+    "serverUrl": "",
     "model": ""
   }
 }

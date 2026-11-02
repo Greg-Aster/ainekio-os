@@ -3,6 +3,12 @@ import { action, addCase, noTask, observation, task, TIME, type CaseSplit } from
 const movement = ['needsAction', 'needsEnvironment']
 function add(suite: string, instructions: string[], expected: Record<string, any>,
   selected = movement, inputs: Record<string, unknown> = {}, split: CaseSplit = 'development') {
+  if (expected.program?.steps?.some((step: any) => step.action?.type === 'requestMotion') && !inputs.observation) {
+    const current = observation()
+    current.capabilities = { actions: ['requestMotion', 'stop', 'captureImage'], movement: true, visual: true }
+    current.state = { ...current.state, body: { motionSystem: 'freestyle' } }
+    inputs = { ...inputs, observation: current }
+  }
   addCase('task', suite, instructions, selected, expected, inputs, split)
 }
 const commands: Array<[string, string[]]> = [
@@ -41,11 +47,11 @@ for (const instructions of [
 add('fresh-image', ['Take a photo now.', 'Capture one camera frame.', 'Get a fresh image.', 'Please take a new picture.'],
   task('Capture one fresh image.', [{ kind: 'action', action: { type: 'captureImage' } }]))
 add('novel-motion', ['Slowly lean left, then return to center.', 'Lean to your left slowly and center yourself again.', 'Make a slow left lean and come back to center.', 'Shift into a slow leftward lean, then return.'],
-  task('Slowly lean left, then return to center.', [{ kind: 'generatedMotion', description: 'Slowly lean left, then return to center.' }]))
+  task('Slowly lean left, then return to center.', [{ kind: 'action', action: { type: 'requestMotion', description: 'Slowly lean left, then return to center.' } }]))
 add('novel-motion', ['Lift your rear right leg for two seconds.', 'Raise the right rear leg and hold it for two seconds.', 'Hold your back right leg up for two seconds.', 'Please lift the rear right leg for a two-second hold.'],
-  task('Lift the rear right leg for two seconds.', [{ kind: 'generatedMotion', description: 'Lift the rear right leg for two seconds.' }]))
+  task('Lift the rear right leg for two seconds.', [{ kind: 'action', action: { type: 'requestMotion', description: 'Lift the rear right leg for two seconds.' } }]))
 add('novel-motion', ['Lean forward while lifting your front left leg.', 'Lift the front left leg while leaning forward.', 'Combine a forward lean with a raised front left leg.', 'Raise your front left leg and lean forward at the same time.'],
-  task('Lean forward while lifting the front left leg.', [{ kind: 'generatedMotion', description: 'Lean forward while lifting the front left leg.' }]))
+  task('Lean forward while lifting the front left leg.', [{ kind: 'action', action: { type: 'requestMotion', description: 'Lean forward while lifting the front left leg.' } }]))
 add('history-reference', ['Do that gesture again.', 'Repeat the gesture we just discussed.', 'Perform that bow now.', 'Go ahead with the gesture you described.'],
   task('Perform the referenced bow.', [action('bow')]), [...movement, 'needsConversationHistory'],
   { conversationHistory: [{ role: 'user', content: 'Tell me about your bow gesture.', timestamp: TIME }, { role: 'assistant', content: 'A bow lowers the front end and recovers.', timestamp: TIME }] })
@@ -132,7 +138,7 @@ const regression: Array<[string, string[], Record<string, any>]> = [
   ['conversation', ['What has been on your mind?', 'Have you had a pleasant day?'], noTask()],
   ['question', ['What distinguishes a bow from a nod?', 'How many gestures are listed?'], noTask()],
   ['capture', ['Acquire a fresh shot from the camera.', 'Save one new camera frame.'], task('Capture an image.', [{ kind: 'action', action: { type: 'captureImage' } }])],
-  ['nuance', ['Lean backward slowly, keeping your front right leg lifted.', 'With your front right leg raised, lean back slowly.'], task('Lean backward with the front right leg raised.', [{ kind: 'generatedMotion', description: 'Lean backward slowly, keeping the front right leg lifted.' }])],
+  ['nuance', ['Lean backward slowly, keeping your front right leg lifted.', 'With your front right leg raised, lean back slowly.'], task('Lean backward with the front right leg raised.', [{ kind: 'action', action: { type: 'requestMotion', description: 'Lean backward slowly, keeping the front right leg lifted.' } }])],
 ]
 for (const [suite, instructions, expected] of regression) add(suite, instructions, expected, movement, {}, 'regression')
 for (const disposition of ['cancel', 'steer']) add('execution', disposition === 'cancel'
@@ -155,3 +161,12 @@ add('direct-planning-request', [
   'Keep this plan with the current model: nod, then sit.',
   'No delegation for this one; give a nod and sit down afterwards.',
 ], task('Nod then sit.', [action('nod'), action('sit')]), movement, {}, 'regression')
+
+// The configured Body Control owner receives the description, including familiar
+// gestures; MetaHuman no longer chooses between a catalog and a joint generator.
+for (const request of ['Please wave.', 'Please raise your right hand.',
+  'Please do the scene from Hamlet with your arms.']) {
+  add('body-control-motion-request', [request], task(request, [
+    { kind: 'action', action: { type: 'requestMotion', description: request } },
+  ]), movement, {}, 'regression')
+}

@@ -1,6 +1,11 @@
 import assert from 'node:assert/strict';
+import fs from 'node:fs';
+import os from 'node:os';
+import path from 'node:path';
+import { createHash } from 'node:crypto';
 import test from 'node:test';
 import type { RouterCallOptions, RouterMessage } from '../../model-router.js';
+import { registerProfileStorageConfigGetter } from '../../path-builder.js';
 
 import {
   executeInnerCuriosityAnswerGenerator,
@@ -38,7 +43,6 @@ const DIAGNOSTICS = {
   skippedOversize: 0,
   skippedGenerated: 0,
   skippedEmpty: 0,
-  truncatedContent: 0,
 };
 const MEMORIES = [{ id: 'memory-1', content: 'A grounded recent experience.' }];
 const SEARCH_RESULTS = [{ id: 'memory-2', text: 'A related indexed memory.' }];
@@ -125,6 +129,29 @@ test('state owns configuration plus completed and prepared retry admission', asy
   });
 });
 
+test('saved receipts with the former truncation diagnostic remain readable without rewriting them', async t => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'inner-curiosity-receipt-'));
+  const username = `inner-curiosity-receipt-${process.pid}`;
+  const executionId = 'retained-execution';
+  const idempotencyKey = `inner-curiosity:${username}:${executionId}`;
+  const directory = path.join(root, 'state', 'inner-curiosity');
+  fs.mkdirSync(directory, { recursive: true });
+  t.after(() => fs.rmSync(root, { recursive: true, force: true }));
+  registerProfileStorageConfigGetter(candidate => candidate === username ? { path: root, type: 'internal' } : undefined);
+  const filename = path.join(directory, `${createHash('sha256').update(idempotencyKey).digest('hex')}.json`);
+  const saved = JSON.stringify({ schemaVersion: 1, kind: 'inner-curiosity-execution', status: 'completed',
+    username, executionId, idempotencyKey, timestamp: NOW, question: 'A retained question.', answer: 'Its retained answer.',
+    innerDialogue: 'A retained result.', sourceMemoryIds: ['source'], searchResultIds: ['related'],
+    sampling: { ...DIAGNOSTICS, truncatedContent: 2 }, preparedAt: NOW, completedAt: NOW });
+  fs.writeFileSync(filename, saved);
+  for (let attempt = 0; attempt < 2; attempt++) {
+    const result = await executeInnerCuriosityState({}, { ...CONTEXT, username, userId: username, executionId, idempotencyKey });
+    assert.equal(result.status, 'completed');
+    assert.equal((result.outcome as any).deduplicated, true);
+    assert.equal(fs.readFileSync(filename, 'utf8'), saved);
+  }
+});
+
 test('question, search, and answer cognition stays inside registered nodes', async () => {
   let questionMessages: RouterMessage[] = [];
   const questionResult = await executeInnerCuriosityQuestionGenerator({
@@ -170,6 +197,54 @@ test('question, search, and answer cognition stays inside registered nodes', asy
   assert.equal(answerResult.answer, 'The evidence supports one cautious connection.');
   assert.equal(typeof answerMessages[1].content, 'string');
   assert.match(answerMessages[1].content as string, /related indexed memory/i);
+});
+
+test('question and answer retain dated attributed evidence and the original delegated purpose', async () => {
+  const memories = [
+    { id: 'spoken-joke', timestamp: '2026-09-01T12:00:00Z', type: 'conversation', role: 'assistant',
+      source: 'conversation', cognitiveMode: 'environment', content: 'My left actuator has forgotten arithmetic.' },
+    { id: 'unattributed', content: 'A record without speaker or time.' },
+  ];
+  const indexed = { id: 'past-connection', timestamp: '2026-08-30T12:00:00Z', memoryType: 'inner_dialogue',
+    role: 'reflection', source: 'autonomy', text: `An earlier disconnected-body observation. ${'Historical context. '.repeat(40)}The old observation does not describe the present connection.`,
+    vector: [0.25, 0.75] };
+  const taskBrief = JSON.stringify({ instruction: 'Examine the reported right actuator concern.',
+    observed: 'Source observation at 2026-09-03T15:59:00Z.', decidedAt: NOW });
+  const messages: RouterMessage[][] = [];
+  const callModel = (async (request: RouterCallOptions) => {
+    messages.push(request.messages);
+    return { content: messages.length === 1 ? 'What does the report establish?' : 'The records have different sources and dates.' };
+  }) as any;
+  const question = await executeInnerCuriosityQuestionGenerator({ memories, taskBrief,
+    personaLoaded: true, identity: { name: 'Test Persona' } }, CONTEXT, {}, { callModel });
+  const search = await executeInnerCuriosityMemorySearch({ question: question.question }, CONTEXT, {}, {
+    query: (async () => [{ item: indexed, score: 1 }]) as any,
+  });
+  const answer = await executeInnerCuriosityAnswerGenerator({ question: question.question, personaName: question.personaName,
+    memories, searchResults: search.searchResults, taskBrief }, CONTEXT, {}, { callModel });
+  assert.equal(answer.question, question.question, 'The model-selected question remains unchanged');
+  for (const request of messages) {
+    const supplied = String(request[1].content);
+    for (const memory of memories) assert.ok(supplied.includes(JSON.stringify(memory)));
+    assert.ok(supplied.includes(taskBrief), 'Both calls retain the complete originating purpose');
+  }
+  assert.ok(String(messages[1][1].content).includes(JSON.stringify({ id: indexed.id, timestamp: indexed.timestamp,
+    type: indexed.memoryType, role: indexed.role, source: indexed.source, content: indexed.text })));
+  assert.ok(!String(messages[1][1].content).includes('"vector"'));
+  assert.equal(indexed.text.length > 500, true);
+});
+
+test('the saved graph and editor forward the same original task brief to both cognition stages', async () => {
+  const graph = JSON.parse(fs.readFileSync(new URL('../../../../../etc/cognitive-graphs/inner-curiosity.json', import.meta.url), 'utf8'));
+  const { nodeSchemas } = await import('../schemas.js');
+  for (const target of ['question', 'answer']) {
+    assert.ok(graph.edges.some((edge: any) => edge.source === 'task-brief' && edge.sourceHandle === 'text'
+      && edge.target === target && edge.targetHandle === 'taskBrief'));
+    const type = `inner_curiosity_${target}_generator`;
+    const schema = nodeSchemas.find(node => node.id === type)!;
+    assert.ok(schema.inputs.some(input => input.name === 'taskBrief' && input.optional));
+    assert.ok(schema.properties?.userPromptTemplate.includes('{{taskBrief}}'));
+  }
 });
 
 test('checkpoint, entry, and completion require both durable persistence effects', async () => {

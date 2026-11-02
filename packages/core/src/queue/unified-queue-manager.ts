@@ -5,6 +5,7 @@
  */
 
 import { randomUUID } from 'node:crypto';
+import { agentHandlerId } from './agent-work-catalog.js';
 import { assertProfileMemoryAvailable } from '../locks.js';
 import { canonicalJSON } from '../durable-execution/store.js';
 import { getTTSQueueState } from '../tts/delivery-queue.js';
@@ -21,8 +22,6 @@ import {
   type QueueEventListener,
   type QueueState,
   type QueuedTask,
-  type RemoteResult,
-  type RemoteTaskHandle,
   type ResourceLane,
   type ResourceLaneId,
   type TaskInput,
@@ -51,13 +50,6 @@ const DESIRE_AGENT_TASK_TYPES = new Set<TaskType>([
   'desire_review',
   'desire_checkin',
 ]);
-const LEGACY_DESIRE_HANDLERS = new Set([
-  'agency.desire-signal',
-  'agent.desire-agent',
-  'agent.desire-executor',
-  'agent.desire-outcome-reviewer',
-]);
-
 function immutableJSON<T>(value: T): T {
   const freeze = (entry: any): any => {
     if (entry && typeof entry === 'object') {
@@ -80,10 +72,10 @@ function protectAdmission(task: QueuedTask): QueuedTask {
 }
 
 export function isDesireAgentAdmission(input: Pick<TaskInput, 'type' | 'handler' | 'input' | 'metadata'>): boolean {
-  const handler = input.handler || DEFAULT_HANDLERS[input.type];
-  if (LEGACY_DESIRE_HANDLERS.has(handler)) return false;
+  const requestedHandler = input.handler || DEFAULT_HANDLERS[input.type];
+  const handler = requestedHandler.startsWith('agent.') ? agentHandlerId(requestedHandler.slice('agent.'.length)) : requestedHandler;
   if (handler === DESIRE_AGENT_HANDLER) {
-    return input.type === 'desire_generate' && input.input?.agentId === 'desire-agent';
+    return requestedHandler === handler && input.type === 'desire_generate' && input.input?.agentId === 'desire-agent';
   }
   const internalTaskType = DESIRE_AGENT_INTERNAL_HANDLERS.get(handler);
   if (internalTaskType) {
@@ -114,7 +106,6 @@ const DEFAULT_LANE_CONFIGS: Record<ResourceLaneId, LaneConfig & { id: ResourceLa
 
 export interface QueueManagerOptions extends Partial<QueueConfig> {
   historyLimit?: number;
-  outputReplayLimit?: number;
 }
 
 interface CoordinatorSnapshot {
@@ -123,7 +114,6 @@ interface CoordinatorSnapshot {
   idempotency: Array<[string, string]>;
   resources: Array<[WorkResource, ResourceLane]>;
   bodyOwners: Array<[string, BodyLease]>;
-  inFlightRemote: Array<[string, RemoteTaskHandle]>;
   config: QueueConfig | null;
   paused: boolean;
 }
@@ -134,14 +124,12 @@ export class UnifiedQueueManager {
   private readonly tasks = new Map<string, QueuedTask>();
   private readonly bodyOwners = new Map<string, BodyLease>();
   private readonly terminalOrder: string[] = [];
-  private readonly inFlightRemote = new Map<string, RemoteTaskHandle>();
   private readonly listeners = new Set<QueueEventListener>();
   private readonly resources = new Map<WorkResource, ResourceLane>();
   private readonly idempotency = new Map<string, string>();
   private config: QueueConfig | null = null;
   private paused = false;
   private historyLimit: number;
-  private outputReplayLimit: number;
   private onQueueChange?: (changedTaskIds: ReadonlySet<string>) => void;
   private readonly changedTaskIds = new Set<string>();
   private committed!: CoordinatorSnapshot;
@@ -150,7 +138,6 @@ export class UnifiedQueueManager {
 
   constructor(options: QueueManagerOptions = {}) {
     this.historyLimit = Math.max(1, options.historyLimit ?? 200);
-    this.outputReplayLimit = Math.max(1, options.outputReplayLimit ?? 1_000);
     this.initializeResources();
     this.committed = this.snapshot();
     this.committedIdentity = this.snapshotIdentity(this.committed);
@@ -168,8 +155,7 @@ export class UnifiedQueueManager {
   private recoveryEligible(task: QueuedTask): boolean {
     if (!this.recoveryUser) return true;
     const recovered = task.admittedRuntimeId !== this.runtimeId
-      || (task.durable && task.durable.originRuntimeId !== this.runtimeId)
-      || task.handler === 'graph.signal';
+      || (task.durable && task.durable.originRuntimeId !== this.runtimeId);
     return !recovered || this.recoveryUser() === task.username;
   }
 
@@ -557,8 +543,27 @@ export class UnifiedQueueManager {
       while (index >= 0 && this.tasks.get(this.terminalOrder[index])?.failureNoticePending) index -= 1;
       if (index < 0) break;
       const [removedId] = this.terminalOrder.splice(index, 1);
-      if (removedId && !this.tasks.get(removedId)?.durable) this.tasks.delete(removedId);
+      const removed = this.tasks.get(removedId);
+      if (removed && (!removed.durable || removed.resultDelivered)) this.forgetTask(removed);
     }
+  }
+
+  private forgetTask(task: QueuedTask): void {
+    const scope = this.idempotencyScope(task);
+    if (scope && this.idempotency.get(scope) === task.id) this.idempotency.delete(scope);
+    this.tasks.delete(task.id);
+    const index = this.terminalOrder.indexOf(task.id);
+    if (index >= 0) this.terminalOrder.splice(index, 1);
+  }
+
+  /** Called after the existing execution owner commits the correlated result. */
+  acknowledgeResult(taskId: string): void {
+    const task = this.tasks.get(taskId);
+    if (!task?.durable || !TERMINAL_STATES.has(task.state) || task.resultDelivered) return;
+    this.changedTaskIds.add(task.id);
+    task.resultDelivered = true;
+    if (!task.failureNoticePending && !this.terminalOrder.includes(task.id)) this.forgetTask(task);
+    this.notifyChange();
   }
 
   complete(
@@ -645,6 +650,24 @@ export class UnifiedQueueManager {
       lane: this.laneFor(current.resource, current.type),
       details: { attempt: current.attempt, maxAttempts: current.maxAttempts },
     });
+    this.notifyChange();
+    return true;
+  }
+
+  /** Relinquish a transport lease for replayable, pre-admitted delivery. Not a handler retry. */
+  releaseForRedelivery(taskId: string): boolean {
+    const task = this.tasks.get(taskId);
+    if (!task || !['leased', 'waiting'].includes(task.state)) return false;
+    if (task.cancellationRequestedAt) {
+      this.acknowledgeCancellation(taskId);
+      return false;
+    }
+    this.changedTaskIds.add(taskId);
+    if (task.state === 'leased') this.releaseCapacity(task);
+    task.state = 'queued';
+    task.startedAt = undefined;
+    task.waitingReason = undefined;
+    task.wakeAt = undefined;
     this.notifyChange();
     return true;
   }
@@ -781,9 +804,6 @@ export class UnifiedQueueManager {
     this.changedTaskIds.add(task.id);
     task.output ||= [];
     task.output.push(chunk);
-    if (task.output.length > this.outputReplayLimit) {
-      task.output.splice(0, task.output.length - this.outputReplayLimit);
-    }
     this.emit({ type: 'task_output', taskId, lane: this.laneFor(task.resource, task.type), details: { chunk } });
     // Progress is live stream data, not a work-state transition. Reconnecting
     // clients read this replay buffer; the next lifecycle commit retains it.
@@ -879,7 +899,6 @@ export class UnifiedQueueManager {
     totalRunning: number;
     byLane: Record<ResourceLaneId, { queued: number; running: number }>;
     byPriority: Record<Priority, number>;
-    inFlightRemote: number;
   } {
     const active = this.getAllTasks();
     const byLane = {} as Record<ResourceLaneId, { queued: number; running: number }>;
@@ -897,31 +916,7 @@ export class UnifiedQueueManager {
       totalRunning: active.filter(task => task.state === 'leased').length,
       byLane,
       byPriority,
-      inFlightRemote: this.inFlightRemote.size,
     };
-  }
-
-  trackRemoteTask(handle: RemoteTaskHandle): void {
-    this.inFlightRemote.set(handle.taskId, handle);
-    this.emit({ type: 'remote_dispatched', taskId: handle.taskId, lane: 'remote-llm', details: { provider: handle.provider } });
-    this.notifyChange();
-  }
-
-  handleRemoteCallback(result: RemoteResult): void {
-    this.inFlightRemote.delete(result.taskId);
-    this.emit({
-      type: 'remote_callback',
-      taskId: result.taskId,
-      lane: 'remote-llm',
-      details: { success: result.success, durationMs: result.durationMs, hasFollowUp: Boolean(result.followUpTasks?.length) },
-    });
-    this.complete(result.taskId, result.success, result.success ? { output: result.output } : 'Remote task failed');
-    for (const followUp of result.followUpTasks || []) this.enqueue(followUp);
-    this.notifyChange();
-  }
-
-  getInFlightRemote(): RemoteTaskHandle[] {
-    return [...this.inFlightRemote.values()];
   }
 
   exportState(): QueueState {
@@ -932,7 +927,6 @@ export class UnifiedQueueManager {
       durableReceipts: [...this.tasks.values()].filter(task => task.durable
         && TERMINAL_STATES.has(task.state) && !this.terminalOrder.includes(task.id)),
       bodyOwners: Object.fromEntries(this.bodyOwners),
-      inFlightRemote: this.getInFlightRemote(),
       lastUpdated: new Date().toISOString(),
     };
   }
@@ -1045,7 +1039,6 @@ export class UnifiedQueueManager {
       const scope = this.idempotencyScope(task);
       if (scope && (task.durable || !TERMINAL_STATES.has(task.state))) this.idempotency.set(scope, task.id);
     }
-    for (const handle of state.inFlightRemote || []) this.inFlightRemote.set(handle.taskId, handle);
     for (const task of this.tasks.values()) this.reconcileInterruptedSpeech(task);
     // Recovery uses the same replacement semantics as live admission; old
     // queued thinking faces must not play back after a reconnect.
@@ -1058,14 +1051,12 @@ export class UnifiedQueueManager {
     this.changedTaskIds.clear();
     this.terminalOrder.length = 0;
     this.idempotency.clear();
-    this.inFlightRemote.clear();
     for (const resource of this.resources.values()) resource.currentRunning = 0;
     if (notify) this.notifyChange();
   }
 
   assertProfileIdle(username: string): void {
-    if (this.getAllTasks().some(task => task.username === username)
-      || [...this.inFlightRemote.values()].some(handle => this.tasks.get(handle.taskId)?.username === username)) {
+    if (this.getAllTasks().some(task => task.username === username)) {
       throw new Error('Finish or cancel this profile\'s unfinished work before resetting memory');
     }
   }
@@ -1074,13 +1065,7 @@ export class UnifiedQueueManager {
   forgetProfileHistory(username: string): void {
     this.assertProfileIdle(username);
     const removed = [...this.tasks.values()].filter(task => task.username === username);
-    for (const task of removed) {
-      const scope = this.idempotencyScope(task);
-      if (scope) this.idempotency.delete(scope);
-      this.tasks.delete(task.id);
-      const index = this.terminalOrder.indexOf(task.id);
-      if (index >= 0) this.terminalOrder.splice(index, 1);
-    }
+    for (const task of removed) this.forgetTask(task);
     this.notifyChange();
     // Notify existing queue viewers only after the history removal is persisted.
     this.emit({ type: 'task_deleted', details: { username, taskIds: removed.map(task => task.id) } });
@@ -1090,12 +1075,7 @@ export class UnifiedQueueManager {
   retireExecutionReceipts(executionId: string): void {
     const tasks = [...this.tasks.values()].filter(task => task.durable?.executionId === executionId);
     if (tasks.some(task => !TERMINAL_STATES.has(task.state))) throw new Error('Execution still owns unfinished work');
-    for (const task of tasks) {
-      this.idempotency.delete(this.idempotencyScope(task)!);
-      this.tasks.delete(task.id);
-      const index = this.terminalOrder.indexOf(task.id);
-      if (index >= 0) this.terminalOrder.splice(index, 1);
-    }
+    for (const task of tasks) this.forgetTask(task);
     this.notifyChange();
   }
 
@@ -1130,8 +1110,6 @@ export class UnifiedQueueManager {
       previous.resources.forEach(([key, resource]) => this.resources.set(key, structuredClone(resource)));
       this.bodyOwners.clear();
       previous.bodyOwners.forEach(([key, lease]) => this.bodyOwners.set(key, Object.freeze({ ...lease })));
-      this.inFlightRemote.clear();
-      previous.inFlightRemote.forEach(([key, handle]) => this.inFlightRemote.set(key, handle));
       this.config = previous.config;
       this.paused = previous.paused;
       throw error;
@@ -1156,7 +1134,6 @@ export class UnifiedQueueManager {
       idempotency: [...this.idempotency],
       resources: structuredClone([...this.resources]),
       bodyOwners: structuredClone([...this.bodyOwners]),
-      inFlightRemote: [...this.inFlightRemote],
       config: structuredClone(this.config),
       paused: this.paused,
     };

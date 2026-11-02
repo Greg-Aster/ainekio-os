@@ -1,338 +1,108 @@
-#!/bin/bash
-
-# MetaHuman OS Shutdown Script
-# This script cleanly stops all MetaHuman OS services and processes
-
-# Shutdown is best-effort: one stubborn service must not prevent later process,
-# PID-file, and launcher-lock cleanup from running.
+#!/usr/bin/env bash
+# Canonical shutdown dispatcher; each service owns its process and state cleanup.
 set -uo pipefail
+REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+cd "$REPO_ROOT"
+status=0
 
-# Get the directory where this script is located
-SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-REPO_ROOT="$SCRIPT_DIR"
-
-# Colors for output
-RED='\033[0;31m'
-GREEN='\033[0;32m'
-YELLOW='\033[1;33m'
-BLUE='\033[0;34m'
-NC='\033[0m' # No Color
-
-echo -e "${BLUE}================================${NC}"
-echo -e "${BLUE}  MetaHuman OS Shutdown Script  ${NC}"
-echo -e "${BLUE}================================${NC}"
-echo
-
-print_status() {
-    echo -e "${GREEN}✓${NC} $1"
+stop_service() {
+  local name="$1"
+  shift
+  if "$@"; then
+    echo "$name shutdown checked"
+  else
+    echo "$name failed to stop" >&2
+    status=1
+  fi
 }
 
-print_warning() {
-    echo -e "${YELLOW}!${NC} $1"
+stop_services() {
+  # Stop work producers before their transports and model services.
+  stop_service "Terminal sessions" "$REPO_ROOT/bin/mh" terminal stop
+  stop_service "Agents" "$REPO_ROOT/bin/mh" agent stop --all
+  stop_service "llama.cpp" "$REPO_ROOT/bin/llama-cpp-services" stop
+  stop_service "Local models" "$REPO_ROOT/bin/stop-local-models"
+  stop_service "Voice services" "$REPO_ROOT/bin/stop-voice-server"
+  stop_service "Cloudflare tunnel" node --import tsx --input-type=module -e '
+import { stopTunnel } from "./packages/core/src/cloudflare-tunnel.ts";
+if (!await stopTunnel()) process.exitCode = 1;
+'
+  stop_service "Event bus" "$REPO_ROOT/bin/stop-event-bus"
 }
 
-print_error() {
-    echo -e "${RED}✗${NC} $1"
+process_running() {
+  kill -0 "$1" 2>/dev/null || return 1
+  local state
+  state="$(ps -o stat= -p "$1")" || return 1
+  [[ "$state" != Z* ]]
 }
 
-process_command() {
-    local pid="$1"
-
-    if [ -r "/proc/$pid/cmdline" ]; then
-        tr '\0' ' ' < "/proc/$pid/cmdline" 2>/dev/null || true
-    fi
-}
-
-process_cwd() {
-    local pid="$1"
-
-    readlink "/proc/$pid/cwd" 2>/dev/null || true
-}
-
-is_repo_process() {
-    local pid="$1"
-    local cmd=""
-    local cwd=""
-
-    [ "$pid" != "$$" ] || return 1
-
-    cmd="$(process_command "$pid")"
-    cwd="$(process_cwd "$pid")"
-
-    case "$cmd" in
-        *"$REPO_ROOT"*) return 0 ;;
-    esac
-
-    case "$cwd" in
-        "$REPO_ROOT"|"$REPO_ROOT"/*) return 0 ;;
-    esac
-
-    return 1
-}
-
-matching_repo_pids() {
-    local pattern="$1"
-    local pid=""
-
-    pgrep -f -- "$pattern" 2>/dev/null | while read -r pid; do
-        [ -n "$pid" ] || continue
-        if is_repo_process "$pid"; then
-            echo "$pid"
-        fi
+stop_application_pid() {
+  local pid="$1"
+  local signal attempt
+  for signal in TERM KILL; do
+    process_running "$pid" || return 0
+    kill "-$signal" "$pid" || return 1
+    for attempt in {1..50}; do
+      process_running "$pid" || return 0
+      sleep 0.1
     done
+  done
+  echo "Application process $pid has not stopped" >&2
+  return 1
 }
 
-kill_pids() {
-    local pids="$1"
-    local signal="${2:-TERM}"
-
-    [ -n "$pids" ] || return 0
-    echo "$pids" | xargs -r kill "-$signal" 2>/dev/null || true
-}
-
-live_pids() {
-    local pids="$1"
-    local pid=""
-
-    echo "$pids" | while read -r pid; do
-        [ -n "$pid" ] || continue
-        if kill -0 "$pid" 2>/dev/null; then
-            echo "$pid"
-        fi
+stop_application() {
+  local launcher_file="$REPO_ROOT/logs/run/web-launcher.pid"
+  local pid command cwd matches code attempt launcher_pid=""
+  if [ -f "$launcher_file" ]; then
+    pid="$(cat "$launcher_file")"
+    command="$(tr '\0' ' ' < "/proc/$pid/cmdline" 2>/dev/null || true)"
+    if [[ "$pid" =~ ^[0-9]+$ && "$command" == *"$REPO_ROOT/start.sh"* ]]; then
+      # The launcher cancels unfinished starts and releases its web child.
+      # This dispatcher remains the sole caller of service shutdown.
+      kill -USR2 "$pid" || status=1
+      launcher_pid="$pid"
+    fi
+  fi
+  if [ -n "$launcher_pid" ]; then
+    # Do not send TERM as well: it can arrive before the launcher handles USR2.
+    for attempt in {1..50}; do
+      process_running "$launcher_pid" || break
+      sleep 0.1
     done
+    if process_running "$launcher_pid"; then stop_application_pid "$launcher_pid" || status=1; fi
+  fi
+  # Let the application-only signal finish before PM2 sends its own stop signal.
+  if command -v pm2 >/dev/null 2>&1 && pm2 describe metahuman-os >/dev/null 2>&1; then
+    pm2 delete metahuman-os || status=1
+  fi
+  # The application owner also handles directly launched Astro dev servers and
+  # production children whose launcher exited. Service processes are excluded.
+  code=0
+  matches="$(pgrep -f -- 'astro/astro.js.*dev|astro/bin/astro.js.*dev|apps/site/(dist|build/releases/[^/]+)/server/entry.mjs')" || code=$?
+  if [ "$code" -gt 1 ]; then
+    echo "Application process lookup failed" >&2
+    status=1
+    return
+  fi
+  while read -r pid; do
+    [ -n "$pid" ] || continue
+    command="$(tr '\0' ' ' < "/proc/$pid/cmdline" 2>/dev/null || true)"
+    cwd="$(readlink "/proc/$pid/cwd" 2>/dev/null || true)"
+    if [[ "$command" == *"$REPO_ROOT/"* || "$cwd" == "$REPO_ROOT/apps/site" ]]; then
+      stop_application_pid "$pid" || status=1
+    fi
+  done <<< "$matches"
 }
 
-kill_repo_process_pattern() {
-    local pattern="$1"
-    local name="$2"
-    local timeout="${3:-5}"
-    local pids=""
-
-    pids="$(matching_repo_pids "$pattern")"
-    if [ -z "$pids" ]; then
-        print_status "$name not running"
-        return 0
-    fi
-
-    echo "Stopping $name (PIDs: $pids)..."
-    kill_pids "$pids" TERM
-
-    for i in $(seq 1 "$timeout"); do
-        pids="$(live_pids "$pids")"
-        if [ -z "$pids" ]; then
-            print_status "$name stopped"
-            return 0
-        fi
-        sleep 1
-    done
-
-    pids="$(live_pids "$pids")"
-    if [ -n "$pids" ]; then
-        print_warning "$name didn't stop gracefully, forcing..."
-        kill_pids "$pids" KILL
-        sleep 1
-    fi
-
-    pids="$(live_pids "$pids")"
-    if [ -n "$pids" ]; then
-        print_error "Failed to stop $name (PIDs: $pids)"
-        return 1
-    fi
-
-    print_status "$name stopped (forced)"
-    return 0
-}
-
-# Function to kill process on specific port
-kill_repo_port() {
-    local port="$1"
-    local name="$2"
-    local pid=""
-    local pids=""
-    local live=""
-
-    for pid in $(lsof -i ":$port" -sTCP:LISTEN -t 2>/dev/null || true); do
-        if is_repo_process "$pid"; then
-            pids="${pids}${pids:+
-}$pid"
-        fi
-    done
-
-    if [ -n "$pids" ]; then
-        echo "Stopping $name on port $port (PIDs: $pids)..."
-        kill_pids "$pids" TERM
-        sleep 2
-
-        live="$(live_pids "$pids")"
-        if [ -n "$live" ]; then
-            kill_pids "$live" KILL
-            print_status "$name stopped (forced)"
-        else
-            print_status "$name stopped"
-        fi
-    else
-        print_status "$name not running on port $port for this repo"
-    fi
-}
-
-run_with_timeout() {
-    local seconds="$1"
-    shift
-
-    if command -v timeout >/dev/null 2>&1; then
-        timeout "$seconds" "$@"
-    else
-        "$@"
-    fi
-}
-
-stop_vllm() {
-    echo "Stopping vLLM server..."
-    if [ -x "$REPO_ROOT/bin/mh" ]; then
-        run_with_timeout 20 "$REPO_ROOT/bin/mh" vllm stop 2>/dev/null || print_warning "vLLM lifecycle owner did not stop cleanly"
-    else
-        print_warning "mh CLI not found; vLLM was not stopped"
-    fi
-}
-
-# Stop PM2 processes if PM2 is installed
-if command -v pm2 &> /dev/null && pm2 describe metahuman-os >/dev/null 2>&1; then
-    echo "Stopping PM2 MetaHuman process..."
-    pm2 delete metahuman-os 2>/dev/null || true
-    print_status "PM2 MetaHuman process stopped"
-fi
-
-# Stop all MetaHuman agents via CLI
-echo "Stopping MetaHuman agents..."
-# Stop owned shell/provider sessions before the generic agent shutdown.
-if [ -x "$REPO_ROOT/bin/mh" ]; then
-    run_with_timeout 15 "$REPO_ROOT/bin/mh" terminal stop || print_warning "Terminal owner did not stop cleanly; inspect Agent Monitor"
-fi
-
-if [ -x "$REPO_ROOT/bin/mh" ]; then
-    run_with_timeout 15 "$REPO_ROOT/bin/mh" agent stop --all 2>/dev/null || print_warning "Agent CLI stop did not exit cleanly; continuing with process cleanup"
-else
-    print_warning "mh CLI not found, stopping agents manually..."
-fi
-
-# Stop the maintenance-only persistent service.
-kill_repo_process_pattern "maintenance-service" "Maintenance Service"
-
-# Stop audio-organizer
-kill_repo_process_pattern "audio-organizer" "Audio Organizer"
-
-# Stop any running agents by pattern
-kill_repo_process_pattern "packages/core/src/agent-bootstrap.ts" "MetaHuman Agents"
-kill_repo_process_pattern "brain/agents" "Background Agents"
-
-# Stop vLLM before voice/web cleanup so GPU memory is released promptly.
-stop_vllm
-
-if ! run_with_timeout 15 "$REPO_ROOT/bin/llama-cpp-services" stop; then
-    print_warning "llama.cpp user services did not stop cleanly"
-fi
-
-# Stop voice services through their lifecycle owners.
-if [ -x "$REPO_ROOT/bin/mh" ]; then
-    run_with_timeout 20 "$REPO_ROOT/bin/mh" voice-server stop --all 2>/dev/null || print_warning "Shared voice services did not stop cleanly"
-    run_with_timeout 20 "$REPO_ROOT/bin/mh" sovits stop 2>/dev/null || print_warning "GPT-SoVITS did not stop cleanly"
-fi
-
-# Stop Cloudflare tunnel
-kill_repo_process_pattern "cloudflared" "Cloudflare Tunnel"
-
-# Stop web servers
-echo "Stopping web servers..."
-kill_repo_port 4321 "Astro Production Server"
-kill_repo_process_pattern "astro dev" "Astro Dev Server"
-kill_repo_process_pattern "apps/site/dist/server/entry.mjs" "Production Server"
-
-# Stop launcher wrappers that can remain after their child services exit.
-kill_repo_process_pattern "start.sh" "Startup Wrapper"
-kill_repo_process_pattern "bin/start-services --background" "Background Services Launcher"
-kill_repo_process_pattern "bin/start-services" "Terminal Services Launcher"
-kill_repo_process_pattern "mh start --no-restart" "MetaHuman Start Command"
-kill_repo_process_pattern "src/entry.ts start --no-restart" "MetaHuman Start Command Launcher"
-kill_repo_process_pattern "mh vllm start" "vLLM Start Command"
-kill_repo_process_pattern "src/entry.ts vllm start" "vLLM Start Command Launcher"
-
-# New launchers use a kernel flock, which is released automatically when their
-# process exits. Remove only the legacy PID-directory format after shutdown.
-LEGACY_START_LOCK_DIR="$REPO_ROOT/logs/run/start.lock"
-if [ -d "$LEGACY_START_LOCK_DIR" ]; then
-    rm -f "$LEGACY_START_LOCK_DIR/pid"
-    if rmdir "$LEGACY_START_LOCK_DIR" 2>/dev/null; then
-        print_status "Legacy startup lock removed"
-    else
-        print_warning "Legacy startup lock contains unexpected files: $LEGACY_START_LOCK_DIR"
-    fi
-fi
-
-# Clean up stale PID files
-echo "Cleaning up stale PID files..."
-PID_DIR="$REPO_ROOT/logs/run"
-if [ -d "$PID_DIR" ]; then
-    for pidfile in "$PID_DIR"/*.pid; do
-        [ -f "$pidfile" ] || continue
-        pid=$(cat "$pidfile" 2>/dev/null || echo "")
-        if [ -n "$pid" ]; then
-            if ! kill -0 "$pid" 2>/dev/null; then
-                rm -f "$pidfile"
-                print_status "Removed stale PID file: $(basename "$pidfile")"
-            fi
-        else
-            rm -f "$pidfile"
-        fi
-    done
-fi
-
-# Clean up stale lock files
-echo "Cleaning up stale lock files..."
-LOCK_DIR="$REPO_ROOT/logs/run/locks"
-if [ -d "$LOCK_DIR" ]; then
-    for lockfile in "$LOCK_DIR"/*.lock; do
-        [ -f "$lockfile" ] || continue
-        # Extract PID from JSON lock file
-        pid=$(grep -o '"pid"[[:space:]]*:[[:space:]]*[0-9]*' "$lockfile" 2>/dev/null | grep -o '[0-9]*' || echo "")
-        if [ -n "$pid" ]; then
-            if ! kill -0 "$pid" 2>/dev/null; then
-                rm -f "$lockfile"
-                print_status "Removed stale lock file: $(basename "$lockfile")"
-            fi
-        else
-            rm -f "$lockfile"
-        fi
-    done
-fi
-
-# Clean up agent registry
-echo "Cleaning up agent registry..."
-REGISTRY_FILE="$REPO_ROOT/logs/agents/running.json"
-if [ -f "$REGISTRY_FILE" ]; then
-    # Create clean registry with only running processes
-    if command -v node >/dev/null 2>&1; then
-        node -e "
-const fs = require('fs');
-const registry = JSON.parse(fs.readFileSync('$REGISTRY_FILE', 'utf-8'));
-const clean = {};
-for (const [name, info] of Object.entries(registry)) {
-    try {
-        process.kill(info.pid, 0);
-        clean[name] = info;
-    } catch (e) {
-        console.log('Removed stale registry entry:', name);
-    }
-}
-fs.writeFileSync('$REGISTRY_FILE', JSON.stringify(clean, null, 2));
-" 2>/dev/null || true
-    fi
-fi
-
-echo
-echo -e "${GREEN}================================${NC}"
-echo -e "${GREEN}  MetaHuman OS Shutdown Complete${NC}"
-echo -e "${GREEN}================================${NC}"
-echo
-print_status "All services stopped"
-print_status "Stale files cleaned up"
-echo
+case "${1:-}" in
+  --services-only) stop_services ;;
+  "")
+    stop_application
+    stop_services
+    ;;
+  *) echo "Usage: ./stop.sh [--services-only]" >&2; exit 2 ;;
+esac
+if [ "$status" -eq 0 ]; then echo "MetaHuman shutdown complete"; else echo "MetaHuman shutdown incomplete" >&2; fi
+exit "$status"

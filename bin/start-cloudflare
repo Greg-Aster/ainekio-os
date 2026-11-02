@@ -6,4 +6,4 @@
 
 import { autoStartTunnel } from '../packages/core/src/cloudflare-tunnel.js';
 
-autoStartTunnel();
+if (!autoStartTunnel()) process.exitCode = 1;

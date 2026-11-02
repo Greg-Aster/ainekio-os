@@ -1,4 +1,5 @@
 import readline from 'node:readline'
+import { audit } from '@metahuman/core/audit'
 import { terminalRequest, terminalCall } from '@metahuman/core/terminal'
 import type { TerminalEvent, DiagnosticReceipt } from '@metahuman/core/terminal/types'
 
@@ -19,16 +20,23 @@ export async function terminalView(id: string): Promise<void> {
     input.prompt(true)
   }
   let closedByOwner = false
-  const close = () => { response.destroy() }
+  let closure: { cause: string; signal?: string; error?: string; errorCode?: string } | undefined
+  const close = (cause: string, signal?: string) => {
+    closure ??= { cause, signal }
+    response.destroy()
+  }
+  const inputClosed = () => close('input_closed')
+  const terminated = () => close('signal', 'SIGTERM')
+  const hungUp = () => close('signal', 'SIGHUP')
   input.on('line', line => {
     if (!line.trim()) { input.prompt(); return }
     void terminalCall<DiagnosticReceipt>('/diagnostic-input', { id, message: line }).then(receipt => {
       write(`\n${color('1;32', 'Follow-up queued')} ${color('2', receipt.submissionId)}\n`)
     }, error => { write(`\n${color('1;31', error.message)}\n`) })
   })
-  input.once('close', close)
-  process.once('SIGTERM', close)
-  process.once('SIGHUP', close)
+  input.once('close', inputClosed)
+  process.once('SIGTERM', terminated)
+  process.once('SIGHUP', hungUp)
   let buffered = ''
   let lastStatus = ''
   try {
@@ -43,6 +51,7 @@ export async function terminalView(id: string): Promise<void> {
         if (event.type === 'error') throw new Error(event.error)
         if (event.type === 'state' && !event.state.sessions.some(session => session.id === id)) {
           closedByOwner = true
+          closure ??= { cause: 'owner_closed' }
           return
         }
         if (event.type === 'state') {
@@ -59,12 +68,21 @@ export async function terminalView(id: string): Promise<void> {
         }
       }
     }
+  } catch (error) {
+    closure ??= { cause: 'viewer_error' }
+    closure.error = error instanceof Error ? error.message : String(error)
+    closure.errorCode = (error as NodeJS.ErrnoException)?.code
+    throw error
   } finally {
-    input.off('close', close)
+    audit({ level: closure?.error || !closure ? 'warn' : 'info', category: 'system',
+      event: 'big_brother_terminal_view_closed', actor: 'terminal',
+      details: { sessionId: id, viewerPid: process.pid, closedByOwner,
+        ...(closure ?? { cause: 'stream_ended' }) } })
+    input.off('close', inputClosed)
     input.close()
     response.destroy()
-    process.off('SIGTERM', close)
-    process.off('SIGHUP', close)
+    process.off('SIGTERM', terminated)
+    process.off('SIGHUP', hungUp)
     if (!closedByOwner) await terminalCall('/close', { id })
   }
 }

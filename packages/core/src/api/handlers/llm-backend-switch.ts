@@ -1,7 +1,7 @@
 /**
  * LLM Backend Switch API Handlers
  *
- * POST switch between backends (ollama, vllm, remote, auto).
+ * POST switch between backends (ollama, remote, auto).
  * Works for both web (Astro) and mobile (nodejs-mobile).
  */
 
@@ -42,7 +42,7 @@ export async function handleSwitchLlmBackend(req: UnifiedRequest): Promise<Unifi
     }
 
     const backend = body?.backend;
-    const validBackends = ['ollama', 'vllm', 'llama-cpp', 'remote', 'auto'];
+    const validBackends = ['ollama', 'llama-cpp', 'remote', 'auto'];
     if (!backend || !validBackends.includes(backend)) {
       return { status: 400, error: `Invalid backend. Must be one of: ${validBackends.join(', ')}` };
     }

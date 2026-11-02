@@ -27,6 +27,7 @@ import {
   recordEnvironmentPerception,
   recordEnvironmentLocomotionMeasurement,
   recordEnvironmentBridgeTelemetry,
+  recordEnvironmentBodyConnections,
   recordEnvironmentActionResult,
   sanitizeEnvironmentBridgeObservation,
   setEnvironmentBridgeEnabled,
@@ -64,7 +65,7 @@ const FEEDBACK_TYPES = new Set<EnvironmentFeedback['type']>([
 const ROBOT_STATUS_KEYS = new Set([
   'robot_id', 'epoch', 'vbat', 'rssi', 'state', 'uptime', 'heap', 'sd',
   'camera_ready', 'cam_drops', 'spk_underruns', 'mic_drops', 'wake_enabled',
-  'wake_model', 'wake_ready', 'imu', 'balance', 'timestamp',
+  'wake_model', 'wake_ready', 'imu', 'balance', 'servo_feedback', 'timestamp',
   'output_ready', 'output_armed', 'output_fault', 'power_monitor_ready', 'status_received_at',
 ]);
 
@@ -153,7 +154,7 @@ function buildFeedback(value: Record<string, unknown>): EnvironmentFeedback | nu
   }
 
   return {
-    id: typeof value.id === 'string' ? value.id : `env-feedback-${Date.now()}`,
+    id: typeof value.id === 'string' ? value.id : `env-feedback-${randomUUID()}`,
     timestamp: typeof value.timestamp === 'string' ? value.timestamp : new Date().toISOString(),
     type: value.type as EnvironmentFeedback['type'],
     message: value.message,
@@ -209,7 +210,7 @@ export async function handleEnvironmentBridgeBehaviorSettings(req: UnifiedReques
   const system = getQueueSystem();
   const store = openExecutionStore(username);
   try {
-    const executions = store.list(username).filter(record => {
+    const executions = store.active(username).filter(record => {
       if (!['running', 'waiting'].includes(record.status)) return false;
       if (store.task(record.executionId)) return true;
       const entry = store.entry(record.executionId);
@@ -317,6 +318,10 @@ export async function handleEnvironmentBridgeTelemetry(req: UnifiedRequest): Pro
   const authorizationFailure = bridgeAuthorizationFailure(req);
   if (authorizationFailure) return authorizationFailure;
   const body = bodyRecord(req);
+  if (body.connections !== undefined) {
+    try { return successResponse({ success: true, diagnostics: recordEnvironmentBodyConnections(body.connections) }); }
+    catch (error) { return badRequestResponse((error as Error).message); }
+  }
   if (typeof body.sessionId !== 'string' || !body.sessionId.trim()) {
     return badRequestResponse('Environment bridge telemetry requires a sessionId');
   }
@@ -577,6 +582,7 @@ async function* streamEnvironmentActions(
   const readOwner = `environment-adapter:${sessionId}:${randomUUID()}`;
   let wake: (() => void) | undefined;
   let closed = false;
+  let unsubscribe: (() => void) | undefined;
 
   const push = (event: string, data: Record<string, unknown>) => {
     if (closed) {
@@ -588,9 +594,13 @@ async function* streamEnvironmentActions(
   };
 
   const close = () => {
+    if (closed) return;
     closed = true;
     wake?.();
     wake = undefined;
+    unsubscribe?.();
+    unsubscribe = undefined;
+    releaseEnvironmentStreamWork(sessionId, readOwner);
   };
 
   const dispatch = () => {
@@ -614,26 +624,30 @@ async function* streamEnvironmentActions(
     }
   };
 
-  const unsubscribe = subscribeEnvironmentActions(sessionId, dispatch);
-  signal?.addEventListener('abort', close, { once: true });
-  touchEnvironmentSession(sessionId);
-
-  push('connected', {
-    sessionId,
-    enabled: readEnvironmentBridgeState().enabled,
-    serverTime: new Date().toISOString(),
-  });
-  dispatch();
-
+  unsubscribe = subscribeEnvironmentActions(sessionId, dispatch);
   try {
-    while (!closed || queue.length > 0) {
+    signal?.addEventListener('abort', close, { once: true });
+    if (signal?.aborted) { close(); return; }
+    touchEnvironmentSession(sessionId);
+    push('connected', {
+      sessionId,
+      enabled: readEnvironmentBridgeState().enabled,
+      serverTime: new Date().toISOString(),
+    });
+    dispatch();
+    while (!closed) {
       if (queue.length === 0) {
-        await Promise.race([
-          new Promise<void>((resolve) => {
-            wake = resolve;
-          }),
-          new Promise<void>((resolve) => setTimeout(resolve, STREAM_HEARTBEAT_MS)),
-        ]);
+        let heartbeat: ReturnType<typeof setTimeout> | undefined;
+        try {
+          await Promise.race([
+            new Promise<void>((resolve) => {
+              wake = resolve;
+            }),
+            new Promise<void>((resolve) => { heartbeat = setTimeout(resolve, STREAM_HEARTBEAT_MS); }),
+          ]);
+        } finally {
+          if (heartbeat !== undefined) clearTimeout(heartbeat);
+        }
         if (!closed && queue.length === 0) {
           touchEnvironmentSession(sessionId);
           push('heartbeat', {
@@ -653,8 +667,6 @@ async function* streamEnvironmentActions(
       yield queue.shift()!;
     }
   } finally {
-    unsubscribe();
-    releaseEnvironmentStreamWork(sessionId, readOwner);
     signal?.removeEventListener('abort', close);
     close();
   }

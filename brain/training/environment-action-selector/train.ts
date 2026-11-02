@@ -97,7 +97,7 @@ function parseOptions(arguments_: string[]): TrainingOptions {
     if (argument === '--specialist' && (value === 'intent' || value === 'task')) {
       options.specialist = value
       index += 1
-    } else if (argument === '--base-model' && ['unsloth/Qwen3.5-0.8B', 'unsloth/Qwen3.5-2B'].includes(value)) {
+    } else if (argument === '--base-model' && ['unsloth/Qwen3.5-0.8B', 'unsloth/Qwen3.5-2B', 'unsloth/Qwen3.5-9B'].includes(value)) {
       options.baseModel = value
       index += 1
     } else if (argument === '--dry-run') {
@@ -138,7 +138,8 @@ function parseOptions(arguments_: string[]): TrainingOptions {
       throw new Error(`Unknown or incomplete argument: ${argument}`)
     }
   }
-  options.outputPath ||= resolve(OUTPUT_ROOT, `${options.specialist}-${options.baseModel === 'unsloth/Qwen3.5-2B' ? '2b-' : ''}${options.reviewedDataPath ? 'reviewed' : 'cv'}-001`)
+  const baseLabel = options.baseModel?.split('Qwen3.5-')[1]?.toLowerCase()
+  options.outputPath ||= resolve(OUTPUT_ROOT, `${options.specialist}-${baseLabel && baseLabel !== '0.8b' ? `${baseLabel}-` : ''}${options.reviewedDataPath ? 'reviewed' : 'cv'}-001`)
   if (Boolean(options.finalFromPath) !== Boolean(options.selectionReportPath)) {
     throw new Error('--final-from and --selection-report are required together')
   }
@@ -271,6 +272,12 @@ async function runTrainer(
   }
   if (options?.remoteProfile) {
     const finalRoot = resolve(adapterPath, '..')
+    const config = await readJson<TrainingConfig>(configPath)
+    // The 9B weights and configured trainer image need the template's larger
+    // storage footprint; retain the existing small-specialist allocation.
+    const storage = config.base_model === 'unsloth/Qwen3.5-9B'
+      ? { volumeInGb: 100, containerDiskInGb: 100 }
+      : { volumeInGb: 20, containerDiskInGb: 40 }
     const provenancePath = resolve(finalRoot, 'run-provenance.json')
     const provenance = await readJson<{ trainingRecords: number }>(provenancePath)
     const runLabel = `${options.specialist}-${new Date().toISOString().replace(/[^0-9A-Za-z_-]/g, '-')}`
@@ -281,7 +288,7 @@ async function runTrainer(
       DATASET_MANIFEST_FILE: provenancePath, CONFIG_FILE: configPath,
       SUMMARY_FILE: resolve(finalRoot, 'remote-training-summary.json'),
       samples_used: provenance.trainingRecords, username: options.remoteProfile,
-      specialistJob: { specialist: options.specialist, gpuType: loadRunpodConfig(options.remoteProfile).gpuType!, volumeInGb: 20, containerDiskInGb: 40,
+      specialistJob: { specialist: options.specialist, gpuType: loadRunpodConfig(options.remoteProfile).gpuType!, ...storage,
         maxHourlyCost: options.remoteMaxHourly!, maxTotalCost: options.remoteMaxTotal! },
     })
     if (!remote.training_success || !remote.terminated) throw new Error(remote.error ?? remote.termination_error ?? 'Remote specialist training failed')
@@ -447,7 +454,7 @@ async function trainWithSelectedSettings(
     }>(resolve(sourceRoot, 'run-provenance.json')),
   ])
   if (provenance.owner !== config.owner || provenance.mode !== 'final-development-training'
-    || provenance.specialist !== options.specialist || !['unsloth/Qwen3.5-0.8B', 'unsloth/Qwen3.5-2B'].includes(provenance.baseModel)
+    || provenance.specialist !== options.specialist || !['unsloth/Qwen3.5-0.8B', 'unsloth/Qwen3.5-2B', 'unsloth/Qwen3.5-9B'].includes(provenance.baseModel)
     || provenance.priorHeldOutUsed !== false || previousConfig.base_model !== provenance.baseModel
     || previousConfig.specialist !== options.specialist || previousConfig.require_exact_messages !== true
     || previousConfig.train_on_responses_only !== true || previousConfig.num_train_epochs !== provenance.epochs) {
@@ -497,7 +504,7 @@ export async function main(arguments_: string[] = process.argv.slice(2)): Promis
   } as TrainingConfig
   if (
     config.owner !== 'environment-action-selector'
-    || !['unsloth/Qwen3.5-0.8B', 'unsloth/Qwen3.5-2B'].includes(config.base_model ?? '')
+    || !['unsloth/Qwen3.5-0.8B', 'unsloth/Qwen3.5-2B', 'unsloth/Qwen3.5-9B'].includes(config.base_model ?? '')
     || config.require_exact_messages !== true
     || config.train_on_responses_only !== true
     || config.development_fold_count !== DEVELOPMENT_FOLD_COUNT

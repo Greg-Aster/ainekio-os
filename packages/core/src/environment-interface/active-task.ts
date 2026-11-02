@@ -104,7 +104,6 @@ export type EnvironmentTaskSteering = { label: string; gain: number; trackId?: s
 export type EnvironmentTaskStep =
   | EnvironmentVisionStep
   | { kind: 'action'; action: Partial<EnvironmentAction> }
-  | { kind: 'generatedMotion'; description: string }
   | { kind: 'behavior'; target: string; completionCriteria: string;
       motion: Partial<EnvironmentAction> | null; candidateLabels: string[];
       identifyEveryFrames: number; steering: EnvironmentTaskSteering | null }
@@ -122,6 +121,7 @@ export interface ActiveTaskContinuation {
   state: ActiveTaskState
 }
 export interface ActiveTaskState {
+  depthDemand?: { consumerId: string; effectId?: string; ready: boolean };
   locomotionTargetAcquired?: boolean;
   locomotion?: { initial: EnvironmentLocomotionMeasurement; latest: EnvironmentLocomotionMeasurement;
     reached: boolean; incomplete?: string; progress?: Record<string, unknown> };
@@ -151,7 +151,6 @@ export interface ActiveTaskState {
   acquisition?: ActiveTaskAcquisition
   visionResult?: Record<string, unknown>
   queryId?: string
-  generationEffectId?: string
   image?: EnvironmentVisualFrame
   perception?: EnvironmentPerception
   trackingFeedback?: { status: 'current' | 'unavailable'; queryId?: string; observedAt?: string; expiresAt?: string }

@@ -65,7 +65,7 @@ export async function handleSetLlmBackendConfig(req: UnifiedRequest): Promise<Un
     const updates = body || {};
 
     // Validate updates
-    const validBackends = ['ollama', 'vllm', 'llama-cpp', 'remote', 'auto'];
+    const validBackends = ['ollama', 'llama-cpp', 'remote', 'auto'];
     if (updates.activeBackend && !validBackends.includes(updates.activeBackend)) {
       return { status: 400, error: `Invalid activeBackend. Must be one of: ${validBackends.join(', ')}` };
     }
@@ -132,47 +132,6 @@ export async function handleSetLlmBackendConfig(req: UnifiedRequest): Promise<Un
     if (updates.ollama?.enableThinking !== undefined
       && typeof updates.ollama.enableThinking !== 'boolean') {
       return { status: 400, error: 'Ollama enableThinking must be a boolean' };
-    }
-
-    if (updates.vllm?.gpuMemoryUtilization !== undefined) {
-      const util = updates.vllm.gpuMemoryUtilization;
-      if (typeof util !== 'number' || !Number.isFinite(util) || util < 0.1 || util > 0.99) {
-        return { status: 400, error: 'gpuMemoryUtilization must be between 0.1 and 0.99' };
-      }
-    }
-
-    if (updates.vllm?.autoUtilizationMax !== undefined) {
-      const util = updates.vllm.autoUtilizationMax;
-      if (typeof util !== 'number' || !Number.isFinite(util) || util < 0.1 || util > 0.99) {
-        return { status: 400, error: 'autoUtilizationMax must be between 0.1 and 0.99' };
-      }
-    }
-
-    const nonNegativeGiBFields = [
-      'gpuMemoryHeadroomGiB',
-      'kvCacheMemoryGiB',
-      'cpuOffloadGiB',
-      'kvOffloadingGiB',
-    ];
-    for (const field of nonNegativeGiBFields) {
-      const value = updates.vllm?.[field];
-      if (value !== undefined && value !== null
-        && (typeof value !== 'number' || !Number.isFinite(value) || value < 0 || value > 1024)) {
-        return { status: 400, error: `${field} must be a non-negative GiB value` };
-      }
-    }
-
-    if (updates.vllm?.maxModelLen !== undefined) {
-      const maxModelLen = updates.vllm.maxModelLen;
-      if (maxModelLen !== 'auto'
-        && (!Number.isInteger(maxModelLen) || maxModelLen < 256)) {
-        return { status: 400, error: 'maxModelLen must be "auto" or an integer of at least 256 tokens' };
-      }
-    }
-
-    if (updates.vllm?.kvOffloadingBackend !== undefined
-      && !['native', 'lmcache'].includes(updates.vllm.kvOffloadingBackend)) {
-      return { status: 400, error: 'kvOffloadingBackend must be native or lmcache' };
     }
 
     saveBackendConfig(updates);

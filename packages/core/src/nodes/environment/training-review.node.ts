@@ -1,17 +1,17 @@
 import {
-  readEnvironmentTrainingBank, readFreestyleTrainingBank,
+  readEnvironmentTrainingBank,
   readEnvironmentTrainingEvidenceForProfile, saveEnvironmentTrainingProposal,
 } from '../../environment-training-bank.js'
 import { defineNode } from '../types.js'
 import { environmentTrainingReviewInputSchema, environmentTrainingReviewSaveSchema } from './training-review.schemas.js'
 
-type Bank = 'decision' | 'freestyle'
+type Bank = 'decision'
 
 function reviewIdentity(context: Record<string, any>): { username: string; bank: Bank; candidateId: string } {
   const username = context.username
   const request = context.environmentTrainingReview
   if (typeof username !== 'string' || !username
-    || !request || !['decision', 'freestyle'].includes(request.bank)
+    || !request || request.bank !== 'decision'
     || typeof request.candidateId !== 'string' || !request.candidateId) {
     throw new Error('Training curator requires a profile, bank, and saved decision identity')
   }
@@ -22,23 +22,19 @@ export const environmentTrainingReviewInputNode = defineNode({
   ...environmentTrainingReviewInputSchema,
   async execute(_inputs, context, properties) {
     const { username, bank, candidateId } = reviewIdentity(context)
-    const candidate = bank === 'freestyle'
-      ? readFreestyleTrainingBank(username).find(value => value.id === candidateId)
-      : readEnvironmentTrainingBank(username).candidates.find(value => value.id === candidateId)
+    const candidates = readEnvironmentTrainingBank(username).candidates
+    const candidate = candidates.find(value => value.id === candidateId)
     if (!candidate) throw new Error(`Training decision ${candidateId} does not exist`)
     const systemPrompt = properties?.systemPrompt
     if (typeof systemPrompt !== 'string' || !systemPrompt.trim()) throw new Error('Training curator graph has no instructions')
-    const evidence = readEnvironmentTrainingEvidenceForProfile(username, candidate.executionId)
-    const specialist = 'specialist' in candidate ? candidate.specialist : 'freestyle'
-    const generation = 'generationError' in candidate
-      ? { generationError: candidate.generationError, validatedAction: candidate.generatedAction }
-      : {}
+    const evidence = readEnvironmentTrainingEvidenceForProfile(username, candidate.executionId, candidates)
     return {
       messages: [
         { role: 'system', content: systemPrompt },
-        { role: 'user', content: JSON.stringify({ specialist,
+        { role: 'user', content: JSON.stringify({ specialist: candidate.specialist,
+          decisionIdentity: { id: candidate.id, sourceDigest: candidate.sourceDigest, executionId: candidate.executionId },
           originalInput: { system: candidate.system, user: candidate.user },
-          originalOutput: candidate.observedOutput, ...generation,
+          originalOutput: candidate.observedOutput,
           executionEvidence: evidence }) },
       ],
       bank, candidateId, sourceDigest: candidate.sourceDigest,

@@ -6,8 +6,8 @@ export type EnvironmentActionType =
   | 'stop'
   | 'captureImage'
   | 'robotCommand'
+  | 'requestMotion'
   | 'faceExpression'
-  | 'robotMotionPlan'
   | 'inspect'
   | 'visualApproach'
   | 'speak'
@@ -124,47 +124,6 @@ export interface EnvironmentActiveViewProgress {
   pathConfidence?: number;
   obstruction?: number;
   reason: string;
-}
-
-export type EnvironmentMotionPlanJoint =
-  | 'R1'
-  | 'R2'
-  | 'L1'
-  | 'L2'
-  | 'R4'
-  | 'R3'
-  | 'L3'
-  | 'L4';
-
-/**
- * The last logical pose established by a correlated completed command.
- * This is commanded-state evidence, not servo feedback or physical proof.
- */
-export type EnvironmentCommandedPoseState = {
-  version: 1;
-  jointMapVersion: 1;
-  sourceActionId: string;
-  updatedAt: string;
-  bodyEpoch?: string;
-} & (
-  | {
-      kind: 'reference';
-      reference: 'stand' | 'neutral';
-    }
-  | {
-      kind: 'joints';
-      joints: Record<EnvironmentMotionPlanJoint, number>;
-    }
-);
-
-export interface EnvironmentMotionPlanTarget {
-  joint: EnvironmentMotionPlanJoint;
-  degrees: number;
-}
-
-export interface EnvironmentMotionPlanFrame {
-  durationMs: number;
-  targets: EnvironmentMotionPlanTarget[];
 }
 
 export interface EnvironmentCapabilities {
@@ -378,6 +337,7 @@ export interface EnvironmentAction {
   movementUpdate?: { actionId: string; revision: number; controls: Record<string, number> };
 
   command?: string;
+  description?: string;
   expression?: string;
   displayToken?: string;
   displayIfToken?: string;
@@ -388,8 +348,6 @@ export interface EnvironmentAction {
   amount?: number;
   durationMs?: number;
   target?: string;
-  frames?: EnvironmentMotionPlanFrame[];
-  endPose?: 'hold' | 'stand' | 'neutral';
   inspectionTarget?: EnvironmentVisualInspectionTarget;
   visualTarget?: EnvironmentVisualTargetSpecification;
   speechArtifactId?: string;
@@ -463,9 +421,21 @@ export interface EnvironmentSessionState {
   firstSeenAt: string;
   lastSeenAt: string;
   latestObservation?: EnvironmentObservation;
+  /** Last reported event identity, retained independently of the current observation. */
+  latestBodyEvent?: {
+    identity: string;
+    observedAt: string;
+    robotId?: string;
+    epoch?: string | number;
+    gatewayInstance?: string;
+  };
+  /** Recorded connection transitions, independent of ordinary heartbeat updates. */
+  connectionRevision?: number;
   /** Latest received camera evidence; retains its capture time across text/status updates. */
   latestVisual?: EnvironmentVisualFrame;
   processedTextEventIds?: string[];
+  /** Active bridge resource registrations; execution remains the lifetime owner. */
+  depthDemands?: Record<string, { executionId: string; username: string; readOwner: string; requestId: string }>;
 }
 
 export interface EnvironmentBridgeState {

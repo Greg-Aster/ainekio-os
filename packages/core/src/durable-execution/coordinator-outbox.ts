@@ -12,17 +12,18 @@ import { eventBus } from '../infrastructure/event-bus/client.js'
 
 /** The same admission contract is used by relay and by an early accepting worker. */
 export function executionWorkInput(store: ExecutionStore, effect: DispatchRecord): TaskInput {
+  const execution = store.get(effect.executionId)
   const input: TaskInput = effect.kind === 'graph_resume' ? {
     type: 'generic', handler: 'graph.resume', resource: `execution:${effect.executionId}`,
-    source: 'system', priority: 'high',
+    source: 'system',
     input: effect.payload as Record<string, unknown>, username: store.get(effect.executionId).username,
     metadata: { producer: 'durable-execution' },
   } : effect.payload as TaskInput
   return {
-    ...input, username: store.get(effect.executionId).username, correlationId: effect.executionId,
+    ...input, priority: input.priority ?? execution.priority, username: execution.username, correlationId: effect.executionId,
     durable: { executionId: effect.executionId, effectId: effect.effectId,
       ...(input.executionScope ? { scope: input.executionScope } : {}),
-      originRuntimeId: store.get(effect.executionId).originRuntimeId,
+      originRuntimeId: execution.originRuntimeId,
       recovery: input.executionScope === 'independent' || input.type === 'environment_command' || input.handler?.startsWith('agent.') ? 'reconcile' : 'resume' },
   }
 }
@@ -34,6 +35,9 @@ export function reconcileTerminatedExecutionWork(store: ExecutionStore, executio
   const cancelled: QueuedTask[] = []
   for (const effect of store.dispatches(executionId).filter(effect =>
     effect.kind === 'coordinator_work' && ['pending', 'admitted', 'cancelled'].includes(effect.status))) {
+    if (effect.status === 'cancelled' && effect.workItemId
+      && ['terminal', 'undispatched', 'not-sent'].some(suffix =>
+        store.findEvent(executionId, `work:${effect.workItemId}:${suffix}`))) continue
     // Enqueue may have committed before its acknowledgement. The admission
     // owner alone can establish that the command never started.
     const receipt = manager.cancelAdmission(executionWorkInput(store, effect), 'Parent execution ended before work started')
@@ -54,12 +58,12 @@ export async function relayExecutionOutbox(
   stillActive: () => boolean = () => true,
 ): Promise<void> {
   const execution = store.get(executionId)
-  for (const pending of store.pendingDispatches().filter(item => item.executionId === executionId)) {
+  for (const pending of store.pendingDispatches(executionId)) {
     const input = pending.kind === 'execution_event'
       ? pending.payload as { executionId: string; kind: string } : undefined
     // Load the registry only for steering, before checking current admission.
     // Cancellation does not resume a graph and remains independent of versions.
-    const resolveInputGraph = input?.kind === 'user_steering'
+    const resolveInputGraph = input?.kind === 'user_steering' || input?.kind === 'autonomy_trigger'
       ? (await import('./graph-contract.js')).resolveExecutionGraph : undefined
     if (!stillActive()) return
     const runtimeId = getAuthenticatedRuntimeId()

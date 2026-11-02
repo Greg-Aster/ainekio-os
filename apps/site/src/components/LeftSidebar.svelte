@@ -1,39 +1,12 @@
 <script lang="ts">
   import { onMount } from 'svelte';
-  import { activeView, statusStore, statusRefreshTrigger, yoloModeStore, graphEditorHref } from '../stores/navigation';
+  import { activeView, statusStore, statusRefreshTrigger, yoloModeStore, graphEditorHref, navigationItems } from '../stores/navigation';
   import { currentMode, isOwner } from '../stores/security-policy';
   import { pendingCount, loadApprovals } from '../stores/approvals';
   import { apiFetch } from '../lib/client/api-config';
   import SyncStatus from './SyncStatus.svelte';
   import { MODEL_ROLE_OPTIONS } from '@metahuman/core/model-roles';
-  import { buildModelRoleSections, type ModelRolePresentation, type WorkflowModelSummary } from '../lib/client/model-role-presentation';
-
-  interface MenuItem {
-    id: string;
-    label: string;
-    icon: string;
-    description?: string;
-  }
-
-  const menuItems: MenuItem[] = [
-    { id: 'chat', label: 'Chat', icon: '💬', description: 'Conversation interface' },
-    { id: 'dashboard', label: 'Dashboard', icon: '📊', description: 'System overview' },
-    { id: 'projects', label: 'Projects', icon: '📁', description: 'Task graph & projects' },
-    { id: 'agency', label: 'Agency', icon: '🎯', description: 'Desires and Active Operator' },
-    { id: 'persona', label: 'Persona', icon: '👤', description: 'Identity & personality' },
-    { id: 'voice', label: 'Voice', icon: '🎤', description: 'Audio & training' },
-    { id: 'training', label: 'AI Training', icon: '🧠', description: 'LoRA adapters' },
-    { id: 'terminal', label: 'Terminal', icon: '⌨', description: 'Shells & provider sessions' },
-    { id: 'system', label: 'System', icon: '⚙️', description: 'Settings & tools' },
-  ];
-
-  // Current user state
-  interface User {
-    id: string;
-    username: string;
-    role: 'owner' | 'standard' | 'guest' | 'anonymous';
-  }
-  let currentUser: User | null = null;
+  import { buildModelRoleSections, buildBaseModelChoices, modelChoiceForAssignment, adapterChoiceForAssignment, modelAdapterLabel, type BaseModelChoice, type ModelInventoryEntry as AvailableModel, type ModelRolePresentation, type WorkflowModelSummary } from '../lib/client/model-role-presentation';
 
   function selectView(viewId: string) {
     activeView.set(viewId);
@@ -44,12 +17,7 @@
   let loading = true;
   let trustMenuOpen = false;
   let trustOptions: string[] = [];
-  let yoloMode = false;
-
-  // Subscribe to YOLO mode store
-  yoloModeStore.subscribe(value => {
-    yoloMode = value;
-  });
+  $: yoloMode = $yoloModeStore;
 
   type AdapterInfo = {
     status?: string;
@@ -129,7 +97,7 @@
   })();
 
   // Subscribe to the shared status store
-  let statusSubscription = null;
+  let statusSubscription: (() => void) | null = null;
 
   // Load status from shared store instead of making API call directly
   async function loadStatus() {
@@ -386,40 +354,14 @@
     }
   }
 
-  interface AvailableModel {
-    id: string;
-    aliases?: string[];
-    model: string;
-    provider: string;
-    roles?: string[];
-    capabilities?: string[];
-    description?: string;
-    adapters?: string[];
-    baseModel?: string | null;
-    metadata?: Record<string, any>;
-    options?: Record<string, any>;
-    source?: string;
-    locked?: boolean;
-  }
-
-  interface LoRAAdapterInfo {
-    id: string;
-    name: string;
-    path: string;
-    date?: string;
-    createdAt?: string;
-    size?: number;
-    loaded?: boolean;
-  }
 
   interface ModelCategories {
     local: AvailableModel[];
-    lora: LoRAAdapterInfo[];
     remote: AvailableModel[];
     bigBrother: AvailableModel[];
   }
 
-  type BackendType = 'llama-cpp' | 'ollama' | 'vllm' | 'remote' | 'auto';
+  type BackendType = 'llama-cpp' | 'ollama' | 'remote' | 'auto';
   type ModelConfigurationMode = 'dual' | 'agent' | 'emulation' | 'environment';
 
   const MODEL_CONFIGURATION_MODES: Array<{
@@ -453,44 +395,14 @@
     return modelRolePresentation(role)?.description || role;
   }
 
-  function modelDisplayName(role: string, info: ModelRoleInfo): string {
-    if (info.baseModel && (role === 'persona' || info.adapters?.length)) {
-      return info.baseModel.split('/').pop() || info.baseModel;
-    }
-    return info.model || '—';
-  }
-
-  function modelAdapterNames(role: string, info: ModelRoleInfo): string[] {
-    const names = [...(info.adapters ?? [])];
-    if (role === 'persona' && info.baseModel && info.model && info.model !== info.baseModel) {
-      names.unshift(info.model);
-    }
-    return Array.from(new Set(names.filter(Boolean)));
-  }
-
-  function adapterLabel(model: AvailableModel): string {
-    return model.description || model.metadata?.run || model.adapters?.map(path => path.split(/[\\/]/).pop()).join(', ') || model.id;
-  }
-
-  function roleAdapterLabel(role: string, info: ModelRoleInfo): string {
-    const model = info.modelId ? findAssignedModel(info.modelId) : undefined;
-    return model ? adapterLabel(model) : modelAdapterNames(role, info).map(path => path.split(/[\\/]/).pop()).join(', ');
-  }
-
   function modelRoleTooltip(role: string, info: ModelRoleInfo): string {
-    const lines = [modelRoleDescription(role), '', `Model: ${modelDisplayName(role, info)}`];
-    if (info.model) lines.push(`Serving model: ${info.model}`);
-    if (info.modelId) lines.push(`Assignment: ${info.modelId}`);
-    const adapters = modelAdapterNames(role, info);
-    if (adapters.length > 0) lines.push(`LoRA: ${adapters.join(', ')}`);
-    lines.push('', 'Click to change this assignment.');
-    return lines.join('\n');
+    return [modelRoleDescription(role), info.unavailableReason || info.error,
+      `Assignment: ${info.modelId || 'unassigned'}`].filter(Boolean).join('\n');
   }
 
   let availableModels: AvailableModel[] = [];
-  let uniqueModels: AvailableModel[] = [];
   let roleAssignments: Record<string, string> = {};
-  let modelDropdownOpen: Record<string, boolean> = {};
+  let loraEnabled: Record<string, boolean> = {};
   let loadingModelRegistry = false;
   let modelRegistryRequestId = 0;
   let modelConfigurationMode: ModelConfigurationMode = 'dual';
@@ -499,15 +411,11 @@
   let savingModelRole: string | null = null;
   let statusRefreshInFlight = false;
 
-  let showRestartModal = false;
-  let pendingLoraName = '';
-  let restartInProgress = false;
 
   let activeBackend: BackendType = 'ollama';
 
   let modelCategories: ModelCategories = {
     local: [],
-    lora: [],
     remote: [],
     bigBrother: []
   };
@@ -515,7 +423,6 @@
   interface BackendAvailability {
     llamaCpp: { available: boolean; running: boolean; active: boolean; model?: string };
     ollama: { available: boolean; running: boolean; active: boolean; model?: string };
-    vllm: { available: boolean; running: boolean; active: boolean; model?: string };
     runpod: { available: boolean; configured: boolean; active: boolean };
     bigBrother: { available: boolean; enabled: boolean; provider?: string };
     remoteServer: { available: boolean; configured: boolean; serverUrl?: string; connected?: boolean };
@@ -524,7 +431,6 @@
   let backendAvailability: BackendAvailability = {
     llamaCpp: { available: false, running: false, active: false },
     ollama: { available: false, running: false, active: false },
-    vllm: { available: false, running: false, active: false },
     runpod: { available: false, configured: false, active: false },
     bigBrother: { available: false, enabled: false },
     remoteServer: { available: false, configured: false, connected: false },
@@ -537,12 +443,6 @@
     if (!ba.available) return 'Ollama: Not installed';
     if (ba.running) return `Ollama: Running${ba.model ? ` (${ba.model})` : ''}${ba.active ? ' [ACTIVE]' : ''}`;
     return 'Ollama: Installed but not running';
-  }
-  function getVllmTooltip(): string {
-    const ba = backendAvailability.vllm;
-    if (!ba.available) return 'vLLM: Not installed';
-    if (ba.running) return `vLLM: Running${ba.model ? ` (${ba.model})` : ''}${ba.active ? ' [ACTIVE]' : ''}`;
-    return 'vLLM: Installed but not running';
   }
   function getRunPodTooltip(): string {
     const ba = backendAvailability.runpod;
@@ -624,11 +524,16 @@
     hasModelRegistry = Object.keys(next).length > 0;
   }
 
-  function isModelAssigned(role: string, model: AvailableModel): boolean {
-    const assignedModelId = roleAssignments[role];
-    return assignedModelId === model.id || Boolean(
-      assignedModelId && model.aliases?.includes(assignedModelId)
-    );
+  async function selectBaseModel(role: string, key: string) {
+    const choice = baseModelChoices.find(model => model.key === key);
+    if (!choice) return;
+    await assignModelToRole(role, choice.base.id, undefined,
+      !choice.registeredBase && choice.provider === 'llama-cpp' ? choice.base : undefined);
+  }
+
+  function toggleRoleLora(role: string, checked: boolean, choice: BaseModelChoice) {
+    loraEnabled = { ...loraEnabled, [role]: checked };
+    if (!checked) void selectBaseModel(role, choice.key);
   }
 
   async function loadModelRegistry(mode: ModelConfigurationMode = modelConfigurationMode) {
@@ -655,18 +560,11 @@
         if (data.modelCategories) {
           modelCategories = {
             local: data.modelCategories.local || [],
-            lora: data.modelCategories.lora || [],
             remote: data.modelCategories.remote || [],
             bigBrother: data.modelCategories.bigBrother || []
           };
         }
 
-        const seen = new Map<string, AvailableModel>();
-        for (const model of availableModels) {
-          const key = JSON.stringify([model.provider, model.model, model.options?.endpoint, model.adapters, model.options?.lora]);
-          if (!seen.has(key)) seen.set(key, model);
-        }
-        uniqueModels = Array.from(seen.values());
         syncModelRoleDisplay(roleAssignments);
       } else {
         throw new Error(data.error || `Failed to load ${mode}-mode model assignments`);
@@ -686,7 +584,7 @@
     if (!isModelConfigurationMode(mode)) return;
     modelConfigurationMode = mode;
     modelConfigurationNotice = '';
-    closeAllModelDropdowns();
+    loraEnabled = {};
     void loadModelRegistry(mode);
   }
 
@@ -708,7 +606,7 @@
     }
   }
 
-  async function assignModelToRole(role: string, modelId: string, cognitiveModeOverride?: string) {
+  async function assignModelToRole(role: string, modelId: string, cognitiveModeOverride?: string, baseDefinition?: AvailableModel) {
     if (savingModelRole) return;
     const modeCandidate = cognitiveModeOverride || modelConfigurationMode;
     if (!isModelConfigurationMode(modeCandidate)) {
@@ -720,6 +618,15 @@
     modelConfigurationError = '';
     modelConfigurationNotice = '';
     try {
+      if (baseDefinition) {
+        const registration = await apiFetch('/api/model-registry', {
+          method: 'PUT', headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ operation: 'register', model: baseDefinition }),
+        });
+        const registered = await registration.json();
+        if (!registration.ok || !registered.success) throw new Error(registered.error || 'Failed to register base model');
+        modelId = registered.modelId;
+      }
       const payload: Record<string, any> = { role, modelId, cognitiveMode: mode };
 
       const response = await apiFetch('/api/model-registry', {
@@ -731,16 +638,10 @@
       const result = await response.json();
 
       if (response.ok && result.success) {
-        modelDropdownOpen[role] = false;
-        modelDropdownOpen = { ...modelDropdownOpen };
+        loraEnabled = {};
         modelConfigurationNotice = `${modelRoleLabel(role)} saved for ${MODEL_CONFIGURATION_MODES.find(item => item.id === mode)?.label || mode}.`;
         void refreshStatus('model assignment');
         await loadModelRegistry();
-
-        if (result.needsRestart && modelId.startsWith('vllm-lora.')) {
-          pendingLoraName = modelId.replace('vllm-lora.', '');
-          showRestartModal = true;
-        }
 
         setTimeout(() => {
           statusRefreshTrigger.update(n => n + 1);
@@ -753,75 +654,12 @@
       modelConfigurationError = (error as Error).message;
     } finally {
       if (savingModelRole === role) savingModelRole = null;
+      loraEnabled = {};
     }
   }
 
-  async function restartVllmForLora() {
-    restartInProgress = true;
-    try {
-      const response = await apiFetch('/api/llm-backend/vllm', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ action: 'restart' }),
-      });
-
-      const result = await response.json();
-
-      if (result.success) {
-        console.log('[vLLM] Restart successful, loaded LoRAs:', result.loadedLoras);
-        showRestartModal = false;
-        pendingLoraName = '';
-        void refreshStatus('vllm restart');
-        void loadModelRegistry();
-      } else {
-        alert('Failed to restart vLLM: ' + (result.error || 'Unknown error'));
-      }
-    } catch (error) {
-      console.error('[vLLM] Restart error:', error);
-      alert('Failed to restart vLLM: ' + (error as Error).message);
-    } finally {
-      restartInProgress = false;
-    }
-  }
-
-  function dismissRestartModal() {
-    showRestartModal = false;
-    pendingLoraName = '';
-  }
-
-  function toggleModelDropdown(role: string) {
-    modelDropdownOpen[role] = !modelDropdownOpen[role];
-    modelDropdownOpen = { ...modelDropdownOpen };
-  }
-
-  function closeAllModelDropdowns() {
-    modelDropdownOpen = {};
-  }
-
-  function handleDocumentClick(event: MouseEvent) {
-    const target = event.target as HTMLElement;
-    if (!target.closest('.model-role-row')) {
-      closeAllModelDropdowns();
-    }
-  }
-
-  async function fetchCurrentUser() {
-    try {
-      const response = await apiFetch('/api/auth/me');
-      const data = await response.json();
-      if (data.success && data.user) {
-        currentUser = data.user;
-      } else {
-        currentUser = null;
-      }
-    } catch (err) {
-      console.error('[LeftSidebar] Failed to fetch user:', err);
-      currentUser = null;
-    }
-  }
 
   onMount(() => {
-    void fetchCurrentUser();
     loadStatus();
     loadFacets();
     loadTrustOptions();
@@ -831,7 +669,7 @@
       lastActiveMode = activeMode;
       modelConfigurationMode = activeMode;
       modelConfigurationNotice = '';
-      closeAllModelDropdowns();
+      loraEnabled = {};
       void loadModelRegistry(activeMode);
     });
     loadApprovals();
@@ -840,7 +678,6 @@
       loadApprovals();
     });
 
-    document.addEventListener('click', handleDocumentClick);
 
     const handleVisibilityChange = () => {
       if (!document.hidden) {
@@ -857,18 +694,24 @@
         statusSubscription();
       }
       document.removeEventListener('visibilitychange', handleVisibilityChange);
-      document.removeEventListener('click', handleDocumentClick);
     };
   });
 
   $: taskCount = taskTotals.active;
   $: inProgressCount = taskTotals.inProgress;
+  $: baseModelChoices = buildBaseModelChoices([
+    ...modelCategories.local, ...modelCategories.remote, ...modelCategories.bigBrother,
+    ...Object.values(roleAssignments).flatMap(id => {
+      const model = findAssignedModel(id);
+      return model ? [model] : [];
+    }),
+  ]);
 </script>
 
 <div class="flex flex-col h-full p-4 gap-4">
   <!-- Menu Items -->
   <nav class="menu">
-    {#each menuItems.filter(item => item.id !== 'terminal' || $isOwner) as item}
+    {#each navigationItems.filter(item => item.id !== 'terminal' || $isOwner) as item}
       <button
         class="menu-item"
         class:active={$activeView === item.id}
@@ -918,15 +761,7 @@
             >🦙</span>
           {/if}
 
-          {#if backendAvailability.vllm.available}
-            <span
-              class="backend-icon"
-              class:running={backendAvailability.vllm.running}
-              class:active={backendAvailability.vllm.active}
-              class:available={backendAvailability.vllm.available && !backendAvailability.vllm.running}
-              title={getVllmTooltip()}
-            >⚡</span>
-          {/if}
+
 
           {#if backendAvailability.runpod.available}
             <span
@@ -964,7 +799,7 @@
             >🔍</span>
           {/if}
 
-          {#if !backendAvailability.llamaCpp?.available && !backendAvailability.ollama.available && !backendAvailability.vllm.available && !backendAvailability.runpod.available}
+          {#if !backendAvailability.llamaCpp?.available && !backendAvailability.ollama.available && !backendAvailability.runpod.available}
             <span class="backend-icon offline" title="No backends configured">❌</span>
           {/if}
         </div>
@@ -1003,7 +838,7 @@
             </div>
           {/if}
           {#if backendAvailability.bigBrother.enabled}
-            <div class="px-2 py-1 text-[0.6875rem] text-gray-400">Big Brother is enabled; eligible calls follow its configured delegation.</div>
+            <div class="px-2 py-1 text-[0.6875rem] text-gray-400">Big Brother is available for model-role assignments and delegated tools.</div>
           {/if}
           {#each modelRoleSections as section}
             <div class="model-role-section">
@@ -1017,6 +852,9 @@
                 {@const role = presentation.role}
                 {@const info = modelRoles[role]}
                 {#if info}
+                  {@const choice = modelChoiceForAssignment(baseModelChoices, roleAssignments[role])}
+                  {@const adapter = choice && adapterChoiceForAssignment(choice, roleAssignments[role])}
+                  {@const useLora = loraEnabled[role] ?? Boolean(adapter)}
                   <div class="model-role-row">
                     <div class="model-role-label">
                       <span class="activity-indicator" aria-hidden="true">
@@ -1024,190 +862,50 @@
                       </span>
                       <span class="role-name" title={presentation.description}>{presentation.label}</span>
                     </div>
-                    {#if info.needsConfig}
-                <button
-                  class="role-model needs-config"
-                  aria-label={`Choose model for ${presentation.label}`}
-                  aria-expanded={Boolean(modelDropdownOpen[role])}
-                  title="{info.unavailableReason || 'Model unavailable'} - Click to select an available model"
-                  on:click|stopPropagation={() => toggleModelDropdown(role)}
-                  disabled={loadingModelRegistry || savingModelRole === role}
-                >
-                  {savingModelRole === role ? 'saving…' : 'select'}
-                  <span class="dropdown-arrow">▼</span>
-                </button>
-                    {:else if info.error}
-                <button class="role-model error clickable" title={info.error}
-                  aria-label={`Choose model for ${presentation.label}`}
-                  aria-expanded={Boolean(modelDropdownOpen[role])}
-                  on:click|stopPropagation={() => toggleModelDropdown(role)}
-                  disabled={loadingModelRegistry || savingModelRole === role}>select ▼</button>
-                    {:else}
-                <button
-                  class="role-model clickable"
-                  aria-label={`Choose model for ${presentation.label}: ${modelDisplayName(role, info)}`}
-                  aria-expanded={Boolean(modelDropdownOpen[role])}
-                  title={modelRoleTooltip(role, info)}
-                  on:click|stopPropagation={() => toggleModelDropdown(role)}
-                  disabled={loadingModelRegistry || savingModelRole === role}
-                >
-                  <span class="role-model-copy">
-                    <span class="role-model-primary">
-                      {savingModelRole === role ? 'saving…' : modelDisplayName(role, info)}
-                    </span>
-                    <span class="role-model-details">
-                      <span>{info.provider === 'llama-cpp' ? 'llama.cpp' : info.provider === 'big-brother' ? 'Big Brother' : info.provider}</span>
-                      {#if info.capabilities?.includes('image')}
-                        <span>· image input</span>
-                      {/if}
-                    </span>
-                    {#if modelAdapterNames(role, info).length > 0}
-                      <span class="role-adapter-line">LoRA · {roleAdapterLabel(role, info)}</span>
-                    {/if}
-                  </span>
-                  <span class="dropdown-arrow">▼</span>
-                </button>
-                    {/if}
-
-                    {#if modelDropdownOpen[role]}
-                <div class="model-dropdown categorized">
-                  <div class="dropdown-header">Choose model for {presentation.label}</div>
-
-                  {#if modelCategories.local.length > 0}
-                    <div class="dropdown-category">
-                      <span class="category-label">
-                        {activeBackend === 'llama-cpp' ? '🦙 llama.cpp' : activeBackend === 'vllm' ? '⚡ vLLM' : '🦙 Local'}
-                      </span>
-                      {#each modelCategories.local as model}
-                        {@const isCurrentlySelected = isModelAssigned(role, model)}
-                        <button
-                          class="dropdown-item"
-                          title={[model.id, ...(model.adapters || [])].join('\n')}
-                          class:selected={isCurrentlySelected}
-                          class:vllm-active={model.locked}
-                          on:click|stopPropagation={() => assignModelToRole(role, model.id)}
-                        >
-                          <span class="model-name">
-                            {model.adapters?.length && model.baseModel ? model.baseModel.split('/').pop() : model.model}
-                            {#if model.locked}
-                              <span class="vllm-badge">loaded</span>
-                            {/if}
-                            {#if model.capabilities?.includes('image')}
-                              <span class="vllm-badge">image</span>
-                            {/if}
-                          </span>
-                          {#if model.adapters?.length}
-                            <span class="model-desc">LoRA · {adapterLabel(model)}</span>
-                          {/if}
-                        </button>
-                      {/each}
-                    </div>
-                  {/if}
-
-                  {#if modelCategories.lora.length > 0}
-                    <div class="dropdown-category">
-                      <span class="category-label">⚡ vLLM LoRAs</span>
-                      {#each modelCategories.lora as adapter}
-                        {@const isCurrentlySelected = roleAssignments[role] === adapter.id}
-                        <button
-                          class="dropdown-item"
-                          class:selected={isCurrentlySelected}
-                          class:lora-loaded={adapter.loaded}
-                          on:click|stopPropagation={() => assignModelToRole(role, adapter.id)}
-                        >
-                          <span class="model-name">
-                            {adapter.name}
-                            {#if adapter.loaded}
-                              <span class="vllm-badge">loaded</span>
-                            {:else}
-                              <span class="restart-badge">⟳ restart</span>
-                            {/if}
-                          </span>
-                          {#if adapter.createdAt}
-                            <span class="model-desc">{adapter.createdAt}</span>
-                          {:else if adapter.date}
-                            <span class="model-desc">{adapter.date}</span>
-                          {/if}
-                        </button>
-                      {/each}
-                    </div>
-                  {/if}
-
-                  {#if modelCategories.remote.length > 0}
-                    <div class="dropdown-category">
-                      <span class="category-label">☁️ Cloud</span>
-                      {#each modelCategories.remote as model}
-                        {@const isCurrentlySelected = isModelAssigned(role, model)}
-                        <button
-                          class="dropdown-item"
-                          class:selected={isCurrentlySelected}
-                          on:click|stopPropagation={() => assignModelToRole(role, model.id)}
-                        >
-                          <span class="model-name">
-                            {model.model}
-                            <span class="cloud-indicator">{model.provider === 'remote-server' ? '🌐' : '☁️'}</span>
-                          </span>
-                          <span class="provider-badge cloud">{model.provider === 'runpod_serverless' ? 'RunPod' : model.provider === 'remote-server' ? '🌐 Remote' : model.provider}</span>
-                        </button>
-                      {/each}
-                    </div>
-                  {/if}
-
-                  {#if modelCategories.bigBrother.length > 0}
-                    <div class="dropdown-category">
-                      <span class="category-label">🤖 Big Brother</span>
-                      {#each modelCategories.bigBrother as model}
-                        {@const isCurrentlySelected = isModelAssigned(role, model)}
-                        <button
-                          class="dropdown-item"
-                          class:selected={isCurrentlySelected}
-                          on:click|stopPropagation={() => assignModelToRole(role, model.id)}
-                        >
-                          <span class="model-name">
-                            {model.model}
-                            <span class="bb-badge">🛡️</span>
-                          </span>
-                          <span class="model-desc">{model.description}</span>
-                        </button>
-                      {/each}
-                    </div>
-                  {/if}
-
-                  {#if activeBackend === 'ollama' && modelCategories.local.length === 0}
-                    {#each uniqueModels as model}
-                      {@const isSuggested = !model.roles || model.roles.includes(role)}
-                      {@const isCurrentlySelected = isModelAssigned(role, model)}
-                      <button
-                        class="dropdown-item"
-                        class:selected={isCurrentlySelected}
-                        class:suggested={isSuggested}
-                        on:click|stopPropagation={() => assignModelToRole(role, model.id)}
+                    <div class="flex min-w-0 items-center gap-2">
+                      <select
+                        class="role-model clickable flex-1"
+                        aria-label={`Model for ${presentation.label}`}
+                        title={modelRoleTooltip(role, info)}
+                        value={choice?.key || ''}
+                        disabled={loadingModelRegistry || Boolean(savingModelRole)}
+                        on:change={event => selectBaseModel(role, event.currentTarget.value)}
                       >
-                        <span class="model-name">
-                          {model.model}
-                          {#if model.provider === 'runpod_serverless' || model.provider === 'huggingface'}
-                            <span class="cloud-indicator">☁️</span>
-                          {/if}
-                          {#if model.capabilities?.includes('image')}
-                            <span class="vllm-badge">image</span>
-                          {/if}
-                          {#if isSuggested}
-                            <span class="suggested-indicator">✓</span>
-                          {/if}
-                        </span>
-                        {#if model.adapters && model.adapters.length > 0}
-                          <span class="adapter-indicator-small">+LoRA</span>
-                        {/if}
-                        {#if model.provider === 'runpod_serverless'}
-                          <span class="provider-badge cloud">RunPod Cloud</span>
-                        {/if}
-                        {#if model.description}
-                          <span class="model-desc">{model.description}</span>
-                        {/if}
-                      </button>
-                    {/each}
-                  {/if}
-                </div>
+                        <option value="" disabled>Select model…</option>
+                        {#each baseModelChoices as model (model.key)}
+                          <option value={model.key}>
+                            {model.label} · {model.provider === 'llama-cpp' ? 'llama.cpp' : model.provider}
+                            {baseModelChoices.some(other => other.key !== model.key && other.model === model.model && other.provider === model.provider) ? ` · ${model.endpoint}` : ''}
+                          </option>
+                        {/each}
+                      </select>
+                      <label class="flex shrink-0 items-center gap-1 text-[0.6875rem] text-gray-600 dark:text-gray-300">
+                        <input
+                          type="checkbox"
+                          aria-label={`Use LoRA for ${presentation.label}`}
+                          checked={useLora}
+                          disabled={!choice?.adapters.length || loadingModelRegistry || Boolean(savingModelRole)}
+                          on:change={event => choice && toggleRoleLora(role, event.currentTarget.checked, choice)}
+                        />
+                        LoRA
+                      </label>
+                    </div>
+                    {#if useLora && choice}
+                      <select
+                        class="role-model clickable"
+                        aria-label={`LoRA for ${presentation.label}`}
+                        value={adapter?.id || ''}
+                        disabled={loadingModelRegistry || Boolean(savingModelRole)}
+                        on:change={event => assignModelToRole(role, event.currentTarget.value)}
+                      >
+                        <option value="" disabled>Select LoRA…</option>
+                        {#each choice.adapters as option (option.id)}
+                          <option value={option.id}>{modelAdapterLabel(option)}</option>
+                        {/each}
+                      </select>
+                    {/if}
+                    {#if info.needsConfig || info.error}
+                      <span class="text-[0.6875rem] text-red-500" role="alert">{info.unavailableReason || info.error}</span>
                     {/if}
                   </div>
                 {/if}
@@ -1277,42 +975,3 @@
     </div>
   </div>
 </div>
-
-<!-- vLLM LoRA Restart Modal -->
-{#if showRestartModal}
-  <div class="modal-overlay">
-    <div class="modal-content max-w-[400px]" on:keydown={(e) => e.key === 'Escape' && dismissRestartModal()} role="dialog" aria-modal="true" aria-labelledby="lora-restart-title" tabindex="-1">
-      <div class="modal-header flex items-center justify-between">
-        <h3 id="lora-restart-title" class="text-lg font-semibold text-gray-900 dark:text-gray-100">⚡ Server Restart Required</h3>
-      </div>
-      <div class="modal-body">
-        <p class="mb-3 text-sm text-gray-600 dark:text-gray-400">
-          The LoRA adapter <strong class="text-gray-900 dark:text-gray-100">{pendingLoraName}</strong> is not currently loaded in vLLM.
-        </p>
-        <p class="mb-0 text-sm text-gray-600 dark:text-gray-400">
-          To use this adapter, vLLM needs to restart and load it. This will briefly interrupt model availability.
-        </p>
-      </div>
-      <div class="modal-footer">
-        <button
-          class="btn-secondary"
-          on:click={dismissRestartModal}
-          disabled={restartInProgress}
-        >
-          Later
-        </button>
-        <button
-          class="btn-primary"
-          on:click={restartVllmForLora}
-          disabled={restartInProgress}
-        >
-          {#if restartInProgress}
-            Restarting...
-          {:else}
-            Restart Now
-          {/if}
-        </button>
-      </div>
-    </div>
-  </div>
-{/if}

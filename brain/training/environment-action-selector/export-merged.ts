@@ -76,7 +76,7 @@ export async function main(arguments_: string[] = process.argv.slice(2)): Promis
   if (
     provenance.owner !== 'environment-action-selector'
     || (stage === 'reviewed' ? provenance.mode !== 'reviewed-training' : !['final-development-training', 'reused-development-settings-training'].includes(provenance.mode ?? ''))
-    || !['unsloth/Qwen3.5-0.8B', 'unsloth/Qwen3.5-2B'].includes(provenance.baseModel ?? '')
+    || !['unsloth/Qwen3.5-0.8B', 'unsloth/Qwen3.5-2B', 'unsloth/Qwen3.5-9B'].includes(provenance.baseModel ?? '')
     || trainingConfig.base_model !== provenance.baseModel
     || provenance.priorHeldOutUsed !== false
     || (stage === 'final' && !(provenance.mode === 'reused-development-settings-training' ? provenance.settingsSource?.selectionEvidence?.digest : provenance.selectionEvidence?.digest))
@@ -124,7 +124,7 @@ export async function main(arguments_: string[] = process.argv.slice(2)): Promis
       owner: 'environment-action-selector',
       purpose: 'merged-quantized-runtime-artifact',
       specialist: provenance.specialist,
-      model: `environment-${provenance.specialist}-${provenance.baseModel === 'unsloth/Qwen3.5-2B' ? '2b' : '0.8b'}`,
+      model: `environment-${provenance.specialist}-${provenance.baseModel!.split('Qwen3.5-')[1]!.toLowerCase()}`,
       baseModel: provenance.baseModel,
       selectionEvidence: provenance.selectionEvidence,
       ...(provenance.settingsSource ? { settingsSource: provenance.settingsSource } : {}),

@@ -8,6 +8,7 @@ export type EnvironmentContextEntry = typeof ENVIRONMENT_CONTEXT_ENTRIES[number]
 export interface EnvironmentRequestRouting {
   needsResponse: boolean;
   needsAction: boolean;
+  needsGoalReview?: boolean;
   needsToolUse?: boolean;
   taskPlanner?: 'specialist' | 'vision';
   taskContext: EnvironmentContextEntry[];
@@ -30,6 +31,7 @@ export function selectedEnvironmentRoutes(
   return {
     needsResponse: routing.needsResponse,
     needsAction: routing.needsAction,
+    needsGoalReview: routing.needsGoalReview === true,
     ...(routing.needsToolUse !== undefined ? { needsToolUse: routing.needsToolUse } : {}),
     needsPersona: selected.some(entry => entry.startsWith('persona.')),
     needsConversationHistory: selected.includes('conversationHistory'),
@@ -39,4 +41,13 @@ export function selectedEnvironmentRoutes(
     needsVision: selected.includes('vision'),
     needsExecutionContext: selected.includes('executionContext'),
   };
+}
+
+/** Read a source already supplied on this attributed handoff, never an installation-wide cache. */
+export function suppliedContextSource(packet: any, source: string, scope: Record<string, unknown>) {
+  const selected = packet?.sources?.[source];
+  if (!selected || !Object.prototype.hasOwnProperty.call(selected, 'value')) return undefined;
+  const normalize = (value: any): any => Array.isArray(value) ? value.map(normalize)
+    : value && typeof value === 'object' ? Object.fromEntries(Object.keys(value).sort().map(key => [key, normalize(value[key])])) : value;
+  return JSON.stringify(normalize(selected.scope)) === JSON.stringify(normalize(scope)) ? selected.value : undefined;
 }

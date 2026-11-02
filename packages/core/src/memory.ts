@@ -25,7 +25,6 @@ import { audit, auditDataChange } from './audit.js';
 import { getUserContext } from './context.js';
 import type { CognitiveModeId } from './cognitive-mode.js';
 import { canWriteMemory, type EventType } from './memory-policy.js';
-import { appendToolToCache } from './recent-tools-cache.js';
 import { validateEvent } from './memory-validation.js';
 import {
   decrypt,
@@ -536,22 +535,6 @@ export function captureEventWithDetails(content: string, opts: CaptureEventOptio
   logSync('capture', { event, encrypted });
 
   const cognitiveMode = (event.metadata?.cognitiveMode as CognitiveModeId) || 'dual';
-
-  // A1: Write to recent tool cache for tool_invocation events (async, non-blocking)
-  if (event.type === 'tool_invocation' && ctx?.profilePaths && event.metadata?.conversationId) {
-    const toolName = event.metadata.toolName || 'unknown';
-    const success = event.metadata.success !== false;
-    const output = JSON.stringify(event.metadata.toolOutputs || {});
-
-    void appendToolToCache(
-      ctx.profilePaths,
-      event.metadata.conversationId,
-      event.id,
-      toolName,
-      success,
-      output
-    ).catch(() => {});
-  }
 
   if (canWriteMemory(cognitiveMode, (event.type || 'observation') as EventType)) {
     try {

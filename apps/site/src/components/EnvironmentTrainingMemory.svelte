@@ -2,7 +2,7 @@
   import { onMount } from 'svelte'
   import { apiFetch } from '../lib/client/api-config'
 
-  type Bank = 'decision' | 'freestyle'
+  type Bank = 'decision'
   type Decision = 'accept' | 'correct' | 'reject' | 'defer'
   type Item = { id: string; bank: Bank; specialist: string; recordedAt: string;
     executionId: string; preview: string; review: string }
@@ -76,7 +76,7 @@
   <div class="flex items-center justify-between gap-3">
     <div>
       <h3 class="font-semibold text-gray-900 dark:text-gray-100">Environment decisions</h3>
-      <p class="text-sm text-gray-500 dark:text-gray-400">Intent, task selection, and Freestyle attempts are stored separately from persona conversations. Only reviewed records can enter specialist training exports.</p>
+      <p class="text-sm text-gray-500 dark:text-gray-400">Intent and task-selection attempts are stored separately from persona conversations. Only reviewed records can enter specialist training exports.</p>
     </div>
     <button class="px-3 py-1.5 rounded border border-gray-300 dark:border-gray-600 text-sm" on:click={load} disabled={loading}>Refresh</button>
   </div>
@@ -99,8 +99,6 @@
         <div class="text-xs text-gray-500 break-all">Execution {detail.candidate.executionId}</div>
         <details><summary class="cursor-pointer font-medium">Model input</summary><pre class="text-xs whitespace-pre-wrap break-words max-h-64 overflow-auto">{detail.candidate.system}</pre><pre class="text-xs whitespace-pre-wrap break-words max-h-64 overflow-auto">{detail.candidate.user}</pre></details>
         <div><div class="font-medium">Model output</div><pre class="text-xs whitespace-pre-wrap break-words max-h-64 overflow-auto">{detail.candidate.observedOutput || '(no model output captured)'}</pre></div>
-        {#if detail.candidate.generationError}<p class="text-sm text-red-600">Generation error: {detail.candidate.generationError}</p>{/if}
-        {#if detail.candidate.generatedAction}<details><summary class="cursor-pointer font-medium">Validated motion plan</summary><pre class="text-xs whitespace-pre-wrap break-words max-h-64 overflow-auto">{JSON.stringify(detail.candidate.generatedAction, null, 2)}</pre></details>{/if}
         <details><summary class="cursor-pointer font-medium">Execution evidence</summary>
           <p class="text-xs text-gray-500">{detail.executionEvidence.scope}</p>
           <pre class="text-xs whitespace-pre-wrap break-words max-h-64 overflow-auto">{JSON.stringify(detail.executionEvidence, null, 2)}</pre>

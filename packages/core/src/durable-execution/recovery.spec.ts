@@ -21,12 +21,13 @@ eventBus.disconnect()
 const { setAuditEnabled } = await import('../audit.js')
 setAuditEnabled(false)
 const { openExecutionStore } = await import('./storage.js')
+const { ExecutionStore } = await import('./store.js')
 const { ExecutionCheckpointer } = await import('./checkpointer.js')
 const { recoverDurableExecutions } = await import('./recovery.js')
 const { UnifiedQueueManager } = await import('../queue/unified-queue-manager.js')
 const { ExecutionEngine } = await import('../queue/execution-engine.js')
 const { WorkOutcomeUnknownError } = await import('../queue/types.js')
-const { executionWorkInput } = await import('./coordinator-outbox.js')
+const { executionWorkInput, relayExecutionOutbox } = await import('./coordinator-outbox.js')
 const { deliverDurableWorkReceipt } = await import('./work-results.js')
 const { activeRobotExecutions } = await import('../robot-operator.js')
 const { handleHttpRequest } = await import('../api/adapters/http.js')
@@ -67,7 +68,7 @@ test('all feedback wakeups use the same execution resource regardless of the pri
   } finally { store.close() }
 })
 
-async function fixture(username: string, handler?: string, physical = false, action = { type: 'robotCommand', command: 'walk' } as Record<string, unknown>) {
+async function fixture(username: string, handler?: string, physical = false, action = { type: 'robotCommand', command: 'walk' } as Record<string, unknown>, input: Record<string, unknown> = {}) {
   const store = openExecutionStore(username)
   assert.ok(String(store.db.name).startsWith(root + path.sep))
   const record = store.create(username, definition)
@@ -83,7 +84,7 @@ async function fixture(username: string, handler?: string, physical = false, act
           payload: physical ? {
             type: 'environment_command', handler: 'environment.command', resource: `body:${effectId}`,
             source: 'environment', username, input: { id: `${effectId}:action`, sessionId: effectId, ...action },
-          } : { type: 'generic', handler, resource: 'local-llm', source: 'system', username, input: {} },
+          } : { type: 'generic', handler, resource: 'local-llm', source: 'system', username, input },
         }],
       } : {}) } }, channel_versions: {}, versions_seen: {},
     }, { source: 'loop', step: 0, parents: {} })
@@ -91,6 +92,242 @@ async function fixture(username: string, handler?: string, physical = false, act
     return { username, executionId: record.executionId, effectId }
   } finally { store.release(lease); store.close() }
 }
+
+test('normal worker delivery releases evicted queue payloads while each parent and its evidence remain available', async () => {
+  const username = 'delivered-work-lifecycle'
+  const manager = new UnifiedQueueManager({ historyLimit: 2 })
+  const engine = new ExecutionEngine({}, manager)
+  engine.registerHandler('fixture.release', async () => ({ observed: true }))
+  for (let index = 0; index < 20; index++) {
+    const entry = await fixture(username, 'fixture.release')
+    const store = openExecutionStore(username)
+    try {
+      await relayExecutionOutbox(store, entry.executionId, async input => manager.enqueue(input))
+      const task = manager.getTask(store.dispatch(entry.effectId).workItemId!)!
+      assert.ok(manager.claim(task.id))
+      await (engine as unknown as { execute(work: typeof task): Promise<void> }).execute(task)
+      assert.ok(store.findEvent(entry.executionId, `work:${task.id}:terminal`))
+      assert.equal(store.get(entry.executionId).status, 'running', 'Parent completion is not required to release a delivered copy')
+      assert.equal(manager.exportState().durableReceipts!.length, 0,
+        'Delivered payloads must not accumulate outside recent activity, without invoking recovery or cleanup')
+    } finally { store.close() }
+  }
+  const restarted = new UnifiedQueueManager({ historyLimit: 2 })
+  restarted.importState(JSON.parse(JSON.stringify(manager.exportState())))
+  assert.equal(restarted.exportState().durableReceipts!.length, 0)
+  assert.equal(restarted.getHistory().length, 2)
+})
+
+test('restart recovers a result committed before its queue acknowledgement without repeating work or evidence', async () => {
+  const username = 'receipt-ack-interrupted'
+  authenticate(username)
+  const manager = new UnifiedQueueManager({ historyLimit: 1 })
+  const entry = await fixture(username, 'fixture.result')
+  const store = openExecutionStore(username)
+  try {
+    await relayExecutionOutbox(store, entry.executionId, async input => manager.enqueue(input))
+    const task = manager.getTask(store.dispatch(entry.effectId).workItemId!)!
+    manager.claim(task.id)
+    manager.complete(task.id, true, { evidence: 'original result' })
+    const newer = manager.enqueue({ type: 'generic', username, input: {} })
+    manager.claim(newer.id); manager.complete(newer.id, true)
+    manager.setOnQueueChange(() => {
+      if (!manager.getTask(task.id)) throw new Error('Crash before queue acknowledgement')
+    })
+    await assert.rejects(deliverDurableWorkReceipt(task, manager, store), /Crash before queue acknowledgement/)
+    assert.equal(manager.getTask(task.id)?.resultDelivered, undefined)
+    assert.ok(store.findEvent(entry.executionId, `work:${task.id}:terminal`))
+    const restarted = new UnifiedQueueManager({ historyLimit: 1 })
+    restarted.importState(JSON.parse(JSON.stringify(manager.exportState())))
+    await recoverDurableExecutions(restarted, 30)
+    assert.equal(restarted.getTask(task.id), null)
+    assert.equal(store.events(entry.executionId).filter(event => event.workItemId === task.id).length, 1)
+    await recoverDurableExecutions(restarted, 30)
+    assert.equal(restarted.getTask(task.id), null)
+    assert.equal(store.events(entry.executionId).filter(event => event.workItemId === task.id).length, 1)
+  } finally { store.close() }
+})
+
+test('physical queue copies are released only after the body result is recorded, without waiting for parent completion', async () => {
+  const username = 'physical-result-release'
+  const entry = await fixture(username, 'environment.command', true)
+  const store = openExecutionStore(username)
+  const manager = new UnifiedQueueManager({ historyLimit: 1 })
+  try {
+    await relayExecutionOutbox(store, entry.executionId, async input => manager.enqueue(input))
+    const task = manager.getTask(store.dispatch(entry.effectId).workItemId!)!
+    manager.claim(task.id); store.recordActionAcceptance(entry.effectId, task)
+    manager.complete(task.id, true)
+    const newer = manager.enqueue({ type: 'generic', username, input: {} })
+    manager.claim(newer.id); manager.complete(newer.id, true)
+    await deliverDurableWorkReceipt(task, manager, store)
+    assert.ok(manager.getTask(task.id), 'A completed queue job alone cannot certify physical delivery')
+    store.recordResult(entry.executionId, task.input.id, {
+      eventId: 'simulated-body-result', kind: 'physical_result', actionId: task.input.id,
+      workItemId: task.id, payload: { completed: true },
+    })
+    await deliverDurableWorkReceipt(task, manager, store)
+    assert.equal(manager.getTask(task.id), null)
+    assert.ok(store.findEvent(entry.executionId, 'simulated-body-result'))
+    assert.equal(store.get(entry.executionId).status, 'running')
+  } finally { store.close() }
+})
+
+test('recovery resolves restored disconnected camera reads through their original workflow receipt once', async () => {
+  const { subscribeEnvironmentActions, writeEnvironmentBridgeState } = await import('../environment-interface/store.js')
+  const graphPath = path.join(root, 'etc/cognitive-graphs/system-event.json')
+  fs.mkdirSync(path.dirname(graphPath), { recursive: true })
+  fs.copyFileSync(new URL('../../../../etc/cognitive-graphs/system-event.json', import.meta.url), graphPath)
+  writeEnvironmentBridgeState({ enabled: true, updatedAt: new Date().toISOString(), sessions: {}, feedback: [] })
+  for (const claimed of [false, true]) {
+    const username = `restored-camera-${claimed}`
+    authenticate(username)
+    const sessionId = `${username}-body`
+    const saved = await fixture(username, 'environment.visual-read', false, undefined, { sessionId })
+    const store = openExecutionStore(username)
+    const original = new UnifiedQueueManager()
+    try {
+      const lease = store.claim(saved.executionId, definition)
+      store.settle(lease, 'waiting', 'agent_result')
+      store.release(lease)
+      await relayExecutionOutbox(store, saved.executionId, async input => original.enqueue(input))
+      const taskId = store.dispatch(saved.effectId).workItemId!
+      if (claimed) assert.ok(original.claim(taskId, 'previous-stream'))
+      const manager = new UnifiedQueueManager()
+      manager.importState(original.exportState())
+      assert.equal(manager.getTask(taskId)?.state, 'queued')
+      await recoverDurableExecutions(manager, 30)
+      assert.equal(manager.getTask(taskId)?.state, 'failed')
+      assert.equal(manager.getTask(taskId)?.error?.code, 'bridge_disconnected')
+      assert.equal(store.dispatch(saved.effectId).status, 'completed')
+      const results = store.events(saved.executionId).filter(event => event.kind === 'work_result')
+      assert.equal(results.length, 1)
+      assert.equal(results[0].workItemId, taskId)
+      assert.equal(manager.getAllTasks().filter(task => task.handler === 'graph.resume'
+        && task.durable?.executionId === saved.executionId).length, 1, 'The waiting graph receives one continuation')
+      await recoverDurableExecutions(manager, 30)
+      assert.equal(store.events(saved.executionId).filter(event => event.kind === 'work_result').length, 1)
+      const disconnect = subscribeEnvironmentActions(sessionId, () => {})
+      try {
+        await recoverDurableExecutions(manager, 30)
+        assert.equal(manager.getTask(taskId)?.state, 'failed', 'Reconnect cannot replay a resolved read')
+      } finally { disconnect() }
+    } finally { store.close() }
+  }
+})
+
+test('camera recovery preserves connected reads, other profiles, depth demand and physical work', async () => {
+  const { subscribeEnvironmentActions, writeEnvironmentBridgeState } = await import('../environment-interface/store.js')
+  const username = 'connected-camera-recovery'
+  authenticate(username)
+  writeEnvironmentBridgeState({ enabled: true, updatedAt: new Date().toISOString(), sessions: {}, feedback: [] })
+  const manager = new UnifiedQueueManager()
+  const connected = manager.enqueue({ type: 'generic', handler: 'environment.visual-read', username,
+    input: { sessionId: 'connected-camera' } })
+  const otherProfile = manager.enqueue({ type: 'generic', handler: 'environment.visual-read', username: 'another-profile',
+    input: { sessionId: 'absent-camera' } })
+  const depth = manager.enqueue({ type: 'generic', handler: 'environment.visual-read', username,
+    input: { sessionId: 'absent-camera', vision: { operation: 'depthDemand', enabled: true } } })
+  const physical = manager.enqueue({ type: 'environment_command', handler: 'environment.command', username,
+    input: { sessionId: 'absent-camera', type: 'robotCommand', command: 'stand' } })
+  const disconnect = subscribeEnvironmentActions('connected-camera', () => {})
+  try {
+    await recoverDurableExecutions(manager, 30)
+    for (const task of [connected, otherProfile, depth, physical]) assert.equal(manager.getTask(task.id)?.state, 'queued')
+  } finally { disconnect() }
+})
+
+test('recovery processes outstanding work without visiting completed history', async t => {
+  const username = 'selective-recovery'
+  authenticate(username)
+  const active = await fixture(username, 'fixture.active')
+  const cancelled = await fixture(username, 'fixture.cancelled')
+  const settledCancellation = await fixture(username, 'fixture.already-cancelled')
+  const expired = await fixture(username)
+  const store = openExecutionStore(username)
+  const manager = new UnifiedQueueManager()
+  const history = new Set<string>()
+  try {
+    store.db.transaction(() => {
+      for (let i = 0; i < 300; i++) {
+        const record = store.create(username, definition)
+        store.db.prepare("UPDATE executions SET status='completed' WHERE execution_id=?").run(record.executionId)
+        history.add(record.executionId)
+      }
+    })()
+    store.db.prepare('UPDATE executions SET updated_at=1 WHERE execution_id=?').run(expired.executionId)
+    store.cancel(cancelled.executionId, { eventId: 'cancel', kind: 'user_cancelled', payload: {} })
+    store.acknowledgeAdmission(settledCancellation.effectId, 'settled-cancellation-work')
+    store.cancel(settledCancellation.executionId, { eventId: 'cancel', kind: 'user_cancelled', payload: {} })
+    store.deliverWorkResult(settledCancellation.effectId, 'settled-cancellation-work', { state: 'cancelled' })
+    history.add(settledCancellation.executionId)
+    const dormant = store.create(username, definition)
+    const lease = store.claim(dormant.executionId, definition)
+    store.settle(lease, 'waiting', 'user_or_autonomy')
+    store.release(lease)
+    history.add(dormant.executionId)
+    const get = ExecutionStore.prototype.get
+    t.mock.method(ExecutionStore.prototype, 'get', function(this: InstanceType<typeof ExecutionStore>, id: string) {
+      assert.ok(!history.has(id), 'Completed history must not enter recovery')
+      return get.call(this, id)
+    })
+    t.mock.method(ExecutionStore.prototype, 'iterate', function*() {
+      assert.fail('Recovery must not enumerate execution history')
+    })
+    await recoverDurableExecutions(manager, 30)
+    assert.equal(store.dispatch(active.effectId).status, 'admitted')
+    assert.equal(store.dispatch(cancelled.effectId).status, 'cancelled')
+    assert.ok(store.findEvent(cancelled.executionId, `work:${store.dispatch(cancelled.effectId).workItemId}:undispatched`))
+    assert.equal(store.find(expired.executionId), null, 'Existing retention still removes expired settled work')
+    assert.deepEqual(store.retirements(), [], 'Retirement acknowledgements are delivered')
+    for (const id of history) assert.ok(store.find(id), 'Recent evidence remains stored')
+    await recoverDurableExecutions(manager, 30)
+    assert.equal(store.dispatch(active.effectId).status, 'admitted', 'Repeated recovery preserves one admission')
+    assert.equal(store.find(dormant.executionId)?.waitingReason, 'user_or_autonomy', 'Dormant goals stay available without being recovered')
+  } finally { store.close() }
+})
+
+test('execution delivery reads only its own pending messages', async t => {
+  const username = 'selective-delivery'
+  const first = await fixture(username, 'fixture.first')
+  const second = await fixture(username, 'fixture.second')
+  const store = openExecutionStore(username)
+  const manager = new UnifiedQueueManager()
+  try {
+    const dispatch = store.dispatch.bind(store)
+    t.mock.method(store, 'dispatch', (id: string) => {
+      assert.notEqual(id, second.effectId, 'Delivering one execution must not decode another execution\'s messages')
+      return dispatch(id)
+    })
+    await relayExecutionOutbox(store, first.executionId, async input => manager.enqueue(input))
+    assert.equal(dispatch(first.effectId).status, 'admitted')
+    assert.equal(dispatch(second.effectId).status, 'pending')
+    await relayExecutionOutbox(store, first.executionId, async input => manager.enqueue(input))
+    assert.equal(manager.getAllTasks().filter(task => task.handler === 'fixture.first').length, 1)
+  } finally { store.close() }
+})
+
+test('Active Operator reads current executions without decoding historical definitions', () => {
+  const username = 'autonomy-active-membership'
+  const store = openExecutionStore(username)
+  try {
+    const active = store.enter(username, definition, 'active', { context: {
+      cognitiveMode: 'environment', robotOperatorContext: { stimulusAgent: 'robot-autonomy-controller' },
+    } })
+    for (const status of ['completed', 'failed', 'cancelled']) {
+      const old = store.create(username, definition)
+      store.db.prepare('UPDATE executions SET status=?, definition=? WHERE execution_id=?')
+        .run(status, 'Historical definitions must not be decoded for active admission', old.executionId)
+    }
+    assert.deepEqual(activeRobotExecutions(username).map(record => ({
+      id: record.executionId, agent: record.stimulusAgent,
+    })), [{ id: active.executionId, agent: 'robot-autonomy-controller' }])
+    const lease = store.claim(active.executionId, definition)
+    store.settle(lease, 'completed')
+    store.release(lease)
+    assert.deepEqual(activeRobotExecutions(username), [])
+  } finally { store.close() }
+})
 
 test('Full Auto sees a pending resume once and stops waiting on a terminally failed execution', async () => {
   const username = 'autonomy-resume-state'
@@ -111,7 +348,7 @@ test('Full Auto sees a pending resume once and stops waiting on a terminally fai
     store.acceptAction(effectId)
     assert.equal(activeRobotExecutions(username)[0].resumePending, true)
     manager.complete(task.id, false, { code: 'execution_conflict', message: 'Saved definition changed', retryable: false })
-    await deliverDurableWorkReceipt(manager.getTask(task.id)!, async input => manager.enqueue(input))
+    await deliverDurableWorkReceipt(manager.getTask(task.id)!, manager)
     assert.equal(store.get(record.executionId).status, 'failed')
     assert.deepEqual(activeRobotExecutions(username), [], 'The existing Full Auto entrypoint can now admit its next controller')
   } finally { store.close() }
@@ -224,7 +461,7 @@ test('reported finite-handler failure returns to its parent while lost-worker ou
   const manager = new UnifiedQueueManager()
   const errors: string[] = []
   const engine = new ExecutionEngine({ onError: error => errors.push(error.message) }, manager)
-  engine.unregisterHandler('graph.resume') // This fixture exercises the worker/result boundary, not a parent model call.
+  engine.registerHandler('graph.resume', async () => ({ fixtureOnly: true })) // Exercise delivery without a model call.
   engine.registerHandler('agent.daydreamer', async () => { throw new Error('Known handler failure') })
   engine.registerHandler('agent.reflector', async () => { throw new WorkOutcomeUnknownError('Worker exited without a result') })
   const cases = []
@@ -260,7 +497,7 @@ test('reported finite-handler failure returns to its parent while lost-worker ou
       assert.equal(results.length, entry.expected === 'failed' ? 1 : 0)
       if (entry.expected === 'failed') {
         assert.equal((results[0].payload as { result: { state: string } }).result.state, 'failed')
-        assert.ok(manager.getAllTasks().some(work => work.handler === 'graph.resume'
+        assert.ok([...manager.getAllTasks(), ...manager.getHistory()].some(work => work.handler === 'graph.resume'
           && work.durable?.executionId === entry.executionId), 'The known result must admit its parent continuation')
       }
     } finally { store.close() }
@@ -292,11 +529,11 @@ test('failed resume receipts settle the saved execution without replay', async (
     store.acknowledgeAdmission(effect.effectId, task.id)
     manager.claim(task.id)
     manager.complete(task.id, false, { code: 'execution_conflict', message: 'Executable versions changed', retryable: false })
-    await deliverDurableWorkReceipt(manager.getTask(task.id)!, async input => manager.enqueue(input), store)
+    await deliverDurableWorkReceipt(manager.getTask(task.id)!, manager, store)
     assert.equal(store.get(entry.executionId).status, 'failed', 'A failed wake cannot remain runnable in Full Auto')
     assert.equal(store.event(entry.executionId, `work:${task.id}:terminal`).kind, 'resume_result')
     const once = store.events(entry.executionId)
-    await deliverDurableWorkReceipt(manager.getTask(task.id)!, async input => manager.enqueue(input), store)
+    await deliverDurableWorkReceipt(manager.getTask(task.id)!, manager, store)
     assert.deepEqual(store.events(entry.executionId), once)
     store.deliverEvent(entry.executionId, { eventId: 'wake', kind: 'autonomy_trigger', payload: {} })
     assert.equal(store.pendingDispatches().filter(item => item.kind === 'graph_resume').length, 0)
@@ -348,22 +585,25 @@ test('terminal recovery cancels only never-started admissions and retains claime
     const store = openExecutionStore(entry.username)
     try {
       const effect = store.dispatch(entry.effectId)
-      const receipt = manager.findTask(task => task.durable?.effectId === entry.effectId)!
-      assert.ok(receipt)
-      assert.equal(effect.workItemId, receipt.id)
-      if (entry.taskId) assert.equal(receipt.id, entry.taskId, 'Enqueue-before-ack attaches the original admission')
+      const receipt = manager.findTask(task => task.durable?.effectId === entry.effectId)
+      assert.ok(effect.workItemId)
+      if (entry.taskId) assert.equal(effect.workItemId, entry.taskId, 'Enqueue-before-ack attaches the original admission')
       if (entry.protected) {
+        assert.ok(receipt)
+        assert.equal(effect.workItemId, receipt.id)
         assert.equal(receipt.state, entry.initialWorkState)
         assert.equal(effect.status, entry.initialEffectStatus)
         assert.equal(receipt.cancellationRequestedAt, undefined, 'Terminal graph failure is not permission to send physical stop')
         assert.equal(store.events(entry.executionId).filter(event => event.kind === 'dispatch_cancelled').length, 0)
         assert.throws(() => store.confirmUndispatched(entry.effectId, { ...receipt, state: 'cancelled' }), /not eligible|does not prove/)
       } else {
-        assert.equal(receipt.state, 'cancelled')
+        if (receipt) assert.equal(receipt.state, 'cancelled')
         assert.equal(effect.status, 'cancelled')
-        assert.equal(manager.enqueue(entry.input).id, receipt.id, 'A late relay returns the same cancelled receipt')
-        assert.equal(restarted.enqueue(entry.input).id, receipt.id, 'Non-dispatch survives restart and history eviction')
-        assert.equal(restarted.getTask(receipt.id)?.state, 'cancelled')
+        // The durable outbox owns replay after settlement; the queue is no longer its archive.
+        await relayExecutionOutbox(store, entry.executionId, async () => assert.fail('A settled cancellation must not be readmitted'))
+        const { reconcileTerminatedExecutionWork } = await import('./coordinator-outbox.js')
+        assert.deepEqual(reconcileTerminatedExecutionWork(store, entry.executionId, restarted), [])
+        assert.equal(restarted.getAllTasks().some(task => task.durable?.effectId === entry.effectId), false)
         assert.equal(store.events(entry.executionId).filter(event => event.kind === 'dispatch_cancelled').length, 1)
         assert.equal(store.events(entry.executionId).some(event => event.kind === 'physical_result'), false)
       }
@@ -476,7 +716,7 @@ test('obsolete unstarted wakeups retire while accepted invocations remain resuma
   }
 })
 
-test('recovery of completed receipts is read-only and services pending HTTP requests', async (t) => {
+test('idle recovery skips settled receipts, remains read-only and yields to I/O', async (t) => {
   const manager = new UnifiedQueueManager({ historyLimit: 1 })
   const parent = await fixture('idle-recovery', 'fixture.finished')
   const store = openExecutionStore(parent.username)
@@ -496,21 +736,21 @@ test('recovery of completed receipts is read-only and services pending HTTP requ
     manager.claim(task.id)
     store.acceptAction(parent.effectId)
     manager.complete(task.id, true, { observed: true })
-    await deliverDurableWorkReceipt(manager.getTask(task.id)!, async input => manager.enqueue(input))
+    await deliverDurableWorkReceipt(manager.getTask(task.id)!, manager)
     const lease = store.claim(parent.executionId, definition)
     store.settle(lease, 'completed')
     store.release(lease)
     for (const wake of manager.getAllTasks().filter(work => work.handler === 'graph.resume')) {
       manager.claim(wake.id)
       manager.complete(wake.id, true, { resumed: true })
-      await deliverDurableWorkReceipt(manager.getTask(wake.id)!, async input => manager.enqueue(input))
+      await deliverDurableWorkReceipt(manager.getTask(wake.id)!, manager)
     }
     const before = store.db.pragma('data_version', { simple: true })
     const events = store.events(parent.executionId)
     const exported = manager.exportState()
     assert.equal(exported.history!.length, 1)
-    assert.equal(exported.durableReceipts!.length, 1,
-      'Recovery must include the durable receipt retained beyond the display history')
+    assert.equal(exported.durableReceipts!.length, 0,
+      'Delivery releases the old queue copy; the execution retains its evidence')
 
     server.listen(0, '127.0.0.1')
     await once(server, 'listening')
@@ -518,23 +758,29 @@ test('recovery of completed receipts is read-only and services pending HTTP requ
     assert.ok(address && typeof address === 'object')
     socket = createConnection(address.port, '127.0.0.1')
     await once(socket, 'connect')
-    let recovering = true
     const response = once(socket, 'data').then(([data]) => {
       assert.match(data.toString(), /HTTP\/1.1 401 Unauthorized/)
       assert.match(data.toString(), /Authentication required/)
-      return recovering
     })
     socket.write('GET /api/auth/me HTTP/1.1\r\nHost: localhost\r\nConnection: close\r\n\r\n')
     authenticate('idle-recovery')
-    await recoverDurableExecutions(manager, 30)
-    recovering = false
-    const httpDuringRecovery = await response
+    let yielded = false
+    setImmediate(() => { yielded = true })
+    let dispatchChecks = 0
+    await recoverDurableExecutions(manager, 30, () => { dispatchChecks++ })
+    assert.equal(dispatchChecks, 1, 'Settled receipts must not trigger repeated dispatch/authentication sweeps')
+    assert.equal(yielded, true, 'Even an idle sweep must yield to the event loop')
+    // With no pending receipts, recovery can finish before the HTTP round trip.
+    await response
     const committedDuringRecovery = Number(store.db.pragma('data_version', { simple: true })) - Number(before)
-    t.diagnostic(JSON.stringify({ committedDuringRecovery, httpDuringRecovery }))
-    assert.deepEqual({ committedDuringRecovery, httpDuringRecovery }, {
-      committedDuringRecovery: 0, httpDuringRecovery: true,
-    })
+    t.diagnostic(JSON.stringify({ committedDuringRecovery, dispatchChecks }))
+    assert.equal(committedDuringRecovery, 0)
     assert.deepEqual(store.events(parent.executionId), events)
+    assert.equal(manager.getTask(task.id), null, 'Delivered old queue copies leave the ledger')
+    assert.equal(manager.exportState().durableReceipts!.length, 0)
+    assert.equal(store.dispatch(parent.effectId).workItemId, task.id, 'Execution retains its admission identity')
+    assert.ok(store.findEvent(parent.executionId, `work:${task.id}:terminal`))
+    await relayExecutionOutbox(store, parent.executionId, async () => assert.fail('Settled work must not be readmitted'))
     assert.throws(() => store.deliverWorkResult(parent.effectId, task.id, {
       state: 'completed', result: { observed: false }, error: null,
     }), /conflict/i, 'A conflicting duplicate must still be rejected')
@@ -622,8 +868,8 @@ test('instruction interpretation recovery reuses its finite work identity and pu
     assert.equal(recovered.id, first.id)
     assert.ok(manager.claim(first.id))
     manager.complete(first.id, true, { executionId: parent.executionId, sessionId: 'session', revision: 3, response: '{}' })
-    await deliverDurableWorkReceipt(manager.getTask(first.id)!, async task => manager.enqueue(task))
-    await deliverDurableWorkReceipt(manager.getTask(first.id)!, async task => manager.enqueue(task))
+    await deliverDurableWorkReceipt(manager.getTask(first.id)!, manager)
+    await deliverDurableWorkReceipt(manager.getTask(first.id)!, manager)
     const receipts = store.events(parent.executionId).filter(event => event.kind === 'work_result')
     assert.equal(receipts.length, 1)
     assert.equal((receipts[0].payload as any).effectId, parent.effectId)
@@ -640,7 +886,7 @@ for (const phase of ['abort', 'return-after-cancel', 'queued-cancel', 'queued-ex
     const errors: Error[] = []
     const engine = phase === 'restart' ? undefined
       : new ExecutionEngine({ onError: error => errors.push(error) }, manager)
-    engine?.unregisterHandler('graph.resume')
+    engine?.registerHandler('graph.resume', async () => ({ fixtureOnly: true }))
     let calls = 0
     let entered!: () => void
     const started = new Promise<void>(resolve => { entered = resolve })
@@ -707,7 +953,7 @@ for (const phase of ['abort', 'return-after-cancel', 'queued-cancel', 'queued-ex
       assert.equal(store.get(record.executionId).checkpointVersion, checkpointVersion)
       assert.equal(calls, phase === 'abort' || phase === 'return-after-cancel' ? 1 : 0)
       assert.equal(manager.getAllTasks().length, 0)
-      await deliverDurableWorkReceipt(manager.getTask(task.id)!, async input => manager.enqueue(input), store)
+      await deliverDurableWorkReceipt(manager.getTask(task.id)!, manager, store)
       assert.deepEqual(store.events(record.executionId), events, 'Receipt replay must reuse the committed outcome')
       assert.deepEqual(errors, [])
     } finally {
@@ -825,8 +1071,9 @@ for (const format of ['result-only', 'confirmation-and-result', 'unsettled'] as 
       const restarted = new UnifiedQueueManager()
       restarted.importState(JSON.parse(JSON.stringify(manager.exportState())))
       await recoverDurableExecutions(restarted, 30)
-      await deliverDurableWorkReceipt(restarted.getTask(task.id)!, async () => {
-        throw new Error('A cancelled receipt must not enqueue work')
+      await deliverDurableWorkReceipt(restarted.getTask(task.id)!, {
+        enqueue() { throw new Error('A cancelled receipt must not enqueue work') },
+        acknowledgeResult: id => restarted.acknowledgeResult(id),
       }, store)
       assert.deepEqual(store.events(entry.executionId), afterRecovery)
       assert.equal(store.db.pragma('data_version', { simple: true }), beforeVersion,

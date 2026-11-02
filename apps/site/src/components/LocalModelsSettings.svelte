@@ -36,11 +36,9 @@
     downloadOnWifiOnly: boolean;
     embeddings: {
       model: string;
-      preloadAtStartup: boolean;
     };
     llm: {
       model: string;
-      preloadAtStartup: boolean;
     };
   }
 
@@ -57,8 +55,6 @@
   let downloadNotice: string | null = null;
 
   // Config changes
-  let selectedEmbeddingModel = '';
-  let selectedLLMModel = '';
   let wifiOnlyDownload = true;
   let autoStart = true;
   let saving = false;
@@ -92,8 +88,6 @@
         const data = await res.json();
         if (!data.localModels) throw new Error('Local model configuration is missing');
         config = data.localModels;
-        selectedEmbeddingModel = config?.embeddings?.model || 'qwen3-embedding-0.6b';
-        selectedLLMModel = config?.llm?.model || 'qwen3-1.7b';
         wifiOnlyDownload = config?.downloadOnWifiOnly ?? true;
         autoStart = config?.autoStart ?? true;
       }
@@ -152,14 +146,6 @@
           localModels: {
             downloadOnWifiOnly: wifiOnlyDownload,
             autoStart: autoStart,
-            embeddings: {
-              model: selectedEmbeddingModel,
-              preloadAtStartup: true,
-            },
-            llm: {
-              model: selectedLLMModel,
-              preloadAtStartup: false,
-            },
           },
         }),
       });
@@ -208,7 +194,7 @@
   <h3 class="text-lg font-semibold mb-2 text-gray-800 dark:text-gray-100">Local Model Service</h3>
   <p class="text-sm text-gray-500 dark:text-gray-400 mb-5">
     Lightweight embedding and LLM models that run locally without Ollama.
-    Works on both desktop and mobile devices.
+    Works on both desktop and mobile devices. Assign models to tasks in the Status widget.
   </p>
 
   {#if error}
@@ -292,7 +278,7 @@
 
       <div class="grid grid-cols-1 sm:grid-cols-[repeat(auto-fill,minmax(250px,1fr))] gap-4">
         {#each embeddingModels as model}
-          <div class="p-4 rounded-xl transition-all border-2 {model.downloaded ? 'border-green-300 dark:border-green-500/50' : 'border-gray-200 dark:border-gray-700'} {selectedEmbeddingModel === model.id ? 'border-violet-500 dark:border-violet-400 ring-4 ring-violet-500/10 dark:ring-violet-400/10' : ''} bg-gray-50 dark:bg-gray-800">
+          <div class="p-4 rounded-xl transition-all border-2 {model.downloaded ? 'border-green-300 dark:border-green-500/50' : 'border-gray-200 dark:border-gray-700'} bg-gray-50 dark:bg-gray-800">
             <div class="flex items-center justify-between mb-2">
               <span class="font-semibold text-gray-800 dark:text-gray-100">{model.id}</span>
               {#if model.downloaded}
@@ -315,12 +301,6 @@
               {#if downloading[model.id]}
                 <span class="text-sm">Requesting download…</span>
               {:else if model.downloaded}
-                <button
-                  class="px-3 py-1.5 rounded-md text-[0.8125rem] font-medium cursor-pointer transition-colors border {selectedEmbeddingModel === model.id ? 'bg-violet-500 text-white border-violet-500' : 'bg-gray-100 dark:bg-gray-700 text-gray-700 dark:text-gray-200 border-gray-300 dark:border-gray-600 hover:bg-gray-200 dark:hover:bg-gray-600'}"
-                  on:click={() => { selectedEmbeddingModel = model.id; }}
-                >
-                  {selectedEmbeddingModel === model.id ? '✓ Selected' : 'Select'}
-                </button>
                 {#if status?.running && status.loadedModels && (!status.loadedModels.embedder.loaded || status.loadedModels.embedder.model !== model.id)}
                   <button
                     class="px-3 py-1.5 rounded-md text-[0.8125rem] font-medium cursor-pointer transition-colors bg-green-500 text-white border-none hover:bg-green-600"
@@ -352,7 +332,7 @@
 
       <div class="grid grid-cols-1 sm:grid-cols-[repeat(auto-fill,minmax(250px,1fr))] gap-4">
         {#each llmModels as model}
-          <div class="p-4 rounded-xl transition-all border-2 {model.downloaded ? 'border-green-300 dark:border-green-500/50' : 'border-gray-200 dark:border-gray-700'} {selectedLLMModel === model.id ? 'border-violet-500 dark:border-violet-400 ring-4 ring-violet-500/10 dark:ring-violet-400/10' : ''} bg-gray-50 dark:bg-gray-800">
+          <div class="p-4 rounded-xl transition-all border-2 {model.downloaded ? 'border-green-300 dark:border-green-500/50' : 'border-gray-200 dark:border-gray-700'} bg-gray-50 dark:bg-gray-800">
             <div class="flex items-center justify-between mb-2">
               <span class="font-semibold text-gray-800 dark:text-gray-100">{model.id}</span>
               {#if model.downloaded}
@@ -372,12 +352,6 @@
               {#if downloading[model.id]}
                 <span class="text-sm">Requesting download…</span>
               {:else if model.downloaded}
-                <button
-                  class="px-3 py-1.5 rounded-md text-[0.8125rem] font-medium cursor-pointer transition-colors border {selectedLLMModel === model.id ? 'bg-violet-500 text-white border-violet-500' : 'bg-gray-100 dark:bg-gray-700 text-gray-700 dark:text-gray-200 border-gray-300 dark:border-gray-600 hover:bg-gray-200 dark:hover:bg-gray-600'}"
-                  on:click={() => { selectedLLMModel = model.id; }}
-                >
-                  {selectedLLMModel === model.id ? '✓ Selected' : 'Select'}
-                </button>
                 {#if status?.running && status.loadedModels && (!status.loadedModels.generator.loaded || status.loadedModels.generator.model !== model.id)}
                   <button
                     class="px-3 py-1.5 rounded-md text-[0.8125rem] font-medium cursor-pointer transition-colors bg-green-500 text-white border-none hover:bg-green-600"

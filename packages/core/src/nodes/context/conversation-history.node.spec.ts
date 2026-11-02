@@ -41,3 +41,19 @@ test('explicit inner-buffer selection still works with implicit merging disabled
   assert.deepEqual(reads, ['inner'])
   assert.deepEqual(result.history, inner)
 })
+
+test('selected retained history has no hidden fifty-entry window', async () => {
+  const original = [...conversation]
+  try {
+    conversation.splice(0, conversation.length, ...Array.from({ length: 80 }, (_, index) => ({
+      role: index % 2 ? 'assistant' : 'user', content: `Retained turn ${index}`, timestamp: String(index),
+    })))
+    for (const limit of [75, 0]) {
+      const result = await ConversationHistoryNode.execute({}, { username: 'fixture' }, { limit, includeInnerDialogue: false })
+      assert.deepEqual(result.history, limit ? conversation.slice(-limit) : conversation)
+      assert.equal(result.count, limit || 80)
+    }
+  } finally {
+    conversation.splice(0, conversation.length, ...original)
+  }
+})

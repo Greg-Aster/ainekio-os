@@ -12,10 +12,28 @@ import type { NodeSchema, NodeCategory } from '@metahuman/core/nodes/types';
 import {
   DEFAULT_GRAPH_SCHEDULER,
   type GraphSchedulerContract,
+  type GraphNodeActivation,
 } from '@metahuman/core/cognitive-graph-contract';
 import { apiFetch } from '../api-config';
 import { getNodeComponentType } from './node-component-map';
 import { decorateEdge } from './graph-authoring';
+
+// Data enriched by this converter and consumed by the graph editor.
+export type EditorNodeData = Record<string, unknown> & {
+  nodeType?: string;
+  schema?: NodeSchema;
+  properties?: Record<string, unknown>;
+  title?: string;
+  label?: string;
+  comment?: string;
+  muted?: boolean;
+  activation?: GraphNodeActivation;
+  executionState?: 'idle' | 'running' | 'completed' | 'skipped' | 'failed';
+  executionSkipReason?: string;
+  executionOutput?: unknown;
+  isUnconnected?: boolean;
+};
+export type EditorNode = Node<EditorNodeData>;
 
 // Svelte Flow format
 export interface SvelteFlowGraph {
@@ -24,7 +42,7 @@ export interface SvelteFlowGraph {
   description: string;
   cognitiveMode?: 'dual' | 'agent' | 'emulation' | 'environment';
   scheduler: GraphSchedulerContract;
-  nodes: Node[];
+  nodes: EditorNode[];
   edges: Edge[];
   viewport?: { x: number; y: number; zoom: number };
 }
@@ -172,7 +190,7 @@ function createFallbackSchema(nodeType: string): NodeSchema {
  * This is the main entry point for loading templates
  */
 export function enrichGraphWithSchemas(sfGraph: any): SvelteFlowGraph {
-  const nodes: Node[] = sfGraph.nodes.map((sfNode: any) => {
+  const nodes: EditorNode[] = sfGraph.nodes.map((sfNode: any) => {
     const nodeType = sfNode.data?.nodeType || sfNode.type;
     const schema = getCachedSchema(nodeType);
     const category = schema?.category || inferCategoryFromType(nodeType);

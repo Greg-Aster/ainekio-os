@@ -218,9 +218,8 @@ An explicit text-only selection reports unsupported image input instead of
 substituting another model.
 
 The choices use the existing profile registry, installed Ollama models, configured
-llama.cpp model and its loaded adapters, and discovered vLLM adapters. Refresh the
-list after changing the serving configuration. A vLLM adapter that needs a server
-reload is labelled accordingly. A llama.cpp adapter is selected per request;
+llama.cpp model and its registered adapters. Refresh the
+list after changing the serving configuration. A llama.cpp adapter is selected per request;
 its saved path is resolved to the server's current adapter ID. Registered models
 may also carry a different llama.cpp endpoint and an adapter combination in their
 model options. There is no global adapter toggle during a node call.

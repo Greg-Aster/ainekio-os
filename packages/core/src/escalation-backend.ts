@@ -16,6 +16,7 @@
 
 import { audit } from './audit.js';
 import { loadToolExecutorConfig } from './tool-executor-config.js';
+import type { ProviderMessage } from './providers/types.js';
 
 // ============================================================================
 // Types
@@ -25,7 +26,7 @@ import { loadToolExecutorConfig } from './tool-executor-config.js';
  * Options for executing an escalation request
  */
 export interface EscalationOptions {
-  /** Request high reasoning for this invocation; false or absent retains configured effort. */
+  /** Ordinary model calls request high reasoning when true, none when false; absent retains configured effort. */
   enableThinking?: boolean;
   /** Timeout in milliseconds */
   timeout?: number;
@@ -37,6 +38,8 @@ export interface EscalationOptions {
   username?: string;
   /** Validated images to attach to a multimodal terminal-provider request. */
   images?: EscalationImageInput[];
+  /** Graph-owned messages and its existing response contract, kept separate from a coding-agent task. */
+  modelRequest?: { messages: ProviderMessage[]; responseInstructions?: string; contextWindow?: number };
   /** Called when a reasoning step is detected */
   onReasoningStep?: (step: ReasoningStep) => void;
   /** Called on each raw output chunk (for terminal display) */

@@ -904,31 +904,6 @@
     filter: drop-shadow(0 2px 3px rgba(0, 0, 0, 0.4));
   }
 
-  /* Thinking Mode Toggle (vLLM/Qwen3) */
-  .thinking-toggle {
-    @apply inline-flex items-center gap-1 px-2 py-1.5 border border-black/15 dark:border-white/20 bg-white dark:bg-gray-900 text-gray-900 dark:text-gray-100 rounded-md cursor-pointer transition-all;
-  }
-
-  .thinking-toggle:hover {
-    @apply bg-gray-50 dark:bg-gray-800;
-  }
-
-  .thinking-toggle.active {
-    @apply bg-purple-600 dark:bg-purple-500 text-white dark:text-gray-900 border-purple-600 dark:border-purple-500;
-  }
-
-  .thinking-toggle.loading {
-    @apply opacity-60 cursor-wait;
-  }
-
-  .thinking-icon {
-    @apply text-base;
-  }
-
-  .thinking-badge {
-    @apply text-xs bg-purple-700 dark:bg-purple-400 text-white dark:text-gray-900 rounded px-1 font-bold;
-  }
-
   /* Big Brother Toggle */
   .big-brother-toggle {
     @apply inline-flex items-center gap-1 px-2 py-1.5 border border-black/15 dark:border-white/20 bg-white dark:bg-gray-900 text-gray-900 dark:text-gray-100 rounded-md cursor-pointer transition-all;
@@ -1081,10 +1056,6 @@
 
   .message-dream .message-content {
     @apply bg-indigo-500/10 text-indigo-700 dark:text-indigo-300 border border-indigo-500/30 max-w-[85%] italic;
-  }
-
-  .scroll-sentinel {
-    @apply h-px;
   }
 
   .mic-btn.recording {
@@ -1274,7 +1245,6 @@
   .strength-value {
     @apply text-xs font-semibold text-gray-600 dark:text-gray-400;
   }
-
 
   /* ==========================================================================
      BANNERS/ALERTS
@@ -1772,64 +1742,11 @@
            cursor-pointer transition-all hover:bg-gray-100 dark:hover:bg-gray-800 hover:border-gray-300 dark:hover:border-gray-600;
   }
 
-  .role-model-copy {
-    @apply flex min-w-0 flex-1 flex-col items-start leading-tight;
-  }
-
-  .role-model-primary {
-    @apply block max-w-full whitespace-normal;
-    overflow-wrap: anywhere;
-  }
-
-  .role-model-details {
-    @apply flex flex-wrap gap-x-1 pt-0.5 text-[0.65rem] font-sans font-normal text-gray-500 dark:text-gray-400;
-  }
-
-  .role-adapter-line {
-    @apply block max-w-full whitespace-normal pt-0.5
-           text-[0.62rem] font-sans font-medium text-violet-600 dark:text-violet-300;
-    overflow-wrap: anywhere;
-  }
-
-  .role-model.error {
-    @apply text-red-500 dark:text-red-400 italic;
-  }
-
-  .role-model.needs-config {
-    @apply text-yellow-500 dark:text-yellow-400 italic cursor-pointer bg-transparent border-0 p-0;
-  }
-
-  .role-model.needs-config:hover {
-    @apply text-yellow-400 dark:text-yellow-300 underline;
-  }
-
-  /* ==========================================================================
-     MODEL DROPDOWN
-     Dropdown for selecting models in role assignments
-     ========================================================================== */
-
-  .model-dropdown {
-    @apply mt-1 bg-white dark:bg-gray-800
-           border border-gray-200 dark:border-gray-700 rounded-lg shadow-lg max-h-[300px] overflow-y-auto;
-    animation: dropdown-slide-in 0.15s ease-out;
-  }
-
-  @keyframes dropdown-slide-in {
-    from { opacity: 0; transform: translateY(-8px); }
-    to { opacity: 1; transform: translateY(0); }
-  }
+  /* Shared menu presentation. */
 
   .dropdown-header {
     @apply px-3 py-2 text-[0.7rem] font-semibold text-gray-500 dark:text-gray-400
            border-b border-gray-200 dark:border-gray-700 uppercase tracking-wider;
-  }
-
-  .dropdown-category {
-    @apply py-1 border-b border-gray-100 dark:border-gray-700 last:border-b-0;
-  }
-
-  .category-label {
-    @apply block px-3 py-1 text-[0.65rem] font-bold text-gray-500 dark:text-gray-400 uppercase tracking-wider;
   }
 
   .dropdown-item {
@@ -1841,57 +1758,14 @@
     @apply bg-violet-600/15 dark:bg-violet-400/20;
   }
 
-  .dropdown-item.vllm-active {
-    @apply bg-yellow-500/10 dark:bg-yellow-400/15 border-l-2 border-l-yellow-500;
-  }
-
-  .dropdown-item.lora-loaded {
-    @apply border-l-2 border-l-yellow-500 dark:border-l-yellow-400;
-  }
-
   .dropdown-item:disabled {
     @apply opacity-50 cursor-not-allowed hover:bg-transparent;
-  }
-
-  .model-name {
-    @apply font-mono text-xs font-semibold text-gray-900 dark:text-gray-100 flex flex-wrap items-center gap-1.5 max-w-full min-w-0;
-    overflow-wrap: anywhere;
-  }
-
-  .model-desc {
-    @apply text-[0.65rem] text-gray-500 dark:text-gray-400 leading-tight max-w-full;
-    overflow-wrap: anywhere;
-  }
-
-  .dropdown-arrow {
-    @apply text-[0.6rem] text-gray-400 dark:text-gray-500 ml-auto shrink-0;
   }
 
   /* ==========================================================================
      ADAPTER/MODEL BADGES
      Small badges for LoRA adapters, cloud providers, etc.
      ========================================================================== */
-
-  .adapter-indicator-small {
-    @apply py-0.5 px-1 rounded text-[0.6rem] font-semibold
-           bg-violet-500/20 dark:bg-violet-400/25 text-violet-700 dark:text-violet-300 uppercase tracking-wider;
-  }
-
-  .cloud-indicator {
-    @apply ml-1 text-xs;
-  }
-
-  .suggested-indicator {
-    @apply ml-1 text-[0.7rem] text-green-500 dark:text-green-400 opacity-70;
-  }
-
-  .provider-badge {
-    @apply inline-block py-0.5 px-1.5 rounded text-[0.6rem] font-medium mt-0.5;
-  }
-
-  .provider-badge.cloud {
-    @apply bg-blue-500/15 dark:bg-blue-400/20 text-blue-600 dark:text-blue-400 border border-blue-500/30 dark:border-blue-400/30;
-  }
 
   .default-badge {
     @apply inline-block py-0.5 px-1 rounded text-[0.6rem] font-semibold
@@ -1901,11 +1775,6 @@
   .dual-badge {
     @apply inline-block py-0.5 px-1 rounded text-[0.6rem] font-semibold
            bg-violet-500/15 dark:bg-violet-400/20 text-violet-700 dark:text-violet-300 uppercase tracking-wider ml-1;
-  }
-
-  .vllm-badge {
-    @apply inline-block py-0.5 px-1 rounded text-[0.6rem] font-semibold
-           bg-yellow-500/20 dark:bg-yellow-400/25 text-yellow-700 dark:text-yellow-300 uppercase tracking-wider ml-1;
   }
 
   .restart-badge {

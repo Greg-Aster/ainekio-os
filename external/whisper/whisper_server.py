@@ -11,7 +11,7 @@ import threading
 from pathlib import Path
 from typing import Optional
 
-from fastapi import FastAPI, HTTPException, UploadFile, File
+from fastapi import FastAPI, HTTPException, UploadFile, File, Form
 from fastapi.responses import JSONResponse
 from pydantic import BaseModel
 
@@ -111,7 +111,7 @@ async def health():
 
 
 @app.post("/transcribe")
-async def transcribe(file: UploadFile = File(...), language: str = "en"):
+async def transcribe(file: UploadFile = File(...), language: str = "en", hotwords: Optional[str] = Form(None)):
     """Transcribe audio file to text"""
     global model, model_loading, model_ready
 
@@ -157,6 +157,7 @@ async def transcribe(file: UploadFile = File(...), language: str = "en"):
             segments, info = model.transcribe(
                 final_path,
                 language=language,
+                hotwords=hotwords,
                 beam_size=5,
                 vad_filter=True,  # Voice activity detection
                 vad_parameters=dict(

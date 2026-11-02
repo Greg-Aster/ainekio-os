@@ -32,20 +32,14 @@
       kokoroActiveDevice?: 'cpu' | 'cuda' | null;
       kokoroFallbackReason?: string | null;
     };
-    provider: 'piper' | 'sovits' | 'rvc' | 'kokoro' | 'kitten';
+    provider: 'piper' | 'rvc' | 'kokoro';
     outputTarget: 'local' | 'robot';
     piper?: {
       voices: PiperVoice[];
       currentVoice: string;
       speakingRate: number;
     };
-    sovits?: {
-      serverUrl: string;
-      speakerId: string;
-      temperature: number;
-      speed: number;
-      autoFallbackToPiper: boolean;
-    };
+
     rvc?: {
       speakerId: string;
       pitchShift: number;
@@ -58,7 +52,6 @@
       device?: 'cuda' | 'cpu';
       speakers?: Array<{id: string; name: string; hasModel: boolean; hasIndex: boolean}>;
     };
-    kitten?: { voice: string; speed: number; voices: string[] };
     kokoro?: {
       langCode: string;
       voice: string;
@@ -85,7 +78,13 @@
     };
   }
 
-  let config: VoiceConfig | null = null;
+  type LoadedVoiceConfig = Omit<VoiceConfig, 'stt'> & {
+    stt?: NonNullable<VoiceConfig['stt']> & {
+      vad: NonNullable<NonNullable<VoiceConfig['stt']>['vad']>;
+    };
+  };
+
+  let config: LoadedVoiceConfig | null = null;
   let loading = true;
   let saving = false;
   let error: string | null = null;
@@ -95,7 +94,6 @@
   let previewRequestId: string | null = null;
   let testingVoice = false;
   let testAudio: HTMLAudioElement | null = null;
-  let generatingReference = false;
   let isGuest = false;
 
   let hardwareButtonsEnabled = false;
@@ -114,24 +112,13 @@
   let vadStartTime: number | null = null;
 
   const providerInfo = {
-    kitten: {
-      name: 'Kitten TTS',
-      icon: '🐱',
-      description: 'Eight English voices with a small CPU model',
-      color: '#14b8a6',
-    },
     piper: {
       name: 'Piper TTS',
       icon: '🎙️',
       description: 'Fast, neural text-to-speech with multiple voice models',
       color: '#3b82f6',
     },
-    sovits: {
-      name: 'GPT-SoVITS',
-      icon: '🤖',
-      description: 'Few-shot voice cloning using reference audio',
-      color: '#10b981',
-    },
+
     rvc: {
       name: 'RVC',
       icon: '🎭',
@@ -162,7 +149,18 @@
 
       const response = await apiFetch('/api/voice-settings');
       if (!response.ok) throw new Error('Failed to load voice settings');
-      config = await response.json();
+      const settings: VoiceConfig = await response.json();
+      config = {
+        ...settings,
+        stt: settings.stt ? {
+          ...settings.stt,
+          vad: settings.stt.vad ?? {
+            voiceThreshold: 12,
+            silenceDelay: 5000,
+            minDuration: 500,
+          },
+        } : undefined,
+      };
       isGuest = false;
       if (config) {
         config.outputTarget = config.outputTarget === 'robot' ? 'robot' : 'local';
@@ -189,11 +187,6 @@
         config.stt.useServer = config.stt.useServer ?? true;
         config.stt.autoStart = config.stt.autoStart ?? true;
         config.stt.serverStatus = config.stt.serverStatus || 'unknown';
-        config.stt.vad = config.stt.vad ?? {
-          voiceThreshold: 12,
-          silenceDelay: 5000,
-          minDuration: 500,
-        };
       }
 
       error = null;
@@ -255,48 +248,6 @@
     }
   }
 
-  async function generateReference() {
-    if (!config || config.provider !== 'sovits') return;
-    if (isGuest) {
-      error = "We apologize! You're viewing this profile as a guest and can't modify voice settings. Only the profile owner can generate reference audio. 🎙️";
-      return;
-    }
-
-    try {
-      generatingReference = true;
-      successMessage = null;
-      error = null;
-
-      const response = await apiFetch('/api/sovits-training', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          action: 'set-reference-latest',
-          provider: 'gpt-sovits',
-          speakerId: config.sovits?.speakerId || 'default',
-        }),
-      });
-
-      const result = await response.json();
-
-      if (!response.ok) {
-        if (result.error?.includes('Authentication required')) {
-          isGuest = true;
-          error = "We apologize! You're viewing this profile as a guest and can't modify voice settings. Only the profile owner can generate reference audio. 🎙️";
-          return;
-        }
-        throw new Error(result.error || 'Failed to generate reference audio');
-      }
-
-      successMessage = result.message || 'Reference audio regenerated successfully!';
-      setTimeout(() => { successMessage = null; }, 5000);
-    } catch (e) {
-      if (!error) error = String(e);
-    } finally {
-      generatingReference = false;
-    }
-  }
-
   async function testVoice(forceProvider?: Provider) {
     if (!config) return;
     const providerToTest = forceProvider || config.provider;
@@ -311,10 +262,11 @@
       }
 
       const requestBody: any = { text: testText, provider: providerToTest };
-      const useStreaming = providerToTest === 'rvc' || providerToTest === 'kokoro' || providerToTest === 'kitten';
+      const useStreaming = providerToTest === 'rvc' || providerToTest === 'kokoro';
 
       if (providerToTest === 'piper' && config.piper) {
-        const voice = config.piper.voices.find(v => v.id === config.piper!.currentVoice);
+        const piper = config.piper;
+        const voice = piper.voices.find(v => v.id === piper.currentVoice);
         if (!voice) {
           error = 'Please select a voice';
           testingVoice = false;
@@ -322,16 +274,10 @@
         }
         requestBody.voiceId = voice.modelPath;
         requestBody.speakingRate = config.piper.speakingRate;
-      } else if (providerToTest === 'sovits' && config.sovits) {
-        requestBody.voiceId = config.sovits.speakerId;
-        requestBody.speed = config.sovits.speed;
       } else if (providerToTest === 'rvc' && config.rvc) {
         requestBody.voiceId = config.rvc.speakerId;
         requestBody.pitchShift = config.rvc.pitchShift;
         requestBody.speed = config.rvc.speed;
-      } else if (providerToTest === 'kitten' && config.kitten) {
-        requestBody.voiceId = config.kitten.voice;
-        requestBody.speed = config.kitten.speed;
       } else if (providerToTest === 'kokoro' && config.kokoro) {
         if (config.kokoro.voice.startsWith('custom_')) {
           try {
@@ -654,65 +600,6 @@
         </div>
       </div>
 
-    {:else if config.provider === 'sovits' && config.sovits}
-      <div class="bg-gray-50 dark:bg-gray-900 rounded-xl p-6 mb-6">
-        <h4 class="m-0 mb-4 text-lg text-gray-800 dark:text-gray-100">GPT-SoVITS Settings</h4>
-
-        <div class="mb-6">
-          <div class="block font-medium text-gray-700 dark:text-gray-300 mb-2 text-sm">Server Status</div>
-          <ServerStatusIndicator serverName="GPT-SoVITS" statusEndpoint="/api/sovits-server" controlEndpoint="/api/sovits-server" autoRefresh={true} refreshInterval={15000} />
-        </div>
-
-        <div class="mb-6">
-          <label for="sovits-url" class="block font-medium text-gray-700 dark:text-gray-300 mb-2 text-sm">Server URL</label>
-          <input id="sovits-url" type="text" bind:value={config.sovits.serverUrl} disabled={saving} class="input-field" />
-        </div>
-
-        <div class="mb-6">
-          <label for="sovits-speaker" class="block font-medium text-gray-700 dark:text-gray-300 mb-2 text-sm">Speaker ID</label>
-          <input id="sovits-speaker" type="text" bind:value={config.sovits.speakerId} placeholder="default" disabled={saving} class="input-field" />
-        </div>
-
-        <div class="mb-6">
-          <label for="sovits-temp" class="block font-medium text-gray-700 dark:text-gray-300 mb-2 text-sm">Temperature: {config.sovits.temperature.toFixed(2)}</label>
-          <input id="sovits-temp" type="range" min="0.1" max="1.0" step="0.05" bind:value={config.sovits.temperature} disabled={saving} class="range-slider" />
-          <div class="flex justify-between text-xs text-gray-500 dark:text-gray-400 mt-1">
-            <span>Stable</span><span>Balanced</span><span>Creative</span>
-          </div>
-        </div>
-
-        <div class="mb-6">
-          <label for="sovits-speed" class="block font-medium text-gray-700 dark:text-gray-300 mb-2 text-sm">Speed: {config.sovits.speed.toFixed(2)}x</label>
-          <input id="sovits-speed" type="range" min="0.5" max="2.0" step="0.05" bind:value={config.sovits.speed} disabled={saving} class="range-slider" />
-          <div class="flex justify-between text-xs text-gray-500 dark:text-gray-400 mt-1">
-            <span>Slower</span><span>Normal</span><span>Faster</span>
-          </div>
-        </div>
-
-        <div class="mb-6">
-          <label class="flex items-center gap-2 cursor-pointer font-normal">
-            <input type="checkbox" bind:checked={config.sovits.autoFallbackToPiper} disabled={saving} />
-            Auto-fallback to Piper if unavailable
-          </label>
-        </div>
-
-        <div class="mb-6">
-          <div class="block font-medium text-gray-700 dark:text-gray-300 mb-2 text-sm">Reference Audio Management</div>
-          <p class="mt-2 text-xs text-gray-500 dark:text-gray-400">Generate reference.wav from the latest recorded sample in your voice profile.</p>
-          <button class="w-full py-3 px-6 border-none rounded-lg font-semibold cursor-pointer transition-all mt-2 bg-emerald-500 text-white hover:bg-emerald-600 disabled:opacity-50 disabled:cursor-not-allowed" on:click={generateReference} disabled={generatingReference || saving}>
-            {generatingReference ? '🔄 Generating...' : '🎯 Generate Reference Audio'}
-          </button>
-        </div>
-
-        <div class="mt-6 pt-6 border-t-2 border-gray-200 dark:border-gray-700">
-          <label for="sovits-test-text" class="block text-[0.95rem] font-semibold text-gray-800 dark:text-gray-100 mb-2">Test Cloned Voice</label>
-          <textarea id="sovits-test-text" bind:value={testText} rows="2" placeholder="Enter text to test your cloned voice..." disabled={testingVoice || saving} class="input-field"></textarea>
-          <button class="w-full py-3 px-6 border-none rounded-lg font-semibold cursor-pointer transition-all mt-3 bg-emerald-500 text-white hover:bg-emerald-600 disabled:opacity-50 disabled:cursor-not-allowed" on:click={() => testVoice('sovits')} disabled={testingVoice || saving}>
-            {testingVoice ? '🔊 Playing...' : '▶️ Test SoVITS'}
-          </button>
-        </div>
-      </div>
-
     {:else if config.provider === 'rvc' && config.rvc}
       <div class="bg-gray-50 dark:bg-gray-900 rounded-xl p-6 mb-6">
         <h4 class="m-0 mb-4 text-lg text-gray-800 dark:text-gray-100">RVC Settings</h4>
@@ -815,26 +702,6 @@
             {testingVoice ? '🔊 Playing...' : '▶️ Test RVC'}
           </button>
         </div>
-      </div>
-
-    {:else if config.provider === 'kitten' && config.kitten}
-      <div class="bg-gray-50 dark:bg-gray-900 rounded-xl p-6 mb-6">
-        <h4 class="m-0 mb-4 text-lg text-gray-800 dark:text-gray-100">Kitten Micro Settings</h4>
-        <div class="mb-6">
-          <div class="block font-medium text-gray-700 dark:text-gray-300 mb-2 text-sm">Server Status</div>
-          <ServerStatusIndicator statusEndpoint="/api/kitten-server" controlEndpoint="/api/kitten-server" serverName="Kitten" />
-        </div>
-        <label for="kitten-voice" class="block font-medium mb-2">Voice</label>
-        <select id="kitten-voice" bind:value={config.kitten.voice} disabled={saving} class="input-field mb-6">
-          {#each config.kitten.voices as voice}<option value={voice}>{voice}</option>{/each}
-        </select>
-        <label for="kitten-speed" class="block font-medium mb-2">Speaking speed: {config.kitten.speed.toFixed(2)}×</label>
-        <input id="kitten-speed" type="range" min="0.5" max="2" step="0.05" bind:value={config.kitten.speed} disabled={saving} class="w-full mb-6" />
-        <label for="kitten-test-text" class="block font-medium mb-2">Test Voice</label>
-        <textarea id="kitten-test-text" bind:value={testText} rows="2" disabled={testingVoice || saving} class="input-field"></textarea>
-        <button class="w-full py-3 px-6 rounded-lg font-semibold mt-3 bg-teal-500 text-white hover:bg-teal-600 disabled:opacity-50" on:click={() => testVoice('kitten')} disabled={testingVoice || saving}>
-          {testingVoice ? '🔊 Playing...' : '▶️ Test Kitten'}
-        </button>
       </div>
 
     {:else if config.provider === 'kokoro' && config.kokoro}

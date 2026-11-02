@@ -61,18 +61,20 @@
 
   <!-- Tab Content -->
   <div class="flex-1 overflow-y-auto overflow-x-hidden">
-    {#if activeTab === 'monitor'}
-      <div class="p-3 h-full overflow-hidden flex flex-col gap-4">
-        <AgentMonitor />
-      </div>
-    {:else if activeTab === 'queue'}
-      <div class="h-full overflow-hidden">
-        <QueuePanel />
-      </div>
-    {:else if activeTab === 'servers'}
-      <div class="h-full overflow-hidden">
-        <ServerStatus isVisible={$rightSidebarOpen && activeTab === 'servers'} />
-      </div>
+    {#if $rightSidebarOpen}
+      {#if activeTab === 'monitor'}
+        <div class="p-3 h-full overflow-hidden flex flex-col gap-4">
+          <AgentMonitor />
+        </div>
+      {:else if activeTab === 'queue'}
+        <div class="h-full overflow-hidden">
+          <QueuePanel />
+        </div>
+      {:else if activeTab === 'servers'}
+        <div class="h-full overflow-hidden">
+          <ServerStatus />
+        </div>
+      {/if}
     {/if}
   </div>
 </div>

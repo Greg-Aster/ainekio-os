@@ -14,10 +14,12 @@ import { validateSession } from '@metahuman/core/sessions';
 import { getUser } from '@metahuman/core/users';
 import { claimWorkCoordinatorOwnership, ensureQueueSystemStarted } from '@metahuman/core/queue';
 import { getModeController } from '@metahuman/core/active-operator/mode';
+import { startAuthenticatedModelServices } from '@metahuman/core/llm-backend';
 
 // Astro loads the middleware module as part of the maintained server entrypoint.
 // Start system work coordination here once, independently of UI page visits.
 claimWorkCoordinatorOwnership();
+startAuthenticatedModelServices();
 void ensureQueueSystemStarted()
   .then(() => getModeController().applyConfiguredMode())
   .catch(error => {

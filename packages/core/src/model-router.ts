@@ -150,7 +150,7 @@ export async function callLLM(callOptions: RouterCallOptions): Promise<RouterRes
 
   // Resolve the model for this role (using user-specific models.json if available)
   const resolved = callOptions.modelId
-    ? resolveModelById(callOptions.modelId, username, false)
+    ? resolveModelById(callOptions.modelId, username)
     : effectiveCognitiveMode
     ? resolveModelForCognitiveMode(effectiveCognitiveMode, callOptions.role, username)
     : resolveModel(callOptions.role, callOptions.overrides, username);
@@ -197,7 +197,6 @@ export async function callLLM(callOptions: RouterCallOptions): Promise<RouterRes
       messages,
       {
         model: resolved.model,
-        explicitModel: Boolean(callOptions.modelId),
         endpoint: typeof mergedOptions.endpoint === 'string' ? mergedOptions.endpoint : undefined,
         lora: mergedOptions.lora,
         executionTarget: callOptions.executionTarget,

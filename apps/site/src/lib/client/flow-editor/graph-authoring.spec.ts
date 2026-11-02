@@ -89,7 +89,7 @@ test('input entry settings report a deleted, muted or conditional receiver in th
   const graph = { version: '1.0', name: 'Input', description: '', nodes: [receiver], edges: [],
     scheduler: { ...DEFAULT_GRAPH_SCHEDULER, eventInputNodeId: receiver.id } }
   assert.deepEqual(validateAuthoringGraph(graph).filter(issue => issue.level === 'error'), [])
-  for (const patch of [{ muted: true }, { activation: { mode: 'any-input' } }]) {
+  for (const patch of [{ muted: true }, { activation: { mode: 'any-input' } }] as const) {
     const invalid = { ...graph, nodes: [{ ...receiver, data: { ...receiver.data, ...patch } }] }
     assert.ok(validateAuthoringGraph(invalid).some(issue => issue.nodeId === receiver.id && /Input receiver/.test(issue.message)))
   }

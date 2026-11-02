@@ -5,14 +5,12 @@ import { fileURLToPath } from 'node:url'
 import {
   DEFAULT_OLLAMA_CHAT_MODEL as CORE_OLLAMA_MODEL,
   DEFAULT_TRAINING_MODEL as CORE_TRAINING_MODEL,
-  DEFAULT_VLLM_CHAT_MODEL as CORE_VLLM_MODEL,
-  DEFAULT_VLLM_TRAINING_MODEL as CORE_VLLM_TRAINING_MODEL,
+  DEFAULT_FULL_TRAINING_MODEL as CORE_FULL_TRAINING_MODEL,
 } from '../packages/core/src/model-defaults.js'
 import {
   DEFAULT_OLLAMA_CHAT_MODEL as SITE_OLLAMA_MODEL,
   DEFAULT_TRAINING_MODEL as SITE_TRAINING_MODEL,
-  DEFAULT_VLLM_CHAT_MODEL as SITE_VLLM_MODEL,
-  DEFAULT_VLLM_TRAINING_MODEL as SITE_VLLM_TRAINING_MODEL,
+  DEFAULT_FULL_TRAINING_MODEL as SITE_FULL_TRAINING_MODEL,
 } from '../apps/site/src/lib/client/model-defaults.js'
 
 const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..')
@@ -34,13 +32,11 @@ function walkFiles(directory: string): string[] {
 }
 
 assert.equal(CORE_OLLAMA_MODEL, 'qwen3.5:9b')
-assert.equal(CORE_VLLM_MODEL, 'sanskar003/Qwen3.5-9B-AWQ')
 assert.equal(CORE_TRAINING_MODEL, 'unsloth/Qwen3.5-4B')
-assert.equal(CORE_VLLM_TRAINING_MODEL, 'Qwen/Qwen3.5-4B')
+assert.equal(CORE_FULL_TRAINING_MODEL, 'Qwen/Qwen3.5-4B')
 assert.equal(SITE_OLLAMA_MODEL, CORE_OLLAMA_MODEL)
-assert.equal(SITE_VLLM_MODEL, CORE_VLLM_MODEL)
 assert.equal(SITE_TRAINING_MODEL, CORE_TRAINING_MODEL)
-assert.equal(SITE_VLLM_TRAINING_MODEL, CORE_VLLM_TRAINING_MODEL)
+assert.equal(SITE_FULL_TRAINING_MODEL, CORE_FULL_TRAINING_MODEL)
 
 for (const relativeRoot of [
   'etc',
@@ -78,7 +74,6 @@ for (const relativePath of ['etc/models.json']) {
 for (const relativePath of ['etc/llm-backend.json']) {
   const config = JSON.parse(fs.readFileSync(path.join(ROOT, relativePath), 'utf8'))
   assert.equal(config.ollama.defaultModel, CORE_OLLAMA_MODEL, `${relativePath} Ollama default drifted`)
-  assert.equal(config.vllm.model, CORE_VLLM_MODEL, `${relativePath} vLLM default drifted`)
 }
 
 const trainingConfig = JSON.parse(fs.readFileSync(path.join(ROOT, 'etc/training.json'), 'utf8'))

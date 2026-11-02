@@ -115,104 +115,39 @@ test('absent or incomplete settings report a configuration error before inferenc
   assert.equal(requests.length, 0);
 });
 
-function kittenVoiceConfig(voice = 'Jasper', speed = 1) {
-  return {
-    tts: { provider: 'kitten', kitten: { voice, speed, outputFormat: 'wav' } },
-    cache: { enabled: false, directory: '{PROFILE_DIR}/out/voice-cache', maxSizeMB: 10 },
-  };
-}
-
-test('Kitten batch synthesis uses its profile voice without Piper or Kokoro configuration', async () => {
-  writeProfile('kitten-fixture', kittenVoiceConfig('Luna', 0.9));
-  const audio = await generateSpeech('Synthetic Kitten speech.', { username: 'kitten-fixture' });
-  assert.equal(audio.toString(), 'synthetic-audio');
-  assert.equal(requests.length, 1);
-  assert.equal(requests[0].voice, 'Luna');
-  assert.equal(requests[0].speed, 0.9);
-  assert.equal(requests[0].custom_voicepack, undefined);
-});
-
-test('Kitten streams ordered phrases through the existing generic stream handler', async () => {
-  writeProfile('kitten-fixture', kittenVoiceConfig());
-  const response = await handleTtsStream({ method: 'POST',
-    body: { text: 'Hello! I am ready to speak. The next phrase is generated while the opening is playing.', provider: 'kitten' },
-    user: { username: 'kitten-fixture', isAuthenticated: true, role: 'owner' },
-  } as any);
-  assert.equal(response.status, 200);
-  let events = '';
-  for await (const event of response.stream!) events += event;
-  assert.doesNotMatch(events, /"event":"error"/);
-  assert.match(events, /"chunk_index":0/);
-  assert.match(events, /"chunk_index":1/);
-  assert.match(events, /"event":"complete"/);
-  assert.equal(requests[0].text, 'Hello! I am ready to speak.');
-  assert(requests.every(request => request.voice === 'Jasper'));
-});
-
-test('Kitten refuses unknown voices before contacting an inference server', async () => {
-  writeProfile('kitten-fixture', kittenVoiceConfig('af_heart'));
-  await assert.rejects(generateSpeech('Do not change my voice.', { username: 'kitten-fixture' }), /Kitten voice/i);
-  assert.equal(requests.length, 0);
-});
-
-test('Kitten starts the following phrase before handing off the first audio', async () => {
-  writeProfile('kitten-fixture', kittenVoiceConfig());
-  let release!: () => void;
-  const blocked = new Promise<void>(resolve => { release = resolve; });
-  const fetch = globalThis.fetch;
-  globalThis.fetch = async (url, init) => {
-    if (String(url).endsWith('/synthesize')) {
-      const body = JSON.parse(String(init?.body));
-      if (body.text !== 'I am ready to speak now.') {
-        requests.push(body);
-        await blocked;
-        return new Response(Buffer.from('second-phrase'));
-      }
+test('voice recording upload feeds the shared sample list and RVC export without a reference server', async () => {
+  const { handleVoiceProfileUpload } = await import('./api/handlers/audio-uploads.js');
+  const { handleGetVoiceTraining, handlePostRvcTraining, handleGetRvcTraining } = await import('./api/handlers/voice-training-routes.js');
+  const username = 'recording-owner';
+  writeProfile(username, voiceConfig());
+  await withUserContext({ userId: username, username, role: 'owner' }, async () => {
+    const audio = Buffer.from('RIFF synthetic WAV fixture');
+    const request = { method: 'POST', user: { username, role: 'owner', isAuthenticated: true }, body: {
+      audio: { name: 'recording.wav', type: 'audio/wav', size: audio.length, buffer: audio },
+      transcript: 'Synthetic recording for the training handoff.', duration: '10', quality: '1.0',
+    } } as any;
+    const upload = await handleVoiceProfileUpload(request);
+    assert.equal(upload.status, 200);
+    const saved = upload.data as { sampleId: string; audioPath: string };
+    assert.deepEqual(fs.readFileSync(saved.audioPath), audio);
+    const available = await handleGetVoiceTraining({ ...request, method: 'GET', query: { action: 'samples', limit: '1000' } });
+    assert.deepEqual((available.data as { samples: Array<{ id: string }> }).samples.map(s => s.id), [saved.sampleId]);
+    for (let pass = 0; pass < 2; pass++) {
+      const copied = await handlePostRvcTraining({ ...request, body: { action: 'copy-samples', speakerId: 'default', sampleIds: [saved.sampleId] } });
+      assert.equal(copied.status, 200);
+      const exported = await handleGetRvcTraining({ ...request, method: 'GET', query: { action: 'list-samples', speakerId: 'default' } });
+      assert.equal((exported.data as { samples: unknown[] }).samples.length, 1);
+      assert.deepEqual(fs.readFileSync(saved.audioPath), audio, 'export preserves the original recording');
     }
-    return fetch(url, init);
-  };
-  const response = await handleTtsStream({ method: 'POST',
-    body: { text: 'I am ready to speak now. This next phrase must already be processing.', provider: 'kitten', voiceId: 'Bella', speed: 0.8 },
-    user: { username: 'kitten-fixture', isAuthenticated: true, role: 'owner' },
-  } as any);
-  const iterator = response.stream![Symbol.asyncIterator]();
-  try {
-    const first = await iterator.next();
-    assert.match(String(first.value), /"chunk_index":0/);
-    assert.equal(requests.length, 2);
-    assert(requests.every(request => request.voice === 'Bella' && request.speed === 0.8));
-  } finally { release(); }
-  const second = await iterator.next();
-  assert.match(String(second.value), /"chunk_index":1/);
-  await iterator.return?.();
+  });
 });
 
-test('Kitten streaming reports inference failures without a false completion event', async () => {
-  writeProfile('kitten-fixture', kittenVoiceConfig());
-  const fetch = globalThis.fetch;
-  globalThis.fetch = async (url, init) => String(url).endsWith('/synthesize')
-    ? new Response('inference unavailable', { status: 503 }) : fetch(url, init);
-  const response = await handleTtsStream({ method: 'POST',
-    body: { text: 'Hello! Do not skip a failed phrase.', provider: 'kitten' },
-    user: { username: 'kitten-fixture', isAuthenticated: true, role: 'owner' },
-  } as any);
-  let events = '';
-  for await (const event of response.stream!) events += event;
-  assert.match(events, /"event":"error"/);
-  assert.match(events, /503/);
-  assert.doesNotMatch(events, /"event":"complete"|audio_base64/);
-});
-
-test('an interrupted Kitten stream neither synthesizes nor emits completion', async () => {
-  writeProfile('kitten-fixture', kittenVoiceConfig());
-  const controller = new AbortController();
-  controller.abort();
-  const response = await handleTtsStream({ method: 'POST', signal: controller.signal,
-    body: { text: 'Hello! Never synthesize canceled text.', provider: 'kitten' },
-    user: { username: 'kitten-fixture', isAuthenticated: true, role: 'owner' },
-  } as any);
-  let events = '';
-  for await (const event of response.stream!) events += event;
-  assert.equal(events, '');
-  assert.equal(requests.length, 0);
-});
+for (const provider of ['kitten', 'gpt-sovits']) {
+  test(`retired ${provider} selections report unsupported instead of synthesizing another voice`, async () => {
+    writeProfile('retired-provider', voiceConfig());
+    await assert.rejects(generateSpeech('Do not substitute this voice.', {
+      username: 'retired-provider', provider: provider as any,
+    }), new RegExp(`Unsupported TTS provider: ${provider}`));
+    assert.equal(requests.length, 0);
+  });
+}

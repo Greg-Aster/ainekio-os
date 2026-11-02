@@ -21,7 +21,7 @@ const graph = JSON.parse(fs.readFileSync(new URL('../../../etc/cognitive-graphs/
 
 test('invalid configured graphs retain the validation error through both real loaders', async () => {
   const invalid = structuredClone(graph)
-  invalid.edges.find((edge: any) => edge.data?.when).data.when.output = 'output_not_in_contract'
+  invalid.edges[0].data = { ...invalid.edges[0].data, when: { output: 'output_not_in_contract', equals: true } }
   const filename = path.join(directory, 'invalid-mode.json')
   fs.writeFileSync(filename, JSON.stringify(invalid))
   for (const load of [() => loadGraphForMode('invalid'), () => loadGraphFile(filename)]) {

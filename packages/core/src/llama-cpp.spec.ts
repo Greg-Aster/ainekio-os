@@ -2,19 +2,30 @@ import assert from 'node:assert/strict'
 import fs from 'node:fs'
 import os from 'node:os'
 import path from 'node:path'
-import { after, afterEach, mock, test } from 'node:test'
+import { after, afterEach, beforeEach, mock, test } from 'node:test'
 import { createServer, type IncomingMessage, type ServerResponse } from 'node:http'
 import { once } from 'node:events'
+import { setTimeout as delay } from 'node:timers/promises'
 
 const root = fs.mkdtempSync(path.join(os.tmpdir(), 'metahuman-llama-cpp-'))
 process.env.METAHUMAN_ROOT = root
 fs.mkdirSync(path.join(root, 'etc'), { recursive: true })
+// Observe the systemd launch boundary without starting installed services or models.
+fs.mkdirSync(path.join(root, 'bin'), { recursive: true })
+const launches = path.join(root, 'launches.jsonl')
+fs.writeFileSync(path.join(root, 'bin/llama-cpp-services'), `#!/usr/bin/env python3
+import json, sys
+from pathlib import Path
+with (Path(__file__).parent.parent / 'launches.jsonl').open('a') as output:
+    output.write(json.dumps(sys.argv[1:]) + chr(10))
+`, { mode: 0o755 })
 const { setAuditEnabled } = await import('./audit.js')
+const { OllamaClient } = await import('./ollama.js')
 setAuditEnabled(false)
 const { eventBus } = await import('./infrastructure/event-bus/client.js')
 const { callLlamaCpp, getLlamaCppStatus, DEFAULT_LLAMA_CPP_CONFIG } = await import('./providers/llama-cpp.js')
-const { saveBackendConfig, loadBackendConfig, getBackendStatus, ensureBackendRunning } = await import('./llm-backend.js')
-const { resolveModel, resolveModelById, resolveModelForCognitiveMode } = await import('./model-resolver.js')
+const { saveBackendConfig, loadBackendConfig, getBackendStatus, ensureBackendRunning, startAssignedModelServices } = await import('./llm-backend.js')
+const { resolveModel, resolveModelById, resolveModelForCognitiveMode, invalidateModelCache, MODEL_ROLES } = await import('./model-resolver.js')
 const { getProfilePaths } = await import('./path-builder.js')
 const { callProvider } = await import('./providers/bridge.js')
 const { handleGetModelRegistry, handleAssignModelRole } = await import('./api/handlers/model-registry.js')
@@ -43,7 +54,18 @@ for (let index = 0; index < 4; index++) {
   endpoints.push(`http://127.0.0.1:${(server.address() as import('node:net').AddressInfo).port}`)
   servers.push(server)
 }
-afterEach(() => { globalThis.fetch = fetchOriginal; rawHandler = undefined; mock.restoreAll() })
+let ollamaStartAttempts = 0
+beforeEach(() => {
+  ollamaStartAttempts = 0
+  mock.method(OllamaClient.prototype, 'startService', async () => {
+    ollamaStartAttempts++
+    throw new Error('This fixture must not start a host Ollama service')
+  })
+})
+afterEach(() => {
+  globalThis.fetch = fetchOriginal; rawHandler = undefined; mock.restoreAll()
+  assert.equal(ollamaStartAttempts, 0, 'Serving readiness must be supplied by this test fixture')
+})
 after(async () => {
   eventBus.disconnect()
   await Promise.all(servers.map(server => new Promise<void>(resolve => {
@@ -230,7 +252,6 @@ test('backend config validates at its owner, disables other startup flags, and r
   healthyFetch()
   saveBackendConfig({ activeBackend: 'llama-cpp', preferredLocalBackend: 'llama-cpp', llamaCpp: config })
   assert.equal(loadBackendConfig(true).ollama.autoStart, false)
-  assert.equal(loadBackendConfig().vllm.autoStart, false)
   assert.throws(() => saveBackendConfig({ llamaCpp: { ...config, maxTokens: -2 } }), /maxTokens/)
   assert.equal(loadBackendConfig(true).llamaCpp.maxTokens, config.maxTokens)
   assert.equal((await getBackendStatus()).resolvedBackend, 'llama-cpp')
@@ -247,7 +268,7 @@ test('settings API accepts llama.cpp and rejects bad values or non-owner edits',
   assert.equal((await handleSetLlmBackendConfig({ ...request, user: { ...request.user, role: 'standard' } } as any)).status, 403)
 })
 
-test('device routing overrides synced local chat/action roles without changing profiles or embedding/cloud roles', async () => {
+test('saved role assignments survive unrelated deployment backend settings', async () => {
   healthyFetch()
   saveBackendConfig({ activeBackend: 'llama-cpp', llamaCpp: config })
   const profile = getProfilePaths('fixture')
@@ -261,16 +282,16 @@ test('device routing overrides synced local chat/action roles without changing p
     } }
   fs.writeFileSync(file, JSON.stringify(registry))
   const resolved = resolveModel('orchestrator', undefined, 'fixture')
-  assert.equal(resolved.provider, 'llama-cpp')
-  assert.equal(resolved.model, config.model)
-  assert.equal(resolveModelById('old', 'fixture', false).model, 'desktop-model')
-  assert.equal(resolveModelById('old', 'fixture', false).provider, 'ollama')
-  assert.deepEqual(resolved.capabilities, ['text', 'image'])
-  assert.equal(resolveModelForCognitiveMode('environment', 'environmentActionSelector', 'fixture').provider, 'llama-cpp')
+  assert.equal(resolved.provider, 'ollama')
+  assert.equal(resolved.model, 'desktop-model')
+  assert.equal(resolveModelById('old', 'fixture').model, 'desktop-model')
+  assert.equal(resolveModelById('old', 'fixture').provider, 'ollama')
+  assert.deepEqual(resolved.capabilities, ['text'])
+  assert.equal(resolveModelForCognitiveMode('environment', 'environmentActionSelector', 'fixture').provider, 'ollama')
   assert.equal(resolveModel('embedder', undefined, 'fixture').provider, 'local-models')
   assert.equal(resolveModel('coder', undefined, 'fixture').provider, 'runpod_serverless')
   assert.equal(JSON.parse(fs.readFileSync(file, 'utf8')).models.old.model, 'desktop-model')
-  for (const provider of ['ollama', 'vllm', 'local', 'llama-cpp'] as const) {
+  for (const provider of ['local', 'llama-cpp'] as const) {
     const result = await callProvider(provider, imageMessages, { model: config.model, modelCapabilities: ['text', 'image'] })
     assert.equal(result.provider, 'llama-cpp')
   }
@@ -280,7 +301,7 @@ test('device routing overrides synced local chat/action roles without changing p
   const data = inventory.data as any
   assert.equal(data.localModel.provider, 'llama-cpp')
   assert.equal(data.modelCategories.local[0].model, config.model)
-  assert(data.modelCategories.local[0].aliases.includes('old'))
+  assert(!data.modelCategories.local[0].aliases.includes('old'))
   respond = async () => { throw new Error('server disconnected') }
   await assert.rejects(callProvider('llama-cpp', messages, {}), /[Nn]o.*backend|offline|not.*running|unavailable|disconnected/)
 })
@@ -378,7 +399,8 @@ test('saved specialist role changes reach the newly assigned endpoint and adapte
   fs.writeFileSync(file, JSON.stringify(registry))
 })
 
-test('router sends an explicit small model to Ollama while inherited calls use llama.cpp', async () => {
+test('router honors Ollama selections by ID and role while the deployment default is llama.cpp', async t => {
+  t.mock.method(OllamaClient.prototype, 'isRunning', async () => true)
   const { callLLM } = await import('./model-router.js')
   const dispatched: string[] = []
   respond = async (url, init) => {
@@ -403,8 +425,9 @@ test('router sends an explicit small model to Ollama while inherited calls use l
   const inherited = await callLLM({ userId: 'fixture', role: 'orchestrator', cognitiveMode: 'environment', messages })
   assert.equal(small.provider, 'ollama')
   assert.equal(small.model, 'desktop-model')
-  assert.equal(inherited.model, config.model)
-  assert.deepEqual(dispatched, ['desktop-model', config.model])
+  assert.equal(inherited.provider, 'ollama')
+  assert.equal(inherited.model, 'desktop-model')
+  assert.deepEqual(dispatched, ['desktop-model', 'desktop-model'])
   await assert.rejects(callLLM({ modelId: 'old', userId: 'fixture', role: 'persona', messages: imageMessages }), /not configured for image/)
   assert.equal(dispatched.length, 2)
 })
@@ -632,4 +655,123 @@ test('router preserves per-model topK and seed, per-call zero overrides and abse
   assert.equal(Object.hasOwn(requests.at(-1)!.body, 'top_k'), false)
   assert.equal(Object.hasOwn(requests.at(-1)!.body, 'seed'), false)
   assert.equal(fs.readFileSync(registryPath, 'utf8'), saved, 'per-call options do not change saved sampling settings')
+})
+
+test('startup uses only effective Status assignments; inventory and another mode cannot start models', async () => {
+  const username = 'startup-fixture'
+  const profile = getProfilePaths(username)
+  fs.mkdirSync(profile.etc, { recursive: true })
+  fs.mkdirSync(profile.persona, { recursive: true })
+  const file = path.join(profile.etc, 'models.json')
+  const modeFile = path.join(profile.persona, 'cognitive-mode.json')
+  const registry = {
+    version: '1.0.0', description: 'Startup ownership fixture',
+    defaults: Object.fromEntries(MODEL_ROLES.map(role => [role, 'cloud'])),
+    models: {
+      cloud: { provider: 'openai', model: 'cloud-model', roles: [], options: {} },
+      selected: { provider: 'llama-cpp', model: 'selected-base', roles: ['persona'],
+        options: { endpoint: 'http://127.0.0.1:8081', lora: [{ path: '/selected.gguf', scale: 1 }] } },
+      unused: { provider: 'llama-cpp', model: 'unused-base', roles: [], options: { endpoint: 'http://127.0.0.1:8083' } },
+    },
+    cognitiveModeMappings: { environment: { persona: 'cloud' as string | null }, agent: { persona: 'unused' } },
+  }
+  registry.defaults.persona = 'unused'
+  const save = () => { fs.writeFileSync(file, JSON.stringify(registry)); invalidateModelCache() }
+  save()
+  fs.writeFileSync(modeFile, JSON.stringify({ currentMode: 'environment' }))
+  fs.rmSync(launches, { force: true })
+  await startAssignedModelServices(username)
+  await startAssignedModelServices(username)
+  assert.equal(fs.existsSync(launches), false, 'cloud assignments never start backend inventory')
+  registry.cognitiveModeMappings.environment.persona = 'selected'
+  save()
+  await startAssignedModelServices(username)
+  const readLaunches = () => fs.readFileSync(launches, 'utf8').trim().split('\n').map(line => JSON.parse(line))
+  assert.deepEqual(readLaunches(), [['start', JSON.stringify([{ endpoint: 'http://127.0.0.1:8081', model: 'selected-base' }])]])
+  assert.deepEqual(resolveModelForCognitiveMode('environment', 'persona', username).options.lora, [{ path: '/selected.gguf', scale: 1 }])
+  registry.cognitiveModeMappings.environment.persona = null
+  save()
+  await startAssignedModelServices(username)
+  assert.equal(readLaunches().length, 1, 'disabled roles do not start their defaults')
+  registry.cognitiveModeMappings.environment.persona = 'cloud'
+  save()
+  await startAssignedModelServices(username)
+  assert.equal(readLaunches().length, 1, 'switching back to cloud cannot restart the previous local model')
+  const assigned = await handleAssignModelRole({ method: 'POST',
+    user: { isAuthenticated: true, username, role: 'owner' },
+    body: { role: 'persona', modelId: 'selected', cognitiveMode: 'environment' },
+  } as any)
+  assert.equal(assigned.status, 200)
+  assert.equal(readLaunches().length, 2, 'Status assignment prepares its selected endpoint through the same startup owner')
+  assert.equal(resolveModelForCognitiveMode('environment', 'persona', username).id, 'selected')
+  const { handleSetCognitiveMode } = await import('./api/handlers/cognitive-mode.js')
+  const changedMode = await handleSetCognitiveMode({ method: 'POST',
+    user: { isAuthenticated: true, userId: username, username, role: 'owner' }, body: { mode: 'agent' },
+  } as any)
+  assert.equal(changedMode.status, 200)
+  assert.deepEqual(JSON.parse(readLaunches().at(-1)[1]), [{ endpoint: 'http://127.0.0.1:8083', model: 'unused-base' }],
+    'changing mode starts only its saved deployment')
+  fs.writeFileSync(path.join(root, 'bin/llama-cpp-services'), '#!/bin/sh\necho startup-failed >&2\nexit 1\n', { mode: 0o755 })
+  try {
+    await assert.rejects(startAssignedModelServices(username), /startup-failed/)
+  } finally {
+    fs.writeFileSync(path.join(root, 'bin/llama-cpp-services'), '#!/bin/sh\nexit 0\n', { mode: 0o755 })
+  }
+})
+
+test('authenticated startup follows committed profile selection, including browser restoration', { timeout: 15000 }, async () => {
+  const { startAuthenticatedModelServices } = await import('./llm-backend.js')
+  const { claimWorkCoordinatorOwnership } = await import('./queue/work-coordinator-ownership.js')
+  const { beginAuthenticatedRuntime, createSession, selectAuthenticatedSession, restoreAuthenticatedSession } = await import('./sessions.js')
+  const { createUser } = await import('./users.js')
+  const users = ['boot-profile-a', 'boot-profile-b'].map((name, index) => createUser(name, 'fixture-only-password', index ? 'standard' : 'owner'))
+  for (const user of users) {
+    const profile = getProfilePaths(user.username)
+    fs.mkdirSync(profile.etc, { recursive: true })
+    fs.mkdirSync(profile.persona, { recursive: true })
+    fs.writeFileSync(path.join(profile.etc, 'models.json'), JSON.stringify({
+      version: '1.0.0', description: 'Authentication startup fixture',
+      defaults: Object.fromEntries(MODEL_ROLES.map(role => [role, 'selected'])),
+      models: { selected: { provider: 'llama-cpp', model: user.username, roles: [],
+        options: { endpoint: 'http://127.0.0.1:8081' } } },
+    }))
+    fs.writeFileSync(path.join(profile.persona, 'cognitive-mode.json'), JSON.stringify({ currentMode: 'conversation' }))
+  }
+  invalidateModelCache()
+  const launcher = path.join(root, 'bin/llama-cpp-services')
+  const saved = fs.readFileSync(launcher)
+  fs.writeFileSync(launches, '')
+  fs.writeFileSync(launcher, `#!/usr/bin/env python3
+import json, sys
+with open(${JSON.stringify(launches)}, 'a') as output: output.write(json.dumps(sys.argv[1:]) + chr(10))
+`, { mode: 0o755 })
+  const read = () => fs.readFileSync(launches, 'utf8').trim().split('\n').filter(Boolean).map(line => JSON.parse(line))
+  const expectCount = async (count: number) => {
+    const deadline = Date.now() + 3000
+    while (read().length < count && Date.now() < deadline) await delay(10)
+    assert.equal(read().length, count)
+  }
+  claimWorkCoordinatorOwnership()
+  const sessions = users.map(user => createSession(user.id, user.role))
+  const dispose = startAuthenticatedModelServices()
+  try {
+    await delay(30)
+    assert.equal(read().length, 0, 'Persisted sessions and a default profile are not authentication')
+    selectAuthenticatedSession(sessions[0].id)
+    await expectCount(1)
+    selectAuthenticatedSession(sessions[0].id)
+    await restoreAuthenticatedSession(sessions[0].id, users[0].id)
+    await delay(30)
+    assert.equal(read().length, 1, 'Repeated authenticated requests do not restart services')
+    selectAuthenticatedSession(sessions[1].id)
+    await expectCount(2)
+    selectAuthenticatedSession(null)
+    await delay(30)
+    assert.equal(read().length, 2, 'Logout does not read an unavailable profile')
+    beginAuthenticatedRuntime()
+    await restoreAuthenticatedSession(sessions[0].id, users[0].id)
+    await expectCount(3)
+    assert.deepEqual(read().map(args => JSON.parse(args[1])[0].model),
+      [users[0].username, users[1].username, users[0].username])
+  } finally { dispose(); selectAuthenticatedSession(null); fs.writeFileSync(launcher, saved) }
 })

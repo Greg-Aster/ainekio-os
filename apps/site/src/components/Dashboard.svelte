@@ -45,7 +45,6 @@
         transcript: string;
       }>;
       providers: {
-        sovits: { samples: number; hasReference: boolean };
         rvc: { samples: number; hasTrained: boolean };
       };
     };
@@ -178,12 +177,7 @@
           <div class="p-4 rounded-md bg-gray-50 dark:bg-gray-900">
             <span class="text-xs uppercase tracking-wide text-gray-500 dark:text-gray-400">Training Samples</span>
             <div class="text-lg font-semibold mt-2">{voiceStatus.training.totalSamples}</div>
-            <div class="text-xs text-gray-500 dark:text-gray-400 mt-1">
-              SoVITS: {voiceStatus.training.providers.sovits.samples}
-              {#if voiceStatus.training.providers.sovits.hasReference}
-                <span class="text-green-600 dark:text-green-400">✓ Reference</span>
-              {/if}
-            </div>
+
             <div class="text-xs text-gray-500 dark:text-gray-400">
               RVC: {voiceStatus.training.providers.rvc.samples}
               {#if voiceStatus.training.providers.rvc.hasTrained}

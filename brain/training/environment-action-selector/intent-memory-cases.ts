@@ -15,6 +15,57 @@ function family(name: string, split: Split, fold: number, instructions: string[]
   return source
 }
 
+// Conversational references and explicit archive searches are different learned
+// source choices. Names and related paraphrases stay together within one fold.
+for (const [split, names] of [
+  ['development', ['Avery', 'Morgan', 'Riley', 'Jordan']],
+  ['evaluation', ['Casey', 'Drew']],
+] as const) {
+  for (const [fold, name] of names.entries()) {
+    const personal = family(`dialogue-${name.toLowerCase()}-personal`, split, fold, [
+      `Can you tell me some facts about ${name}?`,
+      `What do you know about ${name}?`,
+      `Tell me about ${name} and their projects.`,
+      `What background has ${name} shared with you?`,
+    ], [H, M])
+    personal.contextRequirements = { conversationContext: {
+      required: [H], optional: [M, 'persona.identity', 'persona.personality'],
+    } }
+    family(`dialogue-${name.toLowerCase()}-archive`, split, fold, [
+      `Search persistent memory for earlier records about ${name}.`,
+      `Retrieve archived conversations mentioning ${name}.`,
+      `Find stored experiences involving ${name}.`,
+    ], [M], { memoryQuery: name })
+  }
+}
+family('dialogue-recent-background', 'development', 0, [
+  'What do you remember about the background I just shared?',
+  'Which details about my experience did I give you a moment ago?',
+  'What did I say I am building?',
+], [H])
+family('dialogue-recent-interpretation', 'development', 1, [
+  'What made you describe that person as busy?',
+  'Who were you referring to in your previous answer?',
+  'What did you mean when you said you would stay out of the way?',
+], [H, 'persona.personality'])
+family('dialogue-current-person', 'development', 2, [
+  'Who is that person beside the tools?',
+  'Who are you looking at over there?',
+  'Which person are you talking about in the camera view?',
+], [H, E, V, 'persona.identity', 'persona.personality'])
+family('dialogue-recent-experience', 'evaluation', 0, [
+  'Can you recall the career details from my introduction?',
+  'What did you learn about my current project from our exchange?',
+], [H])
+family('dialogue-clarify-description', 'evaluation', 1, [
+  'You described someone as occupied. What were you basing that on?',
+  'Who did you mean when describing the person beside you?',
+], [H, 'persona.personality'])
+family('dialogue-current-identity', 'evaluation', 2, [
+  'Which person can you identify in the scene you are describing?',
+  'Who is visible beside the workbench you mentioned?',
+], [H, E, V, 'persona.identity', 'persona.personality'])
+
 const visualDevelopment = ['ceramic vase', 'folding ladder', 'silver teapot', 'patterned curtain']
 for (const [fold, subject] of visualDevelopment.entries()) {
   const name = subject.replaceAll(' ', '-')

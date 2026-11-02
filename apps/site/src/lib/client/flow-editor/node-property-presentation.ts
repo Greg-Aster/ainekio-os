@@ -88,7 +88,7 @@ export function formatPropertySummary(
           : [option.value, option.label]
       )),
     )
-    const labels = value.map((item) => optionLabels.get(String(item)) || String(item))
+    const labels = value.map((item) => optionLabels.get(String(item)) || (item && typeof item === 'object' ? JSON.stringify(item) : String(item)))
     const optionCount = schema.options?.length ?? 0
 
     if (schema.type === 'multiselect' && optionCount > 0 && value.length === optionCount) {

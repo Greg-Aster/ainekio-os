@@ -1,5 +1,6 @@
 <script lang="ts">
-  import type { Edge, Node } from '@xyflow/svelte'
+  import type { EditorNode as Node } from '../../lib/client/flow-editor/template-converter'
+  import type { Edge } from '@xyflow/svelte'
   import type { GraphNodeActivation, GraphOutputCondition } from '@metahuman/core/cognitive-graph-contract'
   import type { NodeActivationMode, NodeSchema } from '@metahuman/core/nodes/types'
   import { formatScalar, parseScalar } from '../../lib/client/flow-editor/graph-authoring'
@@ -70,7 +71,7 @@
 
   function updateCondition(index: number, patch: Record<string, unknown>): void {
     const previous = conditions[index]
-    const next = { ...previous, ...patch } as GraphNodeActivation['when'][number]
+    const next = { ...previous, ...patch } as NonNullable<GraphNodeActivation['when']>[number]
     updateActivation({
       ...configured,
       when: conditions.map((condition, conditionIndex) => conditionIndex === index ? next : condition),

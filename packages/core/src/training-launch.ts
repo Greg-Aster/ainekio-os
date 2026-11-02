@@ -8,8 +8,8 @@ import { getProfilePaths } from './path-builder.js'
 import { systemPaths } from './paths.js'
 import { safeWriteJSON } from './safe-file.js'
 import { acquireLock, assertProfileMemoryAvailable } from './locks.js'
-import { DEFAULT_TRAINING_MODEL, DEFAULT_VLLM_TRAINING_MODEL } from './model-defaults.js'
-import { parseTrainingDataSettings, type CognitiveMode, type TrainingMessage } from './training-schema.js'
+import { DEFAULT_TRAINING_MODEL, DEFAULT_FULL_TRAINING_MODEL } from './model-defaults.js'
+import { isTrainingTarget, parseTrainingDataSettings, type CognitiveMode, type TrainingMessage, type TrainingTarget } from './training-schema.js'
 import { selectReviewedPersonalizationDataset, type ReviewedPersonalizationDataset } from './training-dataset.js'
 import {
   readProfileTrainingConfig,
@@ -24,11 +24,11 @@ import {
 } from './training-process.js'
 
 export type TrainingMethod = 'local-lora' | 'remote-lora' | 'fine-tune'
-export type TrainingTarget = 'ollama' | 'vllm'
+export type { TrainingTarget } from './training-schema.js'
 
 export function listTrainingBaseModels(username: string) {
   const saved = readProfileTrainingConfig(username).base_model
-  return [...new Set([saved, DEFAULT_TRAINING_MODEL, DEFAULT_VLLM_TRAINING_MODEL])]
+  return [...new Set([saved, DEFAULT_TRAINING_MODEL, DEFAULT_FULL_TRAINING_MODEL])]
     .filter((model): model is string => typeof model === 'string' && Boolean(model.trim()))
     .map(model => ({ id: model, name: model, description: model === saved ? 'Saved training base' : 'Unquantized Qwen 3.5 training weights',
       size: 'Depends on precision', vram: 'Depends on sequence length and batch size', license: 'See the source model card' }))
@@ -195,19 +195,19 @@ export function validateTrainingLaunchRequest(value: unknown): string | null {
   if (!value || typeof value !== 'object' || Array.isArray(value)) return 'Training launch request is required'
   const request = value as Record<string, unknown>
   const method = request.method
-  const trainingTarget = request.trainingTarget ?? 'ollama'
+  const trainingTarget = request.trainingTarget ?? 'llama-cpp'
 
   if (method !== 'local-lora' && method !== 'remote-lora' && method !== 'fine-tune') {
     return `Invalid training method: ${String(method)}`
   }
-  if (trainingTarget !== 'ollama' && trainingTarget !== 'vllm') {
+  if (!isTrainingTarget(trainingTarget)) {
     return `Invalid training target: ${String(trainingTarget)}`
   }
 
   const configError = validateTrainingLaunchConfig(request.trainingConfig)
   if (configError) return configError
   const config = request.trainingConfig as TrainingLaunchConfig
-  if (trainingTarget === 'ollama' && config.skipGguf === true) return 'Ollama review requires GGUF export; select vLLM to keep only native weights'
+  if (config.skipGguf === true) return 'Training candidate serving review requires GGUF export'
   if (method !== 'fine-tune' && (!config.lora_rank || !config.lora_alpha)) return 'LoRA rank and alpha must be positive for LoRA training'
   if (method === 'fine-tune' && config.load_in_4bit) return 'Full fine-tuning requires unquantized training weights'
 
@@ -282,7 +282,7 @@ export function buildTrainingEngineConfig(request: TrainingLaunchRequest, profil
   return {
     ...config,
     training_mode: request.method === 'fine-tune' ? 'full_finetune' : 'lora',
-    trainingTarget: request.trainingTarget ?? 'ollama',
+    trainingTarget: request.trainingTarget ?? 'llama-cpp',
     data,
     ...(request.reviewedDataset ? { reviewedDataset: structuredClone(request.reviewedDataset) } : {}),
     ...(request.generationEvaluation ? { generationEvaluation: structuredClone(request.generationEvaluation) } : {}),
@@ -293,8 +293,9 @@ export function buildTrainingEngineConfig(request: TrainingLaunchRequest, profil
     load_in_16bit: config.load_in_4bit !== true,
     chat_template: 'native', train_on_responses_only: true,
     gguf_conversion: {
-      enabled: request.trainingTarget !== 'vllm' && config.skipGguf !== true,
+      enabled: config.skipGguf !== true,
       quantization_type: config.quantization,
+      ...(request.trainingTarget !== 'ollama' ? { artifact: request.method === 'fine-tune' ? 'model' : 'adapter' } : {}),
     },
   }
 }
@@ -333,7 +334,7 @@ function admitTrainingJob(username: string, request: TrainingLaunchRequest, auto
   if (requestError) return { success: false, status: 400, error: requestError }
 
   const method = request.method
-  const trainingTarget = request.trainingTarget ?? 'ollama'
+  const trainingTarget = request.trainingTarget ?? 'llama-cpp'
   const launchConfig = request.trainingConfig
   const runpodConfig = request.runpodConfig
 
@@ -367,7 +368,7 @@ function admitTrainingJob(username: string, request: TrainingLaunchRequest, auto
   const engineConfig = buildTrainingEngineConfig(request, readProfileTrainingConfig(username))
   if (automatic) engineConfig.automaticAdmission = automatic
   engineConfig.datasetCutoff = automatic?.cutoff ?? new Date().toISOString()
-  const shouldConvertToGguf = trainingTarget !== 'vllm' && !launchConfig.skipGguf
+  const shouldConvertToGguf = !launchConfig.skipGguf
   updateProfileTrainingConfig(username, {
     ...launchConfig,
     trainingTarget,

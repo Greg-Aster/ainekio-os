@@ -8,7 +8,8 @@ import { getActiveFacet, loadPersonaWithFacet } from '../../identity.js';
 import { PersonaFormatterNode } from '../cognitive/persona-formatter.node.js';
 
 const execute: NodeExecutor = async (inputs, context, properties) => {
-  const persona = loadPersonaWithFacet();
+  const source = inputs.selectedContext?.sources?.persona;
+  const persona = source && Object.prototype.hasOwnProperty.call(source, 'value') ? source.value : loadPersonaWithFacet();
   const activeFacet = getActiveFacet();
 
   // Inactive persona is an explicit operating mode, not a load failure.
@@ -53,7 +54,7 @@ export const PersonaLoaderNode: NodeDefinition = defineNode({
   id: 'persona_loader',
   name: 'Persona Loader',
   category: 'persona',
-  inputs: [{ name: 'routingAnalysis', type: 'object', optional: true, description: 'Intent-selected persona sections for task and conversation' }],
+  inputs: [{ name: 'selectedContext', type: 'object', optional: true, description: 'Attributed context already selected and read for the originating assessment.' }, { name: 'routingAnalysis', type: 'object', optional: true, description: 'Intent-selected persona sections for task and conversation' }],
   outputs: [
     { name: 'persona', type: 'object', description: 'Full persona object (null if inactive)' },
     { name: 'formatted', type: 'string', description: 'Selected persona sections formatted for model context, when enabled' },

@@ -29,12 +29,11 @@ you have confirmed the exact owner and PID.
 After rebuilding `apps/site/dist`, restart a long-lived Astro server. A server
 that retained an old module graph can request deleted hashed chunks.
 
-## Ollama or vLLM is unavailable
+## Ollama or llama.cpp is unavailable
 
 ```bash
 ./bin/mh backend status
 ./bin/mh ollama status
-./bin/mh vllm status
 ```
 
 Confirm that `etc/llm-backend.json` selects the intended backend and that the
@@ -44,7 +43,7 @@ file.
 
 If a newly trained model is missing, inspect the training run summary and
 Backend Settings. Ollama targets require a successful model creation step;
-vLLM targets require the compatible base model and explicit adapter loading.
+Review the prepared GGUF in Training History before assigning it.
 
 ## An agent does not run
 

@@ -7,6 +7,7 @@
   import { canSyncOnLogin } from '../lib/client/sync-settings';
   import { getRemoteSyncConfig, runProfileSyncAgent } from '../lib/client/profile-sync';
   import { clearSecurityPolicy, fetchSecurityPolicy } from '../stores/security-policy';
+  import { currentUserStore, statusStore } from '../stores/navigation';
 
   function storeSession(sessionId: string, username: string): void {
     if (!isMobileApp()) return;
@@ -38,6 +39,8 @@
     handlingAuthFailure = true;
     console.warn('[AuthGate] API auth failure detected:', detail);
     clearStoredSession();
+    currentUserStore.set(null);
+    statusStore.set(null);
     clearSecurityPolicy();
     await clearServerSessionCookie();
 
@@ -138,6 +141,8 @@
   // Check if user is already authenticated
   async function checkAuth() {
     console.log('[AuthGate] checkAuth() starting');
+    currentUserStore.set(null);
+    isAuthenticated = false;
 
     try {
       const res = await apiFetch('/api/auth/me');
@@ -146,6 +151,7 @@
         if (data.user) {
           console.log('[AuthGate] Auth successful for:', data.user.username);
           await fetchSecurityPolicy();
+          currentUserStore.set(data.user);
           isAuthenticated = true;
           isCheckingAuth = false;
           return;
@@ -158,7 +164,7 @@
             console.log('[AuthGate] Encrypted storage is locked for:', errorData.data.username);
             // Pre-fill username and show login form with unlock message
             username = errorData.data.username;
-            loginError = `Your encrypted storage is locked. Please enter your password to unlock.`;
+            error = `Your encrypted storage is locked. Please enter your password to unlock.`;
             view = 'login';
             isCheckingAuth = false;
             return;

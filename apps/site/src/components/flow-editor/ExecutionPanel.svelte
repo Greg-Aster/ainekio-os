@@ -1,6 +1,6 @@
 <script lang="ts">
+  import type { EditorNode as Node } from '../../lib/client/flow-editor/template-converter'
   import { onMount } from 'svelte'
-  import type { Node } from '@xyflow/svelte'
   import { apiFetch } from '../../lib/client/api-config'
   import type { SvelteFlowGraph } from '../../lib/client/flow-editor/template-converter'
   import { branchResults } from '../../lib/client/flow-editor/graph-authoring'

@@ -111,7 +111,7 @@ const sources = {
     motion: {
       available: true,
       activity: 'idle',
-      observedAt: '2026-08-27T18:00:00.000Z',
+      observedAt: '2026-08-27T18:00:01.000Z',
     },
     state: { posture: 'standing' },
     telemetry: { vbat: 7.4 },
@@ -134,6 +134,96 @@ const sources = {
     updatedAt: '2026-08-27T18:00:04.000Z',
   }],
 }
+
+test('body activity keeps its telemetry time when a newer observation arrives', async () => {
+  const telemetryAt = '2026-10-28T18:00:00.000Z'
+  const observationAt = '2026-10-29T19:59:12.000Z'
+  const result = await robotStatusContextBuilderNode.execute!({
+    instruction: 'Report the recorded body state.',
+    environmentSummary: { sessions: [{ sessionId: 'robot-1', environmentId: 'ainekio',
+      status: 'connected', latestObservation: { timestamp: observationAt,
+        state: { body: { motionAvailable: true } }, capabilities: {} } }] },
+    robotTelemetry: [{ sessionId: 'robot-1', updatedAt: telemetryAt,
+      robotStatus: { state: 'active', vbat: 7.4 } }],
+  }, {})
+  assert.equal(result.sourceFacts.body.observationAt, observationAt)
+  assert.equal(result.sourceFacts.body.telemetryAt, telemetryAt)
+  assert.deepEqual(result.sourceFacts.body.motion,
+    { available: true, activity: 'active', observedAt: telemetryAt })
+})
+
+test('observation-only status projections do not renew carried activity evidence', async () => {
+  const username = 'status-carried-activity'
+  const telemetryAt = '2026-10-28T18:00:00.000Z'
+  const initial = structuredClone(sources)
+  initial.body = { ...initial.body, observationAt: telemetryAt, telemetryAt,
+    motion: { available: true, activity: 'active', observedAt: '2026-10-29T18:00:00.000Z' } }
+  saveRobotStatus(username, situation, initial)
+  for (const [sessionId, available] of [['robot-1', false], ['other-robot', true]] as const) {
+    const observationAt = '2026-10-29T19:59:12.000Z'
+    const { outputs } = await statusGraph(username, [{ inputs: {
+      observation: { sessionId, environmentId: 'ainekio', timestamp: observationAt,
+        state: { body: { motionAvailable: available } }, capabilities: {} },
+      userInstruction: 'Hello.',
+    } }])
+    const expected = sessionId === 'robot-1'
+      ? { available, activity: 'active', observedAt: telemetryAt }
+      : { available, activity: '', observedAt: '' }
+    assert.deepEqual(outputs[0].status.body.motion, expected)
+    assert.deepEqual(loadRobotStatus(username)?.body?.motion, expected)
+    assert.equal(loadRobotStatus(username)?.body?.observationAt, observationAt)
+  }
+})
+
+test('fresh telemetry replaces activity whose old timestamp was renewed by an observation', () => {
+  const username = 'status-inflated-activity-time'
+  const before = structuredClone(sources)
+  before.body = { ...before.body, observationAt: '2026-10-29T20:00:00.000Z',
+    telemetryAt: '2026-10-28T18:00:00.000Z',
+    motion: { available: false, activity: 'active', observedAt: '2026-10-29T20:00:00.000Z' } }
+  saveRobotStatus(username, situation, before)
+  const next = { ...structuredClone(before), body: { ...before.body,
+    observationAt: '2026-10-29T19:00:00.000Z', telemetryAt: '2026-10-29T19:59:00.000Z',
+    telemetry: { state: 'idle' },
+    motion: { available: true, activity: 'idle', observedAt: '2026-10-29T19:59:00.000Z' } } }
+  const updated = saveRobotStatus(username, situation, next)
+  assert.deepEqual(updated.body?.motion,
+    { available: false, activity: 'idle', observedAt: '2026-10-29T19:59:00.000Z' })
+  assert.deepEqual(loadRobotStatus(username)?.body?.motion, updated.body?.motion)
+})
+
+test('reading legacy activity dates uses its telemetry source without rewriting stored evidence', () => {
+  const username = 'status-legacy-activity-read'
+  saveRobotStatus(username, situation, sources)
+  const file = robotStatusPath(username)
+  const legacy = JSON.parse(fs.readFileSync(file, 'utf8'))
+  legacy.body.motion.observedAt = '2026-10-29T20:59:00.850103+00:00'
+  for (const telemetryAt of ['2026-10-28T18:05:33.063Z', '']) {
+    legacy.body.telemetryAt = telemetryAt
+    const raw = JSON.stringify(legacy)
+    fs.writeFileSync(file, raw)
+    const loaded = loadRobotStatus(username)!
+    assert.equal(loaded.body?.motion.observedAt, telemetryAt)
+    assert.equal(loaded.body?.motion.activity, legacy.body.motion.activity)
+    assert.deepEqual(loaded.history, legacy.history)
+    assert.deepEqual(loaded.body?.state, legacy.body.state)
+    assert.equal(fs.readFileSync(file, 'utf8'), raw, 'Reading repairs the projection, not the archived evidence')
+  }
+})
+
+test('equal-time observation updates keep incoming field precedence', () => {
+  const username = 'status-equal-observation-time'
+  saveRobotStatus(username, situation, sources)
+  const next = structuredClone(sources)
+  next.body = { ...next.body, state: { posture: 'seated' },
+    capabilities: { ...next.body.capabilities, actions: ['captureImage'] },
+    motion: { ...next.body.motion, available: false } }
+  const updated = saveRobotStatus(username, situation, next)
+  assert.deepEqual(updated.body?.state, next.body.state)
+  assert.deepEqual(updated.body?.capabilities, next.body.capabilities)
+  assert.equal(updated.body?.motion.available, false)
+  assert.equal(updated.body?.motion.observedAt, sources.body.telemetryAt)
+})
 
 test('Robot Status strictly validates semantic model output', () => {
   assert.deepEqual(parseRobotStatusSituation(situation), situation)
@@ -165,7 +255,7 @@ test('Robot Status storage keeps deterministic facts and bounded history in one 
   assert.deepEqual(first.body?.motion, {
     available: true,
     activity: 'idle',
-    observedAt: '2026-08-27T18:00:00.000Z',
+    observedAt: '2026-08-27T18:00:01.000Z',
   })
   assert.equal(first.body?.telemetry.vbat, 7.4)
   assert.equal(first.lastAction?.status, 'completed')
@@ -185,7 +275,7 @@ test('Robot Status storage keeps deterministic facts and bounded history in one 
 })
 
 test('Robot Status projects execution lifecycle without rewriting or reviving its objective', async () => {
-  for (const outcome of ['act', 'failed']) for (const state of ['running', 'waiting', 'completed', 'failed', 'cancelled'] as const) {
+  for (const outcome of ['act', 'wait', 'failed']) for (const state of ['running', 'waiting', 'idle', 'completed', 'failed', 'cancelled'] as const) {
     const username = `status-execution-${state}-${outcome}`
     const store = openExecutionStore(username)
     try {
@@ -206,19 +296,43 @@ test('Robot Status projects execution lifecycle without rewriting or reviving it
       }, { source: 'loop', step: 0, parents: {} })
       saveRobotStatus(username, situation, sources)
       if (state === 'cancelled') store.cancel(execution.executionId, { eventId: 'cancel', kind: 'user_cancelled', payload: {} })
+      else if (state === 'idle') store.settle(lease, 'waiting', 'user_or_autonomy')
       else if (state !== 'running') store.settle(lease, state)
 
       const read = await robotStatusNode.execute!({}, { username }, { historyLimit: 3 })
-      assert.equal(read.task.executionStatus, state)
-      assert.equal(read.task.objective, task.objective, 'Historical objectives remain inspectable')
-      assert.equal(read.context.situation.currentGoal, outcome === 'act' && ['running', 'waiting'].includes(state) ? task.objective : '')
-      assert.equal(read.context.situation.currentIntent, outcome === 'act' && ['running', 'waiting'].includes(state) ? task.decision.reason : '',
+      const active = outcome !== 'failed' && ['running', 'waiting'].includes(state)
+      assert.equal(read.task?.executionStatus ?? null, active ? state : null)
+      assert.equal(read.task?.objective ?? null, active ? task.objective : null)
+      assert.equal(read.context.situation.currentGoal, active ? task.objective : '')
+      assert.equal(read.context.situation.currentIntent, active ? task.decision.reason : '',
         'Terminal executions retain their decision as history, not current intent')
+      const parked = outcome !== 'failed' && state === 'idle'
+      assert.deepEqual(read.context.parkedGoals?.map((goal: any) => [goal.executionId, goal.objective, goal.updatedAt]),
+        parked ? [[task.executionId, task.objective, task.updatedAt]] : [])
       assert.deepEqual(store.task(execution.executionId), task, 'A status read cannot rewrite the execution decision')
       const saved = saveRobotStatus(username, situation, sources)
       assert.equal(saved.situation.currentGoal, read.context.situation.currentGoal)
       assert.equal(saved.situation.currentIntent, read.context.situation.currentIntent)
-      assert.equal(saved.task?.executionStatus, state)
+      assert.equal(saved.task?.executionStatus ?? null, active ? state : null)
+      assert.deepEqual(saved.parkedGoals, read.status.parkedGoals)
+      assert.equal('history' in read.context, false, 'Prior summaries belong to the separate history output')
+      if (parked) {
+        store.release(lease)
+        const resumed = store.claim(execution.executionId, definition)
+        store.db.transaction(() => store.commitTransition(execution.executionId, 'resumed-checkpoint', {
+          transitionId: 'resumed-work', status: 'running',
+        }))()
+        const running = loadRobotStatus(username)!
+        assert.equal(running.task?.executionId, task.executionId)
+        assert.equal(running.situation.currentGoal, task.objective)
+        assert.deepEqual(running.parkedGoals, [])
+        store.settle(resumed, 'waiting', 'user_or_autonomy')
+        store.release(resumed)
+        const resting = loadRobotStatus(username)!
+        assert.equal(resting.task, null)
+        assert.equal(resting.parkedGoals[0].objectiveId, task.objectiveId)
+        assert.deepEqual(store.task(execution.executionId), task)
+      }
     } finally { store.close() }
   }
 })
@@ -236,7 +350,7 @@ test('out-of-order projections retain facts together with their independent sour
   latest.sourceUpdatedAt = { environment: time(10), telemetry: time(20), conversation: time(10), robotHistory: time(10), agency: time(10) }
   latest.lastAction = { ...latest.lastAction, actionId: 'newest-action', completedAt: time(10) }
   latest.body = { ...latest.body, observationAt: time(10), telemetryAt: time(20),
-    battery: { voltage: 7.4, observedAt: time(20) }, motion: { available: true, activity: 'idle', observedAt: time(10) } }
+    battery: { voltage: 7.4, observedAt: time(20) }, motion: { available: true, activity: 'idle', observedAt: time(20) } }
   saveRobotStatus(username, situation, { ...latest, latestVisualObservation: visual })
 
   for (const second of [8, 9, 10]) {
@@ -246,7 +360,7 @@ test('out-of-order projections retain facts together with their independent sour
     older.sourceUpdatedAt.robotHistory = time(Math.min(second, 9))
     older.lastAction = { ...older.lastAction, actionId: `older-action-${second}`, completedAt: time(Math.min(second, 9)) }
     older.body = { ...older.body, observationAt: time(second), telemetryAt: time(15), telemetry: { vbat: 6.2 },
-      battery: { voltage: 6.2, observedAt: time(15) }, motion: { available: false, activity: 'old-state', observedAt: time(8) } }
+      battery: { voltage: 6.2, observedAt: time(15) }, motion: { available: false, activity: 'old-state', observedAt: time(15) } }
     const snapshot = saveRobotStatus(username, situation, { ...older, latestVisualObservation: {
       ...visual, observationId: 'older-view', interpretedAt: time(25), frameIds: ['older-frame'],
       frames: [{ id: 'older-frame', timestamp: time(7) }],
@@ -260,7 +374,12 @@ test('out-of-order projections retain facts together with their independent sour
     assert.equal(snapshot.sourceUpdatedAt.telemetry, time(20))
     assert.deepEqual(snapshot.body?.telemetry, latest.body.telemetry)
     assert.deepEqual(snapshot.body?.battery, latest.body.battery)
-    assert.deepEqual(snapshot.body?.motion, latest.body.motion)
+    assert.deepEqual(snapshot.body?.motion, {
+      // Keep the existing incoming-observation precedence when source times tie.
+      available: second === 10 ? older.body.motion.available : latest.body.motion.available,
+      activity: latest.body.motion.activity,
+      observedAt: latest.body.telemetryAt,
+    })
   }
 
   const freshTelemetry = structuredClone(latest)
@@ -346,7 +465,7 @@ test('Robot Status context separates current facts from bounded narrative contex
   assert.deepEqual(result.sourceFacts.body.motion, {
     available: true,
     activity: 'idle',
-    observedAt: '2026-08-27T18:00:00.000Z',
+    observedAt: '2026-08-27T18:00:01.000Z',
   })
   assert.equal(result.sourceFacts.lastAction.command, 'wave')
   assert.equal(result.sourceFacts.lastAction.status, 'completed')
@@ -371,12 +490,8 @@ test('Robot Status retains the semantic description of the last generated moveme
           message: 'done',
           action: {
             id: 'motion-1',
-            type: 'robotMotionPlan',
-            frames: [{ durationMs: 500, targets: [] }],
-            endPose: 'stand',
-            metadata: {
-              motionSummary: 'Raised both front legs, paused, then returned to standing.',
-            },
+            type: 'requestMotion',
+            description: 'Raised both front legs, paused, then returned to standing.',
           },
         },
       },
@@ -424,7 +539,7 @@ test('Robot Status writer and reusable input node share the same canonical snaps
   assert.equal(read.found, true)
   assert.equal(read.status.updatedAt, written.status.updatedAt)
   assert.equal(read.context.situation.currentGoal, '', 'The fixture graph ended; its saved objective is historical')
-  assert.equal(read.task.executionStatus, 'completed')
+  assert.equal(read.task, null)
   assert.equal(read.context.body.battery.voltage, 7.4)
   assert.equal(read.context.body.identity.robotId, 'selected-body')
   assert.equal(read.context.body.motion.available, true)
@@ -435,8 +550,9 @@ test('Robot Status writer and reusable input node share the same canonical snaps
   assert.equal('telemetry' in read.context.body, false)
   assert.equal('capabilities' in read.context.body, false)
   assert.equal(JSON.stringify(read.context).length < 6_000, true)
-  assert.equal(read.task.executionId, executionId)
-  assert.equal(read.historyContext.task.objective, situation.currentGoal)
+  assert.equal(read.historyContext.task, null)
+  const saved = openExecutionStore(username)
+  try { assert.equal(saved.task(executionId)?.objective, situation.currentGoal) } finally { saved.close() }
   assert.deepEqual(Object.keys(read.historyContext).sort(), ['history', 'situation', 'task', 'updatedAt'])
 })
 
@@ -535,7 +651,7 @@ test('Robot Status Out persists the Environment LLM task and correlated action r
   assert.equal(completed.lastAction.command, 'walk_forward')
   assert.equal(completed.lastAction.status, 'completed')
   assert.equal(completed.status.situation.currentGoal, '')
-  assert.equal(loadRobotStatus(username)?.task?.decision.outcome, 'complete')
+  assert.equal(loadRobotStatus(username)?.task, null)
   const store = openExecutionStore(username)
   try {
     assert.equal(store.task(executionId)?.decision.objectiveComplete, true)
@@ -620,7 +736,7 @@ test('Robot Status Out preserves the execution origin rather than inferring stee
 
 test('a new workflow does not copy a previous workflow intent into its new user context', async () => {
   const username = 'robot-status-intent-owner'
-  await statusGraph(username, [{ inputs: {
+  const earlier = await statusGraph(username, [{ inputs: {
     userInstruction: 'The earlier activity.', response: 'That activity is finished.',
     taskDecision: { objective: 'An earlier activity.', completionCriteria: 'The activity is finished.',
       outcome: 'complete', objectiveComplete: true, reason: 'The earlier activity is finished.' },
@@ -630,8 +746,11 @@ test('a new workflow does not copy a previous workflow intent into its new user 
   } }])
   assert.equal(next.status.situation.userContext, 'A separate conversation.')
   assert.equal(next.status.situation.currentIntent, '')
-  assert.ok(next.status.history.some((entry: any) => entry.currentIntent === 'The earlier activity is finished.'),
-    'The previous assessment remains history rather than being relabelled as current')
+  const store = openExecutionStore(username)
+  try {
+    assert.equal(store.task(earlier.executionId)?.decision.reason, 'The earlier activity is finished.')
+    assert.equal(next.status.history.some((entry: any) => entry.currentIntent === 'The earlier activity is finished.'), false)
+  } finally { store.close() }
 })
 
 test('Robot Status Out records a new action within the execution without replacing its objective', async () => {
@@ -806,8 +925,7 @@ test('Environment selector receives the decision-bearing Robot Status fields', a
   assert.equal(envelope.robotStatus.body.motion.available, true)
   assert.equal(envelope.robotStatus.lastAction.command, 'wave')
   assert.equal(envelope.robotStatus.situation.currentGoal, '')
-  assert.equal(envelope.robotStatus.task.objective, situation.currentGoal)
-  assert.equal(envelope.robotStatus.task.executionStatus, 'completed')
+  assert.equal(envelope.robotStatus.task, null)
   assert.equal(envelope.robotStatus.agency.activeDesires[0].title, 'Find the cat')
   assert.equal(envelope.robotStatus.agency.activeDesires[0].nextAction, 'desire-agent')
   assert.equal('reason' in envelope.robotStatus.agency.activeDesires[0], false)
@@ -928,11 +1046,11 @@ test('Robot task programs use the sole active executor and retain task-level cog
 
 test('speech and camera projections preserve the last body action as historical evidence', async () => {
   const { buildRobotStatusProjection } = await import('./robot-status.js')
-  const bodyAction = { actionId: 'stand-result', type: 'robotCommand', command: 'stand', description: 'stand',
+  const bodyAction = { actionId: 'stand-result', type: 'requestMotion', command: '', description: 'Stand up.',
     status: 'completed', message: 'done', completedAt: '2026-10-07T21:00:00Z',
     sessionId: 'robot-1', robotId: 'selected-body', observedAt: '2026-10-07T21:00:00Z' }
-  const first = buildRobotStatusProjection(null, null, situation, { ...sources, lastAction: bodyAction })
-  const speech = buildRobotStatusProjection(first, null, situation, { ...sources,
+  const first = buildRobotStatusProjection(null, { currentTask: null, parkedGoals: [] }, situation, { ...sources, lastAction: bodyAction })
+  const speech = buildRobotStatusProjection(first, { currentTask: null, parkedGoals: [] }, situation, { ...sources,
     lastAction: { ...bodyAction, actionId: 'speech-result', type: 'speak', command: '', completedAt: '2026-10-07T21:01:00Z' } })
   assert.equal(speech.lastAction?.type, 'speak')
   assert.deepEqual(speech.lastBodyAction, bodyAction)
@@ -958,4 +1076,131 @@ test('reading a legacy snapshot removes stale current intent without deleting it
   assert.equal(next.situation.currentIntent, '')
   assert.ok(next.history.some(entry => entry.updatedAt === legacy.updatedAt
     && entry.currentIntent === legacy.situation.currentIntent))
+})
+
+test('saved Robot Status graph delivers the delegated JPEG and matching recognition to its model', async () => {
+  const { nodeRegistry, nodeExecutors } = await import('./nodes/index.js')
+  const graph = JSON.parse(fs.readFileSync(new URL('../../../etc/cognitive-graphs/robot-status-mode.json', import.meta.url), 'utf8'))
+  const originalPrompt = graph.nodes.find((node: any) => node.id === 'instructions').data.properties.message
+  const at = '2026-10-24T01:46:41.000Z'
+  const identities = [
+    { trackId: 'p1', state: 'face_match', name: 'Greg', personId: 'greg', faceAgeMs: 0, similarity: 0.82 },
+    { trackId: 'p1', state: 'tracked', name: 'Greg', personId: 'greg', faceAgeMs: 500 },
+    { trackId: 'p1', state: 'unknown' },
+  ]
+  let expected: any
+  let modelCalls = 0
+  const replacements: Record<string, any> = {
+    environment_bridge_status: async () => ({ summary: { sessions: [
+      { sessionId: 'another-body', status: 'connected', lastSeenAt: '2099-01-01T00:00:00Z' },
+      { sessionId: 'selected-body', environmentId: 'ainekio', status: 'connected', latestObservation: {
+        timestamp: at, state: { body: { robotId: 'p4' } }, capabilities: {} } },
+    ] }, robotTelemetry: [] }),
+    conversation_history: async () => ({ history: [] }),
+    active_desires: async () => ({ desires: [] }),
+    robot_status: async () => ({ historyContext: null }),
+    model_router: async (inputs: any) => {
+      modelCalls++
+      assert.equal(inputs.messages[0].content, originalPrompt)
+      const parts = inputs.messages[1].content
+      assert.equal(parts[1].image_url.url, expected.dataUrl)
+      const data = JSON.parse(parts[0].text)
+      assert.equal(data.sourceFacts.body.sessionId, 'selected-body')
+      assert.deepEqual(data.sourceFacts.visualFrames[0].recognition, expected.metadata.recognition)
+      assert.equal(data.sourceFacts.visualFrames[0].timestamp, at)
+      assert.equal(data.plannerDecision.instruction, 'Update the situation from this frame.')
+      assert.ok(!parts[0].text.includes('base64'))
+      return { response: JSON.stringify(situation) }
+    },
+  }
+  const originals = new Map<string, any>()
+  for (const [id, fn] of Object.entries(replacements)) {
+    originals.set(id, nodeRegistry.get(id)!.execute)
+    nodeRegistry.get(id)!.execute = fn
+    nodeExecutors.set(id, fn)
+  }
+  try {
+    for (const identity of identities) {
+      expected = { id: 'frame-43', timestamp: at, mimeType: 'image/jpeg', dataUrl: 'data:image/jpeg;base64,/9j/2gAA/9k=',
+        metadata: { robotId: 'p4', gatewayInstance: 'gateway-1', epoch: 1, counter: 43,
+          recognition: { robotId: 'p4', gatewayInstance: 'gateway-1', epoch: 1, frameCounter: 43,
+            observedAt: at, timeBasis: 'gateway_receipt', backend: 'ultralytics+sface',
+            objects: [{ label: 'person', score: 0.9, box: { x: 0.1, y: 0.2, width: 0.3, height: 0.4 }, identity }] } } }
+      const username = `status-camera-${identity.state}`
+      const result = await runDurableGraph({ graph: validateSvelteFlowGraph(graph), context: {
+        username, userId: username, requestId: randomUUID(), environment: 'server',
+        robotOperatorContext: { sessionId: 'selected-body', frames: [expected], currentVisualEvidence: true,
+          plannerDecision: { observed: 'Frame 43 selected', instruction: 'Update the situation from this frame.', reason: 'New camera evidence', decidedAt: at } },
+      } })
+      assert.equal(result.status, 'completed', result.error?.stack)
+      assert.deepEqual(loadRobotStatus(username)?.visualFrames?.[0].recognition, expected.metadata.recognition)
+      const envelope = JSON.parse(buildEnvironmentSelectorEnvelope({ observation: { sessionId: 'selected-body', capabilities: { actions: [] } }, visualFrames: [expected] } as any))
+      assert.ok(JSON.stringify(envelope).includes(JSON.stringify(expected.metadata.recognition)))
+    }
+    assert.equal(modelCalls, identities.length)
+  } finally {
+    for (const [id, fn] of originals) { nodeRegistry.get(id)!.execute = fn; nodeExecutors.set(id, fn) }
+  }
+})
+
+test('retained prose keeps per-field evidence dates across receipt updates and persistence', async () => {
+  const { projectRobotStatusContext } = await import('./robot-status.js')
+  const username = 'prose-evidence-receipts'
+  const recordedAt = '2026-08-27T18:00:00.000Z'
+  const evidence = { recordedAt, sourceUpdatedAt: sources.sourceUpdatedAt, visualFrames: [] }
+  saveRobotStatus(username, situation, { ...sources, generatedAt: recordedAt,
+    situationEvidence: { userContext: evidence, uncertainties: evidence } })
+  const { outputs } = await statusGraph(username, [{ inputs: { terminalFeedback: {
+    id: 'new-speech', type: 'completed', message: 'speech_played', actionId: 'speech-1',
+    timestamp: '2026-08-27T20:00:00.000Z',
+  } } }])
+  const saved = loadRobotStatus(username)!
+  assert.deepEqual(saved.situationEvidence?.userContext, evidence)
+  assert.deepEqual(saved.situationEvidence?.uncertainties, evidence)
+  const projected = projectRobotStatusContext(saved) as any
+  assert.deepEqual(projected.recordedSituation.evidence.userContext, evidence)
+  assert.equal(projected.recordedSituation.updatedAt, undefined, 'A status-save time is not the prose acquisition time')
+  assert.deepEqual(outputs[0].status.situationEvidence?.userContext, evidence)
+})
+
+test('legacy prose without recorded evidence remains unknown after a new status save', async () => {
+  const { projectRobotStatusContext } = await import('./robot-status.js')
+  const saved = saveRobotStatus('legacy-prose-evidence', situation, { ...sources, generatedAt: '2026-08-27T20:00:00.000Z' })
+  const projected = projectRobotStatusContext(saved) as any
+  assert.equal(projected.recordedSituation.evidence.userContext, null)
+  assert.equal(projected.recordedSituation.updatedAt, undefined)
+  assert.equal(projected.recordedSituation.userContext, situation.userContext)
+})
+
+test('a new semantic review records fresh provenance even when its text is unchanged', async () => {
+  const { outputs } = await statusGraph('review-prose-evidence', [{ type: 'robot_status_writer', inputs: {
+    response: JSON.stringify(situation), sourceFacts: sources,
+  } }])
+  const saved = loadRobotStatus('review-prose-evidence')!
+  for (const field of ['situationalSummary', 'environmentDescription', 'userContext', 'uncertainties'] as const) {
+    assert.equal(saved.situationEvidence?.[field]?.recordedAt, outputs[0].status.updatedAt)
+    assert.deepEqual(saved.situationEvidence?.[field]?.sourceUpdatedAt, sources.sourceUpdatedAt)
+  }
+})
+
+test('receipt-only updates without new prose preserve every recorded field date', async () => {
+  const username = 'prose-evidence-empty-receipts'
+  const evidence = { recordedAt: '2026-08-27T18:00:00.000Z', sourceUpdatedAt: sources.sourceUpdatedAt,
+    visualFrames: [{ id: 'earlier-frame', timestamp: '2026-08-27T17:59:00.000Z', source: 'camera', description: '' }] }
+  const situationEvidence = Object.fromEntries(
+    ['situationalSummary', 'environmentDescription', 'userContext', 'uncertainties'].map(field => [field, evidence]))
+  saveRobotStatus(username, situation, { ...sources, situationEvidence })
+  await statusGraph(username, [0, 1].map(index => ({ inputs: { terminalFeedback: {
+    id: `empty-receipt-${index}`, type: 'completed', actionId: `speech-${index}`,
+  } } })))
+  const saved = loadRobotStatus(username)!
+  assert.deepEqual(saved.situationEvidence, situationEvidence)
+})
+
+test('changed prose with no attributed producer does not inherit previous evidence', () => {
+  const username = 'prose-evidence-changed-without-source'
+  const evidence = { recordedAt: '2026-08-27T18:00:00.000Z', sourceUpdatedAt: sources.sourceUpdatedAt }
+  saveRobotStatus(username, situation, { ...sources, situationEvidence: { userContext: evidence } })
+  const saved = saveRobotStatus(username, { ...situation, userContext: 'A different recorded request' }, sources)
+  assert.equal(saved.situationEvidence?.userContext, undefined)
 })

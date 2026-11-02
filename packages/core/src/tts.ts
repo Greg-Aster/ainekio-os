@@ -1,6 +1,6 @@
 /**
  * Text-to-Speech Service (Refactored with Provider Architecture)
- * Supports multiple TTS providers: Piper, GPT-SoVITS, RVC, Kokoro
+ * Supports multiple TTS providers: Piper, RVC, Kokoro
  */
 
 import fs from 'node:fs';
@@ -12,24 +12,12 @@ import { audit } from './audit.js';
 import { PiperService } from './tts/providers/piper-service.js';
 import { createLogger } from './logger.js';
 const log = createLogger('tts');
-import { SoVITSService } from './tts/providers/gpt-sovits-service.js';
 import { RVCService } from './tts/providers/rvc-service.js';
 import { KokoroService } from './tts/providers/kokoro-service.js';
-import { KittenService } from './tts/providers/kitten-service.js';
 import type { ITextToSpeechService, TTSConfig, CacheConfig, TTSSynthesizeOptions, TTSStatus } from './tts/interface.js';
 
 // Re-export types and utilities for external use
 export type { TTSConfig, CacheConfig, TTSSynthesizeOptions, TTSStatus };
-export {
-  cleanupStalePidFiles,
-  getRunningServers,
-  getSovitsServerStatus,
-  startSovitsServer,
-  stopAllServers,
-  stopServer,
-  stopSovitsServer,
-} from './tts/server-manager.js';
-export type { SovitsActionResult, SovitsStatus } from './tts/server-manager.js';
 
 interface VoiceConfig {
   tts: TTSConfig;
@@ -72,7 +60,7 @@ function loadUserConfig(username?: string): VoiceConfig {
     tts: { ...globalConfig?.tts, ...userConfig?.tts },
     cache: { ...globalConfig?.cache, ...userConfig?.cache },
   } as VoiceConfig;
-  for (const provider of ['piper', 'sovits', 'rvc', 'kokoro', 'kitten'] as const) {
+  for (const provider of ['piper', 'rvc', 'kokoro'] as const) {
     const base = globalConfig?.tts?.[provider];
     const override = userConfig?.tts?.[provider];
     if (base || override) Object.assign(merged.tts, { [provider]: { ...base, ...override } });
@@ -162,11 +150,6 @@ function resolveConfigPaths(rawConfig: VoiceConfig, username?: string): VoiceCon
     resolved.tts.piper.config = resolved.tts.piper.config ? resolvePath(resolved.tts.piper.config)! : '';
   }
 
-  // Resolve SoVITS paths
-  if (resolved.tts?.sovits) {
-    resolved.tts.sovits.referenceAudioDir = resolvePath(resolved.tts.sovits.referenceAudioDir)!;
-  }
-
   // Resolve RVC paths
   if (resolved.tts?.rvc) {
     resolved.tts.rvc.referenceAudioDir = resolvePath(resolved.tts.rvc.referenceAudioDir)!;
@@ -226,7 +209,6 @@ export function createTTSService(provider?: TTSConfig['provider'], username?: st
     selectedProvider,
     activeUsername,
     rvcConfig: cfg.tts.rvc,
-    sovitsReferenceAudioDir: cfg.tts.sovits?.referenceAudioDir,
     rvcReferenceAudioDir: cfg.tts.rvc?.referenceAudioDir,
     rvcModelsDir: cfg.tts.rvc?.modelsDir
   });
@@ -234,20 +216,7 @@ export function createTTSService(provider?: TTSConfig['provider'], username?: st
   // Always create fresh service (no caching) to ensure per-user paths are respected
   let service: ITextToSpeechService;
 
-  if (selectedProvider === 'gpt-sovits') {
-    // Check if sovits config exists
-    if (!cfg.tts.sovits) {
-      console.error('[TTS] GPT-SoVITS config missing. Config keys:', Object.keys(cfg.tts));
-      throw new Error('GPT-SoVITS not configured. Please install the addon via System Settings.');
-    }
-
-    // Create Piper fallback if auto-fallback is enabled
-    const piperService = cfg.tts.sovits.autoFallbackToPiper && cfg.tts.piper
-      ? new PiperService(cfg.tts.piper, cfg.cache)
-      : undefined;
-
-    service = new SoVITSService(cfg.tts.sovits, cfg.cache, piperService);
-  } else if (selectedProvider === 'rvc') {
+  if (selectedProvider === 'rvc') {
     // Check if RVC config exists
     if (!cfg.tts.rvc) {
       console.error('[TTS] RVC config missing. Config keys:', Object.keys(cfg.tts));
@@ -263,15 +232,13 @@ export function createTTSService(provider?: TTSConfig['provider'], username?: st
     service = new RVCService(cfg.tts.rvc, cfg.cache, piperService);
   } else if (selectedProvider === 'kokoro') {
     service = buildKokoroService(cfg);
-  } else if (selectedProvider === 'kitten') {
-    if (!cfg.tts.kitten) throw new Error('Kitten is not configured. Select a voice in Voice Settings.');
-    service = new KittenService(cfg.tts.kitten, cfg.cache);
-  } else {
-    // Default to Piper
+  } else if (selectedProvider === 'piper') {
     if (!cfg.tts.piper) {
       throw new Error('Piper TTS not configured. Please check voice.json configuration.');
     }
     service = new PiperService(cfg.tts.piper, cfg.cache);
+  } else {
+    throw new Error(`Unsupported TTS provider: ${selectedProvider}`);
   }
 
   return service;
@@ -297,7 +264,7 @@ export async function generateSpeech(
 /**
  * Get TTS status and configuration
  */
-export async function getTTSStatus(provider?: 'piper' | 'gpt-sovits'): Promise<TTSStatus> {
+export async function getTTSStatus(provider?: 'piper'): Promise<TTSStatus> {
   const service = createTTSService(provider);
   return await service.getStatus();
 }
@@ -305,7 +272,7 @@ export async function getTTSStatus(provider?: 'piper' | 'gpt-sovits'): Promise<T
 /**
  * Clear TTS cache
  */
-export function clearTTSCache(provider?: 'piper' | 'gpt-sovits'): void {
+export function clearTTSCache(provider?: 'piper'): void {
   const service = createTTSService(provider);
   if (service.clearCache) {
     service.clearCache();
@@ -323,7 +290,7 @@ export function clearTTSCache(provider?: 'piper' | 'gpt-sovits'): void {
 export async function generateMultiVoiceSpeech(
   text: string,
   voiceModels: string[],
-  options?: TTSSynthesizeOptions & { provider?: 'piper' | 'gpt-sovits' | 'rvc' }
+  options?: TTSSynthesizeOptions & { provider?: 'piper' | 'rvc' }
 ): Promise<Buffer> {
   if (voiceModels.length === 0) {
     throw new Error('At least one voice model is required');

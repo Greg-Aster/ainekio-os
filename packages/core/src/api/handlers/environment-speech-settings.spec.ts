@@ -65,6 +65,10 @@ test('robot control persists, cancels its existing execution, and preserves unkn
   const store = openExecutionStore(owner.username);
   try {
     const definition = { graphId: 'control-fixture', graphHash: 'fixture', runtimeVersion: 'fixture', checkpointSchemaVersion: 1, nodeVersions: {} };
+    for (let index = 0; index < 20; index++) {
+      const historical = store.create(owner.username, definition);
+      store.db.prepare("UPDATE executions SET status='completed', definition='not JSON' WHERE execution_id=?").run(historical.executionId);
+    }
     const active = store.enter(owner.username, definition, 'robot', { graph: { cognitiveMode: 'environment' } });
     const unrelated = store.enter(owner.username, definition, 'other', { graph: { cognitiveMode: 'dual' } });
     const manager = getQueueManager();

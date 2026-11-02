@@ -18,7 +18,7 @@
       "type": "environmentNode",
       "position": {
         "x": 40,
-        "y": 420
+        "y": 500
       },
       "data": {
         "label": "Current Environment Bridge Observation",
@@ -33,7 +33,7 @@
       "type": "operatorNode",
       "position": {
         "x": 40,
-        "y": 80
+        "y": 0
       },
       "data": {
         "label": "Active Operator Assessment Input",
@@ -45,27 +45,45 @@
       "id": "image-input",
       "type": "environmentNode",
       "position": {
-        "x": 420,
-        "y": 420
+        "x": 1660,
+        "y": 3600
       },
       "data": {
         "label": "Select Available Current Camera Evidence",
         "nodeType": "environment_image_input",
-        "properties": {}
+        "properties": {},
+        "activation": {
+          "when": [
+            {
+              "nodeId": "intent-orchestrator",
+              "output": "needsVision",
+              "truthy": true
+            }
+          ]
+        }
       }
     },
     {
       "id": "robot-status",
       "type": "contextNode",
       "position": {
-        "x": 40,
-        "y": 720
+        "x": 1260,
+        "y": 1080
       },
       "data": {
         "label": "Current Robot Status",
         "nodeType": "robot_status",
         "properties": {
           "historyLimit": 3
+        },
+        "activation": {
+          "when": [
+            {
+              "nodeId": "intent-orchestrator",
+              "output": "needsRobotStatus",
+              "truthy": true
+            }
+          ]
         }
       }
     },
@@ -73,15 +91,25 @@
       "id": "conversation-history",
       "type": "contextNode",
       "position": {
-        "x": 40,
-        "y": 940
+        "x": 1260,
+        "y": 0
       },
       "data": {
         "label": "Recent Conversation",
         "nodeType": "conversation_history",
         "properties": {
           "mode": "conversation",
-          "limit": 8
+          "limit": 0,
+          "includeInnerDialogue": false
+        },
+        "activation": {
+          "when": [
+            {
+              "nodeId": "intent-orchestrator",
+              "output": "needsConversationHistory",
+              "truthy": true
+            }
+          ]
         }
       }
     },
@@ -89,15 +117,24 @@
       "id": "inner-history",
       "type": "contextNode",
       "position": {
-        "x": 40,
-        "y": 1160
+        "x": 1260,
+        "y": 360
       },
       "data": {
         "label": "Recent Private Reflection",
         "nodeType": "conversation_history",
         "properties": {
           "mode": "inner",
-          "limit": 3
+          "limit": 0
+        },
+        "activation": {
+          "when": [
+            {
+              "nodeId": "intent-orchestrator",
+              "output": "needsInnerDialogue",
+              "truthy": true
+            }
+          ]
         }
       }
     },
@@ -105,15 +142,24 @@
       "id": "robot-history",
       "type": "contextNode",
       "position": {
-        "x": 40,
-        "y": 1380
+        "x": 1260,
+        "y": 720
       },
       "data": {
         "label": "Verified Robot Action Outcomes",
         "nodeType": "conversation_history",
         "properties": {
           "mode": "robot",
-          "limit": 8
+          "limit": 0
+        },
+        "activation": {
+          "when": [
+            {
+              "nodeId": "intent-orchestrator",
+              "output": "needsRobotActions",
+              "truthy": true
+            }
+          ]
         }
       }
     },
@@ -121,21 +167,30 @@
       "id": "persona-loader",
       "type": "personaNode",
       "position": {
-        "x": 40,
-        "y": 1600
+        "x": 1260,
+        "y": 1440
       },
       "data": {
         "label": "Active Persona",
         "nodeType": "persona_loader",
-        "properties": {}
+        "properties": {},
+        "activation": {
+          "when": [
+            {
+              "nodeId": "intent-orchestrator",
+              "output": "needsPersona",
+              "truthy": true
+            }
+          ]
+        }
       }
     },
     {
       "id": "persona-formatter",
       "type": "personaNode",
       "position": {
-        "x": 420,
-        "y": 1600
+        "x": 1660,
+        "y": 1440
       },
       "data": {
         "label": "Compact Persona Context",
@@ -145,6 +200,15 @@
           "includeGoals": true,
           "goalContext": "standing",
           "includePersonality": true
+        },
+        "activation": {
+          "when": [
+            {
+              "nodeId": "intent-orchestrator",
+              "output": "needsPersona",
+              "truthy": true
+            }
+          ]
         }
       }
     },
@@ -152,14 +216,23 @@
       "id": "active-desires",
       "type": "agencyNode",
       "position": {
-        "x": 40,
-        "y": 1820
+        "x": 1260,
+        "y": 1800
       },
       "data": {
         "label": "Current Active Desires",
         "nodeType": "active_desires",
         "properties": {
           "limit": 5
+        },
+        "activation": {
+          "when": [
+            {
+              "nodeId": "intent-orchestrator",
+              "output": "needsDesires",
+              "truthy": true
+            }
+          ]
         }
       }
     },
@@ -167,8 +240,8 @@
       "id": "task-catalog",
       "type": "operatorNode",
       "position": {
-        "x": 420,
-        "y": 1820
+        "x": 40,
+        "y": 1100
       },
       "data": {
         "label": "Available Autonomy Tasks",
@@ -187,8 +260,10 @@
             "inner-curiosity",
             "train-of-thought",
             "desire-agent",
+            "sleep-workflow",
             "mood"
-          ]
+          ],
+          "includeActivityHistory": false
         }
       }
     },
@@ -197,13 +272,13 @@
       "type": "inputNode",
       "position": {
         "x": 420,
-        "y": 80
+        "y": -900
       },
       "data": {
         "label": "Activation Assessment Contract",
         "nodeType": "text_input",
         "properties": {
-          "message": "Evaluate activation levels for the supplied operations using the supplied context. Each operation has an identifier, description, current activation level, activation threshold, and recorded activity. Timestamps identify when records were produced; intentions and requested work are distinct from recorded results. Return updates containing operationId, activation, reason, and instruction. activation is an absolute level from 0 to 100. Each update replaces that operation’s previous level. In Semi Auto, each returned update at 100 requests its operation through the Work Coordinator. In Full Auto, the returned update with the highest activation requests its operation regardless of whether it has reached 100. If updates share the highest activation, their returned order determines which is selected. An omitted operation retains its recorded level and is not newly requested. reason records the basis for the update; instruction supplies context to the selected operation. Updates may raise, lower, or retain levels, and the updates list may be empty.",
+          "message": "You are the active decision-maker for the robot companion described by the supplied persona. Use its personality, standing goals, desires, attributed memories, conversation, inner activity, current environment, robot status and recorded outcomes to assess what is relevant now. In Full Auto, develop self-directed intentions and select the available operations that can pursue them; an existing user request or task is not required to originate an intention. In Semi Auto, use the same context to update operation activation. Distinguish an intended outcome from evidence that it has been achieved. Evaluate activation levels for the supplied operations using the supplied context. Each operation has an identifier, description, current activation level, activation threshold, and recorded activity. Timestamps identify when records were produced; intentions and requested work are distinct from recorded results. Return updates containing operationId, activation, reason, and instruction. activation is an absolute level from 0 to 100. Each update replaces that operation\u2019s previous level. In Semi Auto, each returned update at 100 requests its operation through the Work Coordinator. In Full Auto, the returned update with the highest activation greater than zero requests its operation. Zero records no current activation and does not request execution. If updates share the highest activation, their returned order determines which is selected. An omitted operation retains its recorded level and is not newly requested. reason records the basis for the update; instruction supplies context to the selected operation. Updates may raise, lower, or retain levels, and the updates list may be empty.\n\nPrior assessments, plans, replies and activity records establish what was previously selected or reported. Current-world claims require the supplied observation or measurement evidence at its recorded acquisition time; a later assessment or status-save time does not renew that evidence.",
           "inputKey": ""
         }
       }
@@ -212,21 +287,23 @@
       "id": "context",
       "type": "operatorNode",
       "position": {
-        "x": 820,
-        "y": 240
+        "x": 2080,
+        "y": 600
       },
       "data": {
         "label": "Build Active Operator Context",
         "nodeType": "robot_autonomy_controller_context",
-        "properties": {}
+        "properties": {
+          "contextPurpose": "assessment"
+        }
       }
     },
     {
       "id": "llm",
       "type": "llmNode",
       "position": {
-        "x": 1220,
-        "y": 240
+        "x": 2500,
+        "y": 600
       },
       "data": {
         "label": "Assess Operation Activation",
@@ -245,8 +322,8 @@
       "id": "parser",
       "type": "operatorNode",
       "position": {
-        "x": 1600,
-        "y": 240
+        "x": 2920,
+        "y": 600
       },
       "data": {
         "label": "Read Activation Assessment",
@@ -258,27 +335,45 @@
       "id": "execution",
       "type": "utilityNode",
       "position": {
-        "x": 20,
-        "y": -380
+        "x": 1260,
+        "y": 2880
       },
       "data": {
         "label": "Current Execution",
         "nodeType": "execution_context",
-        "properties": {}
+        "properties": {},
+        "activation": {
+          "when": [
+            {
+              "nodeId": "intent-orchestrator",
+              "output": "needsExecutionContext",
+              "truthy": true
+            }
+          ]
+        }
       }
     },
     {
       "id": "observation-history",
       "type": "contextNode",
       "position": {
-        "x": 380,
-        "y": 990
+        "x": 1260,
+        "y": 2160
       },
       "data": {
         "label": "Observation History",
         "nodeType": "observation_history",
         "properties": {
           "limit": 5
+        },
+        "activation": {
+          "when": [
+            {
+              "nodeId": "intent-orchestrator",
+              "output": "needsObservationHistory",
+              "truthy": true
+            }
+          ]
         }
       }
     },
@@ -286,15 +381,21 @@
       "id": "read-camera",
       "type": "environmentNode",
       "position": {
-        "x": 220,
-        "y": 420
+        "x": 1260,
+        "y": 3600
       },
       "data": {
         "label": "Read Latest Camera Evidence",
         "nodeType": "environment_visual_read",
         "properties": {},
         "activation": {
-          "mode": "always"
+          "when": [
+            {
+              "nodeId": "intent-orchestrator",
+              "output": "needsVision",
+              "truthy": true
+            }
+          ]
         }
       }
     },
@@ -302,8 +403,8 @@
       "id": "autonomy-inner-output",
       "type": "genericNode",
       "position": {
-        "x": 2200,
-        "y": 580
+        "x": 3760,
+        "y": 600
       },
       "data": {
         "nodeType": "inner_dialogue_buffer",
@@ -328,8 +429,8 @@
       "id": "autonomy-intention-memory",
       "type": "genericNode",
       "position": {
-        "x": 2420,
-        "y": 580
+        "x": 4180,
+        "y": 600
       },
       "data": {
         "nodeType": "inner_dialogue_saver",
@@ -356,13 +457,115 @@
       "id": "activation-dispatch",
       "type": "operatorNode",
       "position": {
-        "x": 1500,
-        "y": 400
+        "x": 3340,
+        "y": 600
       },
       "data": {
         "nodeType": "active_operator_dispatch",
         "label": "Request Activated Operations",
         "properties": {}
+      }
+    },
+    {
+      "id": "recent-memories",
+      "type": "memoryNode",
+      "position": {
+        "x": 1260,
+        "y": 3240
+      },
+      "data": {
+        "label": "Read Selected Memories",
+        "nodeType": "memory_router",
+        "properties": {
+          "dispatch": false,
+          "topK": 12
+        },
+        "activation": {
+          "when": [
+            {
+              "nodeId": "intent-orchestrator",
+              "output": "needsMemory",
+              "truthy": true
+            }
+          ]
+        }
+      }
+    },
+    {
+      "id": "full-policy",
+      "type": "inputNode",
+      "position": {
+        "x": 40,
+        "y": -900
+      },
+      "data": {
+        "label": "Full Auto Continuity Instructions",
+        "nodeType": "text_input",
+        "properties": {
+          "message": "You are the robot companion described by the supplied persona. Decide how you want to spend your time now. Consider your own interests, goals and ongoing pursuits alongside requests and events, using the supplied persona, desires, attributed memories, conversation, inner activity, environment, robot status and recorded outcomes. In Full Auto, select meaningful activity to pursue or continue through an available operation. An existing user request or task is not required to originate an intention. Return updates containing operationId, activation, reason, instruction and target. activation is an absolute level from 0 to 100; the returned update with the highest positive activation requests its operation, with returned order breaking ties. Include a positive selection; an empty list or only zero activations does not select an activity. reason records the basis for the choice; instruction states the intended outcome for the selected operation. An intended outcome and requested work are distinct from evidence of success.\n\nassessmentReason records the basis for the activity selected or continued by this assessment. In Full Auto, an update may identify a target. target is null for a new operation, {kind: \"execution\", executionId} to send the instruction to that recorded execution, or {kind: \"desire\", desireId, operation} to request plan, execute, review or checkin through the Desire owner. Use recorded identifiers. Execution targets receive the instruction through their existing owner. Desire targets request the selected lifecycle operation on the recorded desire; instruction and reason remain the controller's decision evidence. Requesting work does not establish completion. Return memoryRequest as null or a selection using memoryQuery, memoryOrder, memoryTypes, memoryTimeRange and memorySleepCycle for the next assessment's memory lookup. null selects no additional memory lookup. Full Auto continues assessing while enabled. Selected operations execute independently. Execution targets use robot-autonomy-executor; Desire targets use desire-agent.\n\nPrior assessments, plans, replies and activity records establish what was previously selected or reported. Current-world claims require the supplied observation or measurement evidence at its recorded acquisition time; a later assessment or status-save time does not renew that evidence.",
+          "inputKey": ""
+        }
+      }
+    },
+    {
+      "id": "context-selection-request",
+      "type": "operatorNode",
+      "position": {
+        "x": 440,
+        "y": 0
+      },
+      "data": {
+        "label": "Build Context Selection Request",
+        "nodeType": "robot_autonomy_controller_context",
+        "properties": {
+          "contextPurpose": "selection"
+        }
+      }
+    },
+    {
+      "id": "intent-orchestrator",
+      "type": "llmNode",
+      "position": {
+        "x": 840,
+        "y": 0
+      },
+      "width": 420,
+      "data": {
+        "label": "Intent Orchestrator: Select Context",
+        "nodeType": "orchestrator_llm",
+        "properties": {
+          "role": "orchestrator",
+          "outputContract": "autonomy-context",
+          "systemPrompt": "You are the Intent Orchestrator selecting context for an autonomous assessment. Read the supplied trigger, current mode, source availability and recorded operation state. Return the existing Environment request routing fields. Use taskContext to select information relevant to the autonomous assessment. Availability alone does not establish relevance. Available sources are persona.identity, persona.background, persona.personality, persona.values, persona.goals, conversationHistory, innerDialogue, robotActions, memory, robotStatus, environment, vision, executionContext, activityHistory, observationHistory and desires. Select memoryQuery, memoryTypes, memoryOrder, memoryTimeRange and memorySleepCycle only when memory is selected. Source contents not supplied are unknown. Do not select or execute the robot's activity.",
+          "userPromptTemplate": "{{userMessage}}",
+          "temperature": 0.1,
+          "maxTokens": -1
+        },
+        "comment": "One request-only LLM call selects context and capability routes. Sources load after this decision."
+      }
+    },
+    {
+      "id": "activity-history",
+      "type": "contextNode",
+      "position": {
+        "x": 1260,
+        "y": 2520
+      },
+      "data": {
+        "label": "Read Selected Autonomy Activity",
+        "nodeType": "robot_autonomy_activity_history",
+        "properties": {
+          "limit": 10
+        },
+        "activation": {
+          "when": [
+            {
+              "nodeId": "intent-orchestrator",
+              "output": "needsActivityHistory",
+              "truthy": true
+            }
+          ]
+        }
       }
     }
   ],
@@ -817,6 +1020,166 @@
       "data": {
         "type": "array"
       }
+    },
+    {
+      "id": "recent-memories-memories-context-memoryContext",
+      "source": "recent-memories",
+      "sourceHandle": "memories",
+      "target": "context",
+      "targetHandle": "memoryContext",
+      "type": "default"
+    },
+    {
+      "id": "full-policy-text-context-fullInstruction",
+      "source": "full-policy",
+      "sourceHandle": "text",
+      "target": "context",
+      "targetHandle": "fullInstruction",
+      "type": "default",
+      "data": {
+        "type": "string"
+      }
+    },
+    {
+      "id": "execution-activeExecutions-context-activeExecutions",
+      "source": "execution",
+      "sourceHandle": "activeExecutions",
+      "target": "context",
+      "targetHandle": "activeExecutions",
+      "type": "default",
+      "data": {
+        "type": "array"
+      }
+    },
+    {
+      "id": "e-mode-thinking",
+      "source": "context",
+      "target": "llm",
+      "sourceHandle": "fullMode",
+      "targetHandle": "enableThinking",
+      "type": "default",
+      "data": {
+        "type": "boolean"
+      }
+    },
+    {
+      "id": "robot-input-robotObserver-context-selection-request-robotObserver",
+      "source": "robot-input",
+      "sourceHandle": "robotObserver",
+      "target": "context-selection-request",
+      "targetHandle": "robotObserver"
+    },
+    {
+      "id": "robot-input-sourceObservationAt-context-selection-request-sourceObservationAt",
+      "source": "robot-input",
+      "sourceHandle": "sourceObservationAt",
+      "target": "context-selection-request",
+      "targetHandle": "sourceObservationAt"
+    },
+    {
+      "id": "observation-observation-context-selection-request-observation",
+      "source": "observation",
+      "sourceHandle": "observation",
+      "target": "context-selection-request",
+      "targetHandle": "observation"
+    },
+    {
+      "id": "task-catalog-activationState-context-selection-request-activationState",
+      "source": "task-catalog",
+      "sourceHandle": "activationState",
+      "target": "context-selection-request",
+      "targetHandle": "activationState"
+    },
+    {
+      "id": "context-selection-request-request-intent-orchestrator-message",
+      "source": "context-selection-request",
+      "sourceHandle": "request",
+      "target": "intent-orchestrator",
+      "targetHandle": "message"
+    },
+    {
+      "id": "intent-orchestrator-analysis-context-contextSelection",
+      "source": "intent-orchestrator",
+      "sourceHandle": "analysis",
+      "target": "context",
+      "targetHandle": "contextSelection"
+    },
+    {
+      "id": "intent-orchestrator-analysis-recent-memories-orchestratorHints",
+      "source": "intent-orchestrator",
+      "sourceHandle": "analysis",
+      "target": "recent-memories",
+      "targetHandle": "orchestratorHints"
+    },
+    {
+      "id": "intent-orchestrator-personaSections-persona-formatter-sections",
+      "source": "intent-orchestrator",
+      "sourceHandle": "personaSections",
+      "target": "persona-formatter",
+      "targetHandle": "sections"
+    },
+    {
+      "id": "persona-loader-persona-context-persona",
+      "source": "persona-loader",
+      "sourceHandle": "persona",
+      "target": "context",
+      "targetHandle": "persona"
+    },
+    {
+      "id": "conversation-history-selectedContext-context-conversationSelection",
+      "source": "conversation-history",
+      "sourceHandle": "selectedContext",
+      "target": "context",
+      "targetHandle": "conversationSelection"
+    },
+    {
+      "id": "inner-history-selectedContext-context-innerSelection",
+      "source": "inner-history",
+      "sourceHandle": "selectedContext",
+      "target": "context",
+      "targetHandle": "innerSelection"
+    },
+    {
+      "id": "recent-memories-selectedContext-context-memorySelection",
+      "source": "recent-memories",
+      "sourceHandle": "selectedContext",
+      "target": "context",
+      "targetHandle": "memorySelection"
+    },
+    {
+      "id": "task-catalog-tasks-activity-history-availableTasks",
+      "source": "task-catalog",
+      "sourceHandle": "tasks",
+      "target": "activity-history",
+      "targetHandle": "availableTasks"
+    },
+    {
+      "id": "activity-history-history-context-autonomyActivityHistory",
+      "source": "activity-history",
+      "sourceHandle": "history",
+      "target": "context",
+      "targetHandle": "autonomyActivityHistory"
+    },
+    {
+      "id": "context-selectedContext-activation-dispatch-selectedContext",
+      "source": "context",
+      "sourceHandle": "selectedContext",
+      "target": "activation-dispatch",
+      "targetHandle": "selectedContext"
+    },
+    {
+      "id": "context-selection-request-request-recent-memories-userMessage",
+      "source": "context-selection-request",
+      "sourceHandle": "request",
+      "target": "recent-memories",
+      "targetHandle": "userMessage"
+    },
+    {
+      "id": "robot-history-selectedContext-context-sourceContext",
+      "source": "robot-history",
+      "sourceHandle": "selectedContext",
+      "target": "context",
+      "targetHandle": "sourceContext"
     }
   ],
   "viewport": {

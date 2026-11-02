@@ -3,6 +3,7 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { randomUUID } from 'node:crypto';
+import test from 'node:test';
 
 const isolatedRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'metahuman-environment-compatibility-'));
 assert.equal(fs.realpathSync(isolatedRoot), isolatedRoot);
@@ -40,9 +41,10 @@ const {
   handleEnvironmentBridgeActionResult,
   handleEnvironmentBridgeObservation,
   handleEnvironmentBridgeStream,
+  handleEnvironmentBridgeTelemetry,
 } = await import('../api/handlers/environment-bridge.js');
 import type { UnifiedRequest } from '../api/types.js';
-const { validateEnvironmentSelectorOutput } = await import('../nodes/environment/helpers.js');
+const { buildEnvironmentSelectorEnvelope, validateEnvironmentSelectorOutput } = await import('../nodes/environment/helpers.js');
 const { environmentActionParserNode } = await import('../nodes/environment/action-parser.node.js');
 const { environmentContextBuilderNode } = await import('../nodes/environment/context-builder.node.js');
 const { environmentImageInputNode } = await import('../nodes/environment/image-input.node.js');
@@ -171,10 +173,13 @@ try {
     terminalFeedback: { actionId: 'fresh-capture', type: 'completed' }, actionId: 'fresh-capture' }, {});
   assert.equal(requestedCapture.verified, false, 'An available earlier frame cannot satisfy a requested fresh capture');
   assert.deepEqual((await environmentImageInputNode.execute({}, {})).frames, [], 'No implicit global-camera lookup');
-  for (const [robotId, epoch] of [['v1', 1], ['v1', 2], ['v2', 2]] as const) {
-    const bodyObservation = { ...withoutImage, state: { body: { robotId }, gateway: { robots: { [robotId]: { epoch } } } } };
+  for (const [robotId, epoch, gatewayInstance] of [
+    ['v1', 1, 'gateway-a'], ['v1', 2, 'gateway-a'], ['v2', 2, 'gateway-a'], ['v2', 2, 'gateway-b'],
+  ] as const) {
+    const bodyObservation = { ...withoutImage, state: { body: { robotId },
+      gateway: { robots: { [robotId]: { epoch } } }, activeMovementUpdates: { gatewayInstance } } };
     recordEnvironmentObservation(bodyObservation);
-    assert.equal(getLatestEnvironmentVisual('robot-1'), undefined, 'Body/epoch changes cannot inherit another camera source');
+    assert.equal(getLatestEnvironmentVisual('robot-1'), undefined, 'Body, gateway instance and epoch changes cannot inherit another camera source');
     recordEnvironmentObservation({ ...bodyObservation, visual: laterFrame });
     recordEnvironmentObservation(bodyObservation);
     assert.deepEqual(getLatestEnvironmentVisual('robot-1'), laterFrame, 'Status refresh preserves evidence from the same body epoch');
@@ -256,6 +261,45 @@ try {
   assert.equal(readinessObservation?.capabilities.actions.includes('captureImage'), true);
   assert.equal(manager.getAllTasks().length, 0, 'Camera status transitions must not dispatch work');
 
+  await test('persisted body feedback reaches model context through later telemetry and identity checks', async () => {
+    const telemetry = async (robotStatus: Record<string, unknown>) => {
+      const response = await handleEnvironmentBridgeTelemetry(bridgeRequest({ Authorization: 'Bearer bridge-secret' },
+        { sessionId: 'robot-1', robotStatus }));
+      assert.equal(response.status, 200);
+    };
+    const feedbackSample = { enabled: true, usable: false, scan: 59906, clock_us: 1302014762,
+      calibrated_mask: 4095, unavailable_mask: 4, clipped_mask: 0,
+      below_calibration_mask: 0, above_calibration_mask: 0, adc_error: 'ESP_OK',
+      supply_voltage_available: false, signal_millivolts: Array.from({ length: 12 }, (_, i) => i === 2 ? null : 1000 + i) };
+    await telemetry({ kind: 'robot.status', robot_id: 'robot-1', epoch: 8,
+      timestamp: '2026-10-26T17:19:00Z', servo_feedback: feedbackSample });
+    for (const update of [
+      { status_received_at: '2026-10-26T17:19:25Z', output_ready: true, output_armed: false },
+      { imu: { timestamp_us: 1596000000, received_at: '2026-10-26T17:19:28Z' } },
+    ]) {
+      await telemetry({ kind: 'robot.status', robot_id: 'robot-1', epoch: 8, ...update });
+      const stored = readEnvironmentBridgeState().sessions['robot-1']!.latestObservation!;
+      const supplied = JSON.parse(buildEnvironmentSelectorEnvelope({ instruction: 'Report recorded body state.', observation: stored }));
+      assert.deepEqual(supplied.currentEnvironment.state.gateway.selectedRobot.status.servo_feedback, feedbackSample,
+        'Persisted feedback reaches model context without a newer status or IMU sample redating it');
+      assert.equal(stored.timestamp, readinessTimestamp, 'Telemetry does not replace the originating observation identity');
+    }
+    const beforeUnrelated = readEnvironmentBridgeState().sessions['robot-1']!.latestObservation;
+    for (const [robot_id, epoch] of [['other-body', 8], ['robot-1', 7]] as const) {
+      await telemetry({ robot_id, epoch, servo_feedback: { usable: true, scan: 99999 } });
+      assert.deepEqual(readEnvironmentBridgeState().sessions['robot-1']!.latestObservation, beforeUnrelated,
+        'Another body or old connection cannot replace the selected feedback');
+    }
+    const nextSample = { ...feedbackSample, usable: true, unavailable_mask: 0, scan: 59907, clock_us: 1303014762 };
+    await telemetry({ kind: 'robot.status', robot_id: 'robot-1', epoch: 8, servo_feedback: nextSample });
+    const afterFeedback = readEnvironmentBridgeState().sessions['robot-1']!.latestObservation!;
+    const finalStatus = JSON.parse(buildEnvironmentSelectorEnvelope({ instruction: 'Report recorded body state.', observation: afterFeedback }))
+      .currentEnvironment.state.gateway.selectedRobot.status;
+    assert.deepEqual(finalStatus.servo_feedback, nextSample, 'The next actual sample replaces the earlier sample');
+    assert.deepEqual(finalStatus.imu, { timestamp_us: 1596000000, received_at: '2026-10-26T17:19:28Z' });
+    assert.equal(manager.getAllTasks().length, 0, 'Feedback telemetry neither dispatches commands nor invokes cognition');
+  });
+
   resetState();
   const delayed = enqueueEnvironmentAction({
     type: 'robotCommand',
@@ -270,31 +314,25 @@ try {
     timestamp: new Date().toISOString(), type: 'accepted', message: 'Accepted after transport delay' })?.admitted, true);
 
   resetState();
-  const motionPlan = enqueueEnvironmentAction({
-    type: 'robotMotionPlan',
+  const motion = enqueueEnvironmentAction({
+    type: 'requestMotion',
     sessionId: 'robot-1',
-    frames: [{
-      durationMs: 300,
-      targets: ['R1', 'R2', 'L1', 'L2', 'R4', 'R3', 'L3', 'L4'].map(joint => ({
-        joint: joint as 'R1',
-        degrees: 90,
-      })),
-    }],
-    endPose: 'hold',
+    description: 'Raise the right front leg, then return to standing.',
   });
-  const dispatchedPlan = dispatchEnvironmentActions('robot-1')[0];
-  assert.equal(dispatchedPlan?.id, motionPlan.id);
-  assert.equal(dispatchedPlan?.type, 'robotMotionPlan');
-  assert.equal(dispatchedPlan?.frames?.length, 1);
-  assert.equal(dispatchedPlan?.frames?.[0]?.targets.length, 8);
-  assert.equal(dispatchedPlan?.endPose, 'hold');
-  recordEnvironmentActionResult({
-    id: 'plan-completed',
+  const dispatchedMotion = dispatchEnvironmentActions('robot-1')[0];
+  assert.equal(dispatchedMotion?.id, motion.id);
+  assert.equal(dispatchedMotion?.type, 'requestMotion');
+  assert.equal(dispatchedMotion?.description, 'Raise the right front leg, then return to standing.');
+  const motionResult = recordEnvironmentActionResult({
+    id: 'motion-completed',
     timestamp: new Date().toISOString(),
     type: 'completed',
     message: 'done',
-    actionId: motionPlan.id,
+    actionId: motion.id,
   });
+  assert.equal(motionResult?.action.id, motion.id);
+  assert.equal(motionResult?.feedback.type, 'completed');
+  assert.equal(manager.getTask(motion.id), null, 'Delivered motion work leaves the active queue');
 
   resetState();
   const movement = enqueueEnvironmentAction({ type: 'robotCommand', command: 'walk', sessionId: 'robot-1' });
@@ -451,6 +489,8 @@ try {
   }))).status, 400);
 
   resetState();
+  const fullOriginatingInstruction = 'Wave, then use the returned view to tell me what changed.\n'
+    + 'Retained route context. '.repeat(250) + '\nFinal instruction: describe the returned image.';
   const resultAction = enqueueEnvironmentAction({
     type: 'robotCommand',
     command: 'wave',
@@ -458,7 +498,7 @@ try {
   }, {
     username: 'robot-owner',
     correlationId: 'conversation-turn-1',
-    originatingInstruction: 'Wave, then use the returned view to tell me what changed.',
+    originatingInstruction: fullOriginatingInstruction,
   });
   assert.equal(dispatchEnvironmentActions('robot-1')[0]?.id, resultAction.id);
   let admittedUsername = '';
@@ -572,7 +612,7 @@ try {
       status: 'completed',
       requested: { type: 'robotCommand', command: 'wave' },
       correlationId: 'conversation-turn-1',
-      originatingInstruction: 'Wave, then use the returned view to tell me what changed.',
+      originatingInstruction: fullOriginatingInstruction,
       queuedAt: resultAction.createdAt,
       completedAt: manager.getTask(resultAction.workItemId!)?.completedAt,
       result: { type: 'completed', message: 'done' },

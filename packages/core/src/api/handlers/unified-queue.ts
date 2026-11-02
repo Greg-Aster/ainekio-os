@@ -93,7 +93,6 @@ function queueSnapshot(user: UnifiedUser) {
     tasks: visible(manager.getAllTasks()),
     canConfirmRobotStopped: user.role === 'owner',
     executions,
-    inFlightRemote: user.role === 'owner' ? state.inFlightRemote : [],
     nextTriggers: user.role === 'owner' ? state.nextTriggers : [],
     lastActivity: user.role === 'owner' ? state.lastActivity : undefined,
     triggerManager: user.role === 'owner' ? state.triggerManager : undefined,
@@ -401,15 +400,17 @@ export async function handleQueueTaskStream(req: UnifiedRequest): Promise<Unifie
     };
     manager.addEventListener(listener);
     try {
-      for (const chunk of manager.getOutput(streamTaskId)) yield chunk;
       let task = manager.getTask(streamTaskId);
       if (!task) return;
-      if (task.state === 'queued' || task.state === 'waiting') {
+      const replayState = task.state;
+      const replay = manager.getOutput(streamTaskId);
+      for (const chunk of replay) yield chunk;
+      if (replayState === 'queued' || replayState === 'waiting') {
         const position = Math.max(1, manager.getAllTasks().filter(item => item.state === 'queued' || item.state === 'waiting').findIndex(item => item.id === streamTaskId) + 1);
         yield sse({ type: 'queued', data: { taskId: streamTaskId, position, resource: task.resource } });
-      } else if (task.state === 'leased' && manager.getOutput(streamTaskId).length === 0) {
+      } else if (replayState === 'leased' && replay.length === 0) {
         yield sse({ type: 'queued_task_started', data: { taskId: streamTaskId } });
-      } else if (taskStatus(task) === 'completed' || taskStatus(task) === 'failed') {
+      } else if (['completed', 'failed', 'cancelled', 'expired'].includes(replayState)) {
         yield terminalStreamEvent(task);
         return;
       }

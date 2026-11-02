@@ -3,7 +3,7 @@ import test from 'node:test';
 import { ENVIRONMENT_REQUEST_INTENT_JSON_SCHEMA, parseEnvironmentIntentRouting } from './orchestrator-llm.node.js';
 
 const routing = {
-  needsResponse: true, needsAction: false, needsToolUse: false, taskPlanner: 'specialist',
+  needsResponse: true, needsAction: false, needsGoalReview: false, needsToolUse: false, taskPlanner: 'specialist',
   taskContext: [], conversationContext: ['memory'],
 };
 

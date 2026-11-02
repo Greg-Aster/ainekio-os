@@ -4,11 +4,14 @@
     variables: { key: string; value: string | number | boolean | string[] | null }[];
   }
   export let agents: ConnectionAgent[] = [];
-  export let activeAgentId = '';
+  export let connections: { endpoint: string; robotId?: string; connected: boolean; active: boolean; error?: string }[] = [];
+  let robotId = '';
+  $: robotIds = [...new Set(connections.filter(item => item.connected && item.robotId).map(item => item.robotId!))];
   export let busy = false;
-  export let onConnect: (agent: string, settings: Record<string, string | number>) => Promise<void>;
+  export let onConnect: (agent: string, settings: Record<string, string | number | boolean>) => Promise<void>;
 
   let route = 'local';
+  let followRobot = false;
   let initialized = false;
   let localUrl = '';
   let remoteUrl = '';
@@ -21,27 +24,22 @@
     return agents.find(agent => agent.id === id)?.variables.find(variable => variable.key === key)?.value;
   }
 
-  $: if (!initialized && agents.some(agent => agent.id === 'environment-bridge-local')) {
-    localUrl = String(value('environment-bridge-local', 'adapterUrl') || 'ws://127.0.0.1:8790/environment');
-    remoteUrl = String(value('environment-bridge-remote', 'adapterUrl') || 'ws://127.0.0.1:18790/environment');
-    sshTarget = String(value('environment-bridge-remote', 'sshTarget') || '');
-    sshGatewayPort = Number(value('environment-bridge-remote', 'sshGatewayPort') ?? 8790);
-    cloudflareHostname = String(value('environment-bridge-remote', 'cloudflareHostname') || '');
-    accessEnvFile = String(value('environment-bridge-remote', 'accessEnvFile') || '');
-    const selected = activeAgentId || (value('environment-bridge-remote', 'startOnSystemBoot') ? 'environment-bridge-remote' : 'environment-bridge-local');
-    route = selected === 'environment-bridge-remote' ? String(value(selected, 'transport') || 'cloudflare') : 'local';
+  $: if (!initialized && agents.some(agent => agent.id === 'environment-bridge')) {
+    localUrl = String(value('environment-bridge', 'adapterUrl') || 'ws://127.0.0.1:8790/environment');
+    remoteUrl = String(value('environment-bridge', 'remoteAdapterUrl') || '');
+    robotId = String(value('environment-bridge', 'robotId') || '');
+    sshTarget = String(value('environment-bridge', 'sshTarget') || '');
+    sshGatewayPort = Number(value('environment-bridge', 'sshGatewayPort') ?? 8790);
+    cloudflareHostname = String(value('environment-bridge', 'cloudflareHostname') || '');
+    accessEnvFile = String(value('environment-bridge', 'accessEnvFile') || '');
+    route = String(value('environment-bridge', 'transport') || 'local');
+    followRobot = value('environment-bridge', 'followRobot') === true;
     initialized = true;
   }
 
   async function connect() {
-    if (route === 'local') {
-      await onConnect('environment-bridge-local', { adapterUrl: localUrl });
-    } else {
-      await onConnect('environment-bridge-remote', {
-        adapterUrl: remoteUrl, transport: route,
-        ...(route === 'ssh' ? { sshTarget, sshGatewayPort } : { cloudflareHostname, accessEnvFile }),
-      });
-    }
+    await onConnect('environment-bridge', { adapterUrl: localUrl, remoteAdapterUrl: remoteUrl,
+      robotId, followRobot, transport: route, sshTarget, sshGatewayPort, cloudflareHostname, accessEnvFile });
   }
 </script>
 
@@ -49,23 +47,34 @@
   <form id="body-connection" class="mt-3 space-y-2 rounded border border-gray-300 p-2 dark:border-gray-700" on:submit|preventDefault={connect}>
     <fieldset disabled={busy} class="space-y-2 disabled:opacity-50">
       <legend class="text-xs font-semibold">Body connection</legend>
-      <label class="block text-xs">
-        Connect to Body Control
-        <select bind:value={route} class="mt-1 w-full rounded border bg-white p-2 text-gray-900 dark:border-gray-700 dark:bg-gray-950 dark:text-gray-100">
-          <option value="local">This computer</option>
-          <option value="ssh">LAN / Wi-Fi via SSH</option>
-          <option value="cloudflare">Remote via Cloudflare</option>
+      <label class="flex items-center gap-2 text-xs"><input type="checkbox" bind:checked={followRobot} /> Follow the same robot across saved hosts</label>
+      <label class="block text-xs">{followRobot ? 'Saved remote connection' : 'Connection'}
+        <select bind:value={route} class="mt-1 w-full rounded border bg-white p-2 text-gray-900 dark:bg-gray-950 dark:text-gray-100">
+          <option value="local">{followRobot ? "No remote host" : "Local — this computer"}</option>
+          <option value="ssh">Remote — SSH</option>
+          <option value="cloudflare">Remote — Cloudflare Access</option>
         </select>
       </label>
-      <p class="text-xs text-gray-500 dark:text-gray-400">“This computer” means the machine running MetaHuman. Body Control must already be running on the selected machine. Wi-Fi network selection stays in the operating system.</p>
-      {#if route === 'local'}
-        <label class="block text-xs">Local adapter URL
-          <input required type="url" bind:value={localUrl} class="mt-1 w-full rounded border bg-transparent p-2" />
-        </label>
-      {:else}
+      <label class="block text-xs">Robot
+        <select bind:value={robotId} class="mt-1 w-full rounded border bg-white p-2 text-gray-900 dark:bg-gray-950 dark:text-gray-100">
+          <option value="">Use Body Control’s selected robot</option>
+          {#each robotIds as id}<option value={id}>{id}</option>{/each}
+          {#if robotId && !robotIds.includes(robotId)}<option value={robotId}>{robotId} (disconnected)</option>{/if}
+        </select>
+      </label>
+      {#each connections as connection}
+        <p class="break-all text-xs">{connection.robotId || 'No robot'} · {connection.endpoint} · {connection.active ? 'Selected' : connection.connected ? 'Available' : 'Disconnected'}{connection.error ? ` — ${connection.error}` : ''}</p>
+      {/each}
+      <p class="text-xs text-gray-500">{followRobot ? 'The local host and saved remote route are watched. One control stream follows the same robot; a working connection stays selected.' : 'Only the selected connection runs. Body Control must be running on that computer.'}</p>
+      {#if route === 'local' || followRobot}
+      <label class="block text-xs">Local adapter URL
+        <input required type="url" bind:value={localUrl} class="mt-1 w-full rounded border bg-transparent p-2" />
+      </label>
+      {/if}
+      {#if route !== 'local'}
         {#if route === 'ssh'}
           <label class="block text-xs">SSH destination
-            <input required bind:value={sshTarget} placeholder="user@hostname or SSH host alias" class="mt-1 w-full rounded border bg-transparent p-2" />
+            <input bind:value={sshTarget} placeholder="user@hostname or SSH host alias" class="mt-1 w-full rounded border bg-transparent p-2" />
           </label>
           <label class="block text-xs">Gateway port on remote machine
             <input required type="number" min="1" max="65535" bind:value={sshGatewayPort} class="mt-1 w-full rounded border bg-transparent p-2" />
@@ -73,17 +82,17 @@
           <p class="text-xs text-gray-500 dark:text-gray-400">Set up trusted, noninteractive SSH access from the MetaHuman machine first. SSH host aliases can specify a user, key and SSH port. This forwards the gateway, not the dashboard.</p>
         {:else}
           <label class="block text-xs">Cloudflare hostname
-            <input required bind:value={cloudflareHostname} placeholder="Your configured Access TCP hostname" class="mt-1 w-full rounded border bg-transparent p-2" />
+            <input bind:value={cloudflareHostname} placeholder="Your configured Access TCP hostname" class="mt-1 w-full rounded border bg-transparent p-2" />
           </label>
           <label class="block text-xs">Service token file on MetaHuman machine
             <input bind:value={accessEnvFile} placeholder="Empty uses existing browser login" class="mt-1 w-full rounded border bg-transparent p-2" />
           </label>
         {/if}
         <label class="block text-xs">Forwarded adapter URL on MetaHuman machine
-          <input required type="url" bind:value={remoteUrl} class="mt-1 w-full rounded border bg-transparent p-2" />
+          <input type="url" bind:value={remoteUrl} class="mt-1 w-full rounded border bg-transparent p-2" />
         </label>
       {/if}
-      <p class="text-xs text-gray-500 dark:text-gray-400">Save and connect restarts an already selected bridge or switches from the other bridge. It saves the startup choice. Switching interrupts the connection; it does not transfer a running task to another body.</p>
+      <p class="text-xs text-gray-500 dark:text-gray-400">Save and connect applies these settings. Automatic following uses only these saved hosts and the selected robot. Manual local mode leaves remote connections stopped.</p>
       <button type="submit" class="rounded bg-gray-900 px-3 py-2 text-xs font-semibold text-white dark:bg-gray-100 dark:text-gray-950">{busy ? 'Connecting…' : 'Save and connect'}</button>
     </fieldset>
   </form>

@@ -31,6 +31,22 @@ test('current manual launch configuration passes the canonical validator', () =>
   }), null)
 })
 
+test('llama.cpp launches freeze adapter-only LoRA export and full-model GGUF export', () => {
+  for (const method of ['local-lora', 'remote-lora', 'fine-tune'] as const) {
+    const request = { method, trainingTarget: 'llama-cpp' as const, trainingConfig: config,
+      runpodConfig: { apiKey: 'fixture', templateId: 'fixture', gpuType: 'fixture' } }
+    assert.equal(validateTrainingLaunchRequest(request), null)
+    const frozen = buildTrainingEngineConfig(request, {})
+    assert.equal(frozen.trainingTarget, 'llama-cpp')
+    assert.deepEqual(frozen.gguf_conversion, { enabled: true, quantization_type: 'Q4_K_M',
+      artifact: method === 'fine-tune' ? 'model' : 'adapter' })
+    assert.match(validateTrainingLaunchRequest({ ...request,
+      trainingConfig: { ...config, skipGguf: true } }) ?? '', /GGUF export/)
+  }
+  assert.match(validateTrainingLaunchRequest({ method: 'local-lora', trainingTarget: 'retired-provider',
+    trainingConfig: config }) ?? '', /Invalid training target/)
+})
+
 test('admission freezes reviewed context and generation cases with the native base revision', () => {
   const row = (id: string) => ({ id, messages: [
     { role: 'user' as const, content: 'Attributed fixture ' + id },
@@ -42,7 +58,7 @@ test('admission freezes reviewed context and generation cases with the native ba
     train: [row('train')], evaluation: [row('evaluation')] }
   const generationEvaluation = { cases: [{ id: 'case', messages: [{ role: 'user' as const, content: 'Original question' }] }],
     maxNewTokens: 2048, temperature: 0.7, topP: 0.9, topK: 40, repeatPenalty: 1.1 }
-  const frozen = buildTrainingEngineConfig({ method: 'local-lora', trainingTarget: 'vllm',
+  const frozen = buildTrainingEngineConfig({ method: 'local-lora', trainingTarget: 'ollama',
     trainingConfig: { ...config, base_model_revision: 'a'.repeat(40) }, reviewedDataset, generationEvaluation }, {})
   reviewedDataset.train[0]!.messages[0]!.content = 'Changed after admission'
   generationEvaluation.cases[0]!.messages[0]!.content = 'Changed after admission'
@@ -51,16 +67,16 @@ test('admission freezes reviewed context and generation cases with the native ba
   assert.equal((frozen.generationEvaluation as typeof generationEvaluation).cases[0]!.messages[0]!.content, 'Original question')
 })
 
-test('remote training requires credentials; local safetensors uses the shared trainer', () => {
+test('remote training requires credentials; local training uses the shared trainer', () => {
   assert.match(validateTrainingLaunchRequest({
     method: 'remote-lora',
-    trainingTarget: 'vllm',
+    trainingTarget: 'ollama',
     trainingConfig: config,
   }) || '', /RunPod/)
 
   assert.equal(validateTrainingLaunchRequest({
     method: 'local-lora',
-    trainingTarget: 'vllm',
+    trainingTarget: 'ollama',
     trainingConfig: config,
   }), null)
 })
@@ -103,7 +119,7 @@ test('all-samples and persona choices are frozen in the engine config without en
 
   assert.equal(overrides.METAHUMAN_DISABLE_S3, '1')
   assert.equal(overrides.METAHUMAN_SKIP_PREPROCESSING, '0')
-  const frozen = buildTrainingEngineConfig({ method: 'local-lora', trainingTarget: 'vllm',
+  const frozen = buildTrainingEngineConfig({ method: 'local-lora', trainingTarget: 'ollama',
     trainingConfig: { ...config, max_samples: null, monthly_training: true, days_recent: 30, old_samples: 250 } },
   { data: { includePersona: false, objective: 'assistant-continuation' } })
   assert.equal(frozen.max_samples, null)
@@ -111,7 +127,7 @@ test('all-samples and persona choices are frozen in the engine config without en
   assert.equal(frozen.old_samples, 250)
   assert.equal((frozen.data as Record<string, unknown>).includePersona, false)
   assert.equal((frozen.data as Record<string, unknown>).objective, 'assistant-continuation')
-  assert.deepEqual(frozen.gguf_conversion, { enabled: false, quantization_type: 'Q4_K_M' })
+  assert.deepEqual(frozen.gguf_conversion, { enabled: true, quantization_type: 'Q4_K_M' })
   assert.equal(frozen.chat_template, 'native')
   assert.equal(frozen.train_on_responses_only, true)
 })

@@ -139,3 +139,23 @@ for (const item of cases.filter(item => item.specialist === 'intent')) {
     item.contextRequirements = { conversationContext: { required: [M], optional: [H, P] } }
   }
 }
+
+// Goal assessment is an independent Intent choice, not implied by movement or speech.
+for (const item of cases.filter(item => item.specialist === 'intent')) {
+  if (item.suite === 'visual-motion' || item.suite === 'task-persona-goals') item.expected.needsGoalReview = true
+  if (item.suite === 'execution-steer') item.targets = { ...item.targets,
+    1: { ...item.expected, needsGoalReview: true } }
+  if (item.suite === 'self-choice' && item.targets?.[1]) item.targets[1].needsGoalReview = true
+  if (item.suite === 'autonomous-choice' && item.targets?.[1]) item.targets[1].needsGoalReview = true
+}
+for (const [suite, instructions, taskContext, conversationContext, review, action] of [
+  ['find-wallet', ['Can you help me find my wallet?', 'Search for my missing wallet.'], ['environment', 'vision'], ['persona.personality'], true, true],
+  ['verify-goal', ['Check whether the wallet search has achieved its goal.', 'Assess the search results against the goal of finding my wallet.'], ['executionContext', 'robotStatus'], [], true, false],
+  ['goal-discussion', ['What does a goal mean?', 'Tell me about goals without starting or reviewing one.'], [], [], false, false],
+  ['goal-status-only', ['Read the active goal description without assessing it.', 'Tell me the recorded goal status.'], [], ['robotStatus'], false, false],
+] as const) {
+  addCase('intent', `goal-routing-${suite}`, [...instructions], [],
+    output([...taskContext], [...conversationContext], true, action, review))
+}
+addCase('intent', 'goal-routing-heldout', ['Find my misplaced glasses and verify that you found them.', 'Search for my keys and check the result.'], [],
+  output(['environment', 'vision'], [], true, true, true), {}, 'evaluation')

@@ -12,7 +12,7 @@ assert.equal(fs.realpathSync(isolatedRoot), isolatedRoot);
 process.env.METAHUMAN_ROOT = isolatedRoot;
 fs.mkdirSync(path.join(isolatedRoot, 'etc'), { recursive: true });
 fs.writeFileSync(path.join(isolatedRoot, 'etc/services.json'), JSON.stringify({ services: {
-  'environment-bridge-local': { adapterUrl: 'ws://fixture.invalid/environment' },
+  'environment-bridge': { adapterUrl: 'ws://fixture.invalid/environment' },
 } }));
 globalThis.fetch = async () => { throw new Error('Bridge lifecycle tests prohibit network'); };
 mock.method(Socket.prototype, 'connect', function (this: Socket) {
@@ -31,14 +31,17 @@ let finishFixture = () => {};
 let audioFinished = () => {};
 let observationAcknowledged = () => {};
 let fixtureSocket: FakeWebSocket;
+let openedUrls: string[] = [];
 class FakeWebSocket extends EventEmitter {
   static OPEN = 1;
   readyState = 1;
   constructor(_url: string, options: { maxPayload: number }) {
     super();
+    openedUrls.push(_url);
     assert.equal(options.maxPayload, 0, 'The environment connection must not reject observations by total message size');
-    fixtureSocket = this; queueMicrotask(() => this.emit('open'));
+    fixtureSocket = this; queueMicrotask(() => _url.includes('unavailable.invalid') ? this.emit('error', new Error('unavailable')) : this.emit('open'));
   }
+  terminate() { this.close(); }
   send(payload: string | Buffer, callback?: (error?: Error) => void) {
     if (Buffer.isBuffer(payload)) {
       sent++;
@@ -46,7 +49,9 @@ class FakeWebSocket extends EventEmitter {
       return;
     }
     const message = JSON.parse(payload);
-    if (message.type === 'bridge.connect') {
+    if (message.type === 'bridge.watch') {
+      queueMicrotask(() => this.emit('message', JSON.stringify({ type: 'bridge.availability', version: 1, sessionId: 'robot-session', gatewayInstance: 'fixture', robotId: 'body-fixture', connected: true })));
+    } else if (message.type === 'bridge.connect') {
       queueMicrotask(() => this.emit('message', JSON.stringify({ type: 'bridge.ready', sessionId: 'robot-session',
         ...((scenario === 'perception' || scenario === 'audio' || scenario.startsWith('update')) ? { observation: { environmentId: 'ainekio', adapter: 'ainekio-gateway',
           sessionId: 'robot-session', timestamp: new Date().toISOString(), capabilities: { actions: ['captureImage'], visual: true },
@@ -662,6 +667,90 @@ test('Robot control requests use the authenticated Core API and preserve correla
   } finally {
     controller.abort(); clearTimeout(timeout); globalThis.fetch = originalFetch;
     keys.forEach((key, index) => { if (previous[index] === undefined) delete process.env[key]; else process.env[key] = previous[index]; });
+  }
+});
+
+test('local selection ignores saved remote settings and publishes only the selected endpoint', async () => {
+  const controller = new AbortController();
+  const originalFetch = globalThis.fetch;
+  const snapshots: { endpoint: string }[][] = [];
+  openedUrls = [];
+  globalThis.fetch = async (url, options) => {
+    const pathname = new URL(String(url)).pathname;
+    if (pathname === '/api/environment-bridge/telemetry') {
+      const body = JSON.parse(String(options?.body));
+      if (body.connections) snapshots.push(body.connections);
+    }
+    if (pathname === '/api/environment-bridge/stream') {
+      queueMicrotask(() => controller.abort());
+      return new Response('');
+    }
+    return Response.json({ success: true });
+  };
+  try {
+    await runEnvironmentBridgeAgent(controller.signal, {
+      ...config, transport: 'local', remoteAdapterUrl: 'ws://127.0.0.1:18790/environment',
+    });
+    assert.ok(snapshots.length > 0);
+    for (const snapshot of snapshots) assert.deepEqual(snapshot.map(item => item.endpoint), [config.adapterUrl]);
+    assert.deepEqual([...new Set(openedUrls)], [config.adapterUrl]);
+  } finally { controller.abort(); globalThis.fetch = originalFetch; }
+});
+
+test('remote reconnect retains a live tunnel, replaces a failed tunnel, and stops on explicit shutdown', async () => {
+  const bin = path.join(isolatedRoot, 'bin');
+  fs.mkdirSync(bin, { recursive: true });
+  const pids = path.join(isolatedRoot, 'forwarder-pids');
+  fs.writeFileSync(path.join(bin, 'ssh'), `#!/bin/sh\necho $$ >> '${pids}'\nexec '${process.execPath}' -e 'setInterval(() => {}, 1000)'\n`, { mode: 0o700 });
+  const servicesPath = path.join(isolatedRoot, 'etc/services.json');
+  const oldServices = fs.readFileSync(servicesPath, 'utf8');
+  const services = JSON.parse(oldServices);
+  Object.assign(services.services['environment-bridge'], { transport: 'ssh', sshTarget: 'fixture.invalid' });
+  fs.writeFileSync(servicesPath, JSON.stringify(services));
+  const oldPath = process.env.PATH;
+  const oldFetch = globalThis.fetch;
+  process.env.PATH = `${bin}:${oldPath}`;
+  const controller = new AbortController();
+  let connections = 0;
+  let firstPid = 0;
+  let lastPid = 0;
+  let failure: unknown;
+  scenario = 'remote-reconnect';
+  globalThis.fetch = async (url, options) => {
+    if (new URL(String(url)).pathname !== '/api/environment-bridge/stream') return Response.json({ success: true });
+    return new Response(new ReadableStream<Uint8Array>({ start(stream) {
+      options?.signal?.addEventListener('abort', () => stream.close(), { once: true });
+      void (async () => {
+        const attempt = ++connections;
+        while (!controller.signal.aborted) {
+          const values = fs.existsSync(pids) ? fs.readFileSync(pids, 'utf8').trim().split('\n').map(Number) : [];
+          if (values.length >= (attempt === 3 ? 2 : 1)) { lastPid = values.at(-1)!; break; }
+          await new Promise(resolve => setTimeout(resolve, 10));
+        }
+        assert.equal(controller.signal.aborted, false);
+        if (attempt === 1) { firstPid = lastPid; fixtureSocket.close(); }
+        else if (attempt === 2) {
+          assert.equal(lastPid, firstPid, 'WebSocket reconnect must retain the existing tunnel');
+          process.kill(firstPid, 'SIGTERM');
+        } else {
+          assert.notEqual(lastPid, firstPid, 'Tunnel loss must create a new tunnel without restarting the agent');
+          controller.abort();
+        }
+      })().catch(error => { failure = error; controller.abort(); });
+    } }), { headers: { 'Content-Type': 'text/event-stream' } });
+  };
+  const timeout = setTimeout(() => controller.abort(new Error('Remote reconnect test timed out')), 10000);
+  try {
+    openedUrls = [];
+    await runEnvironmentBridgeAgent(controller.signal, { ...config, transport: 'ssh', adapterUrl: 'ws://unavailable.invalid/environment', remoteAdapterUrl: config.adapterUrl });
+    if (failure) throw failure;
+    assert.equal(connections, 3);
+    assert.deepEqual([...new Set(openedUrls)], [config.adapterUrl], 'Remote selection must not open the local endpoint');
+    assert.throws(() => process.kill(lastPid, 0), { code: 'ESRCH' });
+  } finally {
+    controller.abort(); clearTimeout(timeout);
+    globalThis.fetch = oldFetch; process.env.PATH = oldPath;
+    fs.writeFileSync(servicesPath, oldServices);
   }
 });
 

@@ -88,6 +88,10 @@ def validate_config(cfg):
         raise ValueError("gguf_conversion.enabled must be a boolean")
     if conversion["enabled"] and str(conversion.get("quantization_type", "")).lower() not in QUANTIZATIONS:
         raise ValueError("Unsupported or missing GGUF quantization_type")
+    if conversion.get("artifact", "model") not in ("model", "adapter"):
+        raise ValueError("GGUF artifact must be model or adapter")
+    if conversion.get("artifact") == "adapter" and mode != "lora":
+        raise ValueError("Adapter GGUF export requires LoRA training")
     if cfg.get("require_exact_messages") and cfg.get("owner") != "environment-action-selector":
         raise ValueError("Exact system/user/output records belong to the Action Selector's development pipeline")
     return cfg
@@ -265,6 +269,36 @@ def gguf_artifact(directory, quantization):
         if handle.read(4) != b"GGUF":
             raise ValueError("Converted artifact has no GGUF header")
     return files[0]
+
+
+def export_gguf(model, tokenizer, cfg, output):
+    conversion = cfg["gguf_conversion"]
+    conversion_dir = Path(output) / "gguf-conversion"
+    conversion_dir.mkdir(mode=0o700)
+    if conversion.get("artifact", "model") == "adapter":
+        from huggingface_hub import snapshot_download
+        from unsloth_zoo.llama_cpp import LLAMA_CPP_DEFAULT_DIR, install_llama_cpp
+
+        base = Path(cfg["base_model"])
+        if not base.is_dir():
+            base = Path(snapshot_download(cfg["base_model"], revision=cfg.get("base_model_revision"), local_files_only=True))
+        source = Path(LLAMA_CPP_DEFAULT_DIR).with_name("llama.cpp-source")
+        converter = source / "convert_lora_to_gguf.py"
+        if not converter.is_file():
+            install_llama_cpp(llama_cpp_folder=str(source), just_clone_repo=True)
+        subprocess.run([sys.executable, str(converter), str(output), "--base", str(base),
+                        "--outtype", "f16", "--outfile", str(conversion_dir / "adapter.F16.gguf")], check=True)
+        converted = gguf_artifact(conversion_dir, "f16")
+        destination = Path(output) / "adapter.gguf"
+    else:
+        quantization = conversion["quantization_type"].lower()
+        model.save_pretrained_gguf(str(conversion_dir), tokenizer, quantization_method=quantization)
+        converted = gguf_artifact(conversion_dir, quantization)
+        destination = Path(output) / "model.gguf"
+    shutil.move(str(converted), destination)
+    # Conversion intermediates belong only to this newly created run.
+    shutil.rmtree(conversion_dir)
+    return destination
 
 
 def load_runtime(cfg, model_path=None, training=False):
@@ -458,16 +492,8 @@ def run_training(args, cfg, manifest):
         artifacts = artifact_files(output)
         conversion = cfg.get("gguf_conversion", {"enabled": False})
         if conversion["enabled"] and not args.skip_gguf:
-            quantization = conversion["quantization_type"].lower()
-            conversion_dir = output / "gguf-conversion"
-            conversion_dir.mkdir(mode=0o700)
-            model.save_pretrained_gguf(str(conversion_dir), tokenizer, quantization_method=quantization)
-            gguf = gguf_artifact(conversion_dir, quantization)
-            destination = output / "model.gguf"
-            shutil.move(str(gguf), destination)
+            destination = export_gguf(model, tokenizer, cfg, output)
             artifacts[destination.name] = digest(destination)
-            # Conversion intermediates are inside this newly created run only.
-            shutil.rmtree(conversion_dir)
         result["artifacts"] = artifacts
         if cfg.get("generationEvaluation"):
             result["artifacts"]["baseline-generation.json"] = digest(output / "baseline-generation.json")

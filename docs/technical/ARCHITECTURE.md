@@ -58,18 +58,17 @@ streams typed events to clients.
 ## Models and Training
 
 The model registry assigns model roles. Core provider and backend services own
-Ollama, vLLM, remote-server, RunPod, and Hugging Face integration.
+llama.cpp, Ollama, remote-server, RunPod, and Hugging Face integration.
 
 Multimodal messages use the same role resolver, backend selection, and provider
 bridge as text messages. Image content does not select a parallel vision backend.
-The router may use the existing orchestrator-role fallback when the requested
-role explicitly lacks image capability; the final provider/model path must
-preserve image input or fail explicitly.
+The selected model category retains its configured assignment for image requests;
+image input does not substitute the Orchestrator category. The provider path must
+preserve the selected image input or report its actual capability error.
 
 Training has one curation path and one artifact per requested target:
 
 - Ollama training produces a merged GGUF model.
-- vLLM training produces a safetensors LoRA adapter.
 - Backend Settings owns runtime loading and unloading.
 
 Training lifecycle state is tracked by exact PID records in

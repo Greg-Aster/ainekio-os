@@ -14,14 +14,3 @@ const id = 'metahuman-theme';
   </svg>
   <span class="hidden sm:inline">Theme</span>
 </button>
-
-<script>
-  (function() {
-    try {
-      const pref = localStorage.getItem('metahuman-theme');
-      const sys = window.matchMedia('(prefers-color-scheme: dark)').matches ? 'dark' : 'light';
-      const mode = pref || sys;
-      if (mode === 'dark') document.documentElement.classList.add('dark');
-    } catch {}
-  })();
-</script>

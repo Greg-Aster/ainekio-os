@@ -779,8 +779,8 @@ export async function executeGraph(
       const nodeExecution: GraphNodeExecution | undefined = durable ? {
         executionId: durable.lease.executionId,
         occurrenceId,
-        activeExecutions: () => durable.store.list(durable.store.get(durable.lease.executionId).username)
-          .filter(record => record.executionId !== durable.lease.executionId && ['running', 'waiting'].includes(record.status))
+        activeExecutions: () => durable.store.active(durable.store.get(durable.lease.executionId).username)
+          .filter(record => record.executionId !== durable.lease.executionId)
           .map(record => {
             const saved = durable.store.entry(record.executionId);
             const entry = saved.context;

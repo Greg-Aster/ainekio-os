@@ -78,9 +78,10 @@ function dependencies(overrides: Partial<TrainOfThoughtDependencies> = {}): Trai
 
 test('Train of Thought uses an upstream result as the exact graph seed', async () => {
   let graphContext: Record<string, any> | undefined
+  const seed = 'Original reflection. ' + 'x'.repeat(12_100) + ' Complete final evidence. 🤖'
   const outcome = await runTrainOfThought({
     username: 'test-user',
-    seed: 'A persisted reflection.',
+    seed,
     sourceAgent: 'reflector',
     executionId: 'parent-execution',
     executionTimestamp: NOW,
@@ -97,7 +98,7 @@ test('Train of Thought uses an upstream result as the exact graph seed', async (
   assert.equal(outcome.seedSource, 'supplied')
   assert.equal(outcome.sourceAgent, 'reflector')
   assert.equal(outcome.thoughtCount, 3)
-  assert.equal(graphContext?.seedMemory, 'A persisted reflection.')
+  assert.equal(graphContext?.seedMemory, seed)
   assert.equal(graphContext?.username, 'test-user')
   assert.equal(graphContext?.idempotencyKey, 'train-of-thought:test-user:parent-execution')
 })
@@ -154,12 +155,13 @@ test('Train of Thought rejects graph and persistence failures', async () => {
 })
 
 test('Train of Thought CLI parsing consumes coordinator identity and seeded payload', () => {
+  const seed = 'Original result. ' + 'x'.repeat(12_100) + ' Complete terminal evidence. 🤖'
   assert.deepEqual(parseTrainOfThoughtArgs([], {
     MH_TRIGGER_USERNAME: 'test-user',
     MH_TASK_ID: 'task-follow-on',
     MH_TASK_CREATED_AT: NOW,
     MH_TASK_PAYLOAD: JSON.stringify({
-      seed: 'Persisted private result.',
+      seed,
       sourceAgent: 'inner-curiosity',
       executionId: 'inner-curiosity:test-user:execution-1',
     }),
@@ -167,7 +169,7 @@ test('Train of Thought CLI parsing consumes coordinator identity and seeded payl
     username: 'test-user',
     executionId: 'inner-curiosity:test-user:execution-1',
     executionTimestamp: NOW,
-    seed: 'Persisted private result.',
+    seed,
     sourceAgent: 'inner-curiosity',
   })
 

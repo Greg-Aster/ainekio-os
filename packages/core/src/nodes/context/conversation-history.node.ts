@@ -5,6 +5,7 @@
  * Supports unified consciousness mode - merges inner dialogue into context
  */
 
+import { suppliedContextSource } from '../environment/context-routing.js';
 import { defineNode, type NodeDefinition } from '../types.js';
 import { loadChatSettingsForUser } from '../../chat-settings.js';
 import { loadBufferForUser } from '../../conversation-buffer.js';
@@ -14,10 +15,12 @@ export const ConversationHistoryNode: NodeDefinition = defineNode({
   name: 'Buffer History',
   category: 'context',
   inputs: [
+    { name: 'selectedContext', type: 'object', optional: true, description: 'Attributed context already selected and read for the originating assessment.' },
     { name: 'includeInnerDialogue', type: 'boolean', optional: true, description: 'Input-specific selection of inner dialogue alongside conversation.' },
     { name: 'mode', type: 'string', optional: true, description: 'Canonical buffer mode: conversation, inner, or robot' },
   ],
   outputs: [
+    { name: 'selectedContext', type: 'object', description: 'Attributed context already selected and read for the originating assessment.' },
     { name: 'history', type: 'array', description: 'Selected canonical buffer entries' },
   ],
   properties: {
@@ -40,12 +43,11 @@ export const ConversationHistoryNode: NodeDefinition = defineNode({
       options: ['conversation', 'inner', 'robot'],
     },
     limit: {
-      type: 'slider',
+      type: 'number',
       default: 20,
       label: 'Entry Limit',
       description: 'Maximum recent entries; conversation windows retain the latest user turn. 0 uses canonical buffer retention without another cutoff.',
       min: 0,
-      max: 50,
       step: 1,
     },
   },
@@ -55,7 +57,7 @@ export const ConversationHistoryNode: NodeDefinition = defineNode({
     const startTime = Date.now();
     const configuredLimit = properties?.limit ?? properties?.maxMessages;
     const limit = Number.isInteger(configuredLimit)
-      ? Math.max(0, Math.min(50, Number(configuredLimit)))
+      ? Math.max(0, Number(configuredLimit))
       : 20;
     const requestedMode = inputs.mode
       ?? properties?.mode
@@ -66,6 +68,10 @@ export const ConversationHistoryNode: NodeDefinition = defineNode({
       ? requestedMode
       : 'conversation';
     const username = context.username;
+    const source = mode === 'inner' ? 'innerDialogue' : mode === 'robot' ? 'robotActions' : 'conversationHistory';
+    const scope = { mode, limit, includeInnerDialogue: (inputs.includeInnerDialogue ?? properties?.includeInnerDialogue) !== false };
+    const reused = suppliedContextSource(inputs.selectedContext, source, scope);
+    if (reused !== undefined) return { ...reused, selectedContext: inputs.selectedContext };
 
     let messages = mode === 'conversation' ? context.conversationHistory || [] : [];
     let loadedFromBuffer = false;
@@ -73,19 +79,14 @@ export const ConversationHistoryNode: NodeDefinition = defineNode({
 
     if (username) {
       try {
-        const loadStart = Date.now();
         const parsed = loadBufferForUser(username, mode);
         messages = parsed.messages;
         loadedFromBuffer = true;
-        const loadTime = Date.now() - loadStart;
-        console.log(`[ConversationHistory] Loaded ${messages.length} messages from persisted ${mode} buffer (${loadTime}ms)`);
 
         // Unified Consciousness: Load inner dialogue buffer and merge if enabled
         if (mode === 'conversation' && (inputs.includeInnerDialogue ?? properties?.includeInnerDialogue) !== false) {
           try {
             const unifiedConsciousness = loadChatSettingsForUser(username).unifiedConsciousness;
-
-            console.log(`[ConversationHistory] unifiedConsciousness=${unifiedConsciousness} for user ${username}`);
 
             if (unifiedConsciousness) {
               const innerParsed = loadBufferForUser(username, 'inner');
@@ -101,7 +102,6 @@ export const ConversationHistoryNode: NodeDefinition = defineNode({
 
               messages = [...innerMessages, ...messages];
               innerDialogueCount = innerMessages.length;
-              console.log(`[ConversationHistory] Unified consciousness: Added ${innerDialogueCount} inner dialogue messages`);
             }
           } catch (error) {
             console.warn('[ConversationHistory] Could not load inner dialogue:', error);
@@ -154,7 +154,7 @@ export const ConversationHistoryNode: NodeDefinition = defineNode({
       console.log(`[ConversationHistory] Slow execution: ${totalTime}ms`);
     }
 
-    return {
+    const result = {
       history: messages,
       messages,
       count: messages.length,
@@ -165,5 +165,6 @@ export const ConversationHistoryNode: NodeDefinition = defineNode({
       innerDialogueCount,
       unifiedConsciousness: innerDialogueCount > 0,
     };
+    return { ...result, selectedContext: { sources: { [source]: { value: result, scope } } } };
   },
 });

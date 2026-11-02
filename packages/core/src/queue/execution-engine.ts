@@ -6,7 +6,6 @@ import { spawn } from 'node:child_process';
 import fs from 'node:fs';
 import path from 'node:path';
 import { UnifiedQueueManager, getQueueManager } from './unified-queue-manager.js';
-import { RemoteDispatcher } from './remote-dispatcher.js';
 import { WorkOutcomeUnknownError, type QueueEvent, type QueuedTask } from './types.js';
 import { audit } from '../audit.js';
 import { ROOT } from '../paths.js';
@@ -22,7 +21,6 @@ import { wakeSleepSession } from '../sleep-runtime.js';
 import {
   beginEnvironmentPerceptionCycle,
   loadRobotOperatorConfig,
-  robotAutonomyControllerContext,
   parseRobotObserverCycle,
 } from '../robot-operator.js';
 import { AGENT_CATALOG_DEFINITIONS } from '../agent-catalog-definitions.js';
@@ -37,12 +35,13 @@ import { withUserContext } from '../context.js';
 import { deliverDurableWorkReceipt } from '../durable-execution/work-results.js';
 import { ExecutionBusyError, ExecutionCancelledError, ExecutionConflictError } from '../durable-execution/types.js';
 import { openExecutionStore } from '../durable-execution/storage.js';
+import { reconcileEnvironmentDepthDemands } from '../environment-interface/store.js';
 import { executionWorkInput, relayExecutionOutbox, reconcileTerminatedExecutionWork } from '../durable-execution/coordinator-outbox.js';
 import { canWriteMemory } from '../cognitive-mode.js';
 import type { GraphExecutionState } from '../graph-executor.js';
 import { GraphConfigurationError } from '../graph-streaming.js';
 
-const DEFERRED = Symbol('deferred-work-completion');
+class MissingWorkHandlerError extends Error {}
 
 function isRecord(value: unknown): value is Record<string, unknown> {
   return Boolean(value) && typeof value === 'object' && !Array.isArray(value);
@@ -162,7 +161,7 @@ export interface WorkHandlerContext {
 export type WorkHandler = (
   task: QueuedTask,
   context: WorkHandlerContext,
-) => Promise<any | typeof DEFERRED | void>;
+) => Promise<any | void>;
 
 export interface ExecutionEngineOptions {
   wakeFallbackMs?: number;
@@ -174,7 +173,6 @@ export interface ExecutionEngineOptions {
 export class ExecutionEngine {
   private maintenanceError?: string;
   private readonly queueManager: UnifiedQueueManager;
-  private readonly remoteDispatcher: RemoteDispatcher;
   private readonly handlers = new Map<string, WorkHandler>();
   private readonly activeExecutions = new Map<string, Promise<void>>();
   private readonly abortControllers = new Map<string, AbortController>();
@@ -186,7 +184,6 @@ export class ExecutionEngine {
 
   constructor(options: ExecutionEngineOptions = {}, queueManager = getQueueManager()) {
     this.queueManager = queueManager;
-    this.remoteDispatcher = new RemoteDispatcher(this.queueManager);
     this.wakeFallbackMs = Math.max(250, options.wakeFallbackMs ?? 1_000);
     this.options = options;
     this.registerDefaultHandlers();
@@ -253,7 +250,9 @@ export class ExecutionEngine {
           userMessage: '', userMessageEntry: undefined,
           environmentConversationMetadata: { source: 'big-brother-tools', taskId: task.id,
             originalRequest: task.input.request, requestedAt: task.input.requestedAt } } });
-      if (state.status !== 'completed') throw state.error ?? new Error('Big Brother tool workflow did not complete');
+      if (state.status === 'failed') throw state.error ?? new Error('Big Brother tool workflow failed');
+      // The tool result is finite; its workflow still owns independently queued
+      // speech and any later receipts after this worker releases its lane.
       const result = requireGraphNodeOutput(state, 'big_brother_tool_execution').toolWork;
       if (result.state === 'failed') throw new Error(result.error || 'Big Brother tool request failed');
       return result;
@@ -294,52 +293,15 @@ export class ExecutionEngine {
       this.queueManager.cancel(owned.id, String(task.input.reason ?? 'Active task deadline superseded'));
       if (['environment.active-task-deadline', 'environment.interpret'].includes(owned.handler ?? '')) {
         const { deliverDurableWorkReceipt } = await import('../durable-execution/work-results.js');
-        await deliverDurableWorkReceipt(owned, async input => this.queueManager.enqueue(input));
+        await deliverDurableWorkReceipt(owned, this.queueManager);
       }
       // A request receipt never claims that the body action has terminated.
       return { requested: true };
     });
-    this.registerHandler('environment.generate-motion', (task, context) => withTaskUserContext(task, async () => {
-      const [{ loadGraphForMode }, { runGraph }] = await Promise.all([
-        import('../graph-streaming.js'), import('../graph-runtime.js'),
-      ]);
-      const loaded = await loadGraphForMode('environment-freestyle', task.username);
-      const state = await runGraph({ graph: loaded.graph, signal: context.signal,
-        context: { username: task.username, userId: task.username, environmentMotionRequest: task.input,
-          environmentMotionTrainingIdentity: task.durable ? {
-            executionId: task.durable.executionId, effectId: task.durable.effectId,
-          } : undefined },
-      });
-      if (state.status === 'failed') throw state.error ?? new Error('Freestyle workflow failed');
-      const result = completedNodeOutput(state, 'movement_generator');
-      if (!result) throw new Error('Freestyle workflow returned no movement generator result');
-      if (!result.valid) throw new Error(String(result.error || 'Remote motion generation returned no valid plan'));
-      const { modelMessages: _messages, rawOutput: _rawOutput, ...movementResult } = result;
-      return movementResult;
-    }));
     this.registerHandler('environment.identify', (task, context) => withTaskUserContext(task, async () => {
       const { identifyActiveTaskImage } = await import('../environment-interface/active-task.js');
       return identifyActiveTaskImage(task.input as Parameters<typeof identifyActiveTaskImage>[0], context.signal);
     }));
-    this.registerHandler('graph.signal', async (task, context) => {
-      const store = openExecutionStore(task.username);
-      try {
-        const execution = store.get(String(task.input.executionId));
-        if (execution.username !== task.username) throw new Error('Execution belongs to another profile');
-        if (['completed', 'failed', 'cancelled'].includes(execution.status)) return { terminal: true };
-        store.deliverEvent(execution.executionId, {
-          eventId: String(task.input.eventId), kind: 'autonomy_trigger',
-          payload: {
-            source: task.source, requestedAgent: task.input.agentId,
-            userMessage: '', mode: 'system', dialogueType: 'system',
-            robotOperatorContext: robotAutonomyControllerContext(String(task.input.eventId),
-              loadRobotOperatorConfig().robotAutonomyControllerGraph),
-          },
-        });
-        await relayExecutionOutbox(store, execution.executionId, async input => context.enqueue(input));
-        return { executionId: execution.executionId, signalled: true };
-      } finally { store.close(); }
-    });
     this.registerHandler('graph.resume', async (task, context) => {
       const { openExecutionStore } = await import('../durable-execution/storage.js');
       const { runGraph } = await import('../graph-runtime.js');
@@ -427,13 +389,6 @@ export class ExecutionEngine {
 
     for (const [handlerId, agentId] of Object.entries(AGENT_HANDLERS)) {
       this.registerHandler(handlerId, (task, context) => this.runAgent(task, agentId, context.signal));
-    }
-
-    for (const handlerId of ['remote.big-brother', 'remote.runpod']) {
-      this.registerHandler(handlerId, async (task) => {
-        void this.remoteDispatcher.dispatch(task);
-        return DEFERRED;
-      });
     }
 
     this.registerHandler('chat.persona', async (task, context) => {
@@ -618,7 +573,7 @@ export class ExecutionEngine {
         const store = openExecutionStore(task.username);
         try { reconcileTerminatedExecutionWork(store, executionId, this.queueManager); }
         finally { store.close(); }
-      } finally { release(); }
+      } finally { release(); reconcileEnvironmentDepthDemands(executionId); }
     };
   }
 
@@ -629,7 +584,7 @@ export class ExecutionEngine {
       // Cancellation can bypass execute() entirely or exit before its normal
       // completion path; all use the same durable receipt owner immediately.
       if (task?.durable && (!this.canHandle(task) || event.type === 'task_cancelled' || event.type === 'task_expired')) {
-        void deliverDurableWorkReceipt(task, async input => this.queueManager.enqueue(input)).catch(error => {
+        void deliverDurableWorkReceipt(task, this.queueManager).catch(error => {
           const failure = error instanceof Error ? error : new Error(String(error));
           this.options.onError?.(failure, task);
           console.error('[Work Coordinator] External work receipt delivery failed:', failure);
@@ -729,7 +684,6 @@ export class ExecutionEngine {
 
   private async execute(task: QueuedTask): Promise<void> {
     const handler = this.resolveHandler(task);
-    if (!handler) return;
     const controller = new AbortController();
     this.abortControllers.set(task.id, controller);
     const startedAt = Date.now();
@@ -756,13 +710,13 @@ export class ExecutionEngine {
           }
         } finally { store.close(); }
       }
+      if (!handler) throw new MissingWorkHandlerError(`No executor registered for ${task.handler}`);
       const { withGraphWork } = await import('../durable-execution/runtime.js');
       const result = await withGraphWork(task, id => this.attachGraphExecution(task, id), () => handler(task, {
         signal: controller.signal,
         emit: chunk => this.queueManager.appendOutput(task.id, chunk),
         enqueue: this.queueManager.enqueue.bind(this.queueManager),
       }), async input => this.queueManager.enqueue(input));
-      if (result === DEFERRED) return;
       if (controller.signal.aborted || task.cancellationRequestedAt) {
         this.queueManager.acknowledgeCancellation(task.id);
         return;
@@ -770,7 +724,7 @@ export class ExecutionEngine {
 
       const normalizedResult = result && typeof result === 'object' ? result : {};
       this.queueManager.complete(task.id, true, normalizedResult);
-      await deliverDurableWorkReceipt(this.queueManager.getTask(task.id)!, async input => this.queueManager.enqueue(input));
+      await deliverDurableWorkReceipt(this.queueManager.getTask(task.id)!, this.queueManager);
       try {
         advanceSleepWorkflow(this.queueManager, task, 'completed');
       } catch (sleepError) {
@@ -817,9 +771,9 @@ export class ExecutionEngine {
         if (cause instanceof GraphConfigurationError) { configurationError = cause; break; }
       }
       const failure = {
-        code: configurationError ? 'workflow_configuration_invalid' : conflict ? 'execution_conflict' : normalized instanceof WorkOutcomeUnknownError ? 'outcome_unknown' : 'handler_failed',
+        code: normalized instanceof MissingWorkHandlerError ? 'missing_work_handler' : configurationError ? 'workflow_configuration_invalid' : conflict ? 'execution_conflict' : normalized instanceof WorkOutcomeUnknownError ? 'outcome_unknown' : 'handler_failed',
         message: normalized.message,
-        retryable: !configurationError && !conflict && !(normalized instanceof WorkOutcomeUnknownError),
+        retryable: !(normalized instanceof MissingWorkHandlerError) && !configurationError && !conflict && !(normalized instanceof WorkOutcomeUnknownError),
       };
       // Re-running an unchanged job cannot reconcile an immutable version or
       // receipt conflict. Preserve its execution and report the failed work.
@@ -831,7 +785,7 @@ export class ExecutionEngine {
         return;
       }
       if (!retried) {
-        await deliverDurableWorkReceipt(this.queueManager.getTask(task.id)!, async input => this.queueManager.enqueue(input));
+        await deliverDurableWorkReceipt(this.queueManager.getTask(task.id)!, this.queueManager);
         try {
           advanceSleepWorkflow(this.queueManager, task, 'failed', normalized.message);
         } catch (sleepError) {
@@ -858,7 +812,10 @@ export class ExecutionEngine {
   }
 
   private canHandle(task: QueuedTask): boolean {
-    return Boolean(this.resolveHandler(task));
+    // Bridge owns physical command and visual-read acceptance. Every other
+    // admitted item must run or report its missing executor through this owner.
+    return Boolean(this.resolveHandler(task))
+      || !(task.type === 'environment_command' || task.handler === 'environment.visual-read');
   }
 
   private resolveHandler(task: QueuedTask): WorkHandler | undefined {
@@ -887,7 +844,7 @@ export class ExecutionEngine {
           MH_TASK_CREATED_AT: task.createdAt,
           MH_TASK_PAYLOAD: JSON.stringify(task.input),
           MH_GRAPH_WORK: JSON.stringify({ id: task.id, username: task.username, handler: task.handler,
-            attempt: task.attempt, maxAttempts: task.maxAttempts, durable: task.durable, originatingCognitiveMode: task.originatingCognitiveMode }),
+            attempt: task.attempt, maxAttempts: task.maxAttempts, priority: task.priority, durable: task.durable, originatingCognitiveMode: task.originatingCognitiveMode }),
           ...(task.durable ? { MH_PARENT_EXECUTION: JSON.stringify(task.durable) } : {}),
         },
         stdio: ['ignore', 'pipe', 'pipe', 'ipc'],
@@ -910,6 +867,8 @@ export class ExecutionEngine {
       let stderr = '';
       const abort = () => child.kill('SIGTERM');
       signal.addEventListener('abort', abort, { once: true });
+      child.stdout?.setEncoding('utf8');
+      child.stderr?.setEncoding('utf8');
       child.stdout?.on('data', data => { stdout += data.toString(); });
       child.stderr?.on('data', data => { stderr += data.toString(); });
       child.on('error', reject);

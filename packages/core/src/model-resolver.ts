@@ -11,8 +11,7 @@ import { getProfilePaths } from './path-builder.js';
 import { safeWriteJSON } from './safe-file.js';
 import { getUserContext } from './context.js';
 import { loadFreshOperatorConfig } from './config.js';
-import { loadBackendConfig } from './llm-backend.js';
-import { type ModelRole } from './model-roles.js';
+import { MODEL_ROLES, type ModelRole } from './model-roles.js';
 export { MODEL_ROLES, isModelRole, normalizeModelRole, type ModelRole } from './model-roles.js';
 import {
   DEFAULT_ENVIRONMENT_ACTION_SELECTOR_MODEL,
@@ -23,7 +22,7 @@ import {
 
 const LOG_PREFIX = '[model-resolver]';
 
-export type ModelProvider = 'big-brother' | 'llama-cpp' | 'ollama' | 'openai' | 'local' | 'runpod_serverless' | 'huggingface' | 'vllm' | 'remote-server' | 'local-models';
+export type ModelProvider = 'big-brother' | 'llama-cpp' | 'ollama' | 'openai' | 'local' | 'runpod_serverless' | 'huggingface' | 'remote-server' | 'local-models';
 export type ModelCapability = 'text' | 'image';
 
 export interface ModelDefinition {
@@ -253,88 +252,6 @@ function persistMigratedRegistry(registryPath: string, registry: ModelRegistry):
   fs.renameSync(temporaryPath, registryPath);
 }
 
-/**
- * Apply backend override to resolved model
- * When vLLM is active but model is configured for Ollama, use vLLM's model instead
- * This ensures consistent behavior regardless of how cognitive mode mappings are configured
- */
-function applyBackendOverride(resolved: ResolvedModel, registry: ModelRegistry): ResolvedModel {
-  if (resolved.provider === 'big-brother') return resolved;
-  const backend = loadBackendConfig();
-  const { activeBackend } = backend;
-  const configuredVllmModel = backend.vllm.servedModelName || backend.vllm.model;
-
-
-  // Cloud providers and remote-server are NEVER overridden - user's choice is respected
-  if (resolved.provider === 'runpod_serverless' || resolved.provider === 'huggingface' || resolved.provider === 'remote-server') {
-
-    return resolved;
-  }
-
-  // local-models (llama.cpp) runs on CPU - it can run in parallel with GPU backends
-  // Never override local-models requests since they don't conflict with vLLM/Ollama
-  if (resolved.provider === 'local-models') {
-    return resolved;
-  }
-
-  if (resolved.roles.includes('embedder')) return resolved;
-
-  // A registered llama.cpp deployment owns its endpoint, checkpoint and adapters.
-  // Role selection must retain the same deployment as direct registry resolution.
-  if (resolved.provider === 'llama-cpp') return resolved;
-
-  if (activeBackend === 'llama-cpp' && ['local', 'ollama', 'vllm', 'llama-cpp'].includes(resolved.provider)) {
-    const llama = backend.llamaCpp;
-    return {
-      ...resolved, provider: 'llama-cpp', model: llama.model, adapters: [], baseModel: undefined,
-      capabilities: llama.capabilities,
-      options: { ...resolved.options, contextWindow: llama.contextWindow, maxTokens: llama.maxTokens,
-        temperature: llama.temperature, topP: llama.topP, enableThinking: llama.enableThinking },
-      metadata: { ...resolved.metadata, backendOverride: 'llama-cpp' },
-    };
-  }
-
-  // The Environment action selector is a dedicated Ollama system model, not a
-  // generic backend slot. Replacing it with vllm.active would silently restore
-  // the general model to the simple action path.
-  if (resolved.roles.includes('environmentActionSelector')) {
-    return resolved;
-  }
-
-  // vllm.active is a dynamic slot, not a second persisted backend model. Keep
-  // user-owned roles/capabilities/options from the registry while reporting the
-  // checkpoint actually configured by the backend manager.
-  if (activeBackend === 'vllm' && resolved.provider === 'vllm' && resolved.id === 'vllm.active') {
-    return {
-      ...resolved,
-      model: configuredVllmModel || resolved.model,
-      metadata: { ...resolved.metadata, backendOverride: 'vllm' },
-    };
-  }
-
-  // If resolved model uses ollama but vLLM is active, check for vllm.active model
-  if (activeBackend === 'vllm' && resolved.provider === 'ollama') {
-
-    const vllmModel = registry.models['vllm.active'];
-    if (vllmModel) {
-
-      return {
-        id: 'vllm.active',
-        provider: 'vllm' as ModelProvider,
-        model: configuredVllmModel || vllmModel.model,
-        adapters: vllmModel.adapters || [],
-        baseModel: vllmModel.baseModel,
-        roles: vllmModel.roles,
-        capabilities: vllmModel.capabilities || [],
-        options: { ...resolved.options, ...vllmModel.options },
-        metadata: { ...resolved.metadata, ...vllmModel.metadata, backendOverride: 'vllm' },
-      };
-    }
-
-  }
-
-  return resolved;
-}
 
 /**
  * Invalidate the model registry cache
@@ -485,14 +402,14 @@ export function resolveModel(
     }
   }
 
-  // Apply backend override to ensure correct model for active backend
-  return applyBackendOverride(resolved, registry);
+  // Preserve the saved deployment; only explicit dynamic slots follow backend settings.
+  return resolved;
 }
 
 /**
  * Resolve a model by ID instead of role
  */
-export function resolveModelById(modelId: string, username?: string, useBackendOverride = true): ResolvedModel {
+export function resolveModelById(modelId: string, username?: string): ResolvedModel {
   // Input validation
   if (!modelId || typeof modelId !== 'string') {
     throw new Error(`Invalid modelId parameter: ${modelId}`);
@@ -522,16 +439,13 @@ export function resolveModelById(modelId: string, username?: string, useBackendO
     metadata: { ...modelDef.metadata || {} },
   };
 
-  // Apply backend override to ensure correct model for active backend
-  return useBackendOverride || modelId === 'vllm.active' ? applyBackendOverride(resolved, registry) : resolved;
+  // Preserve the saved deployment; only explicit dynamic slots follow backend settings.
+  return resolved;
 }
 
 /**
  * Resolve model based on cognitive mode
  *
- * BACKEND-AWARE: When vLLM is active but cognitive mode maps to an Ollama model,
- * this function will override to use vllm.active instead. This ensures consistent
- * behavior across all cognitive modes when a specific backend is active.
  */
 export function resolveModelForCognitiveMode(
   cognitiveMode: string,
@@ -689,4 +603,13 @@ export function getProviderConfig(provider: ModelProvider, username?: string): {
     timeout: 120000,
     retries: 2,
   };
+}
+
+/** Effective Status-widget assignments only; inventory and legacy fallback entries are not startup requests. */
+export function resolveAssignedModels(username: string, cognitiveMode?: string, roles: readonly ModelRole[] = MODEL_ROLES): ResolvedModel[] {
+  const registry = loadModelRegistry(false, username);
+  const mapping = cognitiveMode ? registry.cognitiveModeMappings?.[cognitiveMode] : undefined;
+  return roles.filter(role => mapping?.[role] !== null && Boolean(mapping?.[role] || registry.defaults[role])).map(role => cognitiveMode
+    ? resolveModelForCognitiveMode(cognitiveMode, role, username)
+    : resolveModel(role, undefined, username));
 }

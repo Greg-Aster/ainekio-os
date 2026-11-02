@@ -18,6 +18,10 @@ import WebSocket, {
 import http from 'node:http';
 import fs from 'node:fs';
 import path from 'node:path';
+import { spawn } from 'node:child_process';
+import { setTimeout as delay } from 'node:timers/promises';
+import { systemPaths } from '../../path-builder.js';
+import { acquireLock } from '../../locks.js';
 import type { MetaHumanEvent } from './schema.js';
 import { createEvent, EventTypes } from './schema.js';
 
@@ -29,6 +33,112 @@ interface EventBusServerOptions {
 }
 
 const DEFAULT_PORT = 3100;
+const PID_FILE = path.join(systemPaths.run, 'event-bus.pid');
+let startGeneration = 0;
+
+function recordedPid(): number | null {
+  try {
+    const pid = Number(fs.readFileSync(PID_FILE, 'utf8').trim());
+    if (!Number.isInteger(pid) || pid <= 1) throw new Error('Invalid event-bus PID');
+    return pid;
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code === 'ENOENT') return null;
+    throw error;
+  }
+}
+
+function processRunning(pid: number): boolean {
+  try {
+    process.kill(pid, 0);
+    if (process.platform === 'linux') {
+      const stat = fs.readFileSync(`/proc/${pid}/stat`, 'utf8');
+      if (stat.slice(stat.lastIndexOf(')') + 2).startsWith('Z ')) return false;
+    }
+    return true;
+  } catch (error) {
+    if (['ESRCH', 'ENOENT'].includes((error as NodeJS.ErrnoException).code || '')) return false;
+    throw error;
+  }
+}
+
+function releasePid(pid: number): void {
+  if (recordedPid() === pid) fs.unlinkSync(PID_FILE);
+}
+
+function managedPid(): number | null {
+  const pid = recordedPid();
+  if (pid !== null && !processRunning(pid)) { releasePid(pid); return null; }
+  return pid;
+}
+
+export async function getEventBusStatus(port = DEFAULT_PORT) {
+  const endpoint = `http://127.0.0.1:${port}`;
+  const pid = managedPid();
+  try {
+    const response = await fetch(`${endpoint}/health`, { signal: AbortSignal.timeout(2000) });
+    if (!response.ok) throw new Error(`Health request failed: HTTP ${response.status}`);
+    const health = await response.json() as { uptime: number; eventCount: number; subscribers: number };
+    return { running: true, healthy: true, port, endpoint, pid, ...health };
+  } catch (error) {
+    return { running: pid !== null, healthy: false, port, endpoint, pid, error: (error as Error).message };
+  }
+}
+
+/** Shell and API process controls share the server's existing PID and log. */
+export async function startEventBusProcess(port = DEFAULT_PORT) {
+  const generation = startGeneration;
+  const status = await getEventBusStatus(port);
+  if (generation !== startGeneration) throw new Error('Event-bus startup cancelled');
+  if (status.healthy) return status;
+  const lock = acquireLock('event-bus', { exitOnSignal: false });
+  let pid: number;
+  let spawnError: Error | undefined;
+  try {
+    const existing = managedPid();
+    if (existing !== null) pid = existing;
+    else {
+      const entry = path.join(systemPaths.root, 'packages/core/src/infrastructure/event-bus/server.ts');
+      const log = fs.openSync(path.join(systemPaths.run, 'event-bus.log'), 'a');
+      try {
+        const child = spawn(process.execPath, ['--import', 'tsx', entry, String(port)], {
+          cwd: systemPaths.root, detached: true, stdio: ['ignore', log, log], env: process.env,
+        });
+        child.once('error', error => { spawnError = error; });
+        if (!child.pid) throw new Error('Event-bus process could not be created');
+        pid = child.pid;
+        try { fs.writeFileSync(PID_FILE, `${pid}\n`); }
+        catch (error) { child.kill('SIGTERM'); throw error; }
+        child.unref();
+      } finally { fs.closeSync(log); }
+    }
+  } finally { lock.release(); }
+  const deadline = Date.now() + 2000;
+  do {
+    if (spawnError) throw spawnError;
+    if (managedPid() !== pid) throw new Error('Event-bus process exited or startup was cancelled');
+    const current = await getEventBusStatus(port);
+    if (generation !== startGeneration || managedPid() !== pid) throw new Error('Event-bus startup cancelled');
+    if (current.healthy || Date.now() >= deadline) return current;
+    await delay(25);
+  } while (true);
+}
+
+export async function stopEventBusProcess(port = DEFAULT_PORT): Promise<void> {
+  startGeneration++;
+  const pid = managedPid();
+  if (pid === null) {
+    if ((await getEventBusStatus(port)).healthy) throw new Error('Event bus is responding without a managed PID');
+    return;
+  }
+  try { process.kill(pid, 'SIGTERM'); }
+  catch (error) { if ((error as NodeJS.ErrnoException).code !== 'ESRCH') throw error; }
+  const deadline = Date.now() + 3000;
+  while (processRunning(pid)) {
+    if (Date.now() >= deadline) throw new Error(`Event-bus process ${pid} has not stopped`);
+    await delay(25);
+  }
+  releasePid(pid);
+}
 
 export class EventBusServer {
   private wss: WSServer | null = null;
@@ -302,7 +412,7 @@ export class EventBusServer {
 
 // CLI entrypoint
 if (import.meta.url === `file://${process.argv[1]}`) {
-  const server = new EventBusServer();
+  const server = new EventBusServer({ port: Number(process.argv[2]) || DEFAULT_PORT });
 
   // Handle graceful shutdown
   process.on('SIGINT', async () => {

@@ -5,6 +5,11 @@ representative user-visible functions to their existing owners and tests. It is
 a guide to selecting evidence, not a new runner, runtime gate or claim that the
 robot currently passes these scenarios.
 
+Use the [companion design guidelines](COMPANION_BEHAVIOR.md#companion-design-guidelines)
+to define the relational outcome, and
+[everyday companion evaluation](#everyday-companion-evaluation) to observe it
+across repeated encounters alongside the capability checks below.
+
 The local cleanup diary records dated findings, repairs and evidence
 from the owner-requested system cleanup; it does not redefine these contracts.
 
@@ -43,6 +48,46 @@ passing results or imply complete coverage of a row.
 | Sleep, produce inner activity and return to interaction | Existing Sleep owner admits enabled stages, records individual outcomes and handles user activity; dreams retain their attribution for later recall | [Sleep workflow](../../packages/core/src/queue/sleep-workflow.spec.ts), [Dreamer persistence](../../packages/core/src/nodes/dreamer/dreamer-persistence.spec.ts), [Daydreamer contract](../../packages/core/src/nodes/dreamer/daydreamer-contract.spec.ts) | Complete live cycle, recall/use of inner activity and return to awake interaction; body low-power state is separate |
 | Learn from a reviewed experience | Original model input/output and outcome evidence → curation → mode-correct dataset → fitting/evaluation → authorized activation; persona facts retain their subject | [Training review](../../packages/core/src/nodes/environment/training-review.graph.spec.ts), [dataset](../../packages/core/src/training-dataset.spec.ts), [persona learning](../../packages/core/src/persona-learning.spec.ts), [specialist evaluation](../../brain/training/environment-action-selector/README.md) | Better behavior after activation, held-out quality and absence of relevant regressions; a completed fit is insufficient |
 | Receive a body event or use an external tool | Event/tool identity survives admission and result delivery; reaction, memory and speech follow the selected workflow's contract | [Body event routing](../../packages/core/src/environment-interface/body-events.spec.ts), [body-event admission](../../packages/core/src/api/handlers/body-event-admission.spec.ts), [tool use](../../packages/core/src/nodes/environment/tool-use.spec.ts) | Physical event/display behavior and actual tool-result delivery, separately from submission |
+
+## Everyday companion evaluation
+
+The [companion guidelines](COMPANION_BEHAVIOR.md#companion-design-guidelines)
+are criteria for evaluating whole interactions and developing familiarity. A
+successful command or plausible sentence establishes only part of that outcome.
+Use ordinary situations relevant to the intended change, with repeated encounters
+across days when continuity or personal fit is being evaluated. These scenarios
+illustrate opportunities; they do not prescribe particular words or actions.
+
+| Situation | Qualities to examine | Evidence to retain |
+| --- | --- | --- |
+| Greet or return to the companion | Responsiveness, continuity and personal fit | What the companion knew about the person and prior encounter; what it actually did; how the exchange developed and the person's response. |
+| Work beside it on a familiar project | Shared context, initiative and personal fit | Selected observations and relevant history; the timing and relevance of its contribution; whether it supported or disrupted the person's activity. |
+| Show it an object and discuss it | Shared context, reciprocity and coherence | The actual image or observation identity, what was said or inferred, and whether the person's explanation influenced the next contribution. |
+| Resume an earlier topic or pursuit | Continuity and coherence | What was saved, selected, delivered and used; whether the follow-up matched the earlier encounter and any remaining uncertainty. |
+| Play, explore or pursue a self-directed interest | Initiative and reciprocity | The chosen purpose and mode, actual activity and outcomes, the person's contributions, and how later choices used those outcomes. |
+| Correct a misunderstanding or change direction | Responsiveness, reciprocity and continuity | The original error and correction, the subsequent behavior, and appropriate later use of the correction in a separate encounter. |
+
+For each selected situation, record the initial context, evidence available to the
+model, selected behavior, observed result and the person's assessment. Keep
+reported experience such as enjoyment, feeling understood or worthwhile support
+distinct from observed actions and inferred intent. For a comparison, identify
+the versions and relevant model/configuration changes and repeat comparable
+situations. Note familiarity and duration of use so an initial novelty response
+is not mistaken for an enduring improvement. A single person's repeated use is
+installation-specific evidence, not a general population study.
+
+The [Godspeed questionnaire research](https://www.bartneck.de/publications/2009/measurementInstrumentsRobots/bartneckCroftKulicZogbiSORO2009.pdf)
+(Bartneck, Kulić, Croft and Zoghbi, 2009) provides established measures of perceived
+anthropomorphism, animacy, likeability, intelligence and safety. It can supplement
+these observations, but does not establish reliable memory, physical safety or a
+sustained companion relationship. Identify the instrument and any adaptations;
+informal questions derived from these guidelines are not a validated scale.
+
+Trace a shortfall through the existing owner for context, memory, model choice,
+execution or delivery using the capability scenarios and architecture. Accurate
+supplied evidence followed by an inappropriate model decision is a model-behavior
+failure to report separately from missing or incorrect data. Record the evidence
+and remaining uncertainty in the existing [result record](#recording-a-result).
 
 ## Selecting existing checks
 

@@ -27,7 +27,7 @@ assert.deepEqual(
 assert.equal(live.agents.find(agent => agent.id === 'curiosity')?.sourceAgentId, 'curiosity-service', 'source aliases must not create duplicate catalog entries');
 assert.equal(live.agents.some(agent => agent.id === 'curiosity-service'), false, 'aliased source id must not appear as a second agent');
 assert.equal(live.agents.some(agent => agent.id === 'transcriber'), false, 'the retired duplicate Transcriber must not return to the agent catalog');
-assert.equal(live.agents.some(agent => agent.id === 'environment-bridge'), false, 'the old shared entrypoint must not be offered alongside Local and Remote');
+assert.deepEqual(live.agents.filter(agent => agent.id.startsWith('environment-bridge')).map(agent => agent.id), ['environment-bridge'], 'only the automatic bridge is offered');
 assert.equal(live.agents.find(agent => agent.id === 'mood')?.enabled, false, 'Mood must remain opt-in even while registered');
 assert.equal(AGENT_CATALOG_DEFINITIONS.mood.defaultTrigger?.enabled, false, 're-registering Mood must preserve its disabled default');
 assert.equal(live.agents.some(agent => agent.id === 'desire-agent'), true, 'the sole Desire Agent must be public');
@@ -41,7 +41,7 @@ for (const childId of ['boredom-observer', 'boredom-movement', 'boredom-reflecti
   assert.equal(child?.canUnregister, false, `${childId} cannot be removed through Trigger Manager controls`);
   assert.equal(child?.canRun, true, `${childId} must remain manually runnable from Agent Monitor`);
 }
-for (const serviceId of ['environment-bridge-local', 'environment-bridge-remote', 'maintenance-service', 'robot-operator']) {
+for (const serviceId of ['environment-bridge', 'maintenance-service', 'robot-operator']) {
   assert.equal(
     AGENT_CATALOG_DEFINITIONS[serviceId]?.executionContext,
     'system',

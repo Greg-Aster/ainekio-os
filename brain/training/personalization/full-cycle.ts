@@ -103,6 +103,7 @@ export async function runPersonalizationCycle(username: string, method: Training
     const candidate = await verifyTrainingCandidate(candidateDirectory, {
       datasetId: dataset.datasetId, baseModel: cfg.base_model, configPath: frozenConfigCopy,
       evaluationSha256: manifest.evaluation.sha256, requireGguf: cfg.gguf_conversion.enabled,
+      ggufArtifact: cfg.gguf_conversion.artifact === 'adapter' ? 'adapter.gguf' : 'model.gguf',
     })
     Object.assign(summary, {
       status: candidate.qualityGate === 'passed' ? 'candidate' : 'rejected', qualityGate: candidate.qualityGate,
@@ -202,8 +203,10 @@ export async function runTrainingEntryPoint(method: TrainingMethod, args = proce
     }
     const profile = readProfileTrainingConfig(options.username)
     const runpod = method === 'local-lora' ? undefined : loadRunpodConfig(options.username)
+    const trainingTarget = profile.trainingTarget ?? 'llama-cpp'
+    if (trainingTarget !== 'llama-cpp' && trainingTarget !== 'ollama') throw new Error('Unsupported training target: ' + String(trainingTarget))
     const launch = launchTrainingJob(options.username, {
-      method, trainingTarget: profile.trainingTarget === 'vllm' ? 'vllm' : 'ollama',
+      method, trainingTarget,
       trainingConfig: { ...trainingLaunchConfigForProfile(options.username, options.overrides), mode_filter: options.modeFilter },
       runpodConfig: runpod ? { apiKey: runpod.apiKey ?? '', templateId: runpod.templateId ?? '', gpuType: runpod.gpuType ?? '' } : undefined,
       advancedSettings: { enableS3Upload: false, enablePreprocessing: true },

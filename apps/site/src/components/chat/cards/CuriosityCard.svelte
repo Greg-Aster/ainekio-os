@@ -41,7 +41,7 @@
   }
 
   // Question ID for tracking
-  $: questionId = message.meta?.questionId || message.id;
+  $: questionId = message.meta?.questionId || message.meta?.curiosityQuestionId;
 
   /**
    * Skip this curiosity question without responding

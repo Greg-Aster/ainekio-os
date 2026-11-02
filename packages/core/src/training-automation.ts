@@ -16,6 +16,7 @@ import {
   type TrainingTarget,
 } from './training-launch.js'
 import { listTrainingProcesses, readTrainingHistoryForUser, type TrackedTrainingProcess } from './training-process.js'
+import { isTrainingTarget } from './training-schema.js'
 
 export interface AutomaticTrainingConfig {
   version: 1
@@ -77,7 +78,7 @@ export const DEFAULT_AUTOMATIC_TRAINING_CONFIG: AutomaticTrainingConfig = {
   version: 1,
   enabled: false,
   method: 'local-lora',
-  trainingTarget: 'ollama',
+  trainingTarget: 'llama-cpp',
   minimumTrainableSamples: 250,
   minimumNewSamples: 50,
   cooldownHours: 168,
@@ -137,7 +138,7 @@ function trainingConfigFromAutomatic(
     gradient_accumulation_steps: candidate.gradientAccumulationSteps,
     max_seq_length: candidate.maxSequenceLength,
     quantization: candidate.quantization,
-    skipGguf: trainingTarget === 'vllm',
+    skipGguf: false,
   } as TrainingLaunchConfig
   const error = validateTrainingLaunchConfig(trainingConfig)
   if (error) throw new Error(error)
@@ -146,9 +147,11 @@ function trainingConfigFromAutomatic(
 
 function automaticDefaultsForProfile(username: string): AutomaticTrainingConfig {
   const launchConfig = trainingLaunchConfigForProfile(username)
+  const target = readProfileTrainingConfig(username).trainingTarget
   const runpod = loadRunpodConfig(username)
   return {
     ...DEFAULT_AUTOMATIC_TRAINING_CONFIG,
+    ...(isTrainingTarget(target) ? { trainingTarget: target } : {}),
     baseModel: launchConfig.base_model,
     epochs: launchConfig.num_train_epochs,
     maxSamples: launchConfig.max_samples,
@@ -185,8 +188,8 @@ export function parseAutomaticTrainingConfig(
   if (candidate.method !== 'local-lora' && candidate.method !== 'remote-lora' && candidate.method !== 'fine-tune') {
     throw new Error('method must be local-lora, remote-lora, or fine-tune')
   }
-  if (candidate.trainingTarget !== 'ollama' && candidate.trainingTarget !== 'vllm') {
-    throw new Error('trainingTarget must be ollama or vllm')
+  if (!isTrainingTarget(candidate.trainingTarget)) {
+    throw new Error('trainingTarget must be llama-cpp or ollama')
   }
   const method = candidate.method as TrainingMethod
   const trainingTarget = candidate.trainingTarget as TrainingTarget

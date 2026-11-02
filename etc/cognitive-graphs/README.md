@@ -11,8 +11,16 @@ executor and the web editor.
   tipping and rapid-movement events send editable preset faces immediately and
   use one Lightweight model call for brief speech. Existing Stream Writer feed
   publication and TTS delivery do not append conversational buffers or memories.
-  Execution evidence and command receipts remain durable. Boot/wake and other
-  body events retain `body-event-trigger-mode.json` and its Environment delegation.
+  Execution evidence and command receipts remain durable. Boot/wake uses
+  **Robot Wake-Up** (`robot-wake-up-mode.json`) under **Robot Autonomy**. Body Control owns the fresh capture and stretch (which already returns to
+  standing), then supplies one wake observation with the photo and recorded status.
+  The graph composes existing Bridge/image inputs, Robot Status, Persona Loader,
+  context, model and model-result nodes. Conversation Buffer, Memory Capture,
+  Conversation Output and TTS Output are explicit nodes in this graph. One Persona
+  call produces one feed entry, memory and speech request; no Environment Mode
+  child call, motion dispatch, motion-result wait, Intent or Goal Review is involved. Other
+  interpreted body events use **Other Body Events** (`body-event-trigger-mode.json`)
+  with its existing Environment delegation.
 - `dual-mode.json`, `agent-mode.json`, `emulation-mode.json`, and
   `environment-mode.json` own the four interactive conversation modes.
 - Agent and workflow graphs own bounded background work such as curation,
@@ -72,9 +80,9 @@ executor and the web editor.
 - Separate admission graphs remain only for the distinct Inner, System, and
   Robot buffers. There is no standalone Conversation Buffer admission graph.
 
-Built-in graphs are maintained source. Update their public site/mobile copies
-with `pnpm sync:graph-artifacts <graph-name>` where the sync contract applies,
-then run `pnpm validate:graphs`.
+Built-in graphs in this directory are the source used by the editor and runtime.
+The mobile backend build packages this same source; no manually synchronized
+public copy is maintained. Run `pnpm validate:graphs` after graph changes.
 
 New graphs saved by the editor belong in `custom/`. First-write backups belong
 in `backups/`. Both directories are local runtime data and are intentionally

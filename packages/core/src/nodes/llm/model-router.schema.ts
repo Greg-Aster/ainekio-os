@@ -16,6 +16,7 @@ export const modelRouterDefinition: Omit<NodeDefinition, 'execute' | 'color' | '
     { name: 'role', type: 'string', optional: true, description: 'Optional runtime role override; a connection takes precedence over Model Role' },
     { name: 'jsonSchema', type: 'object', optional: true, description: 'Upstream structured-output contract applied only in JSON mode' },
     { name: 'precomputedResponse', type: 'string', optional: true, description: 'Exact deterministic output that bypasses model inference when connected' },
+    { name: 'enableThinking', type: 'boolean', optional: true, description: 'Optional reasoning override; a connection takes precedence over Reasoning.' },
   ],
   outputs: [
     { name: 'response', type: 'string', description: 'Normalized model text; downstream nodes own parsing, validation, and effects' },

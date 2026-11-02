@@ -177,7 +177,7 @@ test('CLI cannot write a perfect report from a partial prediction set', async ()
 
 
 test('intent context scoring ignores order but identifies incorrect consumers', () => {
-  const expected = { needsResponse: true, needsAction: false, taskContext: [], conversationContext: ['memory', 'persona.values'] }
+  const expected = { needsResponse: true, needsAction: false, needsGoalReview: false, taskContext: [], conversationContext: ['memory', 'persona.values'] }
   const reordered = { ...expected, conversationContext: ['persona.values', 'memory'] }
   assert.equal(score([prediction(expected, reordered, 'intent')]).exactRouting.count, 1)
   const misplaced = { ...expected, taskContext: ['memory'], conversationContext: ['persona.values'] }
@@ -187,7 +187,7 @@ test('intent context scoring ignores order but identifies incorrect consumers', 
 })
 
 test('required and optional context never mask a dropped request or wrong consumer', () => {
-  const expected = { needsResponse: true, needsAction: true, taskContext: ['environment'], conversationContext: ['memory'] }
+  const expected = { needsResponse: true, needsAction: true, needsGoalReview: false, taskContext: ['environment'], conversationContext: ['memory'] }
   const makeRecord = (sample: ReturnType<typeof prediction>) => ({ system: '', user: sample.user, output: JSON.stringify(expected), jsonSchema: {}, metadata: {
     recordId: sample.recordId, sourceCaseId: sample.sourceCaseId, specialist: 'intent', sourceSplit: 'development',
     developmentFold: 0, suite: sample.suite, risk: sample.risk, instructionIndex: 0, contextVariation: 'clean', systemOwned: true,
@@ -205,7 +205,7 @@ test('required and optional context never mask a dropped request or wrong consum
 })
 
 test('reviewed response choices accept speech or silence while retaining action and context requirements', () => {
-  const expected = { needsResponse: false, needsAction: true, taskContext: ['environment'], conversationContext: [] }
+  const expected = { needsResponse: false, needsAction: true, needsGoalReview: false, taskContext: ['environment'], conversationContext: [] }
   const makeRecord = (sample: ReturnType<typeof prediction>, optional = true) => ({ system: '', user: sample.user,
     output: JSON.stringify(expected), jsonSchema: {}, metadata: {
       recordId: sample.recordId, sourceCaseId: sample.sourceCaseId, specialist: 'intent', sourceSplit: 'development',
@@ -237,7 +237,7 @@ test('reviewed response choices accept speech or silence while retaining action 
 })
 
 test('alternative recall sources require at least one annotated source', () => {
-  const expected = { needsResponse: true, needsAction: false, taskContext: [], conversationContext: ['memory'] }
+  const expected = { needsResponse: true, needsAction: false, needsGoalReview: false, taskContext: [], conversationContext: ['memory'] }
   const sample = prediction(expected, { ...expected, conversationContext: ['conversationHistory'] }, 'intent')
   const record = { system: '', user: sample.user, output: JSON.stringify(expected), jsonSchema: {}, metadata: {
     recordId: sample.recordId, sourceCaseId: sample.sourceCaseId, specialist: 'intent', sourceSplit: 'development',
@@ -251,9 +251,9 @@ test('alternative recall sources require at least one annotated source', () => {
 })
 
 
-test('a reviewed equivalent generated motion can pass semantics without an exact program match', () => {
-  const expected = task('Lean left and recover.', [{ kind: 'generatedMotion', description: 'Lean slowly left and return to center.' }])
-  const actual = task('Lean left and recover.', [{ kind: 'generatedMotion', description: 'Slowly tilt the body to the left, then center it again.' }])
+test('a reviewed equivalent motion description can pass semantics without an exact program match', () => {
+  const expected = task('Lean left and recover.', [{ kind: 'action', action: { type: 'requestMotion', description: 'Lean slowly left and return to center.' } }])
+  const actual = task('Lean left and recover.', [{ kind: 'action', action: { type: 'requestMotion', description: 'Slowly tilt the body to the left, then center it again.' } }])
   const sample = prediction(expected, actual)
   const review = { recordId: sample.recordId, predictionDigest: sha256(sample), semantic: 'pass' as const,
     grounding: 'pass' as const, reason: 'Both descriptions specify the same direction, pace, and return to center.' }
@@ -263,10 +263,17 @@ test('a reviewed equivalent generated motion can pass semantics without an exact
   assert.equal(score([sample]).semanticReview.confirmedCorrect, 0)
 })
 
+test('description-based motion counts as physical selection in training evaluation', () => {
+  const motion = task('Raise the right front leg.', [{ kind: 'action', action: {
+    type: 'requestMotion', description: 'Raise the right front leg.' } }])
+  assert.equal(score([prediction(noTask(), motion)]).unsafeActionAuthorityErrors, 1)
+  assert.equal(score([prediction(motion, noTask())]).missedPhysicalActions, 1)
+})
+
 
 test('tool over-delegation, missed delegation, and a missing current route cannot pass routing evaluation', () => {
   for (const needsToolUse of [false, true]) {
-    const expected = { needsResponse: true, needsAction: false, needsToolUse, taskContext: [], conversationContext: [] }
+    const expected = { needsResponse: true, needsAction: false, needsGoalReview: false, needsToolUse, taskContext: [], conversationContext: [] }
     const actual = { ...expected, needsToolUse: !needsToolUse }
     const result = score([prediction(expected, actual, 'intent')])
     assert.equal(result.acceptableRouting.count, 0)
@@ -278,7 +285,7 @@ test('tool over-delegation, missed delegation, and a missing current route canno
 })
 
 test('planner selection is scored separately from context and action routes', () => {
-  const expected = { needsResponse: false, needsAction: true, needsToolUse: false, taskPlanner: 'vision', taskContext: ['vision'], conversationContext: [] }
+  const expected = { needsResponse: false, needsAction: true, needsGoalReview: false, needsToolUse: false, taskPlanner: 'vision', taskContext: ['vision'], conversationContext: [] }
   const actual = { ...expected, taskPlanner: 'specialist' }
   const result = score([prediction(expected, actual, 'intent')])
   assert.equal(result.acceptableRouting.count, 0)
@@ -288,7 +295,7 @@ test('planner selection is scored separately from context and action routes', ()
 })
 
 const memoryIntent = (scope: Record<string, unknown> = {}) => ({
-  needsResponse: true, needsAction: false, needsToolUse: false, taskPlanner: 'specialist',
+  needsResponse: true, needsAction: false, needsGoalReview: false, needsToolUse: false, taskPlanner: 'specialist',
   taskContext: [], conversationContext: ['memory'], ...scope,
 })
 const memoryReview = (sample: ReturnType<typeof prediction>, verdict: 'pass' | 'fail' = 'pass') => ({
@@ -448,4 +455,29 @@ test('unused memory hints on a no-memory route do not create retrieval requireme
   assert.equal(result.memorySelection.requests, 0)
   assert.equal(result.semanticReview.confirmedCorrect, 1)
   assert.equal(result.failures.length, 0)
+})
+
+
+test('autonomy selector scoring uses its shared runtime contract and source requirements', () => {
+  const expected = { needsResponse: false, needsAction: false, needsGoalReview: false, needsToolUse: false,
+    taskPlanner: 'specialist', taskContext: ['persona.goals', 'desires', 'activityHistory'], conversationContext: [] }
+  const row = prediction(expected, expected, 'intent')
+  const record: ActionSelectorTrainingRecord = { system: 'Approved graph prompt', user: '{}', output: JSON.stringify(expected), jsonSchema: {},
+    metadata: { ...row, instructionIndex: 0, developmentFold: 0, contextVariation: 'clean', systemOwned: true,
+      sourceSplit: 'development', outputContract: 'autonomy-context' } }
+  assert.equal(score([row], [], [record]).coreValid.count, 1)
+  assert.equal(score([row], [], [record]).acceptableRouting.count, 1)
+  const ignoredFields = { ...expected, needsResponse: true, taskPlanner: 'vision', conversationContext: ['persona.personality'] }
+  assert.equal(score([prediction(expected, ignoredFields, 'intent')], [], [record]).acceptableRouting.count, 1)
+  const missing = { ...expected, taskContext: ['environment'] }
+  assert.equal(score([prediction(expected, missing, 'intent')], [], [record]).acceptableRouting.count, 0)
+  const extra = { ...expected, taskContext: [...expected.taskContext, 'unsupported-source'] }
+  assert.equal(score([prediction(expected, extra, 'intent')], [], [record]).coreValid.count, 0)
+})
+
+
+test('acceptable Intent routing includes the existing independent Goal Review choice', () => {
+  const expected = { needsResponse: false, needsAction: false, needsGoalReview: true, needsToolUse: false,
+    taskPlanner: 'specialist', taskContext: ['executionContext'], conversationContext: [] }
+  assert.equal(score([prediction(expected, { ...expected, needsGoalReview: false }, 'intent')]).acceptableRouting.count, 0)
 })

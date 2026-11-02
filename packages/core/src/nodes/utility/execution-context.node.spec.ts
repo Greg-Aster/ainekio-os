@@ -64,7 +64,7 @@ test('unfinished program handoffs do not start Goal Review before task results r
     objective: 'Inspect the target', decision: { outcome: 'continue', requiredCompletionBasis: 'visual_observation' },
   }), events: () => [], activeExecutions: () => [] }
   for (const done of [false, true]) {
-    const result = await executionContextNode.execute({ taskResult: { done } }, { graphExecution } as any, {})
+    const result = await executionContextNode.execute({ taskResult: { done }, routingAnalysis: { needsGoalReview: true } }, { graphExecution } as any, {})
     assert.equal(result.needsGoalReview, done)
   }
 })
@@ -74,7 +74,7 @@ test('Goal Review receives the current Intent routes without treating a selected
     objective: 'Inspect the target', decision: { outcome: 'continue', requiredCompletionBasis: 'visual_observation' },
   }), events: () => [], activeExecutions: () => [] }
   for (const needsResponse of [false, true]) {
-    const routingAnalysis = { needsResponse, needsAction: true, taskContext: ['environment'], conversationContext: [] }
+    const routingAnalysis = { needsGoalReview: true, needsResponse, needsAction: true, taskContext: ['environment'], conversationContext: [] }
     const parent = await executionContextNode.execute({ routingAnalysis }, { graphExecution } as any, {})
     const child = await executionContextNode.execute({}, { ...parent.reviewContext, graphExecution } as any, {})
     assert.deepEqual(child.context.routingAnalysis, routingAnalysis)
@@ -187,4 +187,19 @@ test('execution context never embeds image bytes in text and selected vision sti
       assert.equal(content.find((item: any) => item.type === 'text').text.includes(frame.dataUrl), false)
     } else assert.equal(typeof content, 'string')
   }
+})
+
+
+test('Intent alone selects review eligibility; replies and actions do not select it', async () => {
+  let task: any = { objective: 'Find the wallet', decision: { outcome: 'act', requiredCompletionBasis: 'visual_observation' } }
+  const graphExecution = { executionId: 'intent-goal', task: () => task, events: () => [], activeExecutions: () => [] }
+  for (const needsGoalReview of [undefined, false, true]) {
+    const routingAnalysis = { needsResponse: true, needsAction: true, needsGoalReview }
+    const result = await executionContextNode.execute({ routingAnalysis, taskResult: { done: true } }, { graphExecution } as any, {})
+    assert.equal(result.needsGoalReview, needsGoalReview === true)
+    assert.equal(result.hasActiveTask, true)
+  }
+  task = null
+  const absent = await executionContextNode.execute({ routingAnalysis: { needsGoalReview: true } }, { graphExecution } as any, {})
+  assert.equal(absent.needsGoalReview, false, 'Selecting review does not invent a goal')
 })

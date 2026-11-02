@@ -1,7 +1,8 @@
 <script lang="ts">
-  import { onMount, afterUpdate, onDestroy } from 'svelte';
+  import { onMount, beforeUpdate, afterUpdate, onDestroy } from 'svelte';
   import { get } from 'svelte/store';
   import Thinking from './Thinking.svelte';
+  import RobotConnectionStatus from './RobotConnectionStatus.svelte';
   import InputArea from './chat/InputArea.svelte';
   import MessageList from './chat/MessageList.svelte';
   import ApprovalPrompt from './ApprovalPrompt.svelte';
@@ -27,7 +28,6 @@
   import { autonomyModeDefinition, nextAutonomyMode, type AutonomyMode } from '../lib/client/active-operator-modes';
   import { setActiveOperatorMode, triggerManagerSnapshot, useTriggerManager } from '../lib/stores/trigger-manager';
   import { projectBufferFeed, receiveLiveConversation, replaceBufferSlice, stampBufferSource } from '../lib/client/buffer-feed';
-  import { setInnerDialogueSpeechVisible } from '../lib/client/inner-dialogue-speech-visibility';
 
   // Component state
   let input = '';
@@ -76,9 +76,6 @@
   let speechPreferenceLoading = true;
   let speechPreferenceError = '';
   $: speechOutputLabel = speechOutput === 'off' ? 'Off' : speechOutput === 'browser' ? 'Browser' : 'Body Control';
-  // vLLM Thinking Mode (Qwen3)
-  let thinkingModeEnabled = false;
-  let thinkingModeLoading = false;
   let yoloMode = false;
   // Active Operator three-state control
   let autonomyMode: AutonomyMode = 'reactive';
@@ -219,10 +216,6 @@
   });
 
 
-  // Intersection observer for auto-scroll detection
-  let scrollSentinel: HTMLDivElement;
-  let scrollObserver: IntersectionObserver | null = null;
-
   // Component lifecycle flag for cleanup
   let isComponentMounted = true;
 
@@ -343,55 +336,11 @@
     updateReasoningDepth(Number(target.value), true);
   }
 
-  // vLLM Thinking Mode toggle
-  async function loadThinkingMode() {
-    try {
-      const res = await apiFetch('/api/llm-backend/status');
-      if (res.ok) {
-        const data = await res.json();
-        // Only relevant when vLLM is active
-        if (data.config?.vllm?.enableThinking !== undefined) {
-          thinkingModeEnabled = data.config.vllm.enableThinking;
-        }
-      }
-    } catch (error) {
-      console.error('[thinking-mode] Failed to load status:', error);
-    }
-  }
-
-  async function toggleThinkingMode() {
-    if (thinkingModeLoading) return;
-    thinkingModeLoading = true;
-
-    try {
-      const newValue = !thinkingModeEnabled;
-      const res = await apiFetch('/api/llm-backend/config', {
-        method: 'PUT',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          vllm: { enableThinking: newValue }
-        }),
-      });
-
-      if (res.ok) {
-        thinkingModeEnabled = newValue;
-        console.log(`[thinking-mode] ${newValue ? 'Enabled' : 'Disabled'} - model will ${newValue ? 'show <think> tags' : 'respond directly'}`);
-      } else {
-        console.error('[thinking-mode] Failed to update config');
-      }
-    } catch (error) {
-      console.error('[thinking-mode] Error toggling:', error);
-    } finally {
-      thinkingModeLoading = false;
-    }
-  }
-
   // Server-first conversation buffer management
 
   onMount(() => {
     loadChatPrefs();
     void loadSpeechPreference();
-    loadThinkingMode(); // Load vLLM thinking mode setting
     releaseTriggerManager = useTriggerManager();
     mic.loadVADSettings(); // Load VAD settings from voice config
 
@@ -438,23 +387,10 @@
     connectMultipleBufferStreams();
     console.log(`[ChatInterface] Connected to buffer streams for:`, Array.from(selectedViews));
 
-    scrollObserver = new IntersectionObserver(
-      (entries) => {
-        shouldAutoScroll = entries[0].isIntersecting;
-      },
-      { threshold: 0.1 }
-    );
-
-    if (scrollSentinel) {
-      scrollObserver.observe(scrollSentinel);
-    }
-
     isTabVisible = !document.hidden;
-    setInnerDialogueSpeechVisible(isTabVisible && selectedViews.has('inner'));
     // Reconnect buffer streams when tab becomes visible (in case connection dropped)
     const handleVisibilityChange = () => {
       isTabVisible = !document.hidden;
-      setInnerDialogueSpeechVisible(isTabVisible && selectedViews.has('inner'));
       if (!isTabVisible) {
         disconnectAllBufferStreams();
         return;
@@ -610,7 +546,6 @@
   onDestroy(() => {
     // Mark component as unmounted to stop animation loops
     isComponentMounted = false;
-    setInnerDialogueSpeechVisible(false);
 
     // Clean up event listeners and streams
     visibilityCleanup?.();
@@ -625,12 +560,6 @@
     releaseTriggerManager?.();
     if (transientStatusTimer) clearTimeout(transientStatusTimer);
 
-    // Clean up IntersectionObserver (moved from async onMount which doesn't work for cleanup)
-    if (scrollObserver) {
-      scrollObserver.disconnect();
-      scrollObserver = null;
-    }
-
     // Clean up voice settings event listener
     if (typeof window !== 'undefined') {
       window.removeEventListener('voice-settings-updated', handleVoiceSettingsUpdate);
@@ -639,6 +568,14 @@
     // Clean up mic resources
     mic.disableMediaSession();
     mic.cleanup();
+  });
+
+  beforeUpdate(() => {
+    if (messagesContainer) {
+      // Measure before new content changes the height; allow pixel rounding.
+      shouldAutoScroll = messagesContainer.scrollHeight - messagesContainer.clientHeight
+        - messagesContainer.scrollTop <= 1;
+    }
   });
 
   afterUpdate(() => {
@@ -1828,7 +1765,6 @@
     }
 
     selectedViews = newSet;
-    setInnerDialogueSpeechVisible(isTabVisible && selectedViews.has('inner'));
 
     // Update the selected projections on the shared buffer stream.
     connectMultipleBufferStreams();
@@ -2017,22 +1953,6 @@
       </button>
     </div>
 
-    <!-- Thinking Mode Toggle (vLLM/Qwen3) -->
-    <button
-      class="thinking-toggle {thinkingModeEnabled ? 'active' : ''}"
-      class:loading={thinkingModeLoading}
-      title={thinkingModeEnabled
-        ? 'Thinking ON - Model reasons before answering (click to disable)'
-        : 'Thinking OFF - Direct responses (click to enable reasoning)'}
-      on:click={toggleThinkingMode}
-      disabled={thinkingModeLoading}
-    >
-      <span class="thinking-icon">🧠</span>
-      {#if thinkingModeEnabled}
-        <span class="thinking-badge">On</span>
-      {/if}
-    </button>
-
     <!-- Active Operator Toggle -->
     <button
       class="active-operator-toggle {activeOperatorMode.buttonClass}"
@@ -2068,6 +1988,8 @@
       </button>
     {/if}
   </div>
+
+  {#if $currentMode === 'environment' && $isOwner}<RobotConnectionStatus />{/if}
 
   <!-- Messages Area -->
 
@@ -2128,7 +2050,6 @@
               }
             }}
           />
-          <div bind:this={scrollSentinel} class="scroll-sentinel"></div>
         {/if}
       </div>
 

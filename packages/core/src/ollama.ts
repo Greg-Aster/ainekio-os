@@ -504,7 +504,7 @@ export class OllamaClient {
 
     const body: Record<string, unknown> = { model, prompt };
 
-    // num_gpu: 0 forces CPU inference (leaves GPU free for vLLM)
+    // num_gpu: 0 forces CPU inference (leaves GPU free for the selected chat model)
     if (options?.num_gpu !== undefined) {
       body.options = { num_gpu: options.num_gpu };
     }

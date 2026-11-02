@@ -22,7 +22,6 @@ export interface BaseCardProps {
   message: ChatMessage;
   index: number;
   isSelected: boolean;
-  mode: 'conversation' | 'inner' | 'combined';
 }
 
 // Events that cards can emit

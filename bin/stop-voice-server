@@ -1,39 +1,7 @@
 #!/usr/bin/env bash
-#
-# Stop voice server (any provider)
-# Intelligently detects and stops running voice servers
-#
-
-set -euo pipefail
-
-SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-REPO_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
-
-# Colors
-GREEN='\033[0;32m'
-YELLOW='\033[1;33m'
-NC='\033[0m'
-
-echo "• Stopping voice servers..."
-
-STOPPED=false
-
-# Whisper and Kokoro are owned by the shared voice server manager.
-if "$REPO_ROOT/bin/mh" voice-server stop --all; then
-  STOPPED=true
-else
-  echo -e "  ${YELLOW}⚠ One or more shared voice servers could not be stopped cleanly${NC}"
-fi
-
-# GPT-SoVITS has a separate profile-coupled lifecycle owner.
-if "$REPO_ROOT/bin/mh" sovits stop; then
-  STOPPED=true
-else
-  echo -e "  ${YELLOW}⚠ GPT-SoVITS could not be stopped cleanly${NC}"
-fi
-
-if [ "$STOPPED" = true ]; then
-  echo -e "  ${GREEN}✓ Voice servers stopped${NC}"
-else
-  echo "  ✓ No voice servers running"
-fi
+# Each provider retains its existing lifecycle owner.
+set -uo pipefail
+REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+status=0
+"$REPO_ROOT/bin/mh" voice-server stop --all || status=1
+exit "$status"

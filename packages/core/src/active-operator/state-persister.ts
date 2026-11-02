@@ -13,14 +13,15 @@ import { DEFAULT_CONFIG } from './types.js';
 
 const CONFIG_FILE = path.join(systemPaths.etc, 'active-operator.json');
 
-function normalizeConfig(loaded: Partial<ActiveOperatorConfig>): ActiveOperatorConfig {
+function normalizeConfig(loaded: Partial<ActiveOperatorConfig> & { semiInactivityMinutes?: number }): ActiveOperatorConfig {
+  const interval = loaded.semiAssessmentMinutes ?? loaded.semiInactivityMinutes;
   return {
     autonomyMode: ['reactive', 'semi', 'full'].includes(loaded.autonomyMode || '')
       ? loaded.autonomyMode!
       : DEFAULT_CONFIG.autonomyMode,
-    semiInactivityMinutes: typeof loaded.semiInactivityMinutes === 'number'
-      && Number.isFinite(loaded.semiInactivityMinutes) && loaded.semiInactivityMinutes > 0
-      ? loaded.semiInactivityMinutes : DEFAULT_CONFIG.semiInactivityMinutes,
+    semiAssessmentMinutes: typeof interval === 'number'
+      && Number.isFinite(interval) && interval > 0
+      ? interval : DEFAULT_CONFIG.semiAssessmentMinutes,
   };
 }
 

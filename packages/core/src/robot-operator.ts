@@ -2,6 +2,7 @@ import fs from 'node:fs'
 import path from 'node:path'
 import { systemPaths } from './path-builder.js'
 import type { EnvironmentObservation } from './environment-interface/types.js'
+import { summarizeEnvironmentBridgeState } from './environment-interface/store.js'
 import type { AutonomyMode, QueuedTask } from './queue/types.js'
 import { openExecutionStore } from './durable-execution/storage.js'
 
@@ -140,6 +141,29 @@ function isConfiguredAgentEnabled(id: string): boolean {
   }
 }
 
+function selectedRobotSession(sessionId?: string) {
+  const bridge = summarizeEnvironmentBridgeState()
+  const selectedId = sessionId || loadRobotOperatorConfig().sessionId
+  const session = selectedId ? bridge.sessions.find(item => item.sessionId === selectedId)
+    : [...bridge.sessions].sort((a, b) => Number(b.status === 'connected') - Number(a.status === 'connected')
+      || b.lastSeenAt.localeCompare(a.lastSeenAt))[0]
+  return { bridge, session, selectedId }
+}
+
+/** Current selected-body connection facts, shared by autonomy admission and result consumers. */
+export function readRobotOperatorBodyConnection(sessionId?: string) {
+  const { bridge, session, selectedId } = selectedRobotSession(sessionId)
+  const state = session?.latestObservation?.state
+  const body = state?.body as { authenticated?: boolean; robotId?: string } | undefined
+  const gateway = state?.gateway as { robots?: Record<string, { connection_state?: string }> } | undefined
+  const robot = body?.robotId ? gateway?.robots?.[body.robotId] : undefined
+  const connected = bridge.enabled && session?.status === 'connected'
+    && state?.adapterConnected !== false && body?.authenticated === true
+    && (robot?.connection_state === undefined || robot.connection_state === 'online')
+  return { sessionId: session?.sessionId ?? selectedId ?? null, robotId: body?.robotId ?? null,
+    connected, reason: connected ? null : 'Selected robot body is disconnected or unavailable' }
+}
+
 export function isBoredomObserverEnabled(): boolean {
   return isConfiguredAgentEnabled('boredom-observer')
 }
@@ -181,8 +205,7 @@ export function robotOperatorChildGraph(
 export function activeRobotExecutions(username: string) {
   const store = openExecutionStore(username)
   try {
-    return store.list(username).filter(record => !['completed', 'failed', 'cancelled'].includes(record.status)
-      && store.entry(record.executionId).context?.cognitiveMode === 'environment')
+    return store.active(username).filter(record => store.entry(record.executionId).context?.cognitiveMode === 'environment')
       .map(record => ({ executionId: record.executionId, status: record.status,
         stimulusAgent: store.entry(record.executionId).context?.robotOperatorContext?.stimulusAgent,
         waitingReason: record.waitingReason, checkpointVersion: record.checkpointVersion,

@@ -346,7 +346,7 @@
     "desire-agent": {
       "id": "desire-agent",
       "displayName": "Desire Agent",
-      "description": "Sole controller for reviewing persisted history, nurturing desires, planning approved work, executing it, and reviewing outcomes.",
+      "description": "Creates new desires from attributed evidence, reviews and nurtures existing desires, plans approved work, executes it, and reviews outcomes.",
       "enabled": true,
       "type": "manual",
       "priority": "normal",

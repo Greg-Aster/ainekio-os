@@ -13,10 +13,19 @@ test('body event workflow selection uses only the reported typed event', () => {
   assert.equal(resolveBodyEventGraph(observation('tipped')), 'fast-body-event')
   assert.equal(resolveBodyEventGraph(observation('rapid_movement')), 'fast-body-event')
   assert.equal(resolveBodyEventGraph(observation('servo_stall')), 'fast-body-event')
-  for (const kind of ['wake', 'boot', 'request', 'unknown', undefined]) {
+  for (const kind of ['boot', 'request', 'unknown', undefined]) {
     assert.equal(resolveBodyEventGraph(observation(kind)), 'body-event-trigger')
   }
   const request = observation('request')
   request.text = [{ id: 'fixture-request', source: 'player', text: 'I tipped it and shook it.', timestamp: request.timestamp }]
   assert.equal(resolveBodyEventGraph(request), 'body-event-trigger', 'Request wording does not select a typed event route')
+})
+
+
+test('a reported boot wake uses startup, without classifying request text', () => {
+  const boot = observation('wake')
+  boot.state = { bodyEvent: { data: { kind: 'wake', reason: 'boot' } } }
+  assert.equal(resolveBodyEventGraph(boot), 'robot-wake-up')
+  boot.state = { bodyEvent: { data: { kind: 'wake', reason: 'sleep' } } }
+  assert.equal(resolveBodyEventGraph(boot), 'robot-wake-up')
 })

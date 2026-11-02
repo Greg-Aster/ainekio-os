@@ -8,7 +8,7 @@
  * - Target resources (files, commands, etc.)
  */
 
-import { TrustLevel, SkillRisk, SkillManifest } from './skills.js';
+import type { TrustLevel, SkillRisk, SkillManifest } from './skills.js';
 import { audit } from './audit.js';
 
 // ============================================================================

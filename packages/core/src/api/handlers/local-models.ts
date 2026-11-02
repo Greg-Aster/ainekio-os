@@ -77,8 +77,8 @@ export async function handleGetLocalModelsStatus(_req: UnifiedRequest): Promise<
       downloadOnWifiOnly: localModelsConfig?.downloadOnWifiOnly ?? true,
       loadedModels,
       config: {
-        embeddings: localModelsConfig?.embeddings ?? { model: 'qwen3-embedding-0.6b', preloadAtStartup: true },
-        llm: localModelsConfig?.llm ?? { model: 'qwen3-1.7b', preloadAtStartup: false },
+        embeddings: localModelsConfig?.embeddings ?? { model: 'qwen3-embedding-0.6b' },
+        llm: localModelsConfig?.llm ?? { model: 'qwen3-1.7b' },
       },
     });
   } catch (error) {
@@ -104,8 +104,8 @@ export async function handleGetLocalModelsConfig(_req: UnifiedRequest): Promise<
         endpoint: 'http://127.0.0.1:4324',
         autoStart: false,
         downloadOnWifiOnly: true,
-        embeddings: { model: 'qwen3-embedding-0.6b', preloadAtStartup: true },
-        llm: { model: 'qwen3-1.7b', preloadAtStartup: false },
+        embeddings: { model: 'qwen3-embedding-0.6b' },
+        llm: { model: 'qwen3-1.7b' },
       },
     });
   } catch (error) {
@@ -299,13 +299,8 @@ export async function handleStartLocalModels(req: UnifiedRequest): Promise<Unifi
       return successResponse({ status: 'already_running', endpoint });
     }
 
-    // Get models directory (default to profile-based location)
-    const modelsDir = req.body?.modelsDir || './models';
-
     const success = await startLocalModelService({
-      modelsDir,
-      preloadEmbeddings: config.embeddings.preloadAtStartup,
-      preloadLLM: config.llm.preloadAtStartup,
+      modelsDir: req.body?.modelsDir,
     });
 
     if (!success) {

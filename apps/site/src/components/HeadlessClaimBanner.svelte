@@ -23,9 +23,10 @@
     try {
       const res = await apiFetch('/api/runtime/mode');
       if (res.ok) {
-        runtimeMode = await res.json();
+        const mode: RuntimeMode = await res.json();
+        runtimeMode = mode;
         // Show banner if in headless mode
-        showBanner = runtimeMode.headless;
+        showBanner = mode.headless;
       }
     } catch (err) {
       // Silently fail - this is not critical for app operation
