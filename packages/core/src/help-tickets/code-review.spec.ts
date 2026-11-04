@@ -14,6 +14,7 @@ let planningCalls = 0;
 let terminalCalls = 0;
 let failTerminal = false;
 let reply = '';
+let terminalPrompt = '';
 const modelMock = mock.module('../model-router.js', { namedExports: { ...router,
   callLLM: async (request: any) => { planningCalls++; assert.equal(request.role, 'coder'); assert.equal(request.options.toolAccess, 'read-only'); return { content: 'Investigate the supplied issue and return the required report.' }; },
 } });
@@ -21,6 +22,7 @@ const terminal = await import('../terminal/client.js');
 const terminalMock = mock.module('../terminal/client.js', { namedExports: { ...terminal,
   executeBigBrotherTool: async (request: any) => {
     terminalCalls++;
+    terminalPrompt = request.prompt;
     assert.ok(request.codeReview.issueIds.length);
     if (failTerminal) throw new Error('Fixture Codex failure');
     return { success: true, output: reply, metadata: { repairAuthorization: { canRepair: false } } };
@@ -35,6 +37,7 @@ const { loadBufferForUser } = await import('../conversation-buffer.js');
 const { recordSystemError, getTicket, getPendingTechnicalTickets } = await import('./index.js');
 const { systemCodeReviewAuthorization } = await import('./code-review.js');
 const { prepareCodeReviewResult } = await import('../nodes/active-operator/help-ticket-review.node.js');
+const { SYSTEM_CODE_REVIEW_TERMINAL_PROMPT } = await import('./code-review-prompts.js');
 const username = 'review-owner';
 createUser(username, 'fixture-password-only', 'owner');
 const profile = getProfilePaths(username);
@@ -120,6 +123,11 @@ test('resolution needs evidence; read-only changes and malformed reports remain 
   assert.equal(prepareCodeReviewResult(review, { result: JSON.stringify({ report: 'Already corrected, verified.', issues: [fixed] }) }).failed, false);
   assert.equal(prepareCodeReviewResult(review, { result: JSON.stringify({ report: 'No evidence', issues: [{ ...fixed, validation: [] }] }) }).failed, true);
   assert.equal(prepareCodeReviewResult(review, { result: 'not json' }).issues[0].outcome, 'unresolved');
+  for (const field of ['changedFiles', 'validation', 'evidence']) {
+    const malformed = { ...outcome(ticket.id), [field]: 'Read-only investigation.' };
+    const prepared = prepareCodeReviewResult(review, { result: JSON.stringify({ report: 'Diagnosis completed.', issues: [malformed] }) });
+    assert.equal(prepared.failed, true, `${field} must remain an array of strings`);
+  }
   assert.equal(prepareCodeReviewResult(review, { repairAuthorization: { canRepair: false },
     result: JSON.stringify({ report: 'Edited', issues: [{ ...fixed, changedFiles: ['source.ts'] }] }) }).failed, true);
   assert.ok(getPendingTechnicalTickets(username).some(item => item.id === ticket.id));
@@ -192,4 +200,27 @@ test('Active Operator receives the registered coding operation and unresolved is
   const contextNode = nodeRegistry.get('robot_autonomy_controller_context')!;
   const selection = await contextNode.execute!({ activationState: result.activationState }, { username }, { contextPurpose: 'selection' });
   assert.ok(selection.request.includes(pending.id));
+});
+
+test('the terminal receives explicit array field types and its multi-issue report retains every outcome', async () => {
+  await withUserContext({ username, userId: username, role: 'owner' }, async () => {
+    const primary = issue('typed-report-primary');
+    const duplicate = issue('typed-report-duplicate');
+    const outcomes = [outcome(primary.id), { ...outcome(duplicate.id), outcome: 'duplicate', duplicateOf: primary.id }];
+    reply = JSON.stringify({ report: 'Read-only investigation completed; repair remains proposed.', issues: outcomes });
+    const { graph } = await loadGraphForMode('system-code-review', username);
+    const state = await runGraph({ graph, context: { ...context, codeReview: { issueIds: [primary.id, duplicate.id] } } });
+    assert.equal(state.status, 'completed', state.error?.message);
+    assert.match(terminalPrompt, /The changedFiles, validation and evidence fields must be arrays of strings/);
+    assert.match(terminalPrompt, /use \[\] when empty, never a plain string/);
+    assert.equal(terminalPrompt, SYSTEM_CODE_REVIEW_TERMINAL_PROMPT);
+    const prepared = state.nodes.get('prepare')!.outputs!.prepared;
+    assert.equal(prepared.failed, false);
+    assert.deepEqual(prepared.issues, outcomes);
+    assert.equal(getTicket(username, primary.id)!.status, 'needs_fix');
+    assert.equal(getTicket(username, duplicate.id)!.status, 'duplicate');
+    assert.equal(getTicket(username, duplicate.id)!.duplicateOf, primary.id);
+    assert.equal(loadBufferForUser(username, 'conversation').messages.at(-1)!.content, JSON.parse(reply).report);
+    assert.ok(fs.existsSync(getTicket(username, duplicate.id)!.lastCodeReview!.memoryPath!));
+  });
 });
