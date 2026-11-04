@@ -53,7 +53,7 @@ operating-system permissions.
 
 Each profile reuses its diagnostic terminal and exact Codex thread. Reports that
 arrive during execution wait for a subsequent turn. Chat delegation remains a
-separate conversation. The existing terminal owner serializes provider execution.
+separate conversation. The existing terminal owner serializes turns within each session; independent sessions can execute concurrently.
 Closing the diagnostic window stops its active work and cancels pending reports.
 Stopping the Terminal service closes its sessions; recovery never replays queued
 repairs. A later new session receives the repair-log path for historical context.
@@ -96,7 +96,7 @@ The editable `big-brother-tool-mode.json` graph runs `big_brother_tool_execution
 through the same Terminal service and native desktop view as diagnostics. Each
 admitted task has its own Codex session, separate from the repair thread and repair
 log. The request node exposes the approved prompt, model, and reasoning settings.
-The Terminal owner serializes provider turns and owns cancellation and cleanup.
+The Terminal owner serializes turns within each session and owns cancellation and cleanup. Independent sessions can execute concurrently.
 
 On completion, the graph feeds the attributed result or failure into the existing
 conversation context builder and Model Router, then the conversation buffer,

@@ -31,4 +31,3 @@ export {
 } from './mobile-agents.js';
 
 // Local model service (Transformers.js) lifecycle management
-export { startLocalModelService, stopLocalModelService } from '../local-model-service-manager.js';

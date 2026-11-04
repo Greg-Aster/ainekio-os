@@ -23,12 +23,18 @@ export const bigBrotherToolRequestNode = defineNode({
 
 export const bigBrotherToolExecutionNode = defineNode({
   ...bigBrotherToolExecutionSchema,
-  async execute(_inputs, context) {
-    const work = context.environmentToolWork
+  async execute(inputs, context, properties) {
+    const work = context.environmentToolWork ?? {
+      request: inputs.request, selectedContext: inputs.selectedContext,
+      responseContext: inputs.selectedContext, options: properties,
+      taskId: context.graphExecution!.executionId, requestedAt: new Date().toISOString(),
+    }
     let result
     try {
       result = await executeBigBrotherTool({ prompt: work.options.prompt, model: work.options.model || undefined,
         reasoning: work.options.reasoning, username: context.username, toolTaskId: work.taskId,
+        ...(context.codeReview ? { codeReview: { executionId: context.codeReview.reviewExecutionId || context.graphExecution!.executionId,
+          issueIds: context.codeReview.issueIds } } : {}),
         data: { request: work.request, selectedContext: work.selectedContext },
         source: { taskId: work.taskId, effectId: work.effectId, requestedAt: work.requestedAt,
           originalRequest: work.request, sessionId: context.sessionId } }, context.abortSignal)
@@ -41,6 +47,7 @@ export const bigBrotherToolExecutionNode = defineNode({
     return { request: work.request, selectedContext: work.responseContext,
       toolWork: { taskId: work.taskId, effectId: work.effectId, request: work.request,
         requestedAt: work.requestedAt, completedAt: new Date().toISOString(),
-        state: result.success ? 'completed' : 'failed', result: result.output, error: result.error } }
+        state: result.success ? 'completed' : 'failed', result: result.output, error: result.error,
+        repairAuthorization: result.metadata?.repairAuthorization } }
   },
 })

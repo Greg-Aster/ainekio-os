@@ -40,18 +40,17 @@ export {
   buildEnvironmentSelectorEnvelope,
   buildEnvironmentSelectorSystemPrompt,
   validateEnvironmentSelectorOutput,
-} from './nodes/environment/helpers.js';
+} from './environment-interface/task-selection.js';
 export type {
   EnvironmentActionPurpose,
   EnvironmentModelOutput,
   EnvironmentSelectorEnvelopeInput,
   EnvironmentSelectorSystemInput,
   EnvironmentSelectorValidationResult,
-} from './nodes/environment/helpers.js';
+} from './environment-interface/task-selection.js';
 export * from './ollama';
 export * from './ollama-lora';
 export * from './llm-backend';
-export * from './local-model-service-manager';
 export * from './model-resolver';
 export { promoteEnvironmentSpecialist } from './api/handlers/model-registry';
 export { compareEnvironmentSpecialistReports } from './environment-training-promotion';
@@ -70,7 +69,6 @@ export {
   EmbeddingServiceError,
   embedText,
   cosineSimilarity,
-  getEmbeddingDimensions,
 } from './embeddings';
 export * from './locks';
 export * from './logging';
@@ -158,6 +156,7 @@ export * from './stt';
 export * from './voice-training';
 export * from './autonomy';
 export * from './environment-interface';
+export { collectSystemReviewIssues, systemCodeReviewAuthorization } from './help-tickets/code-review.js';
 // Cognitive mode - primary source for canWriteMemory
 export type {
   CognitiveModeId,

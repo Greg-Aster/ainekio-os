@@ -354,115 +354,8 @@
     @apply flex-1 overflow-y-auto overflow-x-hidden;
   }
 
-  /* Terminal */
-  .terminal-container {
-    @apply flex-1 overflow-hidden;
-  }
-
-  /* Claude CLI Terminal Panel (split view with chat) */
-  .claude-terminal-container {
-    @apply border-t border-gray-200 dark:border-gray-700 flex-shrink-0;
-    max-height: 350px;
-    min-height: 200px;
-    overflow: hidden;
-  }
-
-  /* Main chat area - flex column for split layout */
-  .chat-main-area {
+  .chat-main-area, .messages-panel {
     @apply flex flex-col flex-1 overflow-hidden;
-  }
-
-  .chat-main-area.with-terminal-split {
-    /* When terminal split is active, divide space between chat and terminal */
-  }
-
-  /* Messages panel (contains messages-container and input) */
-  .messages-panel {
-    @apply flex flex-col flex-1 overflow-hidden;
-  }
-
-  .messages-panel.split {
-    /* In split mode, take less vertical space to make room for terminal */
-    flex: 1 1 60%;
-    min-height: 300px;
-  }
-
-  /* Terminal resize handle */
-  .terminal-resize-handle {
-    @apply bg-gray-200 dark:bg-gray-700 cursor-row-resize flex-shrink-0;
-    height: 6px;
-    width: 100%;
-    padding: 0;
-    border: 0;
-    display: flex;
-    align-items: center;
-    justify-content: center;
-    transition: background-color 0.15s ease;
-    position: relative;
-  }
-
-  .terminal-resize-handle:hover,
-  .terminal-resize-handle.resizing {
-    @apply bg-blue-400 dark:bg-blue-500;
-  }
-
-  .terminal-resize-handle:focus {
-    @apply outline-none ring-2 ring-blue-500 ring-offset-1;
-  }
-
-  .resize-handle-grip {
-    @apply bg-gray-400 dark:bg-gray-500 rounded-full;
-    width: 40px;
-    height: 3px;
-    transition: background-color 0.15s ease;
-  }
-
-  .terminal-resize-handle:hover .resize-handle-grip,
-  .terminal-resize-handle.resizing .resize-handle-grip {
-    @apply bg-white dark:bg-gray-200;
-  }
-
-  .terminal-header-controls {
-    @apply flex items-center gap-2;
-  }
-
-  .terminal-size-hint {
-    @apply text-xs text-gray-400 dark:text-gray-500 font-mono;
-  }
-
-  /* Terminal split panel */
-  .terminal-split-panel {
-    @apply border-t border-gray-200 dark:border-gray-700;
-    min-height: 100px;
-    max-height: 70vh;
-    overflow: hidden;
-    display: flex;
-    flex-direction: column;
-  }
-
-  .terminal-split-panel.minimized {
-    flex: 0 0 auto;
-    min-height: auto;
-    max-height: none;
-  }
-
-  .terminal-header {
-    @apply flex items-center justify-between px-3 py-2 bg-gray-100 dark:bg-gray-800 border-b border-gray-200 dark:border-gray-700;
-    flex-shrink: 0;
-  }
-
-  .terminal-title {
-    @apply text-sm font-medium text-gray-600 dark:text-gray-300;
-  }
-
-  .terminal-minimize-btn {
-    @apply px-2 py-1 text-xs rounded hover:bg-gray-200 dark:hover:bg-gray-700 text-gray-500 dark:text-gray-400 transition-colors;
-  }
-
-  .terminal-content {
-    flex: 1;
-    overflow-y: auto;
-    overflow-x: hidden;
   }
 
   .messages-list {
@@ -1836,14 +1729,7 @@
     box-shadow: 0 0 8px rgba(6, 182, 212, 0.5);
   }
 
-  .backend-icon.local-models.available:not(.running) {
-    @apply bg-orange-500/15 dark:bg-orange-400/20 opacity-50;
-  }
 
-  .backend-icon.local-models.running {
-    @apply bg-orange-500/25 dark:bg-orange-400/30;
-    box-shadow: 0 0 8px rgba(251, 146, 60, 0.5);
-  }
 
   .backend-icon.offline {
     @apply opacity-40 grayscale;

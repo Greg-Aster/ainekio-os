@@ -8,7 +8,7 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 
-export type LocalModelProvider = 'ollama' | 'local-models';
+export type LocalModelProvider = 'ollama' | 'llama-cpp';
 export type LocalModelArtifactFormat = 'gguf' | 'safetensors';
 
 export interface LocalModelArtifact {
@@ -159,7 +159,7 @@ function listOllamaModelArtifacts(modelsDir: string): LocalModelArtifact[] {
           displayName,
           source: 'ollama-store',
           provider: 'ollama',
-          compatibleProviders: isGGUF ? ['ollama', 'local-models'] : ['ollama'],
+          compatibleProviders: isGGUF ? ['ollama', 'llama-cpp'] : ['ollama'],
           format: 'gguf',
           architecture: metadata.architecture,
           modelType: metadata.modelType,

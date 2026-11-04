@@ -163,6 +163,16 @@ test('activation workflow reads current evidence and dispatches an independent i
   fs.mkdirSync(path.join(root, 'etc'), { recursive: true })
   fs.writeFileSync(path.join(root, 'etc/active-operator.json'), JSON.stringify({ autonomyMode: 'full' }))
   fs.copyFileSync(new URL('../../../../../etc/agents.json', import.meta.url), path.join(root, 'etc/agents.json'))
+  const { getDefaultPersonaCore } = await import('../../identity.js')
+  let standingPersona: ReturnType<typeof getDefaultPersonaCore> | null = getDefaultPersonaCore()
+  standingPersona.identity.name = 'Fixture standing persona'
+  standingPersona.background = 'Fixture standing background'
+  standingPersona.personality.narrativeStyle = 'Fixture personality for autonomous decisions'
+  const formatter = nodeRegistry.get('persona_formatter')!.execute
+  const formatProperties = controller.nodes.find((node: any) => node.id === 'persona-formatter').data.properties
+  const expectedPersona = (await formatter({ persona: standingPersona }, {}, formatProperties)).formatted
+  let personaReads = 0
+  let assessmentMode: 'semi' | 'full' = 'full'
   let selectedSources = ['vision', 'memory'];
   const sourceReads: string[] = [];
   const order: string[] = []
@@ -177,6 +187,10 @@ test('activation workflow reads current evidence and dispatches an independent i
       assert.equal(properties?.role, 'orchestrator');
       assert.equal(properties?.outputContract, 'autonomy-context');
       assert.doesNotMatch(inputs.message, /Complete record/);
+      const request = JSON.parse(inputs.message)
+      assert.equal(request.activePersona, standingPersona ? expectedPersona : null,
+        'Context selection must receive the standing persona before choosing optional evidence')
+      assert.equal(request.sourceAvailability.persona, standingPersona !== null)
       const analysis = { contextSources: selectedSources, needsVision: selectedSources.includes('vision'),
         needsMemory: selectedSources.includes('memory'), needsConversationHistory: selectedSources.includes('conversationHistory') };
       return { ...analysis, analysis };
@@ -199,7 +213,7 @@ test('activation workflow reads current evidence and dispatches an independent i
       assert.equal(inputs.orchestratorHints.needsMemory, true)
       return { memories, searchPerformed: true }
     },
-    robot_autonomy_task_catalog: async () => ({ memoryHints: { needsMemory: false }, activationState: { mode: 'full', previous: null, assessedAt: timestamp, operations: [] }, tasks: [{ id: 'robot-autonomy-executor', name: 'Executor',
+    robot_autonomy_task_catalog: async () => ({ memoryHints: { needsMemory: false }, activationState: { mode: assessmentMode, previous: null, assessedAt: timestamp, operations: [] }, tasks: [{ id: 'robot-autonomy-executor', name: 'Executor',
       description: 'Existing executor.', kind: 'environment-executor', handler: 'environment.observation', taskType: 'generic', priority: 'normal', tags: [] }] }),
     model_router: async inputs => {
       order.push('decide')
@@ -211,8 +225,12 @@ test('activation workflow reads current evidence and dispatches an independent i
         assert.ok(text.includes('gateway'))
       } else assert.equal(typeof content, 'string', 'Unselected vision must not attach an image');
       const envelope = parseContext(text.slice(text.indexOf('{')))
+      assert.equal(envelope.robotOperatorContext.activePersona, standingPersona ? expectedPersona : null,
+        'Activity selection must retain the standing persona even when no persona section is requested')
       if (selectedSources.includes('memory')) assert.deepEqual(envelope.robotOperatorContext.sampledMemories.entries, memories)
       else assert.doesNotMatch(text, /Complete record/);
+      if (assessmentMode === 'semi') return { response: JSON.stringify({ updates: [{ operationId: 'robot-autonomy-executor', delta: 100,
+        reason: 'Fixture selection.', instruction: intention }] }) }
       return { response: JSON.stringify({ updates: [{ operationId: 'robot-autonomy-executor', activation: 46,
         reason: 'Fixture selection.', instruction: intention, target: null }],
         assessmentReason: 'Current camera evidence supports the selected intention.', memoryRequest: null }) }
@@ -226,8 +244,7 @@ test('activation workflow reads current evidence and dispatches an independent i
     },
     robot_status: async () => ({ context: {} }),
     robot_status_out: async () => ({ persisted: true, status: {} }),
-    persona_loader: async () => ({ persona: {} }),
-    persona_formatter: async () => ({ formatted: '' }),
+    persona_loader: async () => { personaReads++; return { persona: standingPersona, inactive: standingPersona === null } },
     active_desires: async () => ({ desires: [] }),
     observation_history: async () => ({ observations: [] }),
     save_visual_observation: async () => ({ observation: null }),
@@ -262,11 +279,17 @@ test('activation workflow reads current evidence and dispatches an independent i
       selectedSources = sources;
       order.length = 0;
       sourceReads.length = 0;
+      personaReads = 0;
       const state = await executeGraph(controller, { username: 'fixture', currentTime: timestamp,
         robotOperatorContext: { robotObserver } });
       assert.equal(state.status, 'completed', state.error?.stack);
       assert.deepEqual(order, ['select', 'decide', 'delegate']);
-      for (const id of ['robot-status', 'persona-loader', 'active-desires', 'observation-history', 'execution', 'activity-history', 'recent-memories', 'read-camera'])
+      assert.equal(personaReads, 1, 'The existing loader reads standing persona once per assessment')
+      assert.equal(state.nodes.get('persona-loader')?.status, 'completed')
+      assert.equal(state.nodes.get('persona-formatter')?.status, standingPersona ? 'completed' : 'skipped')
+      if (standingPersona) assert.deepEqual(requests.at(-1).input.robotOperatorContext.selectedContext.sources.persona.value, standingPersona,
+        'The already-loaded canonical persona remains reusable by selected downstream work')
+      for (const id of ['robot-status', 'active-desires', 'observation-history', 'execution', 'activity-history', 'recent-memories', 'read-camera'])
         assert.equal(state.nodes.get(id)?.status, 'skipped', `${id} must not read an unselected source`);
       return state;
     };
@@ -274,6 +297,12 @@ test('activation workflow reads current evidence and dispatches an independent i
     assert.deepEqual(sourceReads, []);
     await runSelection(['conversationHistory']);
     assert.deepEqual(sourceReads, ['conversation']);
+    await runSelection(['persona.values']);
+    assessmentMode = 'semi';
+    fs.writeFileSync(path.join(root, 'etc/active-operator.json'), JSON.stringify({ autonomyMode: 'semi' }))
+    await runSelection([]);
+    standingPersona = null;
+    await runSelection([]);
 
   } finally {
     for (const [id, execute] of originals) { nodeRegistry.get(id)!.execute = execute; nodeExecutors.set(id, execute) }

@@ -13,6 +13,22 @@ const repo = fileURLToPath(new URL('../../../../', import.meta.url))
 const root = fs.mkdtempSync(path.join(os.tmpdir(), 'mh-terminal-service-'))
 process.env.METAHUMAN_ROOT = root
 fs.mkdirSync(path.join(root, 'etc'), { recursive: true })
+fs.copyFileSync(path.join(repo, 'agents_big_brother'), path.join(root, 'agents_big_brother'))
+fs.mkdirSync(path.join(root, 'etc/cognitive-graphs'), { recursive: true })
+fs.copyFileSync(path.join(repo, 'etc/cognitive-graphs/big-brother-response-mode.json'), path.join(root, 'etc/cognitive-graphs/big-brother-response-mode.json'))
+const responseAdmissions: any[] = []
+const coordinator = http.createServer(async (req, res) => {
+  let body = ''
+  for await (const chunk of req) body += chunk
+  responseAdmissions.push(JSON.parse(body))
+  res.writeHead(200, { 'Content-Type': 'application/json' })
+  res.end(JSON.stringify({ task: { id: `response-${responseAdmissions.length}` } }))
+})
+await new Promise<void>(resolve => coordinator.listen(0, '127.0.0.1', resolve))
+process.env.MH_WORK_COORDINATOR_URL = `http://127.0.0.1:${(coordinator.address() as import('node:net').AddressInfo).port}`
+const tokenPath = path.join(root, 'logs/run/queue/service-token')
+fs.mkdirSync(path.dirname(tokenPath), { recursive: true })
+fs.writeFileSync(tokenPath, 'fixture-terminal-coordinator')
 fs.writeFileSync(path.join(root, 'codex-calls.jsonl'), '')
 fs.writeFileSync(path.join(root, 'etc', 'agents.json'), JSON.stringify({ agents: {} }))
 const executable = path.join(root, 'provider.cjs')
@@ -104,6 +120,7 @@ function terminalAudit(event: string, sessionId: string) {
 test.after(async () => {
   try { await client.stopTerminalService() } finally {
     if (service?.exitCode === null && service.signalCode === null) { service.kill('SIGTERM'); await waitForExit() }
+    await new Promise<void>(resolve => coordinator.close(() => resolve()))
     fs.rmSync(root, { recursive: true, force: true })
   }
 })
@@ -117,23 +134,22 @@ test('service is off on import and catalog registration is on-demand', async () 
   assert.equal(fs.existsSync(terminalSocket), false)
 })
 
-test('private service retains sessions across stream disconnects and preserves screen order', async () => {
+test('private service retains Codex chat across stream disconnects and preserves screen order', async () => {
   await launch()
   assert.equal(fs.statSync(terminalSocket).mode & 0o777, 0o600)
   assert.deepEqual((await client.getTerminalState()).sessions, [])
-  const session = await client.terminalCall<{ id: string }>('/create', { kind: 'shell' })
-  const first = await client.terminalRequest(`/events?id=${session.id}`)
+  const session = await client.terminalCall<{ sessionId: string }>('/message', { message: 'reconnected-screen', username: 'chat-fixture' })
+  const first = await client.terminalRequest(`/events?id=${session.sessionId}`)
   first.destroy()
-  await client.terminalCall('/input', { id: session.id, data: "printf '\\033[2J\\033[Hreconnected-screen'\n" })
   await delay(100)
-  const second = await client.terminalRequest(`/events?id=${session.id}`)
+  const second = await client.terminalRequest(`/events?id=${session.sessionId}`)
   second.setEncoding('utf8')
   let data = ''
   for await (const chunk of second) { data += chunk; if (data.includes('reconnected-screen')) break }
   second.destroy()
   assert.match(data, /"type":"screen"/)
   assert.equal((await client.getTerminalState()).sessions.length, 1)
-  await client.terminalCall('/close', { id: session.id })
+  await client.terminalCall('/close', { id: session.sessionId })
   assert.deepEqual((await client.getTerminalState()).sessions, [])
 })
 
@@ -185,25 +201,25 @@ test('graph messages retain native roles through the private terminal service an
   await client.stopBigBrotherSession()
 })
 
-test('stream authentication is revoked after logout without terminating the shell', async () => {
+test('stream authentication is revoked after logout without terminating the Codex session', async () => {
   const { createSession, deleteSession } = await import('../sessions.js')
   const { handleTerminalEvents } = await import('../api/handlers/terminal.js')
   const auth = createSession('terminal-test-owner', 'owner')
-  const terminal = await client.terminalCall<{ id: string }>('/create', { kind: 'shell' })
+  const terminal = await client.terminalCall<{ sessionId: string }>('/message', { message: 'reconnected-screen', username: 'chat-fixture' })
   const abort = new AbortController()
   const response = await handleTerminalEvents({ path: '/api/terminal/events', method: 'GET',
     user: { userId: auth.userId, username: 'terminal-test-owner', role: 'owner', isAuthenticated: true },
-    sessionId: auth.id, query: { id: terminal.id }, signal: abort.signal })
+    sessionId: auth.id, query: { id: terminal.sessionId }, signal: abort.signal })
   assert.equal(response.status, 200)
   const iterator = response.stream![Symbol.asyncIterator]()
   await iterator.next()
   deleteSession(auth.id)
-  await client.terminalCall('/input', { id: terminal.id, data: "printf 'revoked-session-check\\n'\n" })
+  await client.terminalCall('/message', { message: 'revoked-session-check', username: 'chat-fixture' })
   const next = await iterator.next()
   assert.match(next.value || '', /access expired/)
   assert.equal((await iterator.next()).done, true)
-  assert.equal((await client.getTerminalState()).sessions.some(item => item.id === terminal.id), true)
-  await client.terminalCall('/close', { id: terminal.id })
+  assert.equal((await client.getTerminalState()).sessions.some(item => item.id === terminal.sessionId), true)
+  await client.terminalCall('/close', { id: terminal.sessionId })
 })
 
 test('provider completes without a browser and cancellation/timeout keep the sole owner', async () => {
@@ -224,7 +240,7 @@ test('provider completes without a browser and cancellation/timeout keep the sol
 })
 
 test('SIGTERM stops children, restart starts empty, and explicit stop exits', async () => {
-  await client.terminalCall('/create', { kind: 'shell' })
+  await client.terminalCall('/message', { message: 'hold-diagnostic', username: 'chat-fixture' })
   service!.kill('SIGTERM')
   await waitForExit()
   assert.deepEqual(fs.readdirSync(terminalReceipts), [])
@@ -238,7 +254,7 @@ test('SIGTERM stops children, restart starts empty, and explicit stop exits', as
 
 test('offline stop recovers the saved sessions after the agent is killed', async () => {
   await launch()
-  await client.terminalCall('/create', { kind: 'shell' })
+  await client.terminalCall('/message', { message: 'hold-diagnostic', username: 'chat-fixture' })
   service!.kill('SIGKILL')
   await waitForExit()
   assert.ok(fs.readdirSync(terminalReceipts).length > 0)
@@ -288,6 +304,7 @@ test('Big Brother starts the canonical service on demand and works again after a
 test('diagnostic node opens one desktop, queues reports, resumes the exact thread and keeps chat separate', async t => {
   await launch()
   t.after(async () => { await client.stopTerminalService(); await waitForExit() })
+  const previousDesktops = fs.readFileSync(path.join(root, 'desktop-calls.jsonl'), 'utf8').trim().split('\n').filter(Boolean).length
   const previousCalls = fs.readFileSync(path.join(root, 'codex-calls.jsonl'), 'utf8').trim().split('\n').filter(Boolean).length
   const { bigBrotherNode } = await import('../nodes/utility/big-brother.node.js')
   const first = await bigBrotherNode.execute({ data: { error: 'first diagnostic' }, data2: false },
@@ -315,7 +332,7 @@ test('diagnostic node opens one desktop, queues reports, resumes the exact threa
   assert.equal(calls[1].args.includes('--last'), false)
   assert.equal(calls[1].args.includes('model_reasoning_effort="high"'), false)
   assert.equal(calls[1].args[calls[1].args.indexOf('--model') + 1], 'fixture-model-2')
-  const desktopCalls = fs.readFileSync(path.join(root, 'desktop-calls.jsonl'), 'utf8').trim().split('\n')
+  const desktopCalls = fs.readFileSync(path.join(root, 'desktop-calls.jsonl'), 'utf8').trim().split('\n').slice(previousDesktops)
   assert.equal(desktopCalls.length, 1)
   assert.ok(desktopCalls[0].includes('terminal'))
   const state = (await client.getTerminalState()).sessions.find(s => s.id === first.sessionId)!
@@ -347,6 +364,35 @@ test('diagnostic node opens one desktop, queues reports, resumes the exact threa
   assert.deepEqual(fs.readdirSync(terminalReceipts), [])
   await client.stopTerminalService()
   await waitForExit()
+})
+
+test('code review resolves current trust at the Terminal owner and leaves manual sessions independent', async t => {
+  await launch()
+  t.after(async () => { await client.stopTerminalService(); await waitForExit() })
+  const persona = path.join(root, 'profiles', 'fixture', 'persona')
+  fs.mkdirSync(persona, { recursive: true })
+  const rules = path.join(persona, 'decision-rules.json')
+  const previous = fs.existsSync(rules) ? fs.readFileSync(rules, 'utf8') : undefined
+  const previousCalls = fs.readFileSync(path.join(root, 'codex-calls.jsonl'), 'utf8').trim().split('\n').filter(Boolean).length
+  try {
+    for (const trustLevel of ['observe', 'adaptive_auto']) {
+      fs.writeFileSync(rules, JSON.stringify({ trustLevel }))
+      const result = await client.executeBigBrotherTool({ username: 'fixture', reasoning: true, prompt: 'Review fixture',
+        data: { repairAuthorization: { canRepair: true } }, toolTaskId: `review-${trustLevel}`,
+        codeReview: { executionId: `review-${trustLevel}`, issueIds: ['issue-fixture'] } })
+      assert.equal((result.metadata.repairAuthorization as { canRepair: boolean }).canRepair, trustLevel === 'adaptive_auto')
+    }
+    const calls = fs.readFileSync(path.join(root, 'codex-calls.jsonl'), 'utf8').trim().split('\n').filter(Boolean).slice(previousCalls).map(line => JSON.parse(line))
+    assert.equal(calls.length, 2)
+    assert.equal(calls[0].args.includes('--dangerously-bypass-approvals-and-sandbox'), false)
+    assert.equal(calls[0].args[calls[0].args.indexOf('--sandbox') + 1], 'read-only')
+    assert.equal(calls[1].args.includes('--dangerously-bypass-approvals-and-sandbox'), true)
+    assert.match(calls[0].prompt, /Diagnostic reference locations/)
+    assert.match(calls[0].prompt, /"canRepair": false/)
+  } finally {
+    if (previous !== undefined) fs.writeFileSync(rules, previous)
+    else fs.rmSync(rules, { force: true })
+  }
 })
 
 test('diagnostic failures remain visible, new reports resume, and closing cancels active and pending work', async t => {
@@ -432,7 +478,7 @@ test('native terminal viewer keeps tool work alive across ordinary model calls a
     await work
     await waitForExit()
   })
-  await eventually(() => output.includes('Big Brother · Codex diagnostics') || viewerExit !== undefined)
+  await eventually(() => output.includes('Big Brother · Codex') || viewerExit !== undefined)
   assert.equal(viewerExit, undefined, output)
   for (let iteration = 0; iteration < 3; iteration++) {
     const replies = await Promise.all([
@@ -553,5 +599,74 @@ test('tool caller disconnection retains the abort cause and cleans up only its s
   assert.equal(cancellations.length, 1)
   assert.equal(cancellations[0].details.taskId, 'caller-disconnect')
   assert.equal(cancellations[0].details.reason, 'Terminal request disconnected')
+  assert.deepEqual(fs.readdirSync(terminalReceipts), [])
+})
+
+test('chat admission initializes once with approved context and reuses Big Brother ownership, exact thread and configured settings', async t => {
+  await launch()
+  t.after(async () => { await client.stopTerminalService(); await waitForExit() })
+  const { handleTerminalMessage } = await import('../api/handlers/terminal.js')
+  const username = 'chat-owner'
+  const user = { userId: username, username, role: 'owner' as const, isAuthenticated: true }
+  const before = fs.readFileSync(path.join(root, 'codex-calls.jsonl'), 'utf8').trim().split('\n').filter(Boolean).length
+  const desktopBefore = fs.readFileSync(path.join(root, 'desktop-calls.jsonl'), 'utf8').trim().split('\n').length
+  const send = (message: string) => handleTerminalMessage({ path: '/api/terminal/message', method: 'POST', user, body: { message } })
+  const previousAdmissions = responseAdmissions.length
+  const first = await send('first chat message\nwith complete text')
+  assert.equal(first.status, 200)
+  const second = await send('follow-up chat message')
+  assert.equal(second.status, 200)
+  assert.equal(second.data.sessionId, first.data.sessionId)
+  await eventually(async () => {
+    const session = (await client.getTerminalState()).sessions.find(s => s.id === first.data.sessionId)
+    return session?.phase === 'completed' && session.diagnostic?.submissionId === second.data.submissionId
+  })
+  const calls = fs.readFileSync(path.join(root, 'codex-calls.jsonl'), 'utf8').trim().split('\n').slice(before).map(line => JSON.parse(line))
+  assert.equal(calls.length, 2)
+  assert.equal(responseAdmissions.length, previousAdmissions + 2, 'follow-up Codex turns do not wait for response graphs or speech to execute')
+  assert.ok(responseAdmissions.slice(previousAdmissions).every(work => work.handler === 'graph.resume'))
+  const instructions = fs.readFileSync(path.join(root, 'agents_big_brother'), 'utf8').trimEnd()
+  assert.ok(calls[0].prompt.startsWith(instructions + '\n\n'))
+  assert.ok(calls[0].prompt.endsWith('first chat message\nwith complete text'))
+  const { getBufferPathForUser } = await import('../conversation-buffer.js')
+  const context = JSON.parse(calls[0].prompt.slice(instructions.length).trimStart().split('\n\n')[0]).sessionContext
+  assert.equal(context.workspace, root)
+  assert.equal(context.username, username)
+  assert.equal(context.conversationBuffer, getBufferPathForUser(username, 'conversation'))
+  assert.equal(calls[1].prompt, 'follow-up chat message', 'startup context is not repeated on resumed turns')
+  assert.equal(calls[0].args.includes('resume'), false)
+  assert.equal(calls[1].args[calls[1].args.indexOf('resume') + 1], 'fixture-diagnostic-thread')
+  for (const call of calls) {
+    assert.equal(call.args.includes('--dangerously-bypass-approvals-and-sandbox'), false, 'chat preserves configured permissions')
+    assert.equal(call.args.some((arg: string) => arg.startsWith('model_reasoning_effort=')), false, 'chat preserves configured native reasoning')
+    assert.equal(call.prompt.includes('repairLog'), false)
+  }
+  assert.equal(fs.readFileSync(path.join(root, 'desktop-calls.jsonl'), 'utf8').trim().split('\n').length, desktopBefore + 1)
+  const snapshot = await client.terminalRequest(`/events?id=${first.data.sessionId}`)
+  let data = ''
+  for await (const chunk of snapshot) { data += chunk; if (data.includes('"type":"screen"')) break }
+  snapshot.destroy()
+  const screen = data.split('\n').filter(line => line.startsWith('data: ')).map(line => JSON.parse(line.slice(6))).find(event => event.type === 'screen')
+  assert.match(screen.text, /first chat message/)
+  assert.match(screen.text, /follow-up chat message/)
+  assert.match(screen.text, /diagnostic fixture result/)
+  assert.doesNotMatch(screen.text, /\x1b/)
+  // Reopening the view observes work; it must not execute any message again.
+  assert.equal(fs.readFileSync(path.join(root, 'codex-calls.jsonl'), 'utf8').trim().split('\n').length, before + 2)
+  for (const operation of ['create', 'input', 'resize']) await assert.rejects(client.terminalCall(`/${operation}`, { kind: 'shell' }), /Unknown terminal operation/)
+  const { handleTerminalState } = await import('../api/handlers/terminal.js')
+  assert.equal((await handleTerminalState({ path: '/api/terminal/state', method: 'GET', user })).data.chatSessionId, first.data.sessionId)
+  assert.equal((await handleTerminalState({ path: '/api/terminal/state', method: 'GET', user: { ...user, username: 'another-owner' } })).data.chatSessionId, undefined)
+  const diagnostic = await client.submitBigBrotherDiagnostic({ username, prompt: 'fixture diagnostic', data: 'hold-diagnostic', reasoning: false })
+  assert.notEqual(diagnostic.sessionId, first.data.sessionId)
+  // A held diagnostic does not block an independent chat thread.
+  const third = await send('chat alongside diagnostic')
+  await eventually(async () => (await client.getTerminalState()).sessions.find(s => s.id === third.data.sessionId)?.diagnostic?.submissionId === third.data.submissionId
+    && (await client.getTerminalState()).sessions.find(s => s.id === third.data.sessionId)?.phase === 'completed')
+  await client.terminalCall('/close', { id: diagnostic.sessionId })
+  await client.terminalCall('/close', { id: first.data.sessionId })
+  const reopened = await send('new chat after explicit close')
+  assert.notEqual(reopened.data.sessionId, first.data.sessionId)
+  await client.terminalCall('/close', { id: reopened.data.sessionId })
   assert.deepEqual(fs.readdirSync(terminalReceipts), [])
 })

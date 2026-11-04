@@ -13,7 +13,7 @@ owns application behavior; Brain owns asynchronous cognitive work.
 | Command-line interface | `packages/cli` |
 | Shared finite-agent execution interfaces | `packages/agent-runtime` |
 | Persistent service and agent-process lifecycle | Agent Monitor and `packages/core/src/agent-process-runner.ts` |
-| Lightweight local model process | `packages/local-model-service` |
+| Shared native inference host and clients | `bin/llama-cpp-services`, `packages/core/src/providers/llama-cpp.ts` |
 | Finite agents, persistent service entrypoints, and model training | `brain` |
 | Operator defaults, deployment configuration, and editable graph composition | `etc` |
 | Policy checks and maintained automation | `scripts`, `bin` |

@@ -3,10 +3,9 @@
   import { apiFetch } from '../lib/client/api-config';
   import { DEFAULT_OLLAMA_CHAT_MODEL } from '../lib/client/model-defaults';
   import { statusRefreshTrigger } from '../stores/navigation';
-  import LocalModelsSettings from './LocalModelsSettings.svelte';
 
   type DefaultBackend = 'auto' | 'ollama' | 'llama-cpp';
-  type ResolvedBackend = 'llama-cpp' | 'ollama' | 'local-models' | 'remote' | 'offline';
+  type ResolvedBackend = 'llama-cpp' | 'ollama' | 'remote' | 'offline';
   type BigBrotherProvider = 'claude-code' | 'aider' | 'gemini-cli' | 'qwen-code' | 'codex';
 
   interface BackendAvailability {
@@ -626,7 +625,6 @@
       case 'ollama': return '🦙';
       case 'auto': return '🔄';
       case 'remote': return '🌐';
-      case 'local-models': return '🔍';
       default: return '❓';
     }
   }
@@ -637,7 +635,6 @@
       case 'ollama': return 'Ollama';
       case 'auto': return 'Auto';
       case 'remote': return 'Remote';
-      case 'local-models': return 'Local Models';
       case 'offline': return 'Offline';
       default: return 'Unknown';
     }
@@ -1056,8 +1053,5 @@
 
     </section>
 
-    <section class="panel p-4 bg-fuchsia-50/50 dark:bg-fuchsia-900/10 border-fuchsia-200 dark:border-fuchsia-800">
-      <LocalModelsSettings />
-    </section>
   {/if}
 </div>

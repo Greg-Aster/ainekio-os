@@ -20,5 +20,8 @@ export const bigBrotherToolRequestSchema = {
 export const bigBrotherToolExecutionSchema = {
   id: 'big_brother_tool_execution', name: 'Big Brother Tool Execution', category: 'utility' as const,
   description: "Runs an admitted request through the Terminal owner's Codex session and returns its attributed result.",
-  inputs: [], outputs: [request, selectedContext, work], properties: {}, propertySchemas: {},
+  inputs: [{ ...request, optional: true }, { ...selectedContext, optional: true }],
+  outputs: [request, selectedContext, work],
+  properties: { prompt: BIG_BROTHER_TOOL_PROMPT, model: '', reasoning: true },
+  propertySchemas: bigBrotherToolRequestSchema.propertySchemas,
 }

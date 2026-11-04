@@ -6,7 +6,7 @@ import test from 'node:test'
 import type { EnvironmentObservation, EnvironmentVisualFrame } from '../../environment-interface/index.js'
 import { environmentContextBuilderNode } from './context-builder.node.js'
 import { environmentImageInputNode } from './image-input.node.js'
-import { buildEnvironmentSelectorEnvelope, buildEnvironmentSelectorJsonSchema } from './helpers.js'
+import { buildEnvironmentSelectorEnvelope, buildEnvironmentSelectorJsonSchema } from '../../environment-interface/task-selection.js'
 import { getNodeSchema } from '../schemas.js'
 import { validateSvelteFlowGraph } from '../../cognitive-graph-schema.js'
 

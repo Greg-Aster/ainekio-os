@@ -174,15 +174,16 @@ Commands:
 
 ### `./bin/mh terminal COMMAND`
 
-Manage the on-demand Terminal agent. It starts with no shell sessions and is off
+Manage the on-demand Terminal agent. It starts with no provider sessions and is off
 at system startup by default. The same controls are available in Agent Monitor
-and the owner-only Terminal panel.
+and the owner-only Terminal conversation. Sending the first terminal message
+starts the service on demand.
 
 - `start` — start the service.
 - `status` — inspect the service and its sessions.
-- `stop` — terminate owned shells and provider work, then stop the service.
+- `stop` — terminate owned provider work, then stop the service.
 
-Hiding the panel preserves sessions. Stopping the agent closes them. After an
+Hiding Terminal preserves sessions. Stopping the agent closes them. After an
 unexpected agent exit, start or stop cleans up saved process ownership; commands
 are never replayed. Linux is required for process-session verification.
 

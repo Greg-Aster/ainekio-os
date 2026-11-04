@@ -12,7 +12,7 @@ import {
 import {
   normalizedEnvironmentMotionClass,
   validateEnvironmentSelectorOutput,
-} from './helpers.js';
+} from '../../environment-interface/task-selection.js';
 
 const PHYSICAL_MOTION_ACTIONS = new Set([
   'move',

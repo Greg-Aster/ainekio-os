@@ -1,0 +1,55 @@
+--- a/common/json-schema-to-grammar.cpp
++++ b/common/json-schema-to-grammar.cpp
+@@ -974,6 +974,16 @@
+             int max_len = schema.contains("maxLength") ? schema["maxLength"].get<int>() : std::numeric_limits<int>::max();
+             return _add_rule(rule_name, "\"\\\"\" " + build_repetition(char_rule, min_len, max_len) + " \"\\\"\"");
+         }
++        // Enforce signed, nonzero numeric adjustments without restricting decimals.
++        const bool positive_number = schema.contains("exclusiveMinimum") && schema["exclusiveMinimum"] == 0
++            && !schema.contains("minimum") && !schema.contains("maximum") && !schema.contains("exclusiveMaximum");
++        const bool negative_number = schema.contains("exclusiveMaximum") && schema["exclusiveMaximum"] == 0
++            && !schema.contains("minimum") && !schema.contains("maximum") && !schema.contains("exclusiveMinimum");
++        if (schema_type == "number" && (positive_number || negative_number)) {
++            const auto exponent = _add_primitive("integral-part", PRIMITIVE_RULES.at("integral-part"));
++            const std::string magnitude = R"(([1-9] [0-9]* ("." [0-9]+)? | "0." [0-9]* [1-9] [0-9]*) ([eE] [-+]? )" + exponent + ")?";
++            return _add_rule(rule_name, (negative_number ? "\"-\" " : "") + magnitude);
++        }
+         if (schema_type == "integer" && (schema.contains("minimum") || schema.contains("exclusiveMinimum") || schema.contains("maximum") || schema.contains("exclusiveMaximum"))) {
+             int64_t min_value = std::numeric_limits<int64_t>::min();
+             int64_t max_value = std::numeric_limits<int64_t>::max();
+@@ -1005,7 +1015,7 @@
+             _errors.push_back("Unrecognized schema: " + schema.dump());
+             return "";
+         }
+-        // TODO: support minimum, maximum, exclusiveMinimum, exclusiveMaximum at least for zero
++        // TODO: support general numeric minimum and maximum bounds
+         return _add_primitive(rule_name == "root" ? "root" : schema_type.get<std::string>(), PRIMITIVE_RULES.at(schema_type.get<std::string>()));
+     }
+ 
+--- a/tests/test-grammar-integration.cpp
++++ b/tests/test-grammar-integration.cpp
+@@ -193,6 +193,12 @@
+ }
+ 
+ static void test_simple_grammar() {
++    test_schema("positive nonzero numbers", R"({"type":"number","exclusiveMinimum":0})",
++        {"10", "0.25", "0.00001", "1e-4", "10.00E+2"},
++        {"-10", "-0.25", "0", "-0", "0.0", "0e10", "-0.0e-2"});
++    test_schema("negative nonzero numbers", R"({"type":"number","exclusiveMaximum":0})",
++        {"-10", "-0.25", "-0.00001", "-1e-4", "-10.00E+2"},
++        {"10", "0.25", "0", "-0", "0.0", "0e10", "-0.0e-2"});
+     test_schema(
+         "min 0",
+         R"""({
+@@ -1463,9 +1469,8 @@
+         {
+             R"""({})""", // Missing all required properties
+             R"""({"productName": "A green door", "price": 12.50, "productId": 1})""", // Out of order properties
+-            // TODO: The following line should fail, but currently it passes. `exclusiveMinimum` is not supported, as it would likely be too difficult to implement.
+-            //  Perhaps special checks for minimum and maximum values of 0 could be added (since that's relatively easy to do with grammars), but anything else would likely be too complex.
+-            // R"""({"productId": 1, "productName": "A green door", "price": -12.50})""",
++            R"""({"productId": 1, "productName": "A green door", "price": -12.50})""", // price must be positive
++            R"""({"productId": 1, "productName": "A green door", "price": 0})""",
+             R"""({"productId": 1, "productName": "A green door"})""", // Missing required property (price)
+             R"""({"productName": "A green door", "price": 12.50})""", // Missing required property (productId)
+             R"""({"productId": 1, "productName": "A green door", "price": 12.50, "tags": []})""", // tags is empty, but minItems is 1

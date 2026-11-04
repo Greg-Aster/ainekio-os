@@ -177,6 +177,7 @@ export function inspectProviderMessages(
 }
 
 export interface ProviderOptions {
+  toolAccess?: 'read-only';
   signal?: AbortSignal;
   executionTarget?: 'remote';
   model?: string;
@@ -240,12 +241,6 @@ export interface ProviderConfig {
   ollama?: {
     endpoint: string;
   };
-  // Local model service config (Transformers.js)
-  localModels?: {
-    endpoint: string;
-    embeddingModel?: string;
-    llmModel?: string;
-  };
   // Cloud config
   runpod?: {
     apiKey: string;
@@ -261,10 +256,10 @@ export interface ProviderConfig {
 /**
  * Provider type - determines where requests are routed
  *
- * Local providers: ollama, mock, local-models (handled by core bridge)
+ * Local providers: llama-cpp, ollama, mock (handled by core bridge)
  * Cloud providers: runpod_serverless, huggingface
  */
-export type ProviderType = 'big-brother' | 'llama-cpp' | 'ollama' | 'mock' | 'runpod_serverless' | 'huggingface' | 'openai' | 'local' | 'remote-server' | 'local-models';
+export type ProviderType = 'big-brother' | 'llama-cpp' | 'ollama' | 'mock' | 'runpod_serverless' | 'huggingface' | 'openai' | 'local' | 'remote-server';
 
 /**
  * Check if a provider is a cloud provider.
@@ -286,12 +281,5 @@ export function isRemoteServerProvider(provider: ProviderType): boolean {
  * Check if a provider is a local provider (handled by core)
  */
 export function isLocalProvider(provider: ProviderType): boolean {
-  return provider === 'llama-cpp' || provider === 'ollama' || provider === 'mock' || provider === 'local-models';
-}
-
-/**
- * Check if a provider is the local models service (Transformers.js)
- */
-export function isLocalModelsProvider(provider: ProviderType): boolean {
-  return provider === 'local-models';
+  return provider === 'llama-cpp' || provider === 'ollama' || provider === 'mock';
 }

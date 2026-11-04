@@ -33,26 +33,12 @@
 
   interface LLMBackendInfo {
     llamaCpp: { configured: boolean; running: boolean; model?: string; endpoint: string; error?: string };
-    activeBackend: 'llama-cpp' | 'auto' | 'ollama' | 'remote' | 'local-models';
+    activeBackend: 'llama-cpp' | 'auto' | 'ollama' | 'remote';
     ollama: {
       installed: boolean;
       running: boolean;
       model?: string;
       endpoint: string;
-    };
-  }
-
-  interface LocalModelsInfo {
-    running: boolean;
-    endpoint: string;
-    embedder: {
-      model: string | null;
-      loaded: boolean;
-      dimensions?: number;
-    };
-    generator: {
-      model: string | null;
-      loaded: boolean;
     };
   }
 
@@ -79,7 +65,6 @@
   let servers: ServerInfo[] = [];
   let astroServers: AstroServer[] = [];
   let llmBackend: LLMBackendInfo | null = null;
-  let localModels: LocalModelsInfo | null = null;
   let bigBrother: BigBrotherInfo | null = null;
   let eventBus: EventBusInfo | null = null;
   let loading = true;
@@ -144,30 +129,6 @@
         }
       } catch (error) {
         reportStatusFetchFailure('LLM backend', error);
-      }
-
-      try {
-        const localModelsResponse = await fetchStatusEndpoint('/api/local-models/status');
-        if (localModelsResponse.ok) {
-          const data = await localModelsResponse.json();
-          const loaded = data.loadedModels;
-          localModels = {
-            running: data.running,
-            endpoint: data.endpoint || 'http://127.0.0.1:4324',
-            embedder: {
-              model: loaded?.embedder?.model || data.config?.embeddings?.model || null,
-              loaded: loaded?.embedder?.loaded || false,
-              dimensions: loaded?.embedder?.dimensions,
-            },
-            generator: {
-              model: loaded?.generator?.model || data.config?.llm?.model || null,
-              loaded: loaded?.generator?.loaded || false,
-            },
-          };
-        }
-      } catch (error) {
-        reportStatusFetchFailure('local-models', error);
-        localModels = null;
       }
 
       try {
@@ -474,46 +435,6 @@
           {/if}
         </div>
 
-
-        <!-- Local Models -->
-        <div class="border rounded-lg p-3 bg-white dark:bg-gray-800 transition-all hover:shadow-md dark:hover:shadow-black/30 {localModels?.running ? 'border-2 border-orange-500/40 dark:border-orange-400/40 bg-orange-500/[0.02] dark:bg-orange-400/[0.03]' : 'border-orange-500/20 dark:border-orange-400/20'}">
-          <div class="mb-3">
-            <div class="flex items-start gap-3">
-              <span class="text-xl leading-none">
-                {#if localModels?.running}
-                  {#if localModels.embedder.loaded}🟢{:else}🟡{/if}
-                {:else}🔴{/if}
-              </span>
-              <div class="flex-1 min-w-0">
-                <div class="font-semibold text-sm text-gray-900 dark:text-gray-100 mb-1">
-                  Local Models
-                  <span class="inline-block px-1.5 py-0.5 ml-2 bg-orange-500/15 dark:bg-orange-400/20 text-orange-600 dark:text-orange-400 rounded text-[0.6rem] font-bold tracking-tight">Utility</span>
-                </div>
-                <div class="text-xs text-gray-500 dark:text-gray-400">
-                  {localModels?.endpoint || 'http://127.0.0.1:4324'}
-                  {#if localModels?.running && localModels.embedder.loaded}
-                    • {localModels.embedder.model}
-                  {/if}
-                </div>
-              </div>
-            </div>
-          </div>
-          <button class="w-full py-1.5 px-3 border border-orange-500/30 dark:border-orange-400/30 rounded-md text-xs font-semibold cursor-pointer transition-all bg-orange-500/10 dark:bg-orange-400/10 text-orange-700 dark:text-orange-300 hover:bg-orange-500/15 dark:hover:bg-orange-400/15" on:click={openBackendSettings}>
-            Configure in Backend
-          </button>
-          {#if localModels?.running}
-            <div class="flex flex-wrap gap-2 mt-3 pt-3 border-t border-black/10 dark:border-white/10">
-              {#if localModels.embedder.loaded}
-                <span class="inline-block px-2 py-1 bg-blue-500/10 dark:bg-blue-400/15 text-blue-600 dark:text-blue-400 rounded text-[0.7rem] font-medium">🔍 Embeddings: {localModels.embedder.model}</span>
-              {:else}
-                <span class="inline-block px-2 py-1 bg-amber-500/10 dark:bg-amber-400/15 text-amber-600 dark:text-amber-400 rounded text-[0.7rem] font-medium">Embeddings: Loading...</span>
-              {/if}
-              {#if localModels.generator.loaded}
-                <span class="inline-block px-2 py-1 bg-emerald-500/10 dark:bg-emerald-400/15 text-emerald-600 dark:text-emerald-400 rounded text-[0.7rem] font-medium">💬 LLM: {localModels.generator.model}</span>
-              {/if}
-            </div>
-          {/if}
-        </div>
 
         <!-- Big Brother shared terminal session -->
         <div class="border rounded-lg p-3 bg-white dark:bg-gray-800 transition-all hover:shadow-md dark:hover:shadow-black/30 {bigBrother?.sessionOpen ? 'border-2 border-purple-500/40 dark:border-purple-400/40 bg-purple-500/[0.02] dark:bg-purple-400/[0.03]' : 'border-purple-500/20 dark:border-purple-400/20'}">

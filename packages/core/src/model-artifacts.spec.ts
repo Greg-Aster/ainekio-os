@@ -34,7 +34,7 @@ try {
   assert.equal(ollamaArtifact?.architecture, 'example_arch')
   assert.equal(ollamaArtifact?.modelType, '9B')
   assert.equal(ollamaArtifact?.quantization, 'Q4_K_M')
-  assert.deepEqual(ollamaArtifact?.compatibleProviders, ['ollama', 'local-models'])
+  assert.deepEqual(ollamaArtifact?.compatibleProviders, ['ollama', 'llama-cpp'])
 
 } finally {
   fs.rmSync(modelsDir, { recursive: true })

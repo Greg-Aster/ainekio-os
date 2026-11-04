@@ -37,12 +37,13 @@ its own processes and state; the scripts do not
 rewrite agent registries or scan for service names to kill. Failed owners are
 reported, remaining shutdown steps run, and full shutdown returns a failure code.
 
-Local-model shell start/stop and API controls share the Core lifecycle manager,
-`logs/run/local-models.pid`, and `etc/llm-backend.json`. Boot selection reads
-`localModels.enabled` and `localModels.autoStart`. Both the prebuilt service and
-source-mode service start without loading model weights. Shared voice boot
-selection belongs to `etc/voice-servers.json`; an enabled provider can remain
-available on request without being selected for system boot.
+Text, vision, motion and embeddings use the shared native llama.cpp host described
+in the [software architecture](docs/robot/SYSTEM_ARCHITECTURE.md#shared-llamacpp-hosting).
+Model Registry/Router select models; native presets own model loading, CPU/GPU
+placement and capacity. The Embedder role uses that same service. Application
+shutdown leaves its independent systemd unit running. The old Node embedding
+service, process manager and local-model start/stop controls are removed.
+Shared voice boot selection remains in `etc/voice-servers.json`.
 
 Event-bus shell and API controls share the process lifecycle in Core's existing
 event-bus server module and `logs/run/event-bus.pid`. Stop terminates the recorded

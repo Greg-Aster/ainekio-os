@@ -65,12 +65,14 @@ try {
 
   const counts: Record<CanonicalBufferMode, number> = {
     conversation: 7,
+    terminal: 7,
     inner: 22,
     system: 22,
     robot: 22,
   };
   const roles = {
     conversation: 'assistant',
+    terminal: 'assistant',
     inner: 'thought',
     system: 'system',
     robot: 'robot',
@@ -83,7 +85,7 @@ try {
         content: `${mode}-${index}`,
       }), true);
     }
-    const expected = mode === 'conversation' ? 5 : 20;
+    const expected = mode === 'conversation' || mode === 'terminal' ? 5 : 20;
     const buffer = loadBufferForUser(username, mode);
     assert.equal(buffer.messages.length, expected, `${mode} uses its independent retention limit`);
     assert.equal(buffer.messages.at(-1)?.content, `${mode}-${counts[mode] - 1}`);

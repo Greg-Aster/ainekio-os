@@ -4,10 +4,11 @@ MetaHuman OS is a local-first operating system for a persistent personal AI iden
 
 It is not a single chatbot wrapper. It is a development system for building a digital counterpart: one that can talk with you, maintain an inner dialogue, remember what matters, generate goals, run background work, train adapters from your history, and connect to external environments.
 
-**Working on Ainekio:** start with the shared [robot design core](docs/robot/ROBOT_BIBLE.md)
-for the companion's purpose, architecture, ownership and maintenance approach.
-Human and agent contributors then follow the contract and qualification scenario
-relevant to their task. [AGENTS.md](AGENTS.md) governs repository work.
+**Working on Ainekio:** open the [one-page robot system map](docs/robot/SYSTEM_ARCHITECTURE.md#processes-and-connections)
+for the complete data flow in a single Mermaid diagram. The shared
+[robot design core](docs/robot/ROBOT_BIBLE.md) owns the companion's purpose and
+capability contracts. Follow the contract and qualification scenario relevant
+to the task; [AGENTS.md](AGENTS.md) governs repository work.
 
 ![MetaHuman OS interface](docs/images/metahuman-os-ui-2026-02-27.png)
 
@@ -63,7 +64,7 @@ MetaHuman OS routes LLM calls through a role-aware model router instead of bindi
 Supported backend paths include:
 
 - **Ollama** for simple local model serving.
-- **local-models service** for lighter CPU/mobile-friendly model and embedding work.
+- **Shared native llama.cpp service** for text, vision, motion and CPU embedding presets.
 - **remote/server providers** for connected MetaHuman servers or cloud-backed inference.
 - **Big Brother/operator backends** such as Claude Code, Codex, Aider, Qwen Code, or Gemini CLI for escalated reasoning and coding workflows.
 

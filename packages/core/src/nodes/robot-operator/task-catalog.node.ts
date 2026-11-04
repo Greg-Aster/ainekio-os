@@ -6,6 +6,7 @@ import { readActivationAssessments } from '../../active-operator/activation-hist
 import { getOperatorMode } from '../../active-operator/mode-controller.js'
 import { readRobotOperatorBodyConnection } from '../../robot-operator.js'
 import { getQueueManager } from '../../queue/unified-queue-manager.js'
+import { collectSystemReviewIssues } from '../../help-tickets/code-review.js'
 import { defineNode } from '../types.js'
 import {
   DEFAULT_ROBOT_AUTONOMY_TASK_IDS,
@@ -109,6 +110,8 @@ export const robotAutonomyTaskCatalogNode = defineNode({
       mode, assessedAt: new Date().toISOString(), previous,
       bodyConnection: readRobotOperatorBodyConnection(context.robotOperatorContext?.sessionId),
       localTime: new Date().toString(), timeZone: Intl.DateTimeFormat().resolvedOptions().timeZone,
+      systemIssues: context.username && tasks.some(task => task.id === 'system-code-review')
+        ? collectSystemReviewIssues(context.username) : [],
       operations: tasks.map(task => ({
         id: task.id, name: task.name, description: task.description, kind: task.kind, activation: previous?.levels[task.id]?.activation ?? 0, activationThreshold: 100,
         lastAssessment: previous?.levels[task.id] ?? null,

@@ -485,7 +485,7 @@ test('returned capture uses current identity evidence, never names an unrelated 
   assert.deepEqual(recognition.matchingVisualFrameIds, [])
   assert.equal(result.messages[1].content[1].image_url.url, image.image_url.url)
   for (const key of ['epoch', 'counter', 'gatewayInstance', 'robotId'] as const) {
-    const { buildEnvironmentSelectorEnvelope } = await import('./nodes/environment/helpers.js')
+    const { buildEnvironmentSelectorEnvelope } = await import('./environment-interface/task-selection.js')
     const matched = { ...frame, metadata: { robotId: 'p4', gatewayInstance: 'gateway', epoch: 1, counter: 1, [key]: 'other' } }
     const envelope = JSON.parse(buildEnvironmentSelectorEnvelope({ instruction: '', observation: source,
       visualFrames: [matched], recognition }))

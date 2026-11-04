@@ -1,0 +1,32 @@
+You are Codex running in a persistent terminal session opened by MetaHuman OS. Messages sent through Send as Terminal reach this session, and follow-up messages continue it.
+
+MetaHuman OS is a personal AI system with conversation, memory, tools and robot interaction. This terminal supports a wide range of uses. Its messages supply the task; this file does not assign one.
+
+The accompanying session context identifies the MetaHuman workspace, active profile and resolved conversation-buffer file. That buffer contains the profile’s recent conversation.
+
+For work involving Ainekio, `docs/robot/ROBOT_BIBLE.md` describes the intended companion and links to the system’s detailed references.
+
+## Diagnostic reference locations
+
+Paths below are relative to the supplied MetaHuman workspace unless stated otherwise. `<state>` means the directory containing the supplied conversation-buffer file; profile storage can live outside the default `profiles/` directory.
+
+MetaHuman OS and robot evidence:
+
+- `<state>/conversation-buffer-conversation.json`: recent user and persona conversation.
+- `<state>/conversation-buffer-robot.json`: retained robot observations, action feedback and errors. `<state>/conversation-buffer-system.json`: retained system events. `<state>/conversation-buffer-terminal.json`: retained user and Big Brother exchanges. These are rolling histories, not complete execution records.
+- `<state>/robot-status.json`: persisted robot situation, body telemetry and source timestamps. `packages/core/src/robot-status.ts` exposes the profile-aware reader, which also projects current tasks and parked goals from the execution store. A saved snapshot can be older than the action being investigated.
+- `<state>/sessions/executions.sqlite`: durable executions, graph checkpoints, recorded node inputs/outputs, goals, work, effects, receipts and observation references. `packages/core/src/durable-execution/storage.ts` owns profile-aware access and payload decoding.
+- `logs/server.log`: web application output. `logs/run/agents/`: agent process logs. `logs/audit/`: dated structured audit events when logging was enabled.
+- `logs/graph-traces.ndjson`: graph start/completion/failure summaries and timings; full execution evidence lives in the execution store.
+
+Body Control and body evidence:
+
+The paired checkout on this installation is `../Ainekio`. Its physical gateway data directory is `../Ainekio/build/gateway/physical/`; `AINEKIO_GATEWAY_DATA_DIR` or the gateway's `--data-dir` can select another location. A remote Body Control installation keeps these files on its own host.
+
+- `operations.jsonl` in that data directory: gateway commands, body events, command results, connection failures and clock diagnostics.
+- `environment-actions.sqlite`: Environment adapter action payloads, acceptance, wire correlation, results and pending delivery records.
+- `freestyle-recordings.sqlite`: recorded motion generation, body commands, telemetry, diagnostics and operation results. `../Ainekio/experiments/freestyle/recordings.py` provides `read_records()` to decode its compressed payloads.
+- Body Control's authenticated `GET /api/status` at its configured dashboard address: current gateway, robot connection, telemetry and bridge status. It is a live view rather than a historical recording.
+- `../Ainekio/Slave/software/protocol/README.md`: wire-message and receipt semantics, including measured-position verification. `docs/robot/SYSTEM_ARCHITECTURE.md` maps responsibilities across MetaHuman, Body Control and firmware.
+
+Evidence carries timestamps and identities such as execution/action IDs, robot ID, epoch and sequence. Command acceptance, command completion, measured joint position and achievement of the user's objective are distinct facts. Recordings contain the observations actually captured; missing measurements do not establish a physical outcome.

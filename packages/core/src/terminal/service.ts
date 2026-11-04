@@ -69,13 +69,11 @@ export async function runTerminalService(): Promise<void> {
           heartbeat = setInterval(() => { if (!res.destroyed) res.write(': heartbeat\n\n') }, 15000)
         } catch (error) { owner.off('event', onEvent); throw error }
         return
-      } else if (req.method === 'POST' && url.pathname === '/create') {
-        if (data.kind !== 'shell' && data.kind !== 'log') throw new TerminalError('Invalid terminal kind', 400)
-        result = owner.create(data.kind, data.cols, data.rows)
-      } else if (req.method === 'POST' && url.pathname === '/input') { owner.input(data.id, data.data); result = { success: true } }
-      else if (req.method === 'POST' && url.pathname === '/resize') { owner.resize(data.id, data.cols, data.rows); result = { success: true } }
-      else if (req.method === 'POST' && url.pathname === '/close') { await owner.close(data.id); result = { success: true } }
-      else if (req.method === 'POST' && (url.pathname === '/diagnostic' || url.pathname === '/tool')) {
+      } else if (req.method === 'POST' && url.pathname === '/close') { await owner.close(data.id); result = { success: true } }
+      else if (req.method === 'POST' && url.pathname === '/message') {
+        if (typeof data.message !== 'string' || !data.message.trim() || typeof data.username !== 'string') throw new TerminalError('Expected a terminal message and username', 400)
+        result = await owner.submitDiagnostic({ chat: true, prompt: data.message, data: null, reasoning: false, username: data.username })
+      } else if (req.method === 'POST' && (url.pathname === '/diagnostic' || url.pathname === '/tool')) {
         if (typeof data.prompt !== 'string' || typeof data.reasoning !== 'boolean'
           || (data.model !== undefined && typeof data.model !== 'string')) throw new TerminalError('Invalid diagnostic request', 400)
         if (url.pathname === '/tool') {
@@ -139,7 +137,7 @@ export async function runTerminalService(): Promise<void> {
     })
     process.on('SIGTERM', onSignal)
     process.on('SIGINT', onSignal)
-    console.log('[terminal] Ready; no shell sessions started')
+    console.log('[terminal] Ready; no provider sessions started')
     await done
   } finally {
     process.off('SIGTERM', onSignal)

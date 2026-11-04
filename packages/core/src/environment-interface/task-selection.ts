@@ -1,9 +1,9 @@
-import { projectRobotStatusContext } from '../../robot-status.js'
-import { normalizeLocomotionGoal } from '../../environment-interface/active-task.js'
-import { normalizeEnvironmentTargetBox } from '../../environment-interface/visual-approach.js'
-import { recognitionImageAssociation, projectEnvironmentVisualFrame } from '../../environment-interface/perception.js'
-import { projectDesireAwareness } from '../../agency/lifecycle-policy.js'
-import type { EnvironmentTaskProgram, EnvironmentTaskStep } from '../../environment-interface/active-task.js'
+import { projectRobotStatusContext } from '../robot-status.js'
+import { normalizeLocomotionGoal } from './active-task.js'
+import { normalizeEnvironmentTargetBox } from './visual-approach.js'
+import { recognitionImageAssociation, projectEnvironmentVisualFrame } from './perception.js'
+import { projectDesireAwareness } from '../agency/lifecycle-policy.js'
+import type { EnvironmentTaskProgram, EnvironmentTaskStep } from './active-task.js'
 import {
   ENVIRONMENT_MOTION_CLASSES,
   normalizeEnvironmentVisualInspectionTarget,
@@ -14,7 +14,7 @@ import {
   type EnvironmentMotionClass,
   type EnvironmentObservation,
   type EnvironmentVisualFrame,
-} from '../../environment-interface/index.js';
+} from './index.js';
 
 // Joint trajectories are owned by Body Control, not the task selector.
 const DIRECT_ACTION_TYPES = new Set<EnvironmentActionType>([
@@ -234,7 +234,7 @@ export function projectEnvironmentHistory(value: unknown) {
 export interface EnvironmentSelectorEnvelopeInput {
   /** Frames selected alongside the attached images, in the same order. */
   visualFrames?: EnvironmentVisualFrame[];
-  observationHistory?: import('../../visual-observation.js').VisualObservationRecord[];
+  observationHistory?: import('../visual-observation.js').VisualObservationRecord[];
   execution?: unknown;
   activeExecutions?: EnvironmentExecutionTarget[];
   instruction: string;
@@ -1066,4 +1066,11 @@ export function validateEnvironmentSelectorOutput(
   return { jsonValid: true, valid: true, errors, value: { response, program, taskDecision: task.decision,
     ...(activeExecutions.length ? { executionDisposition: raw.executionDisposition as EnvironmentModelOutput['executionDisposition'], targetExecutionId: raw.targetExecutionId as string } : {}),
     ...(raw.visualObservation !== undefined ? { visualObservation: raw.visualObservation } : {}) } };
+}
+
+export const PLANNING_DELEGATION_DESCRIPTION = 'The additional output {"delegatePlanning":true} requests planning by the configured larger model. The larger model receives the same context and returns the existing task output. This requests planning; it does not admit an action or report completion.'
+
+export function isPlanningDelegation(value: unknown): value is { delegatePlanning: true } {
+  return value !== null && typeof value === 'object' && !Array.isArray(value)
+    && Object.keys(value).length === 1 && (value as Record<string, unknown>).delegatePlanning === true
 }

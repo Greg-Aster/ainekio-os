@@ -50,9 +50,13 @@ class FakeWebSocket extends EventEmitter {
     }
     const message = JSON.parse(payload);
     if (message.type === 'bridge.watch') {
-      queueMicrotask(() => this.emit('message', JSON.stringify({ type: 'bridge.availability', version: 1, sessionId: 'robot-session', gatewayInstance: 'fixture', robotId: 'body-fixture', connected: true })));
+      queueMicrotask(() => this.emit('message', JSON.stringify({ type: 'bridge.availability', version: 1, sessionId: 'robot-session', gatewayInstance: 'fixture',
+        robotId: scenario === 'computer-speech' ? undefined : 'body-fixture', connected: scenario !== 'computer-speech' })));
     } else if (message.type === 'bridge.connect') {
       queueMicrotask(() => this.emit('message', JSON.stringify({ type: 'bridge.ready', sessionId: 'robot-session',
+        ...(scenario === 'computer-speech' ? { observation: { environmentId: 'ainekio', adapter: 'ainekio-gateway',
+          sessionId: 'robot-session', timestamp: new Date().toISOString(), capabilities: { actions: ['speak'] },
+          state: { adapterConnected: true, body: { authenticated: false, speakerReady: true, speechPlaybackTarget: 'computer' } } } } : {}),
         ...((scenario === 'perception' || scenario === 'audio' || scenario.startsWith('update')) ? { observation: { environmentId: 'ainekio', adapter: 'ainekio-gateway',
           sessionId: 'robot-session', timestamp: new Date().toISOString(), capabilities: { actions: ['captureImage'], visual: true },
           state: { activeMovementUpdates: { version: 1, available: true, gatewayInstance: 'gateway-fixture', robotId: 'body-fixture', epoch: 7, maxValidityMs: 1000 } } } } : {}) }), false));
@@ -113,6 +117,37 @@ const config: BridgeConfig = {
   serviceToken: 'service-token',
   graph: 'environment',
 };
+
+test('robotless Body Control reaches Core with computer speaker readiness and one ready bridge stream', async () => {
+  const controller = new AbortController();
+  const originalFetch = globalThis.fetch;
+  const observations: any[] = [];
+  const snapshots: any[][] = [];
+  scenario = 'computer-speech';
+  openedUrls = [];
+  globalThis.fetch = async (url, options) => {
+    const pathname = new URL(String(url)).pathname;
+    if (pathname === '/api/environment-bridge/observation') observations.push(JSON.parse(String(options?.body)));
+    if (pathname === '/api/environment-bridge/telemetry') {
+      const body = JSON.parse(String(options?.body));
+      if (body.connections) snapshots.push(body.connections);
+    }
+    if (pathname === '/api/environment-bridge/stream') return new Response(new ReadableStream<Uint8Array>({ start(stream) {
+      options?.signal?.addEventListener('abort', () => stream.close(), { once: true });
+      setImmediate(() => controller.abort());
+    } }), { headers: { 'Content-Type': 'text/event-stream' } });
+    return Response.json({ success: true });
+  };
+  const timeout = setTimeout(() => controller.abort(), 5000);
+  try {
+    await runEnvironmentBridgeAgent(controller.signal, config);
+    assert.equal(observations.length, 1);
+    assert.deepEqual(observations[0].state.body, { authenticated: false, speakerReady: true, speechPlaybackTarget: 'computer' });
+    assert.ok(snapshots.some(states => states[0].adapterConnected && !states[0].connected && states[0].ready));
+    assert.equal(openedUrls.length, 2, 'One watcher and one control stream use the selected host');
+    assert.equal(snapshots.at(-1)![0].adapterConnected, false, 'Shutdown releases availability');
+  } finally { controller.abort(); clearTimeout(timeout); globalThis.fetch = originalFetch; }
+});
 
 test('reconnect backlog preserves every observation while independent feedback is acknowledged', async () => {
   const keys = ['MH_ENVIRONMENT_ADAPTER_URL', 'MH_ENVIRONMENT_ADAPTER_TOKEN', 'MH_ENVIRONMENT_BRIDGE_TOKEN', 'MH_ENVIRONMENT_CORE_URL'];

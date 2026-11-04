@@ -23,6 +23,7 @@ import './quoted-imperative-cases.js'
 import './locomotion-cases.js'
 import './intent-memory-cases.js'
 import './intent-autonomy-context-cases.js'
+import './intent-perception-cases.js'
 import { migrateLocomotionReference, refreshLocomotionFixture } from './locomotion-contract.js'
 
 export const DEVELOPMENT_CASES = cases.filter(item => item.split === 'development')
@@ -205,7 +206,7 @@ export async function buildDevelopmentManifest(records: ActionSelectorTrainingRe
   const evaluation = await buildDevelopmentRecords(EVALUATION_CASES)
   const regression = await buildDevelopmentRecords(REGRESSION_CASES)
   return {
-    version: 23, owner: 'environment-action-selector', sourceCaseCount: DEVELOPMENT_CASES.length,
+    version: 24, owner: 'environment-action-selector', sourceCaseCount: DEVELOPMENT_CASES.length,
     recordCount: records.length, foldCount: DEVELOPMENT_FOLD_COUNT,
     specialists: Object.fromEntries(['intent', 'task'].map(specialist => [specialist, {
       records: records.filter(item => item.metadata.specialist === specialist).length,

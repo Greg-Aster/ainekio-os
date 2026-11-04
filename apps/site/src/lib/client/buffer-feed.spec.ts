@@ -80,4 +80,19 @@ assert.deepEqual(projectBufferFeed([...updatedBuffers, ...liveMessages], new Set
 assert.ok(updatedBuffers.every(message => !message.meta?.liveConversation),
   'Live view state never enters canonical buffer snapshots');
 
+
+const terminal = stampBufferSource<TestMessage>({ role: 'assistant', content: 'Big Brother final answer', timestamp: 45,
+  meta: { source: 'big-brother', speaker: 'Big Brother', submissionId: 'terminal-turn' } }, 'terminal');
+assert.deepEqual(projectBufferFeed([...all, terminal], new Set<BufferView>(['terminal'])).map(message => message.content),
+  ['Big Brother final answer'], 'Terminal selects its canonical exchange history');
+assert.deepEqual(projectBufferFeed([...all, terminal], new Set<BufferView>(['inner'])).map(message => message.content),
+  ['unvoiced'], 'Big Brother replies do not become unvoiced thoughts');
+
+assert.deepEqual(projectBufferFeed([...all, terminal], new Set<BufferView>(['conversation'])).map(message => message.content),
+  ['spoken'], 'Conversation does not silently select the Terminal buffer');
+assert.deepEqual(projectBufferFeed([...all, terminal], new Set<BufferView>(['conversation', 'terminal'])).map(message => message.content),
+  ['spoken', 'Big Brother final answer'], 'Conversation and Terminal combine chronologically when both are selected');
+assert.deepEqual(projectBufferFeed([...all, terminal], new Set<BufferView>(['conversation', 'inner', 'system', 'terminal'])).map(message => message.content),
+  ['unvoiced', 'wave queued', 'spoken', 'service started', 'Big Brother final answer'], 'All four tabs share the same projection');
+
 console.log('buffer-feed.spec.ts: all assertions passed');

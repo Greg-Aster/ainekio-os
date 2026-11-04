@@ -21,7 +21,7 @@ import { ENVIRONMENT_CONTEXT_ENTRIES, selectedEnvironmentRoutes, type Environmen
  */
 
 import { defineNode, type NodeDefinition } from '../types.js';
-import { projectEnvironmentHistory } from '../environment/helpers.js';
+import { projectEnvironmentHistory } from '../../environment-interface/task-selection.js';
 import { callLLM } from '../../model-router.js';
 import { renderPromptTemplate } from '../prompt-template.js';
 import { modelRouterDefinition } from './model-router.schema.js';

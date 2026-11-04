@@ -26,6 +26,7 @@ import type { ProviderMessage } from './providers/types.js';
  * Options for executing an escalation request
  */
 export interface EscalationOptions {
+  toolAccess?: 'read-only';
   /** Ordinary model calls request high reasoning when true, none when false; absent retains configured effort. */
   enableThinking?: boolean;
   /** Timeout in milliseconds */

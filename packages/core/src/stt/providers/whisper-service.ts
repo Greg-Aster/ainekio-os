@@ -12,7 +12,6 @@ import { audit } from '../../audit.js';
 import { eventBus, EventTypes, generateRequestId } from '../../infrastructure/event-bus/index.js';
 import {
   ensureVoiceServiceRunning,
-  getVoiceServiceStatus,
   getVoiceServiceUrl,
   stopVoiceService,
 } from '../../voice-service-manager.js';
@@ -243,12 +242,14 @@ print(json.dumps(result))
         let stdout = '';
         let stderr = '';
 
+        proc.stdout.setEncoding('utf8');
+        proc.stderr.setEncoding('utf8');
         proc.stdout.on('data', (data) => {
-          stdout += data.toString();
+          stdout += data;
         });
 
         proc.stderr.on('data', (data) => {
-          stderr += data.toString();
+          stderr += data;
         });
 
         proc.on('close', (code) => {
@@ -276,25 +277,24 @@ print(json.dumps(result))
    * Check if Whisper server is healthy
    */
   private async checkServerHealth(serverUrl: string): Promise<boolean> {
+    const controller = new AbortController();
+    const timeout = setTimeout(() => controller.abort(), 2000);
     try {
-      const controller = new AbortController();
-      const timeout = setTimeout(() => controller.abort(), 2000);
-
       const response = await fetch(`${serverUrl}/health`, {
         signal: controller.signal,
       });
-
-      clearTimeout(timeout);
 
       if (!response.ok) {
         return false;
       }
 
-      // Check if model is ready (not just loading)
+      // The probe includes reading the body, not just receiving headers.
       const health = await response.json();
       return health.status === 'ready';
     } catch {
       return false;
+    } finally {
+      clearTimeout(timeout);
     }
   }
 
@@ -345,19 +345,12 @@ print(json.dumps(result))
     }
 
     try {
-      await ensureVoiceServiceRunning('whisper');
+      const status = await ensureVoiceServiceRunning('whisper');
+      return status.healthy;
     } catch (error) {
       console.error('[WhisperService] Auto-start server failed:', error);
       return false;
     }
-
-    const deadline = Date.now() + 10000;
-    while (Date.now() < deadline) {
-      const status = await getVoiceServiceStatus('whisper');
-      if (status.health) return true;
-      await new Promise(resolve => setTimeout(resolve, 500));
-    }
-    return false;
   }
 
   /**

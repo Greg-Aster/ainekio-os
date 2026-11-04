@@ -4,16 +4,16 @@ import { serializeContext } from '../../context-serialization.js';
 import { selectedEnvironmentRoutes } from './context-routing.js';
 import { resolveMemoryWork } from '../memory/memory-router.node.js';
 import { defineNode } from '../types.js';
-import { PLANNING_DELEGATION_DESCRIPTION } from './planning-contract.js';
 import { withVisualObservationSchema } from '../../visual-observation.js';
 import type { EnvironmentObservation, EnvironmentVisualFrame } from '../../environment-interface/index.js';
 import {
+  PLANNING_DELEGATION_DESCRIPTION,
   buildEnvironmentSelectorEnvelope,
   buildEnvironmentSelectorJsonSchema,
   buildEnvironmentSelectorSystemPrompt,
   projectEnvironmentHistory,
   type EnvironmentExecutionTarget,
-} from './helpers.js';
+} from '../../environment-interface/task-selection.js';
 
 function isRecord(value: unknown): value is Record<string, unknown> {
   return Boolean(value) && typeof value === 'object' && !Array.isArray(value);

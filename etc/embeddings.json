@@ -1,12 +1,8 @@
 {
   "enabled": true,
   "model": "qwen3-embedding-0.6b",
-  "provider": "local-models",
-  "description": "Unified embedding model for semantic memory search (node-llama-cpp - works on desktop and mobile)",
-  "localModels": {
-    "endpoint": "http://127.0.0.1:4324",
-    "model": "qwen3-embedding-0.6b"
-  },
+  "provider": "llama-cpp",
+  "description": "Semantic memory embeddings through the shared native llama.cpp service",
   "indexContentMode": "user",
   "indexContentModeOptions": {
     "user": "User only - indexes only user inputs (recommended, prevents LLM hallucinations in search)",

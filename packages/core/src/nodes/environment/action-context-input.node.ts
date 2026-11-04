@@ -6,10 +6,8 @@ function isRecord(value: unknown): value is Record<string, unknown> {
   return Boolean(value) && typeof value === 'object' && !Array.isArray(value);
 }
 
-function cleanText(value: unknown, maxLength: number): string {
-  return typeof value === 'string'
-    ? value.replace(/\s+/g, ' ').trim().slice(0, maxLength)
-    : '';
+function identifier(value: unknown): string {
+  return typeof value === 'string' ? value : '';
 }
 
 export const environmentActionContextInputNode = defineNode({
@@ -73,17 +71,17 @@ export const environmentActionContextInputNode = defineNode({
   },
   description: 'Verifies that the action ID reported by the robot matches the trusted sent-action record Core resolved before graph execution. A match exposes the sent command and its result details. This node performs no lookup, sends no command, changes no status, and calls no model.',
   async execute(inputs, context) {
-    const expectedActionId = cleanText(inputs.actionId, 200);
+    const expectedActionId = identifier(inputs.actionId);
     const supplied = isRecord(inputs.record ?? context.environmentActionContext)
       ? (inputs.record ?? context.environmentActionContext) as unknown as EnvironmentActionContext
       : null;
-    const actionId = cleanText(supplied?.actionId, 200);
+    const actionId = identifier(supplied?.actionId);
     const matching = Boolean(expectedActionId && actionId === expectedActionId);
     const actionContext = matching ? supplied : null;
     return {
       actionContext,
       actionId: actionContext?.actionId ?? '',
-      correlationId: cleanText(actionContext?.correlationId, 200),
+      correlationId: identifier(actionContext?.correlationId),
       robotObserver: parseRobotObserverCycle(actionContext?.robotObserver),
       available: Boolean(actionContext),
     };

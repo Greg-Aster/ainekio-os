@@ -14,7 +14,7 @@ import {
 } from '../../robot-operator.js';
 import {
   projectSelectorState,
-} from '../environment/helpers.js';
+} from '../../environment-interface/task-selection.js';
 import type { NodeSlot } from '../types.js';
 import { ROBOT_OPERATOR_DECISION_JSON_SCHEMA } from './decision-parser.node.js';
 import { buildRobotGoalReviewJsonSchema } from './goal-review-parser.node.js';
@@ -343,7 +343,7 @@ async function buildRobotOperatorContext(
         executionContext: ['execution', 'activeExecutions'], activityHistory: ['autonomyActivityHistory'],
         observationHistory: ['observationHistory'], desires: ['activeDesires'], vision: ['images', 'frames', 'currentVisualEvidence'],
       })) if (!selected.has(source)) for (const field of fields) delete inputs[field];
-      if (![...selected].some(source => source.startsWith('persona.'))) delete inputs.personaText;
+      if (outputContract !== 'autonomy_controller' && ![...selected].some(source => source.startsWith('persona.'))) delete inputs.personaText;
       if (!selected.has('environment')) {
         const observation = inputs.observation;
         inputs.observation = observation ? { sessionId: observation.sessionId, timestamp: observation.timestamp, metadata: observation.metadata } : undefined;
@@ -528,6 +528,7 @@ async function buildRobotOperatorContext(
         mode: inputs.activationState.mode, assessedAt: inputs.activationState.assessedAt,
         localTime: inputs.activationState.localTime, timeZone: inputs.activationState.timeZone,
         bodyConnection: inputs.activationState.bodyConnection,
+        systemIssues: inputs.activationState.systemIssues,
         operations: inputs.activationState.operations?.map(({ lastAssessment, recordedActivity, ...operation }: Record<string, unknown>) => operation),
         ...(!selected || selected.has('activityHistory') ? { history: inputs.activationState.operations?.map(({ id, lastAssessment, recordedActivity }: Record<string, unknown>) => ({
           operationId: id, lastAssessment, ...(!selected ? { recordedActivity } : {}),
@@ -649,11 +650,12 @@ async function buildRobotOperatorContext(
       ],
       selectedContext: { sources: { ...(inputs.sourceContext?.sources ?? {}), ...(inputs.conversationSelection?.sources ?? {}), ...(inputs.innerSelection?.sources ?? {}), ...(inputs.memorySelection?.sources ?? {}),
         ...(selected?.has('vision') ? { vision: { value: { frames: selectedFrames, current: inputs.currentVisualEvidence === true }, scope: { sessionId: suppliedObservation?.sessionId } } } : {}),
-        ...(Object.prototype.hasOwnProperty.call(inputs, 'persona') && [...(selected ?? [])].some(source => source.startsWith('persona.')) ? { persona: { value: inputs.persona, scope: {} } } : {}),
+        ...(Object.prototype.hasOwnProperty.call(inputs, 'persona') && (outputContract === 'autonomy_controller'
+          || [...(selected ?? [])].some(source => source.startsWith('persona.'))) ? { persona: { value: inputs.persona, scope: {} } } : {}),
       } },
       frames: selectedFrames,
       jsonSchema: outputContract === 'autonomy_controller'
-        ? buildRobotAutonomyControllerJsonSchema(inputs.availableTasks ?? [], inputs.activationState?.mode)
+        ? buildRobotAutonomyControllerJsonSchema(inputs.availableTasks ?? [], inputs.activationState?.mode, inputs.activationState?.previous?.levels)
         : withVisualObservationSchema(outputContract === 'delegation'
           ? ROBOT_OPERATOR_DECISION_JSON_SCHEMA : buildRobotGoalReviewJsonSchema(), selectedFrames),
       context: {
@@ -712,9 +714,11 @@ function fixedContextNode(
           mode: nodeInputs.activationState?.mode, localTime: nodeInputs.activationState?.localTime,
           timeZone: nodeInputs.activationState?.timeZone,
           bodyConnection: nodeInputs.activationState?.bodyConnection,
+          systemIssues: nodeInputs.activationState?.systemIssues,
+          activePersona: typeof nodeInputs.personaText === 'string' ? nodeInputs.personaText.trim() || null : null,
           operations: nodeInputs.activationState?.operations?.map((operation: any) => ({ id: operation.id, name: operation.name,
             activation: operation.activation, assessedAt: operation.lastAssessment?.assessedAt })),
-          sourceAvailability: { persona: true, conversationHistory: true, innerDialogue: true, robotActions: true,
+          sourceAvailability: { persona: Boolean(nodeInputs.personaText?.trim()), conversationHistory: true, innerDialogue: true, robotActions: true,
             memory: true, robotStatus: true, environment: Boolean(nodeInputs.observation),
             vision: nodeInputs.observation?.state?.camera?.ready ?? nodeInputs.observation?.capabilities?.actions?.includes('captureImage') ?? false,
             executionContext: true, activityHistory: true, observationHistory: true, desires: true },

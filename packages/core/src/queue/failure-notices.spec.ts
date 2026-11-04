@@ -15,6 +15,7 @@ setAuditEnabled(false)
 const { UnifiedQueueManager } = await import('./unified-queue-manager.js')
 const { deliverWorkFailureNotice } = await import('./failure-notices.js')
 const { loadBufferForUser } = await import('../conversation-buffer.js')
+const { getPendingTechnicalTickets } = await import('../help-tickets/index.js')
 const { createUser } = await import('../users.js')
 const { beginAuthenticatedRuntime, createSession, selectAuthenticatedSession } = await import('../sessions.js')
 const { recoverDurableExecutions } = await import('../durable-execution/recovery.js')
@@ -61,6 +62,9 @@ test('a terminal conversation failure reaches the existing System Buffer once ac
   assert.equal(restored.failureNoticePending, false)
   assert.equal(restored.state, 'failed', 'Publishing a notice never claims the work succeeded')
   assert.equal(loadBufferForUser(username, 'conversation').messages.length, 0)
+  const issues = getPendingTechnicalTickets(username).filter(issue => issue.errorEvidence?.taskId === task.id)
+  assert.equal(issues.length, 1, 'Notice replay must not duplicate its unresolved technical issue')
+  assert.equal(issues[0].errorEvidence?.message, 'Simulated llama.cpp connection closed')
 })
 
 test('Coordinator recovery delivers only the authenticated profile and retains notices beyond dashboard history trimming', async () => {

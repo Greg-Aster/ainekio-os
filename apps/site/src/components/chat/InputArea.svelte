@@ -5,7 +5,8 @@
 
   export let input: string = '';
   export let loading: boolean = false;
-  export let composeTarget: 'conversation' | 'inner' = 'conversation';
+  export let composeTarget: 'conversation' | 'inner' | 'terminal' | null = 'conversation';
+  export let readOnly = false;
 
   // Auto-expanding textarea
   let textareaElement: HTMLTextAreaElement;
@@ -199,9 +200,10 @@
     <textarea
       bind:this={textareaElement}
       bind:value={input}
+      disabled={readOnly}
       on:keypress={handleKeyPress}
       on:input={adjustTextareaHeight}
-      placeholder={composeTarget === 'inner' ? 'Add an unvoiced thought...' : 'Message your MetaHuman...'}
+      placeholder={readOnly ? 'The selected view is read-only' : composeTarget === 'terminal' ? 'Message Codex in the same terminal session...' : composeTarget === 'inner' ? 'Add an unvoiced thought...' : 'Message your MetaHuman...'}
       rows="1"
       class="chat-input {loading ? 'queuing' : ''}"
     ></textarea>
@@ -233,6 +235,7 @@
       {/if}
       <button
         bind:this={micButton}
+        disabled={readOnly}
         class="mic-btn {isRecording ? 'recording' : ''} {isContinuousMode ? 'continuous' : ''} {isConversationMode ? 'conversation' : ''} {ttsIsPlaying ? 'interrupt-ready' : ''} {loading ? 'queuing' : ''}"
         title={loading ? 'Voice input will be queued' : ttsIsPlaying ? 'Tap to interrupt and speak' : isConversationMode ? (isRecording ? 'Listening…' : 'Conversation mode - just talk!') : isContinuousMode ? (isRecording ? 'Listening continuously…' : 'Continuous mode active') : (isRecording ? 'Listening… tap to stop' : 'Tap to speak, hold for conversation')}
         on:click={handleMicClick}
@@ -279,7 +282,7 @@
       <button
         class="send-btn"
         on:click={handleSend}
-        disabled={!input.trim()}
+        disabled={readOnly || !input.trim()}
         title="Send message"
       >
         <svg class="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">

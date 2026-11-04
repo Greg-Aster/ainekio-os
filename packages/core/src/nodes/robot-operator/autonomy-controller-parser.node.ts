@@ -13,17 +13,21 @@ const targetSchema = { anyOf: [
 ] }
 const memoryFields = ['memoryQuery', 'memoryOrder', 'memoryTypes', 'memoryTimeRange', 'memorySleepCycle'] as const
 
-export function buildRobotAutonomyControllerJsonSchema(tasks: Array<{ id: string }>, mode: AutonomyMode = 'semi') {
+export function buildRobotAutonomyControllerJsonSchema(tasks: Array<{ id: string }>, mode: AutonomyMode = 'semi',
+  previous: ActivationAssessment['levels'] = {}) {
   const full = mode === 'full'
   const updateProperties = {
     operationId: { type: 'string', enum: tasks.map(task => task.id) },
-    activation: { type: 'number', minimum: 0, maximum: 100 },
+    ...(full ? { activation: { type: 'number', minimum: 0, maximum: 100 } }
+      : { delta: { anyOf: [{ type: 'number', exclusiveMinimum: 0 }, { type: 'number', exclusiveMaximum: 0 }] } }),
     reason: { type: 'string' }, instruction: { type: 'string' },
   }
   const update = (target?: object, operationId?: string) => ({
     type: 'object', additionalProperties: false,
-    required: ['operationId', 'activation', 'reason', 'instruction', ...(full ? ['target'] : [])],
+    required: ['operationId', full ? 'activation' : 'delta', 'reason', 'instruction', ...(full ? ['target'] : [])],
     properties: { ...updateProperties, ...(operationId ? { operationId: { const: operationId } } : {}),
+      ...(!full && operationId && (previous[operationId]?.activation ?? 0) === 0
+        ? { delta: { type: 'number', exclusiveMinimum: 0 } } : {}),
       ...(target ? { target } : {}) },
   })
   const fullUpdates = [update({ type: 'null' })]
@@ -33,8 +37,8 @@ export function buildRobotAutonomyControllerJsonSchema(tasks: Array<{ id: string
     type: 'object', additionalProperties: false,
     required: full ? ['updates', 'assessmentReason', 'memoryRequest'] : ['updates'],
     properties: {
-      updates: { type: 'array', items: full ? { anyOf: fullUpdates } : update(),
-        ...(full ? { minItems: 1, contains: { type: 'object', required: ['activation'],
+      updates: { type: 'array', minItems: 1, items: { anyOf: full ? fullUpdates : tasks.map(task => update(undefined, task.id)) },
+        ...(full ? { contains: { type: 'object', required: ['activation'],
           properties: { activation: { type: 'number', exclusiveMinimum: 0 } } } } : {}) },
       ...(full ? {
         assessmentReason: { type: 'string', minLength: 1 },
@@ -65,7 +69,8 @@ function parseTarget(value: unknown): AutonomyTarget | null {
   return fail('Activation target must identify an execution, a Desire operation, or null')
 }
 
-function parseAssessment(value: unknown, operations: Array<{ id: string }>, mode: AutonomyMode) {
+function parseAssessment(value: unknown, operations: Array<{ id: string }>, mode: AutonomyMode,
+  previous: ActivationAssessment['levels'] = {}) {
   const raw = typeof value === 'string' ? value : (value as { content?: string })?.content
   let parsed: any
   try { parsed = JSON.parse(raw ?? '') } catch { return fail('Activation assessment is not JSON') }
@@ -75,11 +80,14 @@ function parseAssessment(value: unknown, operations: Array<{ id: string }>, mode
   if (full && (typeof parsed.assessmentReason !== 'string' || !parsed.assessmentReason.trim())) {
     return fail('Full activation assessment requires a nonempty assessment reason')
   }
+  if (!full && parsed.updates.length === 0) return fail('Semi activation assessment requires at least one nonzero adjustment')
+  const currentLevels = new Map(Object.entries(previous).map(([id, entry]) => [id, entry.activation]))
   const updates: ActivationUpdate[] = parsed.updates.map((update: any) => {
-    if (!isRecord(update) || !exactFields(update, ['activation', 'instruction', 'operationId', 'reason', ...(full ? ['target'] : [])])
+    const field = full ? 'activation' : 'delta'
+    if (!isRecord(update) || !exactFields(update, [field, 'instruction', 'operationId', 'reason', ...(full ? ['target'] : [])])
       || !operations.some(operation => operation.id === update.operationId)
-      || typeof update.activation !== 'number' || !Number.isFinite(update.activation)
-      || update.activation < 0 || update.activation > 100
+      || typeof update[field] !== 'number' || !Number.isFinite(update[field])
+      || (full ? update.activation < 0 || update.activation > 100 : update.delta === 0)
       || typeof update.reason !== 'string' || typeof update.instruction !== 'string') {
       return fail('Activation update does not match the supplied operation contract')
     }
@@ -88,7 +96,14 @@ function parseAssessment(value: unknown, operations: Array<{ id: string }>, mode
       || target?.kind === 'desire' && update.operationId !== 'desire-agent') {
       return fail('Activation target does not match its selected operation')
     }
-    return { ...update, ...(full ? { target } : {}) } as ActivationUpdate
+    const current = currentLevels.get(update.operationId) ?? 0
+    const activation = full ? update.activation
+      : Math.max(0, Math.min(100, current + update.delta))
+    if (!full && activation === current && activation !== 100) {
+      return fail('Semi activation adjustment must change a level or trigger its function at 100')
+    }
+    currentLevels.set(update.operationId, activation)
+    return { ...update, activation, ...(full ? { target } : {}) } as ActivationUpdate
   })
   if (!full) return { updates }
   if (!updates.some(update => update.activation > 0)) return fail('Full activation assessment requires a positive activity selection')
@@ -106,8 +121,9 @@ function parseAssessment(value: unknown, operations: Array<{ id: string }>, mode
   return { updates, assessmentReason: parsed.assessmentReason as string, memoryRequest: request as AutonomyMemoryRequest | null }
 }
 
-export function parseRobotAutonomyChoice(value: unknown, operations: Array<{ id: string }>, mode: AutonomyMode = 'semi'): ActivationUpdate[] {
-  return parseAssessment(value, operations, mode).updates
+export function parseRobotAutonomyChoice(value: unknown, operations: Array<{ id: string }>, mode: AutonomyMode = 'semi',
+  previous: ActivationAssessment['levels'] = {}): ActivationUpdate[] {
+  return parseAssessment(value, operations, mode, previous).updates
 }
 
 export const robotAutonomyControllerParserNode = defineNode({
@@ -124,7 +140,7 @@ export const robotAutonomyControllerParserNode = defineNode({
   description: 'Records model-selected activation levels and applies the configured Semi or Full selection rule.',
   async execute(inputs, context) {
     const state = inputs.activationState as { mode: AutonomyMode; previous: ActivationAssessment | null; assessedAt: string }
-    const parsed = parseAssessment(inputs.response, inputs.availableTasks, state.mode)
+    const parsed = parseAssessment(inputs.response, inputs.availableTasks, state.mode, state.previous?.levels)
     const { updates } = parsed
     const assessedAt = new Date().toISOString()
     const levels = { ...state.previous?.levels }

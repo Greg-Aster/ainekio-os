@@ -13,14 +13,23 @@ Start MetaHuman OS, sign in, and select **Chat** in the left sidebar. If the pag
 
 ## Choose What You Read
 
-The buttons above the message list are independent filters. More than one can be enabled at once.
+Conversation is selected when Chat opens. The four buttons above the message
+list select persistent feeds and can be combined in any combination:
 
-- **Conversation** shows user and assistant messages from the conversation buffer.
-- **Inner Dialogue** shows persisted private thoughts, reflections, dreams, and related inner records.
-- **System** merges chronological System and Robot buffer records.
-- **Terminal** opens the terminal control surface. It is not another message buffer.
+- **Conversation** shows user and persona messages from the Conversation Buffer.
+- **Inner Dialogue** shows private thoughts, reflections, dreams, and related Inner Buffer records.
+- **System** merges System and Robot Buffer records and remains read-only.
+- **Terminal** shows exchanges with Big Brother from the Terminal Buffer.
 
-Changing these filters does not change where a new message will be written. Use the compose-target buttons beside the input to choose **Conversation** or **Unvoiced thought**.
+Selected feeds merge chronologically. Each history comes from its existing
+profile buffer file and retains its configured message limit across reloads and
+application sessions. Selecting Conversation does not implicitly select Terminal.
+
+With a single selected tab that accepts input, the input automatically uses that destination
+and hides **Send as**. With multiple tabs selected, **Send as** lists the writable
+selected destinations: Conversation, Unvoiced thought, and/or Terminal. Your chosen
+destination remains selected while it is available. System-only selection disables
+message input without changing its displayed history.
 
 ## Send a Message
 
@@ -36,9 +45,9 @@ Select an existing message before sending to include it as focused reply context
 
 - **Stop** cancels the current chat request.
 - Interrupting speech stops browser TTS playback; it does not by itself cancel model work.
-- **Clear** clears only the explicit compose target's server buffer. The visible read-filter combination never decides what is deleted.
+- **Clear** clears only the selected input destination's server buffer. The visible read-filter combination never decides what is deleted.
 
-Clearing Conversation therefore does not clear Inner Dialogue, System, audit logs, memories, or unrelated runtime data.
+Clearing Conversation therefore does not clear Terminal exchanges, Inner Dialogue, System, audit logs, memories, or unrelated runtime data.
 
 ## Thinking, Big Brother, and Active Operator
 
@@ -62,36 +71,82 @@ maintained React Native shell may use device-native speech recognition instead.
 Check each stage separately when diagnosing a failure. See
 [Voice Features](/user-guide#voice-features).
 
-## System Terminal
+## Terminal Conversation
 
-Owners can open **Terminal** from the sidebar or the chat toolbar. Select
-**Start terminal**, then **New shell** or **Server log**. Starting the agent alone
-creates no shell. Server log displays the application log; it does not start
-other services.
+Owners can select **Terminal** from the sidebar or chat toolbar. Terminal-only
+selection routes input there automatically; with other feeds selected, choose
+**Send as Terminal** beside the input. Opening
+this view does not start a process. The first terminal message starts the existing
+Big Brother Terminal service and opens its native Codex session. Later messages
+continue that exact Codex thread, including messages sent while a turn is running.
+Final replies appear in the chat as **Big Brother**. The expandable **Terminal activity** section retains the same owned session's execution transcript.
 
-Shells belong to the Terminal agent. Hiding the panel, switching tabs, or
-reloading the page preserves their state. Reconnect restores the current screen
-and up to 2,000 lines of scrollback. A failed close leaves the session visible
-with its error so it can be retried. **Stop terminal** closes every owned session
-and provider invocation. Agent Monitor offers the same service lifecycle controls.
+Terminal messages use the configured Codex command, arguments, permissions,
+model and reasoning settings. The first turn includes the root `agents_big_brother` orientation file and
+resolved workspace/profile/conversation-buffer locations, followed by the complete
+message. Later turns send only the new message to the same thread. Terminal input
+does not run the MetaHuman conversation workflow or become a diagnostic report.
+Big Brother diagnostic and tool sessions remain separate.
 
-The terminal is off by default and is not started by opening a panel or sending
-a Big Brother request. Start it before using Claude Code or Codex escalation.
-Chat-triggered escalation opens the panel; autonomous provider sessions can be
-viewed through the sidebar. Closing a provider session cancels that invocation;
-hiding its display does not. Provider sessions are read-only displays.
+Completed chat turns enter the editable **Big Brother Response** workflow in
+`etc/cognitive-graphs/big-brother-response-mode.json`. Existing User Input and
+Conversation Work Result nodes provide the original request and final reply;
+the Conversation Buffer node selects its Terminal channel, TTS Output uses the
+saved speech destination, and Stream Writer returns the final text. No Persona
+model rewrites Codex's answer. Terminal exchanges use the canonical buffer owner
+and the existing conversation retention setting, separately from the persona's
+Conversation Buffer. Select both Conversation and Terminal to see both histories.
 
-Access uses the application's authenticated connection, including for remote
-browsers. No separate localhost terminal port is required. Logging out revokes
-access without terminating intentionally retained shells.
+The existing execution store persists each response and its submission identity
+before the Coordinator admits delivery. Recovery resumes response delivery;
+it does not rerun Codex. Speech admission does not wait for audible playback,
+and independent response work does not block subsequent terminal turns.
+
+Hiding Terminal, switching views or reloading preserves the session. Reconnect
+restores its current transcript using the application's authenticated connection.
+**Close session**, **Stop** while composing terminal input, or closing the native
+window ends that session and its pending turns. The next terminal message starts
+a new thread. Stopping Terminal in Agent Monitor closes all owned provider work.
+After a service restart, saved processes are cleaned up and commands are never
+replayed. Logging out revokes browser access without stopping retained work.
+
+## System Code Review
+
+System Code Review is available alongside the other Active Operator operations.
+Active Operator receives unresolved technical issues and their previous review
+outcomes when assessing activation. Its existing model decides whether to select
+the coding operation. The agent can also be run manually from the agent catalog.
+
+The editable **System Code Review** workflow uses the configured Coder model to
+prepare an investigation request, then runs it through the existing Big Brother
+Terminal service. Diagnosis is read-only at every trust level. Automatic source
+repair follows the existing high-risk approval policy: `adaptive_auto`, including
+the status widget's subsequent YOLO step. Lower trust levels receive a diagnosis
+and proposed repair. The terminal owner reads trust again when work starts.
+
+Every attempt records a report as **System Code Review** in Conversation and
+Persona Memory, including failures and unrepaired issues. Help Tickets retain
+issue identity, evidence, review history and resolution references. Resolved and
+duplicate tickets leave the unresolved list; a new error occurrence remains new
+evidence. A failed investigation does not establish a cause or a completed repair.
+Report delivery recovery preserves the original report without repeating Codex.
+
+Client errors are recorded when the backend accepts their report. Coordinator
+execution failures use its existing durable failure-notice path. Manual terminal
+conversation keeps its own session. Desire integration remains a later option.
 
 ## Speech Output
 
-The speaker control enables or disables conversational speech. Generated audio is delivered through the TTS queue and played by the authenticated browser consumer. A healthy synthesis provider or completed audio file does not prove that the browser played it audibly; browser permission, the active output device, and the queue consumer also matter.
+The speaker control selects Off, Browser, or Body Control for workflow speech.
+Browser uses the existing TTS queue and authenticated playback consumer. Body
+Control receives audio through Environment Bridge and selects its configured
+computer or robot speaker. Computer playback remains available without a physical
+robot connection. Synthesis, delivery receipts and actual audibility are separate
+evidence; a completed audio file alone does not prove that it was heard.
 
 ## Privacy and Persistence
 
-Conversation, inner-dialogue, system, and robot histories are server-owned, profile-resolved buffers. They are not interchangeable with durable episodic memory. Use explicit memory capture when something must be retained as a memory rather than relying on the current chat view.
+Conversation, inner-dialogue, system, robot, and terminal histories are server-owned, profile-resolved buffers. They are not interchangeable with durable episodic memory. Use explicit memory capture when something must be retained as a memory rather than relying on the current chat view.
 
 Guest sessions are authenticated, read-only sessions with limited profile access. Private profiles are not available to guests.
 

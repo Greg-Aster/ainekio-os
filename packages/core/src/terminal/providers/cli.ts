@@ -30,7 +30,8 @@ export interface ParsedBigBrotherEvent {
 
 /** Per-invocation model and diagnostic settings passed to the terminal provider. */
 export interface TerminalProviderOptions extends EscalationOptions {
-  diagnostic?: { model?: string; reasoning: boolean; threadId?: string }
+  diagnostic?: { model?: string; reasoning: boolean; threadId?: string; access?: 'read-only' | 'repair' }
+  session?: { threadId?: string }
 }
 
 export interface BigBrotherCLIInvocation {
@@ -320,6 +321,10 @@ export function buildBigBrotherCLIInvocation(
       ensureConfigOverride(appArgs, 'approval_policy', 'never')
       ensureConfigOverride(appArgs, 'sandbox_mode', 'danger-full-access')
     }
+    if (options.toolAccess === 'read-only') {
+      ensureConfigOverride(appArgs, 'sandbox_mode', 'read-only')
+      ensureConfigOverride(appArgs, 'approval_policy', 'never')
+    }
     ensureConfigOverride(appArgs, 'developer_instructions', '')
     ensureConfigOverride(appArgs, 'project_doc_max_bytes', 0)
     ensureConfigOverride(appArgs, 'memories.use_memories', false)
@@ -351,20 +356,32 @@ export function buildBigBrotherCLIInvocation(
   }
 
   if (args.length === 0 || (args[0] !== 'exec' && args[0] !== 'e')) args.unshift('exec')
-  // Resume the exact diagnostic thread, never whichever CLI session was last used.
-  if (options.diagnostic?.threadId) args.push('resume', options.diagnostic.threadId, '-')
+  // Resume this owner's exact thread, never whichever CLI session was last used.
+  const threadId = options.session?.threadId || options.diagnostic?.threadId
+  if (threadId) args.push('resume', threadId, '-')
   ensureArg(args, '--json')
   if (model) setModelArg(args, model)
-  if (reasoning || !options.diagnostic) ensureConfigOverride(args, 'model_reasoning_effort', reasoning || 'low')
+  if (reasoning || (!options.diagnostic && !options.session)) ensureConfigOverride(args, 'model_reasoning_effort', reasoning || 'low')
   const colorIndex = args.indexOf('--color')
   if (colorIndex >= 0 && colorIndex + 1 < args.length) args[colorIndex + 1] = 'never'
-  else if (!options.diagnostic?.threadId) args.push('--color', 'never')
+  else if (!threadId) args.push('--color', 'never')
   // --color belongs to exec, not exec resume.
-  if (options.diagnostic?.threadId && colorIndex >= 0) args.splice(colorIndex, 2)
+  if (threadId && colorIndex >= 0) args.splice(colorIndex, 2)
 
   const resultFile = path.join(tempDir, 'last-message.txt')
   ensureArg(args, '--output-last-message', resultFile)
-  if (options.diagnostic || backend.dangerouslySkipPermissions) ensureArg(args, '--dangerously-bypass-approvals-and-sandbox')
+  if (options.diagnostic?.access === 'read-only') {
+    for (let index = args.length - 1; index >= 0; index--) {
+      const arg = args[index];
+      if (['--dangerously-bypass-approvals-and-sandbox', '--yolo', '--full-auto', '--approve-for-me'].includes(arg)) args.splice(index, 1);
+      else if (['--sandbox', '-s', '--ask-for-approval', '-a'].includes(arg)) args.splice(index, 2);
+      else if (/^(--sandbox|-s|--ask-for-approval|-a)=/.test(arg)) args.splice(index, 1);
+    }
+    ensureConfigOverride(args, 'sandbox_mode', 'read-only');
+    ensureConfigOverride(args, 'approval_policy', 'never');
+    const resume = args.indexOf('resume');
+    args.splice(resume < 0 ? 1 : resume, 0, '--sandbox', 'read-only');
+  } else if (options.diagnostic || backend.dangerouslySkipPermissions) ensureArg(args, '--dangerously-bypass-approvals-and-sandbox')
 
   try {
     const imagePaths = materializeCodexImages(tempDir, options)
@@ -381,6 +398,6 @@ export function buildBigBrotherCLIInvocation(
     stdin: prompt,
     resultFile,
     tempDir,
-    timeout: options.diagnostic ? 0 : options.timeout || backend.timeout || 300000,
+    timeout: options.diagnostic || options.session ? 0 : options.timeout || backend.timeout || 300000,
   }
 }

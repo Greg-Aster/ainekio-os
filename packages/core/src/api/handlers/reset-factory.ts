@@ -18,7 +18,7 @@ import { clearMemoryCaptureCache } from '../../memory.js'
 import { getAgencyHistoryResetPaths } from '../../agency/storage.js'
 import { createTTSDeliveryQueueStore } from '../../tts/delivery-queue.js'
 
-const BUFFER_MODES: CanonicalBufferMode[] = ['conversation', 'inner', 'system', 'robot']
+const BUFFER_MODES: CanonicalBufferMode[] = ['conversation', 'inner', 'system', 'robot', 'terminal']
 
 export interface ResetFactoryDependencies {
   coordinator(): Promise<UnifiedQueueManager>

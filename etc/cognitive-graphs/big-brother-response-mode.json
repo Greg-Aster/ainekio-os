@@ -1,0 +1,150 @@
+{
+  "version": "1.0",
+  "format": "svelte-flow",
+  "name": "Big Brother Response",
+  "description": "Records terminal exchanges and speaks the attributed final Big Brother response.",
+  "scheduler": {
+    "version": 1,
+    "activation": "demand",
+    "skippedState": "explicit",
+    "sideEffectOrder": "serial-topological",
+    "maxLoopIterations": 0
+  },
+  "nodes": [
+    {
+      "id": "request",
+      "type": "genericNode",
+      "position": {
+        "x": 0,
+        "y": 100
+      },
+      "data": {
+        "nodeType": "user_input",
+        "label": "Terminal Request",
+        "properties": {}
+      }
+    },
+    {
+      "id": "result",
+      "type": "genericNode",
+      "position": {
+        "x": 0,
+        "y": 100
+      },
+      "data": {
+        "nodeType": "environment_conversation_result",
+        "label": "Big Brother Final Response",
+        "properties": {}
+      }
+    },
+    {
+      "id": "request-buffer",
+      "type": "outputNode",
+      "position": {
+        "x": 330,
+        "y": 0
+      },
+      "data": {
+        "nodeType": "conversation_buffer",
+        "label": "Record Terminal Request",
+        "properties": {
+          "mode": "terminal"
+        }
+      }
+    },
+    {
+      "id": "buffer",
+      "type": "genericNode",
+      "position": {
+        "x": 660,
+        "y": 100
+      },
+      "data": {
+        "nodeType": "conversation_buffer",
+        "label": "Save Big Brother Reply",
+        "properties": {
+          "mode": "terminal"
+        }
+      }
+    },
+    {
+      "id": "speech",
+      "type": "genericNode",
+      "position": {
+        "x": 990,
+        "y": 100
+      },
+      "data": {
+        "nodeType": "tts",
+        "label": "Speak Big Brother Response",
+        "properties": {
+          "source": "big-brother",
+          "defaultMode": "conversation"
+        }
+      }
+    },
+    {
+      "id": "output",
+      "type": "outputNode",
+      "position": {
+        "x": 1320,
+        "y": 100
+      },
+      "data": {
+        "nodeType": "stream_writer",
+        "label": "Return Big Brother Response",
+        "properties": {}
+      }
+    }
+  ],
+  "edges": [
+    {
+      "id": "request-buffer",
+      "source": "request",
+      "sourceHandle": "entry",
+      "target": "request-buffer",
+      "targetHandle": "entry",
+      "type": "default"
+    },
+    {
+      "id": "result-buffer",
+      "source": "result",
+      "sourceHandle": "response",
+      "target": "buffer",
+      "targetHandle": "response",
+      "type": "default"
+    },
+    {
+      "id": "metadata-buffer",
+      "source": "result",
+      "sourceHandle": "metadata",
+      "target": "buffer",
+      "targetHandle": "metadata",
+      "type": "default"
+    },
+    {
+      "id": "buffer-speech",
+      "source": "buffer",
+      "sourceHandle": "response",
+      "target": "speech",
+      "targetHandle": "conversation",
+      "type": "default"
+    },
+    {
+      "id": "buffer-output",
+      "source": "buffer",
+      "sourceHandle": "response",
+      "target": "output",
+      "targetHandle": "response",
+      "type": "default"
+    },
+    {
+      "id": "request-before-response",
+      "source": "request-buffer",
+      "sourceHandle": "persisted",
+      "target": "buffer",
+      "targetHandle": "passthrough",
+      "type": "default"
+    }
+  ]
+}

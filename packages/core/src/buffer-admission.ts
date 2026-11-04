@@ -29,7 +29,7 @@ export interface BufferAdmissionReceipt {
   }>;
 }
 
-type AdmissionBufferMode = Exclude<CanonicalBufferMode, 'conversation'>;
+type AdmissionBufferMode = Exclude<CanonicalBufferMode, 'conversation' | 'terminal'>;
 
 type GraphAdmissionBufferMode = Exclude<AdmissionBufferMode, 'inner'>;
 

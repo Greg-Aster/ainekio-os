@@ -167,7 +167,7 @@ function environmentBridgeReadiness(
     return { readiness: 'not-ready', dependencyHealth: 'connecting',
       latestTask: connections.find(connection => connection.active && connection.error)?.error
         || connections.find(connection => connection.error)?.error
-        || 'No robot control connection is ready; voice is not reaching MetaHuman.' };
+        || 'No Body Control bridge connection is ready.' };
   }
 
   if (activeSessions.length === 0) {
@@ -182,14 +182,15 @@ function environmentBridgeReadiness(
     return {
       readiness: 'not-ready',
       dependencyHealth: 'connecting',
-      latestTask: `Received ${activeSessions.length} robot session(s); waiting for an action stream.`,
+      latestTask: `Received ${activeSessions.length} Body Control session(s); waiting for an action stream.`,
     };
   }
 
   return {
     readiness: 'ready',
     dependencyHealth: 'ok',
-    latestTask: `${activeSessions.length} robot session(s) connected with ${streamCount} action stream(s).`,
+    latestTask: `${activeSessions.length} Body Control session(s) connected with ${streamCount} action stream(s).`
+      + (connections.some(connection => connection.active && !connection.connected) ? ' No robot connected; Body Control capabilities remain available.' : ''),
   };
 }
 

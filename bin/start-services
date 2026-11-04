@@ -30,7 +30,6 @@ if [ "$MODE" = "--background" ]; then
   start_task agents "$REPO_ROOT/bin/mh" start --no-restart
   start_task cloudflare pnpm --dir "$REPO_ROOT" exec tsx "$REPO_ROOT/bin/start-cloudflare"
   start_task voice-server "$REPO_ROOT/bin/start-voice-server"
-  start_task local-models "$REPO_ROOT/bin/start-local-models"
   echo "Background service launchers dispatched; readiness is reported by each service. Logs: $LOG_DIR"
   status=0
   for pid in "${!launchers[@]}"; do

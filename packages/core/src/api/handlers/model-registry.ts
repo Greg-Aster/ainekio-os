@@ -499,7 +499,7 @@ export async function handleGetModelRegistry(req: UnifiedRequest): Promise<Unifi
     }
 
     const modelCategories = {
-      local: [...llamaModels, ...(activeBackend !== 'llama-cpp' && isOllamaRunning ? installedOllamaModels : []), ...availableModels.filter(model => model.provider === 'local-models')],
+      local: [...llamaModels, ...(activeBackend !== 'llama-cpp' && isOllamaRunning ? installedOllamaModels : [])],
       remote: availableModels.filter(m => cloudProviderSet.has(m.provider)),
       bigBrother: availableModels.filter(m => bigBrotherProviders.has(m.provider))
     };

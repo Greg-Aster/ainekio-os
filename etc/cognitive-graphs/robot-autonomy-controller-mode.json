@@ -167,48 +167,32 @@
       "id": "persona-loader",
       "type": "personaNode",
       "position": {
-        "x": 1260,
-        "y": 1440
+        "x": -800,
+        "y": -500
       },
       "data": {
         "label": "Active Persona",
         "nodeType": "persona_loader",
-        "properties": {},
-        "activation": {
-          "when": [
-            {
-              "nodeId": "intent-orchestrator",
-              "output": "needsPersona",
-              "truthy": true
-            }
-          ]
-        }
+        "properties": {}
       }
     },
     {
       "id": "persona-formatter",
       "type": "personaNode",
       "position": {
-        "x": 1660,
-        "y": 1440
+        "x": -380,
+        "y": -500
       },
       "data": {
-        "label": "Compact Persona Context",
+        "label": "Standing Persona Context",
         "nodeType": "persona_formatter",
         "properties": {
           "includeValues": true,
           "includeGoals": true,
           "goalContext": "standing",
-          "includePersonality": true
-        },
-        "activation": {
-          "when": [
-            {
-              "nodeId": "intent-orchestrator",
-              "output": "needsPersona",
-              "truthy": true
-            }
-          ]
+          "includePersonality": true,
+          "includeIdentity": true,
+          "includeBackground": true
         }
       }
     },
@@ -261,7 +245,8 @@
             "train-of-thought",
             "desire-agent",
             "sleep-workflow",
-            "mood"
+            "mood",
+            "system-code-review"
           ],
           "includeActivityHistory": false
         }
@@ -278,7 +263,7 @@
         "label": "Activation Assessment Contract",
         "nodeType": "text_input",
         "properties": {
-          "message": "You are the active decision-maker for the robot companion described by the supplied persona. Use its personality, standing goals, desires, attributed memories, conversation, inner activity, current environment, robot status and recorded outcomes to assess what is relevant now. In Full Auto, develop self-directed intentions and select the available operations that can pursue them; an existing user request or task is not required to originate an intention. In Semi Auto, use the same context to update operation activation. Distinguish an intended outcome from evidence that it has been achieved. Evaluate activation levels for the supplied operations using the supplied context. Each operation has an identifier, description, current activation level, activation threshold, and recorded activity. Timestamps identify when records were produced; intentions and requested work are distinct from recorded results. Return updates containing operationId, activation, reason, and instruction. activation is an absolute level from 0 to 100. Each update replaces that operation\u2019s previous level. In Semi Auto, each returned update at 100 requests its operation through the Work Coordinator. In Full Auto, the returned update with the highest activation greater than zero requests its operation. Zero records no current activation and does not request execution. If updates share the highest activation, their returned order determines which is selected. An omitted operation retains its recorded level and is not newly requested. reason records the basis for the update; instruction supplies context to the selected operation. Updates may raise, lower, or retain levels, and the updates list may be empty.\n\nPrior assessments, plans, replies and activity records establish what was previously selected or reported. Current-world claims require the supplied observation or measurement evidence at its recorded acquisition time; a later assessment or status-save time does not renew that evidence.",
+          "message": "You are the active decision-maker for the robot companion described by the supplied persona. Use its personality, standing goals, desires, attributed memories, conversation, inner activity, current environment, robot status and recorded outcomes to assess what is relevant now. Semi Auto gives you agency over the available functions through periodic assessments of current circumstances. You choose which functions to advance or reduce and by how much. An external request is not required to advance a function. Functions that perform internal work do not require outward interaction. Treat user messages as user instructions and assistant messages as the robot\u2019s own statements; an assistant statement does not establish a user request. Distinguish an intended outcome from evidence that it has been achieved. Evaluate activation levels for the supplied operations using the supplied context. Each operation has an identifier, description, current activation level, activation threshold, and recorded activity. Timestamps identify when records were produced; intentions and requested work are distinct from recorded results. Assess the current environmental conditions using the supplied context and current activation levels. Return one or more updates containing operationId, delta, reason, and instruction. delta is a signed, nonzero amount to add to or subtract from that operation\u2019s current activation. You choose which functions to adjust, the direction, and the amount for each. Multiple updates are allowed. The resulting activation is kept between 0 and 100. Each updated function whose resulting activation reaches 100 requests its operation through the Work Coordinator. Functions omitted from the updates retain their current activation. An empty updates list is invalid. An update must change its function\u2019s activation or request its execution at 100. Adjustments that leave both activation and execution unchanged are invalid. An assessment may adjust activation without triggering an operation. Prior assessments and activity are evidence for your decision, not fixed instructions for the present assessment.\n\nPrior assessments, plans, replies and activity records establish what was previously selected or reported. Current-world claims require the supplied observation or measurement evidence at its recorded acquisition time; a later assessment or status-save time does not renew that evidence.",
           "inputKey": ""
         }
       }
@@ -1112,13 +1097,6 @@
       "targetHandle": "orchestratorHints"
     },
     {
-      "id": "intent-orchestrator-personaSections-persona-formatter-sections",
-      "source": "intent-orchestrator",
-      "sourceHandle": "personaSections",
-      "target": "persona-formatter",
-      "targetHandle": "sections"
-    },
-    {
       "id": "persona-loader-persona-context-persona",
       "source": "persona-loader",
       "sourceHandle": "persona",
@@ -1180,6 +1158,13 @@
       "sourceHandle": "selectedContext",
       "target": "context",
       "targetHandle": "sourceContext"
+    },
+    {
+      "id": "persona-formatter-formatted-context-selection-request-personaText",
+      "source": "persona-formatter",
+      "target": "context-selection-request",
+      "sourceHandle": "formatted",
+      "targetHandle": "personaText"
     }
   ],
   "viewport": {

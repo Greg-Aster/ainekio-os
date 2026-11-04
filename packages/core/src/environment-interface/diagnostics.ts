@@ -87,6 +87,7 @@ export interface EnvironmentBodyConnection {
   sessionId?: string;
   gatewayInstance?: string;
   robotId?: string;
+  adapterConnected: boolean;
   connected: boolean;
   active: boolean;
   ready?: boolean;
@@ -100,7 +101,8 @@ export function recordEnvironmentBodyConnections(value: unknown): EnvironmentBri
     || typeof item.connected !== 'boolean' || typeof item.active !== 'boolean')) {
     throw new Error('Invalid bridge connection availability');
   }
-  connections = value.map(item => ({ endpoint: item.endpoint, connected: item.connected, active: item.active, ready: item.ready === true,
+  connections = value.map(item => ({ endpoint: item.endpoint, adapterConnected: item.adapterConnected === true,
+    connected: item.connected, active: item.active, ready: item.ready === true,
     ...Object.fromEntries(['sessionId', 'gatewayInstance', 'robotId', 'error']
       .filter(key => typeof item[key] === 'string').map(key => [key, item[key]])) }));
   notify();

@@ -2,7 +2,7 @@ import assert from 'node:assert/strict'
 import test from 'node:test'
 import type { EnvironmentObservation } from '../../environment-interface/index.js'
 import { environmentActionParserNode } from './action-parser.node.js'
-import { buildEnvironmentSelectorJsonSchema, validateEnvironmentSelectorOutput } from './helpers.js'
+import { buildEnvironmentSelectorJsonSchema, validateEnvironmentSelectorOutput } from '../../environment-interface/task-selection.js'
 
 const observation: EnvironmentObservation = {
   environmentId: 'fixture', adapter: 'fixture', sessionId: 'robot-1', timestamp: new Date().toISOString(),

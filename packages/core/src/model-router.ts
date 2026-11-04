@@ -11,7 +11,7 @@ import { loadCognitiveMode } from './cognitive-mode.js';
 import { getUserContext } from './context.js';
 import { callProvider, type ProviderType, type ProviderProgressEvent } from './providers/bridge.js';
 import { ollama } from './ollama.js';
-import { embedWithLocalService, isLocalModelServiceRunning } from './providers/local-models.js';
+import { embedWithLlamaCpp, getLlamaCppStatus } from './providers/llama-cpp.js';
 import { loadBackendConfig } from './llm-backend.js';
 import { parseThinkingBlocks } from './nodes/output/thinking-stripper.node.js';
 import {
@@ -406,8 +406,8 @@ export interface EmbeddingResponse {
 /**
  * Generate embeddings using role-based routing
  *
- * Routes to the configured embedder model (local-models/llama.cpp by default).
- * The local-models backend runs on CPU and can operate in parallel with GPU backends.
+ * Routes to the configured embedder model (the shared native llama.cpp host by default).
+ * Embedding CPU/GPU placement belongs to its native model preset.
  */
 export async function callEmbeddings(options: EmbeddingCallOptions): Promise<EmbeddingResponse> {
   const startTime = Date.now();
@@ -426,14 +426,14 @@ export async function callEmbeddings(options: EmbeddingCallOptions): Promise<Emb
     let embeddings: number[];
     let dimensions: number;
 
-    if (resolved.provider === 'local-models') {
-      // Get endpoint from llm-backend config
+    if (resolved.provider === 'llama-cpp') {
+      // The selected deployment retains its configured host.
       const backendConfig = loadBackendConfig();
-      const endpoint = backendConfig.localModels?.endpoint || 'http://127.0.0.1:4324';
+      const endpoint = typeof resolved.options.endpoint === 'string' ? resolved.options.endpoint : backendConfig.llamaCpp.endpoint;
 
       // The operation itself reports availability and inference failures. A
       // separate short health probe can time out while the service is healthy.
-      embeddings = await embedWithLocalService(options.text, {
+      embeddings = await embedWithLlamaCpp(options.text, {
         model: resolved.model,
         endpoint,
       });
@@ -509,10 +509,10 @@ export async function isEmbeddingServiceAvailable(userId?: string): Promise<bool
 
     const resolved = resolveModel('embedder', undefined, username);
 
-    if (resolved.provider === 'local-models') {
+    if (resolved.provider === 'llama-cpp') {
       const backendConfig = loadBackendConfig();
-      const endpoint = backendConfig.localModels?.endpoint || 'http://127.0.0.1:4324';
-      return await isLocalModelServiceRunning(endpoint);
+      const endpoint = typeof resolved.options.endpoint === 'string' ? resolved.options.endpoint : backendConfig.llamaCpp.endpoint;
+      return (await getLlamaCppStatus({ ...backendConfig.llamaCpp, model: resolved.model, endpoint })).running;
     }
 
     if (resolved.provider === 'ollama') {

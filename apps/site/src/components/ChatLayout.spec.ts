@@ -270,3 +270,101 @@ test('unknown saved and URL views return to Chat; valid history and HMR keep wor
     assert.equal(state.createNavigationStore('chat'), store);
   }
 });
+
+test('final terminal reply renders as Big Brother while ordinary replies retain the persona name', async () => {
+  const { render } = await import('svelte/server');
+  const { formatTimestamp, parseThinkBlocks } = await import('./chat/message-discriminator');
+  const base = renderedComponent('./chat/cards/BaseMessageCard.svelte', {
+    '../../../stores/navigation': { personaNameStore: writable('Fixture Persona'), userDisplayNameStore: writable('Fixture Owner') },
+    '../message-discriminator': { formatTimestamp },
+  });
+  const assistant = renderedComponent('./chat/cards/AssistantMessageCard.svelte', {
+    './BaseMessageCard.svelte': { default: base },
+    '../../Thinking.svelte': { default: () => {} },
+    '../message-discriminator': { parseThinkBlocks },
+  });
+  const message = { role: 'assistant', content: 'Exact Codex final response.', timestamp: 1,
+    meta: { source: 'big-brother', speaker: 'Big Brother' } };
+  const terminal = render(assistant, { props: { message, index: 0 } }).body;
+  assert.match(terminal, /Big Brother/);
+  assert.match(terminal, /Exact Codex final response\./);
+  assert.doesNotMatch(terminal, /Fixture Persona/);
+  const ordinary = render(assistant, { props: { message: { ...message, meta: {} }, index: 0 } }).body;
+  assert.match(ordinary, /Fixture Persona/);
+  assert.doesNotMatch(ordinary, /Big Brother/);
+});
+
+test('rendered chat starts with Conversation alone and shows routing choices for combined Conversation and Terminal', async () => {
+  const { render } = await import('svelte/server');
+  const feed = await import('../lib/client/buffer-feed');
+  const speech = await import('../lib/client/assistant-speech-preference');
+  const modes = await import('../lib/client/active-operator-modes');
+  const transport = await import('../lib/client/conversation-transport');
+  const messageOwner = await import('../lib/client/composables/useMessages');
+  const inputs: Array<{ readOnly: boolean; composeTarget: string }> = [];
+  const blank = { default() {} };
+  const component = renderedComponent('./ChatInterface.svelte', {
+    svelte: { onMount() {}, beforeUpdate() {}, afterUpdate() {}, onDestroy() {} },
+    './Thinking.svelte': blank, './ApprovalPrompt.svelte': blank,
+    './terminal/TerminalChat.svelte': blank, './chat/MessageList.svelte': blank,
+    './chat/InputArea.svelte': { default: (_payload: unknown, props: { readOnly: boolean; composeTarget: string }) => { inputs.push(props); } },
+    '../stores/security-policy': { canUseOperator: writable(true), currentMode: writable('dual'), isOwner: writable(true) },
+    '../stores/navigation': { yoloModeStore: writable(false), statusRefreshTrigger: writable(0) },
+    '../lib/client/utils/audio-utils.js': { calculateVoiceVolume() {} },
+    '../lib/client/assistant-speech-preference': speech,
+    '../lib/client/composables/useTTS': { useTTS: () => ({ isPlaying: writable(false), isLoading: writable(false) }) },
+    '../lib/client/composables/useMicrophone': { useMicrophone: () => ({ isRecording: writable(false), isContinuousMode: writable(false),
+      interimTranscript: writable(''), isNativeMode: writable(false), isConversationMode: writable(false) }) },
+    '../lib/client/composables/useThinkingTrace': { useThinkingTrace: () => ({ trace: writable(''), statusLabel: writable(''),
+      active: writable(false), steps: writable(''), showIndicator: writable(false) }) },
+    '../lib/client/composables/useMessages': messageOwner,
+    '../lib/client/server-health': { forceHealthCheck() { throw new Error('Render must not submit work'); } },
+    '../lib/client/api-config': { apiFetch() { throw new Error('Render must not fetch'); }, apiEventSource() { throw new Error('Render must not subscribe'); } },
+    '../stores/proposals': { connectProposalsStream() {}, disconnectProposalsStream() {} },
+    '../lib/client/active-operator-modes': modes,
+    '../lib/stores/trigger-manager': { setActiveOperatorMode() {}, triggerManagerSnapshot: writable(null), useTriggerManager() {} },
+    '../lib/client/buffer-feed': feed,
+    '../lib/client/conversation-transport': transport,
+  });
+  const initial = render(component).body;
+  assert.doesNotMatch(initial, /aria-label="Compose target"/);
+  assert.match(initial, /aria-pressed="true"[^>]*aria-label="Toggle conversation view"/);
+  assert.equal(inputs.at(-1)!.composeTarget, 'conversation');
+  const mixed = render(component, { props: { terminalSelected: true } }).body;
+  assert.match(mixed, /aria-label="Compose target"/);
+  assert.match(mixed, /💬 Conversation/);
+  assert.match(mixed, /⌨️ Terminal/);
+  assert.doesNotMatch(mixed, /💭 Unvoiced thought/);
+  assert.match(mixed, /aria-pressed="true"[^>]*aria-label="Toggle terminal view"/);
+});
+
+test('read-only input preserves its draft and disables sending without altering normal input', async () => {
+  const { render } = await import('svelte/server');
+  const component = renderedComponent('./chat/InputArea.svelte', {
+    svelte: { onDestroy() {}, createEventDispatcher: () => () => {} },
+    './FeedbackButtons.svelte': { default() {} },
+  });
+  const readOnly = render(component, { props: { input: 'preserved draft', readOnly: true, composeTarget: null } }).body;
+  assert.match(readOnly, /<textarea[^>]*disabled/);
+  assert.match(readOnly, /preserved draft/);
+  assert.match(readOnly.match(/<button\b[^>]*class="send-btn\b[^"]*"[^>]*>/)![0], /disabled/);
+  const normal = render(component, { props: { input: 'ready to send', composeTarget: 'conversation' } }).body;
+  assert.doesNotMatch(normal.match(/<textarea\b[^>]*>/)![0], /disabled/);
+  assert.doesNotMatch(normal.match(/<button\b[^>]*class="send-btn\b[^"]*"[^>]*>/)![0], /disabled/);
+});
+
+test('Body connection UI distinguishes a connected computer speaker from a disconnected robot', async () => {
+  const { render } = await import('svelte/server');
+  const component = renderedComponent('./BodyConnectionSelector.svelte', {});
+  const agents = [{ id: 'environment-bridge', variables: [] }];
+  const connection = { endpoint: 'ws://fixture/environment', adapterConnected: true, connected: false, active: true, ready: true };
+  const html = render(component, { props: { agents, connections: [connection] } }).body;
+  assert.match(html, /Body Control: connected/);
+  assert.match(html, /Robot: disconnected/);
+  assert.match(html, /Bridge: ready/);
+  const unavailable = render(component, { props: { agents, connections: [{ ...connection,
+    adapterConnected: false, active: false, ready: false, error: 'Connection refused' }] } }).body;
+  assert.match(unavailable, /Body Control: disconnected/);
+  assert.match(unavailable, /Bridge: not selected/);
+  assert.match(unavailable, /Connection refused/);
+});

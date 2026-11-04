@@ -2,23 +2,23 @@
  * Embeddings Module
  *
  * Unified embedding system routed through the Model Router.
- * Uses llama.cpp via local-model-service as the default backend.
+ * Uses the shared native llama.cpp service as the default backend.
  *
  * Architecture:
  * - Model Router resolves 'embedder' role from user profile's models.json
- * - Default provider is 'local-models' (llama.cpp on CPU)
+ * - Default provider is 'llama-cpp'; its model preset owns CPU/GPU placement
  * - Can run in parallel with GPU backends (llama.cpp, Ollama)
  * - Works on both desktop and mobile (React Native)
  *
  * Configuration comes from user profiles:
  * - profiles/{username}/etc/models.json → embedder model config
- * - llm-backend.json → localModels.endpoint for service location
+ * - Selected model endpoint or llm-backend.json → llamaCpp.endpoint for host location
  *
  * NOTE: This module does NOT use global etc/embeddings.json.
  * All configuration must come from user profile or be passed explicitly.
  */
 
-import { embedWithLocalService, isLocalModelServiceRunning } from './providers/local-models.js'
+import { embedWithLlamaCpp } from './providers/llama-cpp.js'
 import { callEmbeddings, isEmbeddingServiceAvailable as checkEmbeddingAvailable } from './model-router.js'
 import { getUserContext } from './context.js'
 import { loadBackendConfig } from './llm-backend.js'
@@ -34,14 +34,7 @@ export class EmbeddingServiceError extends Error {
   }
 }
 
-/**
- * Default embedding settings (used when no user context and no explicit options)
- */
-const DEFAULTS = {
-  model: 'qwen3-embedding-0.6b',
-  endpoint: 'http://127.0.0.1:4324',
-  maxTextLength: 32000,  // qwen3-embedding supports 32K context
-} as const;
+const DEFAULT_EMBEDDING_MODEL = 'qwen3-embedding-0.6b';
 
 /**
  * Check if embedding service is available
@@ -55,7 +48,7 @@ export async function isEmbeddingServiceAvailable(userId?: string): Promise<bool
  * Generate embedding vector for text
  *
  * Routes through the Model Router when user context is available.
- * Falls back to direct local-model-service calls for system operations.
+ * System operations without profile context use the same native provider.
  *
  * @param text - Text to generate embedding for
  * @param opts - Options including userId for profile-based model resolution
@@ -67,14 +60,6 @@ export async function embedText(
 ): Promise<number[]> {
   // Ensure text is a string
   const originalText = typeof text === 'string' ? text : JSON.stringify(text);
-
-  // Truncate if too long
-  const maxTextLength = DEFAULTS.maxTextLength;
-  let truncatedText = originalText;
-  if (originalText.length > maxTextLength) {
-    console.warn(`[embeddings] Text too long (${originalText.length} chars), truncating to ${maxTextLength}`);
-    truncatedText = originalText.substring(0, maxTextLength) + '... [truncated]';
-  }
 
   // Try to get user context for profile-based model resolution
   const ctx = getUserContext();
@@ -88,43 +73,17 @@ export async function embedText(
     }
   }
 
-  // Route through Model Router if we have user context
-  if (username) {
-    try {
-      const response = await callEmbeddings({
-        text: truncatedText,
-        userId: username,
-      });
-      return response.embeddings;
-    } catch (error) {
-      console.error('[embeddings] Model router error:', error);
-      // Fall through to direct service call as last resort
-    }
-  }
-
-  // Direct service call (no user context or router failed)
-  // This is a fallback for system operations without user context
-  const model = opts.model || DEFAULTS.model;
-  const backendConfig = loadBackendConfig();
-  const endpoint = backendConfig.localModels?.endpoint || DEFAULTS.endpoint;
-
   try {
-    const isRunning = await isLocalModelServiceRunning(endpoint);
-    if (!isRunning) {
-      throw new EmbeddingServiceError(
-        `Embedding service not running at ${endpoint}. Start with: ./bin/start-local-models`,
-      );
+    if (username) {
+      const response = await callEmbeddings({ text: originalText, userId: username });
+      return response.embeddings;
     }
-
-    return await embedWithLocalService(truncatedText, { model, endpoint });
+    return await embedWithLlamaCpp(originalText, {
+      model: opts.model || DEFAULT_EMBEDDING_MODEL,
+      endpoint: loadBackendConfig().llamaCpp.endpoint,
+    });
   } catch (error) {
-    if (error instanceof EmbeddingServiceError) {
-      throw error;
-    }
-    throw new EmbeddingServiceError(
-      `Embedding service error: ${(error as Error).message}. Ensure local-model-service is running.`,
-      error as Error
-    );
+    throw new EmbeddingServiceError(`Embedding request failed: ${(error as Error).message}`, error as Error);
   }
 }
 
@@ -145,24 +104,4 @@ export function cosineSimilarity(a: number[], b: number[]): number {
 
   const denom = Math.sqrt(na) * Math.sqrt(nb) || 1;
   return dot / denom;
-}
-
-/**
- * Get embedding dimensions for a model
- */
-export function getEmbeddingDimensions(model?: string): number {
-  const modelName = model || DEFAULTS.model;
-
-  // Known dimensions by model (local-models uses hyphen format)
-  const dimensions: Record<string, number> = {
-    'qwen3-embedding-0.6b': 1024,   // Qwen3 Embedding 0.6B - MTEB #1 per param
-    'qwen3-embedding-4b': 1024,     // Qwen3 Embedding 4B
-    'qwen3-embedding-8b': 1024,     // Qwen3 Embedding 8B - MTEB #1 overall
-    'nomic-embed-text-v1.5': 768,
-    'nomic-embed-text-v2-moe': 768,
-    'mxbai-embed-large-v1': 1024,
-    'all-minilm-l6-v2': 384,
-  };
-
-  return dimensions[modelName] || 1024;
 }

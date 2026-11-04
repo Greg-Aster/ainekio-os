@@ -72,6 +72,7 @@ export interface EnvironmentBridgeDiagnosticsSnapshot {
     sessionId?: string
     gatewayInstance?: string
     robotId?: string
+    adapterConnected: boolean
     connected: boolean
     active: boolean
     ready?: boolean

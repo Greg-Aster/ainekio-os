@@ -44,7 +44,7 @@ const {
   handleEnvironmentBridgeTelemetry,
 } = await import('../api/handlers/environment-bridge.js');
 import type { UnifiedRequest } from '../api/types.js';
-const { buildEnvironmentSelectorEnvelope, validateEnvironmentSelectorOutput } = await import('../nodes/environment/helpers.js');
+const { buildEnvironmentSelectorEnvelope, validateEnvironmentSelectorOutput } = await import('./task-selection.js');
 const { environmentActionParserNode } = await import('../nodes/environment/action-parser.node.js');
 const { environmentContextBuilderNode } = await import('../nodes/environment/context-builder.node.js');
 const { environmentImageInputNode } = await import('../nodes/environment/image-input.node.js');

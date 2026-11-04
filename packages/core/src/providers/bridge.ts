@@ -22,7 +22,6 @@ import {
 } from '../ollama.js';
 import { callLlamaCpp, getLlamaCppStatus } from './llama-cpp.js';
 import { loadBackendConfig, getBackendStatus } from '../llm-backend.js';
-import { generateWithLocalService, isLocalModelServiceRunning } from './local-models.js';
 import { loadDeploymentConfig } from '../deployment.js';
 import { callCloudProvider, isCloudProviderAvailable } from './cloud.js';
 import {
@@ -179,6 +178,7 @@ export async function callProvider(
       }
     }
     const nativeMessages = resolvedBackendId === 'codex';
+    if (options.toolAccess === 'read-only' && !nativeMessages) throw new Error('This model backend does not provide the requested read-only terminal tool access');
     const prompt = nativeMessages ? '' : messages.map(m =>
       `[${m.role === 'system' ? 'System' : m.role === 'user' ? 'User' : 'Assistant'}]: ${messageText(m)}`
     ).join('\n\n') + (responseInstructions ? `\n\n[System]: ${responseInstructions}` : '');
@@ -189,6 +189,7 @@ export async function callProvider(
     const result = await escalate(prompt, {
       signal: options.signal,
       enableThinking: options.enableThinking,
+      toolAccess: options.toolAccess,
       username,
       preferredBackend,
       timeout: 300000,
@@ -240,34 +241,6 @@ export async function callProvider(
     case 'mock':
       assertAdapterPreservesImageInput('Mock provider', contentInspection.imageCount)
       return callMockProvider(messages, options);
-
-    case 'local-models': {
-      assertAdapterPreservesImageInput('Local models', contentInspection.imageCount)
-      // Local model service (Transformers.js) - for mobile/offline use
-      const backendConfig = loadBackendConfig();
-      const localModelsConfig = backendConfig.localModels;
-      const endpoint = localModelsConfig?.endpoint || 'http://127.0.0.1:4324';
-
-      // Check if service is running
-      const isRunning = await isLocalModelServiceRunning(endpoint);
-      if (!isRunning) {
-        onProgress?.({
-          phase: 'failed',
-          message: 'Local model service not running. Start it from Settings → Backend.',
-        });
-        throw new Error('Local model service not running. Start it from Settings → Backend.');
-      }
-
-      return generateWithLocalService(
-        messages,
-        {
-          ...options,
-          endpoint,
-          model: options.model || localModelsConfig?.llm?.model || 'qwen3-1.7b',
-        },
-        onProgress
-      );
-    }
 
     default:
       throw new Error(`Unknown provider: ${providerName}`);
@@ -634,12 +607,6 @@ export async function isProviderAvailable(providerName: ProviderType): Promise<b
       return (await getLlamaCppStatus(loadBackendConfig().llamaCpp)).running;
     case 'ollama':
       return ollama.isRunning();
-
-    case 'local-models': {
-      const backendConfig = loadBackendConfig();
-      const endpoint = backendConfig.localModels?.endpoint || 'http://127.0.0.1:4324';
-      return isLocalModelServiceRunning(endpoint);
-    }
 
     case 'mock':
       return true;

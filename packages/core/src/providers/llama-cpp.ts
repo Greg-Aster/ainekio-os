@@ -124,6 +124,21 @@ export async function getLlamaCppProperties(config: LlamaCppConfig, signal?: Abo
   return requestJson(config.endpoint, `/props?model=${encodeURIComponent(config.model)}`, { signal })
 }
 
+/** Embeddings use the same native host and select their own model preset. */
+export async function embedWithLlamaCpp(
+  text: string,
+  config: Pick<LlamaCppConfig, 'endpoint' | 'model'>,
+  signal?: AbortSignal,
+): Promise<number[]> {
+  const result = await requestJson(config.endpoint, '/v1/embeddings', {
+    signal,
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ model: config.model, input: text, encoding_format: 'float' }),
+  })
+  return result.data[0].embedding
+}
+
 export async function callLlamaCpp(
   config: LlamaCppConfig,
   messages: ProviderMessage[],

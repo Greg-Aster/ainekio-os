@@ -2,8 +2,9 @@
 export type TerminalProvider = 'claude-code' | 'codex'
 export interface TerminalSession {
   id: string
-  kind: 'shell' | 'provider' | 'log'
+  kind: 'provider'
   title: string
+  chat?: { username: string }
   provider?: TerminalProvider
   phase: 'running' | 'completed' | 'failed' | 'stopping'
   cols: number
@@ -12,6 +13,7 @@ export interface TerminalSession {
   diagnostic?: { pending: number; submissionId?: string; threadId?: string; repairLog: string }
 }
 export interface DiagnosticRequest {
+  chat?: boolean
   prompt: string
   data: unknown
   model?: string
@@ -19,6 +21,7 @@ export interface DiagnosticRequest {
   username?: string
   source?: Record<string, unknown>
   toolTaskId?: string
+  codeReview?: { executionId: string; issueIds: string[] }
 }
 export interface DiagnosticReceipt {
   sessionId: string
@@ -26,23 +29,16 @@ export interface DiagnosticReceipt {
   status: 'submitted'
 }
 export interface TerminalState {
+  chatSessionId?: string
   status: 'running' | 'stopping' | 'stopped'
   sessions: TerminalSession[]
 }
 export type TerminalEvent =
   | { type: 'state'; state: TerminalState }
-  | { type: 'screen'; id: string; data: string; cols: number; rows: number }
-  | { type: 'output'; id: string; data: string }
+  | { type: 'screen'; id: string; data: string; text: string; cols: number; rows: number }
+  | { type: 'output'; id: string; data: string; text?: string }
   | { type: 'error'; error: string }
 
 export class TerminalError extends Error {
   constructor(message: string, public readonly status = 500) { super(message) }
-}
-
-export function dimensions(cols: unknown, rows: unknown): { cols: number; rows: number } {
-  if (!Number.isInteger(cols) || !Number.isInteger(rows)
-    || Number(cols) < 2 || Number(cols) > 300 || Number(rows) < 2 || Number(rows) > 120) {
-    throw new TerminalError('Terminal size must be 2–300 columns and 2–120 rows', 400)
-  }
-  return { cols: Number(cols), rows: Number(rows) }
 }

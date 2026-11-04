@@ -2,7 +2,8 @@
   import { onMount, beforeUpdate, afterUpdate, onDestroy } from 'svelte';
   import { get } from 'svelte/store';
   import Thinking from './Thinking.svelte';
-  import RobotConnectionStatus from './RobotConnectionStatus.svelte';
+  import TerminalChat from './terminal/TerminalChat.svelte';
+  import { reportChatError } from '../lib/client/system-errors';
   import InputArea from './chat/InputArea.svelte';
   import MessageList from './chat/MessageList.svelte';
   import ApprovalPrompt from './ApprovalPrompt.svelte';
@@ -27,7 +28,11 @@
   import { connectProposalsStream, disconnectProposalsStream } from '../stores/proposals';
   import { autonomyModeDefinition, nextAutonomyMode, type AutonomyMode } from '../lib/client/active-operator-modes';
   import { setActiveOperatorMode, triggerManagerSnapshot, useTriggerManager } from '../lib/stores/trigger-manager';
-  import { projectBufferFeed, receiveLiveConversation, replaceBufferSlice, stampBufferSource } from '../lib/client/buffer-feed';
+  import { projectBufferFeed, receiveLiveConversation, replaceBufferSlice, type BufferView } from '../lib/client/buffer-feed';
+
+  export let terminalSelected = false;
+  let terminalChat: TerminalChat;
+  let terminalRunning = false;
 
   // Component state
   let input = '';
@@ -46,24 +51,24 @@
   // Live workflow replies are local view state, never a conversation buffer or cache.
   let liveConversationMessages: ChatMessage[] = [];
   let isTabVisible = true;
-  // View selection: VS Code-style multi-select
-  // All three tabs can be combined for unified feed
-  // - Conversation: user/assistant messages from conversation buffer
-  // - Inner: reflection/dream/reasoning from inner buffer
-  // - System: chronological System Buffer + Robot Buffer records
-  let selectedViews = new Set<'conversation' | 'inner' | 'system'>(['conversation', 'inner']);
+  // One selection owns all persistent feeds, including Terminal.
+  let selectedViews = new Set<BufferView>(['conversation']);
+  $: if (terminalSelected) toggleView('terminal', true);
 
-  // Terminal is a control surface, not a buffer tab.
-  let terminalVisible = false;
-  let terminalMinimized = false;
-  let terminalHeight = 300; // Default height in pixels
-  let isResizing = false;
-  let resizeStartY = 0;
-  let resizeStartHeight = 0;
-
-  // Read selection and write target are intentionally independent.
-  let composeTarget: 'conversation' | 'inner' = 'conversation';
-  $: mode = composeTarget;
+  const composeOptions = [
+    { target: 'conversation', label: '💬 Conversation', title: 'Voiced conversation input' },
+    { target: 'inner', label: '💭 Unvoiced thought', title: 'Unvoiced thought input' },
+    { target: 'terminal', label: '⌨️ Terminal', title: 'Send to the same Codex terminal session' },
+  ] as const;
+  let composeTarget: 'conversation' | 'inner' | 'terminal' | null = 'conversation';
+  $: availableComposeOptions = composeOptions.filter(option => selectedViews.has(option.target)
+    && (option.target !== 'terminal' || $isOwner));
+  $: if (availableComposeOptions.length === 1 || !availableComposeOptions.some(option => option.target === composeTarget)) {
+    composeTarget = availableComposeOptions[0]?.target ?? null;
+  }
+  $: showComposeSelector = selectedViews.size > 1 && availableComposeOptions.length > 0;
+  let mode: 'conversation' | 'inner' = 'conversation';
+  $: mode = composeTarget === 'inner' ? 'inner' : 'conversation';
   let transientStatus = '';
   let transientStatusTimer: ReturnType<typeof setTimeout> | null = null;
   let messagesContainer: HTMLDivElement;
@@ -91,9 +96,9 @@
   const { isPlaying: ttsIsPlaying, isLoading: ttsIsLoading } = ttsApi;
 
   // Initialize Messages composable
-  // Terminal mode doesn't use messages, default to 'conversation' for the messages API
+  // History clearing follows the selected input destination; inference keeps its existing conversation mode.
   const messagesApi = useMessages({
-    getMode: () => mode,
+    getMode: () => composeTarget ?? 'conversation',
     onMessagesChange: (msgs) => {
       // This handles any side effects when messages change
       // (currently none needed, but useful for future extensions)
@@ -118,7 +123,13 @@
     }, 10_000);
   }
 
-  function pushComposedInput(content: string, target: 'conversation' | 'inner' = composeTarget) {
+  function showChatError(error: unknown, eventId?: string, record = true) {
+    const message = error instanceof Error ? error.message : String(error);
+    messagesApi.pushMessage('system', `Error: ${message}`);
+    if (record) void reportChatError(error, { eventId }).catch(failure => console.error('[chat] Error evidence was not recorded:', failure));
+  }
+
+  function pushComposedInput(content: string, target: 'conversation' | 'inner' = mode) {
     messagesApi.pushMessage(
       target === 'inner' ? 'thought' : 'user',
       content,
@@ -132,7 +143,7 @@
 
   function pushGeneratedResponse(
     content: string,
-    target: 'conversation' | 'inner' = composeTarget,
+    target: 'conversation' | 'inner' = mode,
     meta: Record<string, any> = {},
   ) {
     if (typeof content !== 'string' || !content.trim()) return;
@@ -344,14 +355,6 @@
     releaseTriggerManager = useTriggerManager();
     mic.loadVADSettings(); // Load VAD settings from voice config
 
-    // Load saved terminal height
-    try {
-      const savedHeight = localStorage.getItem('mh-terminal-height');
-      if (savedHeight) {
-        terminalHeight = Math.max(100, parseInt(savedHeight, 10) || 300);
-      }
-    } catch {}
-
     // Connect to proposals SSE stream for real-time updates (no polling)
     connectProposalsStream();
 
@@ -454,90 +457,6 @@
     ttsApi.refreshVoiceSettings();
   }
 
-  /**
-   * Fetch buffer content directly (for initial load and tab switches)
-   * Canonical history is server-owned. A failed read returns no persisted
-   * messages rather than reviving the removed IndexedDB buffer authority.
-   */
-  async function fetchSingleBuffer(streamMode: 'conversation' | 'inner' | 'system' | 'robot'): Promise<ChatMessage[]> {
-    // Always try server first - don't rely on isConnected which may not be accurate yet
-    try {
-      console.log(`[chat] Fetching ${streamMode} buffer from server...`);
-      const response = await apiFetch(`/api/buffer?mode=${streamMode}`);
-      if (response.ok) {
-        const data = await response.json();
-        if (Array.isArray(data.messages)) {
-          console.log(`[chat] Loaded ${data.messages.length} messages from ${streamMode} buffer`);
-          return data.messages.map((message: ChatMessage) => stampBufferSource(message, streamMode));
-        }
-      }
-      // Non-OK response - canonical history is temporarily unavailable.
-      console.warn('[chat] Buffer fetch returned non-OK status:', response.status);
-    } catch (err) {
-      console.warn('[chat] Server buffer fetch failed:', err);
-    }
-    return [];
-  }
-
-  // Concurrency guard for buffer fetches - prevents overlapping requests
-  let fetchInProgress = false;
-  let fetchNeededAfterCurrent = false;
-  /**
-   * Fetch and merge messages from all selected buffers
-   * Merges messages by timestamp for unified display
-   *
-   * Three distinct buffers:
-   * - conversation tab → conversation buffer (user/assistant)
-   * - inner tab → inner buffer (reflection/dream/reasoning)
-   * - system tab → system buffer (execution/system messages)
-   */
-  async function fetchAllSelectedBuffers() {
-    // Concurrency guard: if a fetch is already in progress, mark that we need another one
-    if (fetchInProgress) {
-      console.log('[chat] Fetch already in progress, will re-fetch when complete');
-      fetchNeededAfterCurrent = true;
-      return;
-    }
-
-    fetchInProgress = true;
-    fetchNeededAfterCurrent = false;
-
-    try {
-      // Map selected views directly to buffer modes (1:1 mapping now)
-      // System buffer only fetched when system tab is selected
-      const bufferModes: ('conversation' | 'inner' | 'system' | 'robot')[] = [];
-      if (selectedViews.has('conversation')) bufferModes.push('conversation');
-      if (selectedViews.has('inner')) bufferModes.push('inner');
-      if (selectedViews.has('system')) bufferModes.push('system', 'robot');
-
-      console.log(`[chat] Fetching buffers for views:`, Array.from(selectedViews), '→ modes:', bufferModes);
-
-      // Fetch all buffers in parallel
-      const bufferPromises = bufferModes.map(mode => fetchSingleBuffer(mode));
-      const bufferResults = await Promise.all(bufferPromises);
-
-      // Flatten and merge all messages
-      const allMessages: ChatMessage[] = [];
-      for (const bufferMessages of bufferResults) {
-        allMessages.push(...bufferMessages);
-      }
-
-      // Sort by timestamp (oldest first for chat display)
-      allMessages.sort((a, b) => a.timestamp - b.timestamp);
-
-      console.log(`[chat] Projected ${allMessages.length} messages from ${bufferModes.length} authoritative buffer(s)`);
-      messages.set(allMessages);
-    } finally {
-      fetchInProgress = false;
-
-      // If another fetch was requested while we were busy, do it now
-      if (fetchNeededAfterCurrent) {
-        console.log('[chat] Re-fetching due to pending request');
-        fetchAllSelectedBuffers();
-      }
-    }
-  }
-
   function disconnectAllBufferStreams() {
     bufferStream?.close();
     bufferStream = null;
@@ -626,7 +545,6 @@
 
           if (task.status === 'completed') {
             activeChatTaskId = null;
-            await fetchAllSelectedBuffers();
             thinkingTraceApi.stop();
             reasoningStages = [];
             loading = false;
@@ -639,7 +557,7 @@
             thinkingTraceApi.stop();
             reasoningStages = [];
             loading = false;
-            messagesApi.pushMessage('system', `Error: ${task.error || 'Queued message failed'}`);
+            showChatError(task.error || 'Queued message failed', `work-failure:${taskId}`, false);
 
             return;
           }
@@ -702,7 +620,7 @@
 
         } else if (type === 'error') {
           thinkingTraceApi.stop();
-          messagesApi.pushMessage('system', `Error: ${data?.message || 'Queued message failed'}`);
+          showChatError(data?.message || 'Queued message failed', `work-failure:${taskId}`, false);
           loading = false;
           close();
 
@@ -713,7 +631,7 @@
 
         }
       } catch (err) {
-        messagesApi.pushMessage('system', `Error: ${(err as Error).message || 'Failed to process queued response.'}`);
+        showChatError(err);
         loading = false;
         close();
 
@@ -721,7 +639,7 @@
     };
 
     stream.onerror = () => {
-      messagesApi.pushMessage('system', 'Error: Queued message stream disconnected.');
+      showChatError('Queued message stream disconnected.');
       loading = false;
       close();
 
@@ -876,6 +794,7 @@
 
         thinkingTraceApi.appendTrace(`[${timestamp()}] ❌ ${errorTitle}`, 5);
         messagesApi.pushMessage('system', `${errorTitle}\n\n${errorMessage}${contextInfo}\n\n💡 ${suggestion}`);
+        void reportChatError(authError).catch(failure => console.error('[chat] Error evidence was not recorded:', failure));
         restoreInputAndCleanup();
         return;
       }
@@ -1096,7 +1015,7 @@
       const errorMsg = err instanceof Error ? err.message : 'Response pipeline failed';
       thinkingTraceApi.appendTrace(`[${timestamp()}] ❌ ERROR: ${errorMsg}`, 10);
       thinkingTraceApi.appendTrace(`[${timestamp()}] ❌ PIPELINE FAILED after ${elapsed}ms`, 10);
-      messagesApi.pushMessage('system', `⚠️ Response Pipeline Error: ${errorMsg}`);
+      showChatError(err);
       thinkingTraceApi.stop();
     } finally {
       // Clear heartbeat interval
@@ -1118,8 +1037,22 @@
     // No input - nothing to do
     if (!input.trim()) return;
 
+    if (!composeTarget) { showTransientSystemMessage('The selected view is read-only.'); return; }
+
     // Already processing a send - ignore
     if (sendInProgress) return;
+
+    if (composeTarget === 'terminal') {
+      if (!$isOwner) { showTransientSystemMessage('Terminal access is restricted to the installation owner.'); return; }
+      sendInProgress = true;
+      const message = input;
+      try {
+        await terminalChat.send(message);
+        if (input === message) input = '';
+      } catch (error) { showTransientSystemMessage((error as Error).message); void reportChatError(error).catch(failure => console.error('[chat] Error evidence was not recorded:', failure)); }
+      finally { sendInProgress = false; }
+      return;
+    }
 
     sendInProgress = true;
     await interruptAssistantSpeech('user-input');
@@ -1144,7 +1077,7 @@
     activityApi.signalActivity();
 
     const userMessage = input.trim();
-    const requestComposeTarget = composeTarget;
+    const requestComposeTarget = mode;
     input = '';
 
     // Capture replyTo metadata if any message is selected
@@ -1219,7 +1152,7 @@
         openQueuedBackgroundStream(task.id, userMessage, requestComposeTarget);
       } catch (err) {
         input = userMessage;
-        messagesApi.pushMessage('system', `Error: ${(err as Error).message || 'Could not queue message.'}`);
+        showChatError(err);
       } finally {
         sendInProgress = false;
       }
@@ -1496,10 +1429,8 @@
                 thinkingTraceApi.setStatusLabel('✓ Completed, finalizing...');
                 thinkingTraceApi.appendTrace(`[${timestamp()}] ✓ ${progressMsg}`, 15);
               } else if (data.step?.startsWith('big_brother_')) {
-                terminalVisible = true;
                 // Big Brother status updates - show prominent status WITH TIMESTAMPS
                 if (data.step === 'big_brother_init') {
-                  terminalMinimized = false;
                   thinkingTraceApi.setStatusLabel('🤖 Big Brother initializing...');
                   thinkingTraceApi.appendTrace(`[${timestamp()}] 🤖 Big Brother: Initializing...`, 15);
                 } else if (data.step === 'big_brother_ready') {
@@ -1616,7 +1547,7 @@
           console.error('Chat stream error:', err);
           clearConnectionTracking();
           activeChatTaskId = null;
-          messagesApi.pushMessage('system', `Error: ${(err as Error).message || 'Failed to process server response.'}`);
+          showChatError(err);
           thinkingTraceApi.stop();
           loading = false;
           reasoningStages = [];
@@ -1667,7 +1598,7 @@
         sendInProgress = false;
         return;
       }
-      messagesApi.pushMessage('system', 'Error: Could not send message.');
+      showChatError(err);
       thinkingTraceApi.stop();
       loading = false;
       sendInProgress = false; // Safety net: ensure guard is reset on error
@@ -1751,11 +1682,11 @@
     }
   }
 
-  // View toggle functions for VS Code-style multi-select tabs
-  function toggleView(view: 'conversation' | 'inner' | 'system') {
+  function toggleView(view: BufferView, include = false) {
     const newSet = new Set(selectedViews);
 
     if (newSet.has(view)) {
+      if (include) return;
       // Can't deselect if it's the only one
       if (newSet.size > 1) {
         newSet.delete(view);
@@ -1766,8 +1697,8 @@
 
     selectedViews = newSet;
 
-    // Update the selected projections on the shared buffer stream.
-    connectMultipleBufferStreams();
+    // Initial selection is read on mount; later changes replace the same reader.
+    if (bufferStream) connectMultipleBufferStreams();
   }
 
   // One transport preserves the separate canonical buffer projections.
@@ -1783,14 +1714,14 @@
       try {
         const data = JSON.parse(event.data);
         if (data.type === 'error') {
-          messagesApi.pushMessage('system', `Buffer update failed (${data.mode || 'connection'}): ${data.error}`);
+          showChatError(`Buffer update failed (${data.mode || 'connection'}): ${data.error}`);
         } else if (data.type === 'update' && Array.isArray(data.messages)) {
           messages.update(msgs => replaceBufferSlice(msgs, data.mode, data.messages));
         } else if (data.type === 'conversation' && data.message) {
           liveConversationMessages = receiveLiveConversation(liveConversationMessages, data.message);
         }
       } catch (error) {
-        messagesApi.pushMessage('system', `Buffer update failed: ${(error as Error).message}`);
+        showChatError(error);
       }
     };
     source.onerror = (error) => {
@@ -1832,80 +1763,29 @@
     reasoningStages = [];
     thinkingTraceApi.stop();
 
-    // Generate new conversation session ID
-    try {
-      const newId = messagesApi.generateSessionId();
-      localStorage.setItem('mh_conversation_session_id', newId);
-    } catch (e) {
-      messagesApi.generateSessionId();
+    const target = composeTarget;
+    if (!target) return;
+
+    // Terminal history has its own session identity, owned by the terminal service.
+    if (target !== 'terminal') {
+      try {
+        const newId = messagesApi.generateSessionId();
+        localStorage.setItem('mh_conversation_session_id', newId);
+      } catch {
+        messagesApi.generateSessionId();
+      }
     }
 
     // Clear only the explicit compose target. Read-tab selection never decides
     // which canonical buffer is mutated.
     const serverCleared = await messagesApi.clearServerBuffer();
     if (serverCleared) {
-      if (composeTarget === 'conversation') liveConversationMessages = [];
-      console.log(`[ChatInterface] ${composeTarget} buffer cleared successfully`);
-      await fetchAllSelectedBuffers();
+      if (target === 'conversation') liveConversationMessages = [];
+      messages.update(current => replaceBufferSlice(current, target, []));
+      console.log(`[ChatInterface] ${target} buffer cleared successfully`);
     } else {
-      console.warn(`[ChatInterface] Failed to clear ${composeTarget} buffer`);
+      console.warn(`[ChatInterface] Failed to clear ${target} buffer`);
     }
-  }
-
-  // Terminal resize handlers
-  function startResize(e: MouseEvent | TouchEvent) {
-    if (terminalMinimized) return;
-    e.preventDefault(); // Prevent default to avoid scroll/selection issues
-    e.stopPropagation();
-
-    isResizing = true;
-    resizeStartY = 'touches' in e ? e.touches[0].clientY : e.clientY;
-    resizeStartHeight = terminalHeight;
-
-    // Prevent text selection during resize
-    document.body.style.userSelect = 'none';
-    document.body.style.cursor = 'row-resize';
-    document.body.style.pointerEvents = 'none'; // Prevent other elements from capturing
-
-    // Add global listeners for move/end (with passive: false to allow preventDefault)
-    document.addEventListener('mousemove', handleResize, { passive: false });
-    document.addEventListener('mouseup', stopResize);
-    document.addEventListener('mouseleave', stopResize); // Cleanup if mouse leaves window
-    document.addEventListener('touchmove', handleResize, { passive: false });
-    document.addEventListener('touchend', stopResize);
-    document.addEventListener('touchcancel', stopResize); // Handle touch cancellation
-  }
-
-  function handleResize(e: MouseEvent | TouchEvent) {
-    if (!isResizing) return;
-    e.preventDefault(); // Prevent scrolling during resize
-
-    const clientY = 'touches' in e ? e.touches[0].clientY : e.clientY;
-    // Moving up increases height (negative delta = more height)
-    const delta = resizeStartY - clientY;
-    const newHeight = Math.max(100, Math.min(window.innerHeight * 0.7, resizeStartHeight + delta));
-    terminalHeight = newHeight;
-  }
-
-  function stopResize() {
-    if (!isResizing) return; // Prevent double cleanup
-    isResizing = false;
-    document.body.style.userSelect = '';
-    document.body.style.cursor = '';
-    document.body.style.pointerEvents = ''; // Restore pointer events
-
-    // Remove global listeners
-    document.removeEventListener('mousemove', handleResize);
-    document.removeEventListener('mouseup', stopResize);
-    document.removeEventListener('mouseleave', stopResize);
-    document.removeEventListener('touchmove', handleResize);
-    document.removeEventListener('touchend', stopResize);
-    document.removeEventListener('touchcancel', stopResize);
-
-    // Save preference to localStorage
-    try {
-      localStorage.setItem('mh-terminal-height', String(terminalHeight));
-    } catch {}
   }
 
 </script>
@@ -1918,8 +1798,9 @@
       <button
         class="mode-btn {selectedViews.has('conversation') ? 'active' : ''}"
         on:click={() => toggleView('conversation')}
+        aria-pressed={selectedViews.has('conversation')}
         aria-label="Toggle conversation view"
-        title="Toggle conversation view (can combine with Inner Dialogue)"
+        title="Toggle Conversation buffer (can combine with other views)"
       >
         <span class="mode-icon" aria-hidden="true">💬</span>
         <span class="mode-label">Conversation</span>
@@ -1927,8 +1808,9 @@
       <button
         class="mode-btn {selectedViews.has('inner') ? 'active' : ''}"
         on:click={() => toggleView('inner')}
+        aria-pressed={selectedViews.has('inner')}
         aria-label="Toggle inner dialogue view"
-        title="Toggle inner dialogue view (can combine with Conversation)"
+        title="Toggle Inner Dialogue buffer (can combine with other views)"
       >
         <span class="mode-icon" aria-hidden="true">💭</span>
         <span class="mode-label">Inner Dialogue</span>
@@ -1936,6 +1818,7 @@
       <button
         class="mode-btn {selectedViews.has('system') ? 'active' : ''}"
         on:click={() => toggleView('system')}
+        aria-pressed={selectedViews.has('system')}
         aria-label="Toggle system view"
         title="Toggle merged System and Robot Buffer feed"
       >
@@ -1943,10 +1826,11 @@
         <span class="mode-label">System</span>
       </button>
       <button
-        class="mode-btn {terminalVisible ? 'active' : ''}"
-        on:click={() => { terminalVisible = !terminalVisible; }}
-        aria-label="Toggle terminal controls"
-        title="Toggle Terminal controls"
+        class="mode-btn {selectedViews.has('terminal') ? 'active' : ''}"
+        on:click={() => toggleView('terminal')}
+        aria-pressed={selectedViews.has('terminal')}
+        aria-label="Toggle terminal view"
+        title="Toggle Terminal buffer (can combine with other views)"
       >
         <span class="mode-icon" aria-hidden="true">⌨️</span>
         <span class="mode-label">Terminal</span>
@@ -1981,7 +1865,7 @@
       {#if speechPreferenceError}<span role="alert">{speechPreferenceError}</span>{/if}
     </div>
 
-    {#if displayMessages.length > 0}
+    {#if composeTarget && displayMessages.length > 0}
       <button class="clear-btn" on:click={clearChat} title="Clear chat history">
         <span class="clear-icon" aria-hidden="true">🗑️</span>
         <span class="clear-text">Clear</span>
@@ -1989,16 +1873,19 @@
     {/if}
   </div>
 
-  {#if $currentMode === 'environment' && $isOwner}<RobotConnectionStatus />{/if}
 
   <!-- Messages Area -->
 
-  <!-- Main chat area with optional terminal split -->
-  <div class="chat-main-area" class:with-terminal-split={terminalVisible}>
+  <!-- Shared conversation interface -->
+  <div class="chat-main-area">
     <!-- Messages panel -->
-    <div class="messages-panel" class:split={terminalVisible}>
+    <div class="messages-panel">
       <div class="messages-container" bind:this={messagesContainer}>
-        {#if displayMessages.length === 0}
+        {#if selectedViews.has('terminal')}
+          {#if $isOwner}<TerminalChat bind:this={terminalChat} bind:running={terminalRunning} />
+          {:else}<p>Terminal access is restricted to the installation owner.</p>{/if}
+        {/if}
+        {#if displayMessages.length === 0 && !selectedViews.has('terminal')}
           <div class="welcome-screen">
             <div class="welcome-icon">🧠 => 💻</div>
             <h2 class="welcome-title">MetaHuman OS</h2>
@@ -2063,28 +1950,28 @@
 
   <!-- Input Area -->
   <div class="input-container">
-    <div class="compose-target" aria-label="Compose target">
-      <span class="compose-label">Send as</span>
-      <button
-        class:active={composeTarget === 'conversation'}
-        on:click={() => { composeTarget = 'conversation'; }}
-        aria-pressed={composeTarget === 'conversation'}
-        title="Voiced conversation input"
-      >💬 Conversation</button>
-      <button
-        class:active={composeTarget === 'inner'}
-        on:click={() => { composeTarget = 'inner'; }}
-        aria-pressed={composeTarget === 'inner'}
-        title="Unvoiced thought input"
-      >💭 Unvoiced thought</button>
-    </div>
+    {#if showComposeSelector}
+      <div class="compose-target" aria-label="Compose target">
+        <span class="compose-label">Send as</span>
+        {#each availableComposeOptions as option}
+          <button
+            class:active={composeTarget === option.target}
+            on:click={() => { composeTarget = option.target; }}
+            aria-pressed={composeTarget === option.target}
+            title={option.title}
+          >{option.label}</button>
+        {/each}
+      </div>
+    {/if}
+    {#if !composeTarget}<p class="read-only-notice">The selected view is read-only.</p>{/if}
     {#if transientStatus}
       <div class="transient-status" role="status">{transientStatus}</div>
     {/if}
     <InputArea
       bind:input
-      {loading}
-      {composeTarget}
+      loading={composeTarget === 'terminal' ? terminalRunning : loading}
+      composeTarget={composeTarget}
+      readOnly={!composeTarget}
       selectedMessage={$selectedMessage}
       isRecording={$micIsRecording}
       isContinuousMode={$micIsContinuousMode}
@@ -2092,7 +1979,7 @@
       ttsIsPlaying={$ttsIsPlaying}
       interimTranscript={$micInterimTranscript}
       on:send={sendMessage}
-      on:stop={stopRequest}
+      on:stop={() => { if (composeTarget === 'terminal') void terminalChat.close().catch(error => showTransientSystemMessage(error.message)); else void stopRequest(); }}
       on:keypress={(e) => handleKeyPress(e.detail.event)}
       on:micClick={() => {
         // Tap on mic: stop any active listening mode first
@@ -2148,44 +2035,13 @@
     </div>
     <!-- End messages-panel -->
 
-    <!-- Terminal split panel (system terminal, not Claude CLI) -->
-    {#if terminalVisible}
-      <!-- Resize handle -->
-      <button
-        type="button"
-        class="terminal-resize-handle"
-        class:resizing={isResizing}
-        on:mousedown={startResize}
-        on:touchstart={startResize}
-        aria-label="Resize terminal panel"
-        on:keydown={(e) => {
-          if (e.key === 'ArrowUp') { terminalHeight = Math.min(window.innerHeight * 0.7, terminalHeight + 20); }
-          if (e.key === 'ArrowDown') { terminalHeight = Math.max(100, terminalHeight - 20); }
-        }}
-      >
-        <span class="resize-handle-grip"></span>
-      </button>
-
-      <div
-        class="terminal-split-panel"
-        style={`height: ${terminalHeight}px; flex: none;`}
-      >
-        <div class="terminal-content">
-          {#await import('./terminal/TerminalPanel.svelte')}
-            <p>Loading terminal…</p>
-          {:then module}
-            <svelte:component this={module.default} />
-          {:catch error}
-            <p role="alert">Unable to load terminal: {error.message}</p>
-          {/await}
-        </div>
-      </div>
-    {/if}
   </div>
   <!-- End chat-main-area -->
 </div>
 
 <style>
+  .read-only-notice { padding: .5rem .75rem 0; color: var(--text-muted, #9ca3af); font-size: .8rem; }
+
   .compose-target {
     display: flex;
     align-items: center;

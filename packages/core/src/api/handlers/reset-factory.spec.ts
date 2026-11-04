@@ -59,7 +59,7 @@ function fixture(username = 'reset-owner') {
   for (const [id, relative] of [['old-desire', 'folders/old-desire/manifest.json'], ['legacy', 'pending/legacy.json'], ['nested-legacy', 'desires/pending/nested-legacy.json']]) {
     put(prefix + 'persona/desires/' + relative, JSON.stringify({ id, status: 'nascent', createdAt: '2026-01-01T00:00:00Z' }))
   }
-  for (const mode of ['inner', 'conversation', 'system', 'robot']) {
+  for (const mode of ['inner', 'conversation', 'system', 'robot', 'terminal']) {
     put(prefix + `state/conversation-buffer-${mode}.json`, JSON.stringify({ messages: [
       { role: 'user', content: 'synthetic old conversation' }], userMessageCount: 12,
       executionAdmissions: { example: { executionIds: ['old-id'], contentHash: 'hash' } } }))
@@ -137,7 +137,7 @@ test('reset clears real buffers, durable SQLite history and only this profile\'s
   }
   assert.ok(validateSession(session.id))
   assert.ok(validateSession(otherSession.id))
-  for (const mode of ['inner', 'conversation', 'system', 'robot'] as const) {
+  for (const mode of ['inner', 'conversation', 'system', 'robot', 'terminal'] as const) {
     const buffer = loadBufferForUser('reset-owner', mode)
     assert.deepEqual(buffer.messages, [])
     assert.equal(buffer.userMessageCount ?? 0, 0)

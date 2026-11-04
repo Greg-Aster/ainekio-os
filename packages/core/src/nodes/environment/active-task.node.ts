@@ -6,7 +6,7 @@ import type { EnvironmentTaskProgram, ActiveTaskState, ActiveTaskContinuation, E
 import { observeSinglePerson, personFrameKey, evaluateLocomotionGoal } from '../../environment-interface/active-task.js'
 import { environmentActionHasEnded } from '../../environment-interface/types.js'
 import type { EnvironmentAction, EnvironmentObservation, EnvironmentVisualFrame, EnvironmentLocomotionMeasurement } from '../../environment-interface/types.js'
-import type { EnvironmentTaskDecision } from './helpers.js'
+import type { EnvironmentTaskDecision } from '../../environment-interface/task-selection.js'
 import { loadGraphForMode } from '../../graph-streaming.js'
 import { requireGraphNodeOutput } from '../../graph-runtime.js'
 import { environmentSendActionNode } from './send-action.node.js'

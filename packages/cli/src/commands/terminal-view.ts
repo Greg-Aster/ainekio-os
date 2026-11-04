@@ -40,7 +40,7 @@ export async function terminalView(id: string): Promise<void> {
   let buffered = ''
   let lastStatus = ''
   try {
-    write(`${color('1;36', 'Big Brother · Codex diagnostics')}\n${color('2', 'Type a follow-up and press Enter. Follow-ups run after the current turn. Closing this window stops this session.')}\n\n`)
+    write(`${color('1;36', 'Big Brother · Codex')}\n${color('2', 'Type a follow-up and press Enter. Follow-ups run after the current turn. Closing this window stops this session.')}\n\n`)
     for await (const chunk of response) {
       buffered += chunk
       let end: number
@@ -57,7 +57,7 @@ export async function terminalView(id: string): Promise<void> {
         if (event.type === 'state') {
           const session = event.state.sessions.find(session => session.id === id)!
           const pending = session.diagnostic?.pending ?? 0
-          const status = `${session.phase === 'completed' ? 'Idle · ready for another report' : session.phase} · ${pending} queued`
+          const status = `${session.phase === 'completed' ? 'Idle · ready for another message' : session.phase} · ${pending} queued`
           if (status !== lastStatus) {
             lastStatus = status
             write(`\n${color(session.phase === 'failed' ? '1;31' : '2', status)}\n`)

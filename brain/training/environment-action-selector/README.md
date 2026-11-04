@@ -17,6 +17,15 @@ right-hand and Hamlet requests are held-out regression cases. Scoring counts
 graph/schema before a new training run; existing JSONL snapshots, frozen runs and
 LoRA weights have not been migrated or qualified by these source changes.
 
+**Version 24 — conversational visual questions.** Eight paired families add 32
+development and 16 evaluation examples distinguishing a current camera read,
+camera readiness, an earlier spoken description, a fresh photograph and social
+or quoted uses of seeing. The original “Can you see me?” failure is regression-only.
+These are offline labels; the runtime still executes the model's selected sources.
+Current totals are 7,206 development records (1,872 Intent / 5,334 Task), 1,814
+evaluation records (521 Intent / 1,293 Task), and 197 regression records (47 Intent /
+150 Task). Existing Task records and model-visible instructions are unchanged.
+
 **Version 23 — conversational continuity.** The existing memory curriculum adds
 37 development and 20 evaluation records distinguishing recent conversation,
 archived facts, earlier assistant claims and current visual evidence. Generic
@@ -26,7 +35,7 @@ distinct. These are supervised examples, not runtime routing rules. Synthetic
 subjects replace private biography, and the original reported failures remain
 outside fitting and checkpoint selection.
 
-Totals are 7,174 development records (1,840 Intent / 5,334 Task), 1,798 evaluation
+Version 23 totals were 7,174 development records (1,840 Intent / 5,334 Task), 1,798 evaluation
 records (505 Intent / 1,293 Task), and 196 regression records (46 Intent / 150
 Task). Existing Task targets and runtime prompts are unchanged. Training and
 qualification remain separate; generating these records does not change role

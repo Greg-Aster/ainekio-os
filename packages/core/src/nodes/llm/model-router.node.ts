@@ -7,7 +7,7 @@
 import { defineNode, type NodeDefinition } from '../types.js';
 import { modelRouterDefinition } from './model-router.schema.js';
 import { callLLM } from '../../model-router.js';
-import { ENVIRONMENT_SELECTOR_JSON_SCHEMA } from '../environment/helpers.js';
+import { ENVIRONMENT_SELECTOR_JSON_SCHEMA } from '../../environment-interface/task-selection.js';
 
 export const ModelRouterNode: NodeDefinition = defineNode({
   ...modelRouterDefinition,
@@ -45,6 +45,7 @@ export const ModelRouterNode: NodeDefinition = defineNode({
         userId: username,
         cognitiveMode: context.cognitiveMode,
         options: {
+          ...(inputs.toolAccess === 'read-only' ? { toolAccess: 'read-only' } : {}),
           enableThinking: typeof inputs.enableThinking === 'boolean'
             ? inputs.enableThinking
             : properties?.enableThinking === true,

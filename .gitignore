@@ -253,6 +253,11 @@ GEMINI.md
 external/
 !external/
 external/*
+!external/llama.cpp/
+external/llama.cpp/*
+!external/llama.cpp/server-cancellation.patch
+!external/llama.cpp/shared-host-kv.patch
+!external/llama.cpp/json-schema-number-sign.patch
 !external/kokoro/
 external/kokoro/*
 !external/kokoro/VOICES.md

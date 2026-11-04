@@ -9,7 +9,6 @@ import { setTimeout as delay } from 'node:timers/promises'
 const root = fs.mkdtempSync(path.join(os.tmpdir(), 'metahuman-terminal-test-'))
 process.env.METAHUMAN_ROOT = root
 process.env.SHELL = '/bin/bash'
-const { TerminalRuntime } = await import('./runtime.js')
 const { TerminalProcess } = await import('./process.js')
 const { TerminalScreen } = await import('./screen.js')
 const receipts = path.join(root, 'receipts')
@@ -21,40 +20,6 @@ async function eventually(check: () => boolean | Promise<boolean>): Promise<void
   while (Date.now() < deadline) { if (await check()) return; await delay(25) }
   assert.fail('Timed out waiting for terminal evidence')
 }
-async function screenText(runtime: InstanceType<typeof TerminalRuntime>, id: string) {
-  const event = await runtime.snapshot(id)
-  assert.equal(event.type, 'screen')
-  return event.type === 'screen' ? event.data : ''
-}
-
-test('real PTY survives viewer disposal, retains shell state, resizes, and stops job-control children', async () => {
-  const runtime = new TerminalRuntime(receipts)
-  try {
-    assert.deepEqual(runtime.state().sessions, [])
-    const session = runtime.create('shell')
-    const listener = () => {}
-    runtime.on('event', listener)
-    runtime.input(session.id, "export MH_TERMINAL_PROBE=retained\nprintf 'first-%s\\n' \"$MH_TERMINAL_PROBE\"\n")
-    await eventually(async () => (await screenText(runtime, session.id)).includes('first-retained'))
-    runtime.off('event', listener)
-    runtime.input(session.id, "printf 'hidden-%s\\n' \"$MH_TERMINAL_PROBE\"\n")
-    await eventually(async () => (await screenText(runtime, session.id)).includes('hidden-retained'))
-    runtime.resize(session.id, 101, 37)
-    runtime.input(session.id, 'stty size\n')
-    await eventually(async () => (await screenText(runtime, session.id)).includes('37 101'))
-    const childFile = path.join(root, 'background.pid')
-    runtime.input(session.id, `sleep 120 & echo $! > '${childFile}'\n`)
-    await eventually(() => fs.existsSync(childFile))
-    const pid = Number(fs.readFileSync(childFile, 'utf8'))
-    process.kill(pid, 0)
-    await Promise.all([runtime.close(session.id), runtime.close(session.id)])
-    assert.deepEqual(runtime.state().sessions, [])
-    const live = fs.existsSync(`/proc/${pid}/stat`) && !fs.readFileSync(`/proc/${pid}/stat`, 'utf8').includes(') Z ')
-    assert.equal(live, false, 'background job must stop along with the shell')
-    assert.deepEqual(fs.readdirSync(receipts), [])
-  } finally { await runtime.stop() }
-})
-
 test('screen snapshots retain alternate screen and bound scrollback', async () => {
   const screen = new TerminalScreen(80, 24)
   const restored = new TerminalScreen(80, 24)
@@ -72,42 +37,25 @@ test('screen snapshots retain alternate screen and bound scrollback', async () =
   } finally { screen.dispose(); restored.dispose() }
 })
 
-test('failed termination retains the session and receipt for retry; stop fences new work', async () => {
-  const runtime = new TerminalRuntime(receipts)
-  const session = runtime.create('shell')
+test('failed process termination retains receipts for retry, including job-control children', async () => {
+  const childFile = path.join(root, 'background.pid')
+  const child = spawn(process.execPath, ['-e', `const fs=require('fs'); const child=require('child_process').spawn('sleep',['120'],{stdio:'ignore'}); fs.writeFileSync(${JSON.stringify(childFile)},String(child.pid)); setInterval(()=>{},1000)`], { detached: true, stdio: 'ignore' })
+  await new Promise<void>((resolve, reject) => { child.once('spawn', resolve); child.once('error', reject) })
+  const owner = TerminalProcess.record(child.pid!, receipts)
+  await eventually(() => fs.existsSync(childFile))
+  const pid = Number(fs.readFileSync(childFile, 'utf8'))
   const kill = process.kill
   try {
     process.kill = ((pid: number, signal?: NodeJS.Signals | number) => {
       if (signal === 'SIGTERM' || signal === 'SIGKILL') throw Object.assign(new Error('permission denied'), { code: 'EPERM' })
       return kill(pid, signal)
     }) as typeof process.kill
-    await assert.rejects(runtime.close(session.id), /permission denied/)
-    assert.equal(runtime.state().sessions[0].phase, 'failed')
+    await assert.rejects(owner.stop(), /permission denied/)
     assert.equal(fs.readdirSync(receipts).length, 1)
-    await assert.rejects(runtime.stop(), /Failed to stop/)
-    assert.throws(() => runtime.create('shell'), /stopping/)
-  } finally { process.kill = kill; await runtime.stop() }
+  } finally { process.kill = kill; await owner.stop() }
+  const live = fs.existsSync(`/proc/${pid}/stat`) && !fs.readFileSync(`/proc/${pid}/stat`, 'utf8').includes(') Z ')
+  assert.equal(live, false)
   assert.deepEqual(fs.readdirSync(receipts), [])
-})
-
-test('recovery terminates only saved process sessions and leaves no receipt', async () => {
-  const runtime = new TerminalRuntime(receipts)
-  runtime.create('shell')
-  await TerminalProcess.recover(receipts)
-  await eventually(() => runtime.state().sessions[0].phase !== 'running')
-  await runtime.stop()
-  assert.deepEqual(fs.readdirSync(receipts), [])
-})
-
-test('invalid sizes and input do not mutate or remove a session', async () => {
-  const runtime = new TerminalRuntime(receipts)
-  try {
-    assert.throws(() => runtime.create('shell', 0, 24), /Terminal size/)
-    const session = runtime.create('shell')
-    assert.throws(() => runtime.resize(session.id, 10000, 40), /Terminal size/)
-    assert.throws(() => runtime.input(session.id, 'x'.repeat(65537)), /64 KiB/)
-    assert.equal(runtime.state().sessions[0].cols, 80)
-  } finally { await runtime.stop() }
 })
 
 test('recovery never signals a PID saved by a previous operating-system boot', async () => {

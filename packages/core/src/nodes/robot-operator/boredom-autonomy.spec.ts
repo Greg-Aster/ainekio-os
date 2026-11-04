@@ -108,7 +108,7 @@ test('execution context represents repeated observations losslessly without copy
 
 test('execution observations use selected-body evidence without leaking transport diagnostics', async () => {
   const { executionEventContext } = await import('../utility/execution-context.node.js');
-  const { projectSelectorState } = await import('../environment/helpers.js');
+  const { projectSelectorState } = await import('../../environment-interface/task-selection.js');
   const details = Array.from({ length: 30 }, (_, index) => ({ index, text: 'Evidence retained. '.repeat(40) }));
   const state = { body: { robotId: 'selected', authenticated: true }, scene: { details }, gateway: {
     joint_contract: { joints: ['transport-only'] },
@@ -1023,7 +1023,7 @@ test('Robot Autonomy Controller context combines unfinished work, buffers, bridg
   assert.equal(result.context.activeDesireCount, 1);
   assert.equal(result.context.bridgeSummaryIncluded, true);
   assert.equal(result.context.autonomyActivityCount, 1);
-  assert.deepEqual(result.jsonSchema.properties.updates.items.properties.operationId.enum, ['boredom-observer']);
+  assert.deepEqual(result.jsonSchema.properties.updates.items.anyOf.map((item: any) => item.properties.operationId.const), ['boredom-observer']);
   const envelope = JSON.parse(result.messages[1].content);
   const entries = envelope.robotOperatorContext.recentNarrativeContext.entries;
   const userTurn = entries.find((entry: any) => entry.content === 'Please keep looking for my keys.');

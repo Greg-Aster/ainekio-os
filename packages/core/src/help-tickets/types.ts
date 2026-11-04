@@ -33,10 +33,21 @@ export interface HelpTicket {
   status: TicketStatus;
 
   // Feedback context
-  feedbackRating: -1;  // Always negative (that's why ticket was created)
+  origin?: 'feedback' | 'system';
+  feedbackRating?: -1;
   feedbackComment?: string;
   feedbackTargetType: 'conversation' | 'task' | 'memory';
   feedbackTargetId?: string;
+  errorEvidence?: SystemErrorEvidence;
+  duplicateOf?: string;
+  lastCodeReview?: {
+    executionId: string;
+    completedAt: string;
+    outcome: 'resolved' | 'unresolved' | 'not_actionable' | 'duplicate';
+    reportKey: string;
+    memoryEventId?: string;
+    memoryPath?: string;
+  };
 
   // Classification (may be updated during review)
   category?: TicketCategory;
@@ -61,13 +72,27 @@ export interface HelpTicket {
   // Resolution
   resolution?: {
     resolvedAt: string;
-    resolvedBy: 'training_update' | 'manual' | 'wont_fix';
+    resolvedBy: 'training_update' | 'manual' | 'wont_fix' | 'system_code_review';
     summary: string;
     desireId?: string;  // Reference to Desire if training/personality change
   };
 
   // Audit trail
   history: TicketHistoryEntry[];
+}
+
+export interface SystemErrorEvidence {
+  source: string;
+  eventId: string;
+  message: string;
+  occurredAt: string;
+  executionId?: string;
+  taskId?: string;
+  requestId?: string;
+  sessionId?: string;
+  nodeId?: string;
+  stack?: string;
+  references?: string[];
 }
 
 export interface TicketHistoryEntry {

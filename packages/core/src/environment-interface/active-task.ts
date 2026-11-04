@@ -117,7 +117,7 @@ export interface ActiveTaskIdentification {
 }
 export interface ActiveTaskContinuation {
   program: EnvironmentTaskProgram
-  decision: import('../nodes/environment/helpers.js').EnvironmentTaskDecision
+  decision: import('./task-selection.js').EnvironmentTaskDecision
   state: ActiveTaskState
 }
 export interface ActiveTaskState {

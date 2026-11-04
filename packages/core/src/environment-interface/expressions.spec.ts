@@ -229,7 +229,7 @@ test('joined finite-work failures select the configured error face, including af
 })
 
 test('The model contract exposes only advertised expressions and keeps display actions distinct from motion', async () => {
-  const { buildEnvironmentSelectorJsonSchema, buildEnvironmentSelectorEnvelope } = await import('../nodes/environment/helpers.js')
+  const { buildEnvironmentSelectorJsonSchema, buildEnvironmentSelectorEnvelope } = await import('./task-selection.js')
   const { environmentActionParserNode } = await import('../nodes/environment/action-parser.node.js')
   const observation = readEnvironmentBridgeState().sessions.body.latestObservation!
   const schema = buildEnvironmentSelectorJsonSchema({ actions: ['faceExpression'], expressions: ['bow', 'thinking'] }) as any

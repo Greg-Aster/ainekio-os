@@ -21,6 +21,7 @@ export const DEFAULT_ROBOT_AUTONOMY_TASK_IDS = [
   'desire-agent',
   'sleep-workflow',
   'mood',
+  'system-code-review',
 ] as const
 
 export const ROBOT_AUTONOMY_TASK_OPTIONS = [

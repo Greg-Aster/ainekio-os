@@ -1,5 +1,5 @@
-export type BufferSource = 'conversation' | 'inner' | 'system' | 'robot';
-export type BufferView = 'conversation' | 'inner' | 'system';
+export type BufferSource = 'conversation' | 'inner' | 'system' | 'robot' | 'terminal';
+export type BufferView = 'conversation' | 'inner' | 'system' | 'terminal';
 
 export interface FeedMessage {
   timestamp?: number;
@@ -45,6 +45,7 @@ export function projectBufferFeed<T extends FeedMessage>(
     .filter(message => {
       if (message.meta?.liveConversation === true) return selectedViews.has('conversation');
       const source = message.meta?.bufferSource;
+      if (source === 'terminal') return selectedViews.has('terminal');
       if (source === 'conversation') return selectedViews.has('conversation');
       if (source === 'inner') return selectedViews.has('inner');
       if (source === 'system' || source === 'robot') return selectedViews.has('system');

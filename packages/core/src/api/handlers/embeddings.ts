@@ -8,10 +8,6 @@ interface EmbeddingsConfig {
   model?: string;
   provider?: string;
   description?: string;
-  localModels?: {
-    endpoint?: string;
-    model?: string;
-  };
   indexContentMode?: 'user' | 'all' | 'agent';
   indexContentModeOptions?: Record<string, string>;
 }

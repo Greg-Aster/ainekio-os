@@ -12,7 +12,7 @@ export async function terminalRequest(path: string, data?: unknown, signal?: Abo
     request.once('error', error => {
       const code = (error as NodeJS.ErrnoException).code
       reject(['ENOENT', 'ECONNREFUSED'].includes(code || '')
-        ? new TerminalError('Terminal agent is stopped. Start Terminal in Agent Monitor or the terminal panel.', 503) : error)
+        ? new TerminalError('Terminal agent is stopped. Send a terminal message or start Terminal in Agent Monitor.', 503) : error)
     })
     request.end(data === undefined ? undefined : JSON.stringify(data))
   })

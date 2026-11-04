@@ -15,6 +15,7 @@ export interface AutonomyMemoryRequest {
 export interface ActivationUpdate {
   operationId: string
   activation: number
+  delta?: number
   reason: string
   instruction: string
   target?: AutonomyTarget | null

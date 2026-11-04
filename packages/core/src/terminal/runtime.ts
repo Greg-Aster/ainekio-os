@@ -2,29 +2,31 @@ import { EventEmitter } from 'node:events'
 import { randomUUID } from 'node:crypto'
 import { spawn } from 'node:child_process'
 import path from 'node:path'
-import * as pty from 'node-pty'
-import { ROOT, systemPaths } from '../path-builder.js'
+import fs from 'node:fs'
+import { systemCodeReviewAuthorization } from '../help-tickets/code-review.js'
+import { ROOT } from '../path-builder.js'
+import { getBufferPathForUser } from '../conversation-buffer.js'
 import type { EscalationOptions } from '../escalation-backend.js'
 import { audit } from '../audit.js'
 import { eventBus } from '../infrastructure/event-bus/client.js'
 import { EventTypes } from '../infrastructure/event-bus/schema.js'
 import { TerminalScreen } from './screen.js'
 import { TerminalProcess } from './process.js'
-import { TerminalError, dimensions, type TerminalEvent, type TerminalSession, type TerminalState, type TerminalProvider, type DiagnosticRequest, type DiagnosticReceipt } from './types.js'
+import { TerminalError, type TerminalEvent, type TerminalSession, type TerminalState, type TerminalProvider, type DiagnosticRequest, type DiagnosticReceipt } from './types.js'
 import { appendDiagnosticLog, bigBrotherRepairLog } from './diagnostics.js'
 import { runProvider } from './providers/session.js'
 import { terminalHeading } from './presentation.js'
+import { admitTerminalResponse } from './response.js'
 import type { BigBrotherSessionResult, ParsedBigBrotherEvent } from './providers/cli.js'
 
 interface OwnedSession {
   info: TerminalSession
   screen: TerminalScreen
   close: () => Promise<void>
-  input?: (data: string) => void
-  resize?: (cols: number, rows: number) => void
   closing?: Promise<void>
   ready?: Promise<void>
   diagnostic?: {
+    active?: boolean
     username?: string
     request: DiagnosticRequest
     pending: Array<{ id: string; receivedAt: string; request: DiagnosticRequest; complete?: (result: BigBrotherSessionResult) => void }>
@@ -38,7 +40,6 @@ interface OwnedSession {
 export class TerminalRuntime extends EventEmitter {
   private sessions = new Map<string, OwnedSession>()
   private status: TerminalState['status'] = 'running'
-  private diagnosticActive = false
   constructor(readonly receipts: string) { super() }
   state(): TerminalState { return { status: this.status, sessions: [...this.sessions.values()].map(s => ({ ...s.info })) } }
   private changed(): void { this.emit('event', { type: 'state', state: this.state() } satisfies TerminalEvent) }
@@ -53,68 +54,13 @@ export class TerminalRuntime extends EventEmitter {
   }
   private async write(session: OwnedSession, data: string): Promise<void> {
     await session.screen.write(data)
-    this.emit('event', { type: 'output', id: session.info.id, data } satisfies TerminalEvent)
+    this.emit('event', { type: 'output', id: session.info.id, data, ...(session.info.chat ? { text: await session.screen.text() } : {}) } satisfies TerminalEvent)
   }
   async snapshot(id: string): Promise<TerminalEvent> {
     const session = this.get(id)
-    return { type: 'screen', id, data: await session.screen.snapshot(), cols: session.info.cols, rows: session.info.rows }
+    return { type: 'screen', id, data: await session.screen.snapshot(), text: await session.screen.text(), cols: session.info.cols, rows: session.info.rows }
   }
 
-  create(kind: 'shell' | 'log', cols = 80, rows = 24): TerminalSession {
-    this.admit()
-    dimensions(cols, rows)
-    const id = randomUUID()
-    const screen = new TerminalScreen(cols, rows)
-    let child: pty.IPty
-    try {
-      child = kind === 'log'
-        ? pty.spawn('tail', ['-n', '100', '-F', path.join(systemPaths.logs, 'server.log')], { cwd: ROOT, cols, rows, name: 'xterm-256color' })
-        : pty.spawn(process.env.SHELL || '/bin/bash', [], { cwd: ROOT, cols, rows, name: 'xterm-256color', env: process.env as Record<string, string> })
-    } catch (error) { screen.dispose(); throw error }
-    child.onExit(() => {}) // PTY errors/exits always have an owner, including failed exec.
-    let owned: TerminalProcess
-    try { owned = TerminalProcess.record(child.pid, this.receipts) } catch (error) {
-      child.kill('SIGKILL'); screen.dispose(); throw error
-    }
-    const session: OwnedSession = {
-      info: { id, kind, title: kind === 'log' ? 'Server log' : 'Shell', phase: 'running', cols, rows }, screen,
-      close: () => owned.stop(),
-      input: kind === 'shell' ? data => child.write(data) : undefined,
-      resize: (c, r) => child.resize(c, r),
-    }
-    this.sessions.set(id, session)
-    child.onData(data => {
-      child.pause()
-      this.write(session, data).then(() => child.resume(), error => {
-        session.info.error = error.message; session.info.phase = 'failed'; this.changed()
-        this.close(id).catch(cleanup => { session.info.error = cleanup.message; this.changed() })
-      })
-    })
-    child.onExit(({ exitCode }) => {
-      session.info.phase = exitCode === 0 ? 'completed' : 'failed'
-      if (exitCode !== 0) session.info.error = `Process exited with code ${exitCode}`
-      owned.stop().catch(error => { session.info.error = error.message; session.info.phase = 'failed' })
-        .finally(() => this.changed())
-    })
-    this.changed()
-    return { ...session.info }
-  }
-
-  input(id: string, data: unknown): void {
-    const session = this.get(id)
-    if (typeof data !== 'string' || Buffer.byteLength(data) > 65536) throw new TerminalError('Input must be at most 64 KiB', 400)
-    if (this.status !== 'running' || session.info.phase !== 'running' || !session.input) throw new TerminalError('Terminal is not accepting input', 409)
-    session.input(data)
-  }
-  resize(id: string, cols: unknown, rows: unknown): void {
-    const size = dimensions(cols, rows)
-    const session = this.get(id)
-    if (session.closing) throw new TerminalError('Terminal is closing', 409)
-    session.resize?.(size.cols, size.rows)
-    session.screen.resize(size.cols, size.rows)
-    Object.assign(session.info, size)
-    this.changed()
-  }
   async close(id: string): Promise<void> {
     const session = this.get(id)
     if (session.closing) return session.closing
@@ -181,7 +127,7 @@ export class TerminalRuntime extends EventEmitter {
 
   async submitDiagnostic(request: DiagnosticRequest, complete?: (result: BigBrotherSessionResult) => void): Promise<DiagnosticReceipt> {
     let session = [...this.sessions.values()].find(item => item.diagnostic?.username === request.username && item.diagnostic
-      && item.diagnostic.request.toolTaskId === request.toolTaskId)
+      && item.diagnostic.request.toolTaskId === request.toolTaskId && item.diagnostic.request.chat === request.chat)
     if (!session) {
       this.admit()
       const id = randomUUID()
@@ -189,8 +135,8 @@ export class TerminalRuntime extends EventEmitter {
         username: request.username, request, pending: [], abort: new AbortController(),
       }
       session = {
-        info: { id, kind: 'provider', provider: 'codex', title: request.toolTaskId ? 'Big Brother Tools' : 'Big Brother Diagnostics', phase: 'completed',
-          cols: 100, rows: 30, diagnostic: { pending: 0, repairLog: bigBrotherRepairLog } },
+        info: { id, kind: 'provider', provider: 'codex', title: request.chat ? 'Codex Terminal' : request.toolTaskId ? 'Big Brother Tools' : 'Big Brother Diagnostics', phase: 'completed',
+          cols: 100, rows: 30, ...(request.chat ? { chat: { username: request.username! } } : {}), diagnostic: { pending: 0, repairLog: bigBrotherRepairLog } },
         screen: new TerminalScreen(100, 30), diagnostic, close: async () => {},
       }
       const current = session
@@ -204,7 +150,7 @@ export class TerminalRuntime extends EventEmitter {
         await diagnostic.cleanup?.()
         await desktop?.stop()
         for (const pending of diagnostic.pending.splice(0)) {
-          if (!pending.request.toolTaskId) appendDiagnosticLog(pending.id, 'cancelled', 'Terminal closed before this submission ran.')
+          if (!pending.request.chat && !pending.request.toolTaskId) appendDiagnosticLog(pending.id, 'cancelled', 'Terminal closed before this submission ran.')
           pending.complete?.({ success: false, output: '', error: 'Terminal closed before this submission ran.', executionTime: 0, metadata: {} })
         }
       }
@@ -229,7 +175,7 @@ export class TerminalRuntime extends EventEmitter {
           if (current.closing || !this.sessions.has(id)) return
           if (code !== 0) {
             current.info.error = stderr.trim() || `Desktop terminal exited with code ${code}`
-            try { if (!request.toolTaskId) appendDiagnosticLog(id, 'desktop failed', current.info.error) }
+            try { if (!request.chat && !request.toolTaskId) appendDiagnosticLog(id, 'desktop failed', current.info.error) }
             catch (error) { console.error('[big-brother-diagnostic] Cannot record desktop failure:', error) }
           }
           void this.close(id).catch(error => { current.info.error = error.message; this.changed() })
@@ -244,7 +190,7 @@ export class TerminalRuntime extends EventEmitter {
     if (session.closing || !this.sessions.has(session.info.id) || this.status !== 'running') throw new TerminalError('Terminal session is closed or stopping', 409)
     const id = randomUUID()
     const diagnostic = session.diagnostic!
-    if (!request.toolTaskId) appendDiagnosticLog(id, 'submitted', JSON.stringify({ username: request.username, source: request.source, data: request.data }, null, 2))
+    if (!request.chat && !request.toolTaskId) appendDiagnosticLog(id, 'submitted', JSON.stringify({ username: request.username, source: request.source, data: request.data }, null, 2))
     diagnostic.pending.push({ id, receivedAt: new Date().toISOString(), request, complete })
     diagnostic.request = request
     session.info.diagnostic!.pending = diagnostic.pending.length
@@ -275,13 +221,17 @@ export class TerminalRuntime extends EventEmitter {
   async diagnosticInput(id: string, message: string): Promise<DiagnosticReceipt> {
     const session = this.get(id)
     if (!session.diagnostic) throw new TerminalError('Not a diagnostic session', 400)
-    return this.submitDiagnostic({ ...session.diagnostic.request, data: message, source: { terminalSessionId: id, speaker: 'operator' } })
+    return this.submitDiagnostic({ ...session.diagnostic.request, ...(session.info.chat ? { prompt: message } : { data: message }), source: { terminalSessionId: id, speaker: 'operator' } })
   }
 
   private pumpDiagnostics(): void {
-    if (this.diagnosticActive || this.status !== 'running') return
-    const session = [...this.sessions.values()].find(item => item.diagnostic?.pending.length && !item.closing)
-    if (!session) return
+    if (this.status !== 'running') return
+    for (const session of this.sessions.values()) {
+      if (session.diagnostic?.pending.length && !session.diagnostic.active && !session.closing) this.pumpDiagnosticSession(session)
+    }
+  }
+
+  private pumpDiagnosticSession(session: OwnedSession): void {
     const diagnostic = session.diagnostic!
     const submission = diagnostic.pending.shift()!
     const state = session.info.diagnostic!
@@ -289,28 +239,42 @@ export class TerminalRuntime extends EventEmitter {
     state.submissionId = submission.id
     session.info.phase = 'running'
     session.info.error = undefined
-    this.diagnosticActive = true
+    diagnostic.active = true
     this.changed()
     diagnostic.finished = (async () => {
       try {
         await diagnostic.cleanup?.()
         diagnostic.cleanup = undefined
         const request = submission.request
-        const prompt = `${request.prompt}\n\n${JSON.stringify({
+        const reviewAuthorization = request.codeReview ? systemCodeReviewAuthorization(request.username!) : undefined
+        const chatPrompt = request.chat && !state.threadId ? [
+          fs.readFileSync(path.join(ROOT, 'agents_big_brother'), 'utf8').trimEnd(),
+          JSON.stringify({ sessionContext: { workspace: ROOT, username: request.username,
+            conversationBuffer: getBufferPathForUser(request.username!, 'conversation') } }, null, 2),
+          request.prompt,
+        ].join('\n\n') : request.prompt
+        const prompt = request.chat ? chatPrompt : `${request.codeReview ? fs.readFileSync(path.join(ROOT, 'agents_big_brother'), 'utf8') + '\n\n' : ''}${request.prompt}\n\n${JSON.stringify({
+          ...(reviewAuthorization ? { repairAuthorization: reviewAuthorization } : {}),
           ...(!request.toolTaskId ? { repairLog: bigBrotherRepairLog } : { taskId: request.toolTaskId }), submissionId: submission.id,
           receivedAt: submission.receivedAt, source: request.source, data: request.data,
         }, null, 2)}`
-        await this.write(session, terminalHeading(`${request.toolTaskId ? 'Tool task' : 'Diagnostic'} ${submission.id}`))
+        await this.write(session, terminalHeading(request.chat ? `You › ${request.prompt}` : `${request.toolTaskId ? 'Tool task' : 'Diagnostic'} ${submission.id}`))
         const result = await runProvider('codex', prompt, {
           username: request.username,
-          diagnostic: { model: request.model, reasoning: request.reasoning, threadId: state.threadId },
+          ...(request.chat ? { session: { threadId: state.threadId } }
+            : { diagnostic: { model: request.model, reasoning: request.reasoning, threadId: state.threadId,
+              access: reviewAuthorization?.access } }),
         }, this.receipts, diagnostic.abort.signal, data => this.write(session, data), event => {
           if (event.threadId) { state.threadId = event.threadId; this.changed() }
         }, cleanup => { diagnostic.cleanup = cleanup })
+        if (reviewAuthorization) result.metadata.repairAuthorization = reviewAuthorization
         diagnostic.cleanup = undefined
+        if (request.chat && !diagnostic.abort.signal.aborted) await admitTerminalResponse({ username: request.username!, sessionId: session.info.id,
+          submissionId: submission.id, threadId: state.threadId, message: request.prompt,
+          receivedAt: submission.receivedAt, result })
         session.info.phase = result.success ? 'completed' : 'failed'
         session.info.error = result.error
-        if (!request.toolTaskId) appendDiagnosticLog(submission.id, result.success ? 'agent turn completed' : 'agent turn failed',
+        if (!request.chat && !request.toolTaskId) appendDiagnosticLog(submission.id, result.success ? 'agent turn completed' : 'agent turn failed',
           [result.output, result.error].filter(Boolean).join('\n\n'))
         await this.write(session, terminalHeading(result.success ? 'Agent turn completed.' : result.error || 'Agent turn failed.',
           result.success ? 'success' : 'error'))
@@ -322,7 +286,7 @@ export class TerminalRuntime extends EventEmitter {
         submission.complete?.({ success: false, output: '', error: session.info.error, executionTime: 0, metadata: {} })
         await this.write(session, terminalHeading(session.info.error!, 'error'))
       } finally {
-        this.diagnosticActive = false
+        diagnostic.active = false
         this.changed()
       }
     })()

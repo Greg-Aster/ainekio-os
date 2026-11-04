@@ -81,7 +81,6 @@
     "./environment-interface": "./src/environment-interface/index.ts",
     "./providers": "./src/providers/index.ts",
     "./providers/types": "./src/providers/types.ts",
-    "./local-model-service": "./src/local-model-service-manager.ts",
     "./voice-service-manager": "./src/voice-service-manager.ts",
     "./api": "./src/api/index.ts",
     "./api/handlers/profile-sync": "./src/api/handlers/profile-sync.ts",
@@ -108,7 +107,6 @@
     "gray-matter": "^4.0.3",
     "mammoth": "^1.11.0",
     "node-ical": "^0.22.1",
-    "node-pty": "^1.1.0",
     "pdf-parse": "^2.4.5",
     "tsx": "^4.23.13",
     "uuid": "^13.0.0",
@@ -118,7 +116,8 @@
     "@types/better-sqlite3": "7.6.13",
     "@types/fs-extra": "^11.0.4",
     "@types/ws": "^8.18.1",
-    "typescript": "^5.5.0"
+    "typescript": "^5.5.0",
+    "node-pty": "^1.1.0"
   },
   "packageManager": "pnpm@10.15.1+sha512.34e538c329b5553014ca8e8f4535997f96180a1d0f614339357449935350d924e22f8614682191264ec33d1462ac21561aff97f6bb18065351c162c7e8f6de67"
 }

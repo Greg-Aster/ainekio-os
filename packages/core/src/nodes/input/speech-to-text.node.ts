@@ -35,8 +35,8 @@ export const SpeechToTextNode: NodeDefinition = defineNode({
   description: 'Converts speech audio to text using Whisper STT',
 
   execute: async (inputs, context, properties) => {
-    const audioBuffer = inputs[0]?.audioBuffer || context.audioBuffer;
-    const audioFormat = inputs[0]?.audioFormat || context.audioFormat || properties?.audioFormat || 'wav';
+    const audioBuffer = inputs.audioBuffer || context.audioBuffer;
+    const audioFormat = inputs.audioFormat || context.audioFormat || properties?.audioFormat || 'wav';
 
     if (!audioBuffer) {
       return {

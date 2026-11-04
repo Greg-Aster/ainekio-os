@@ -15,7 +15,7 @@ class Source extends EventTarget {
 const originalFetch = globalThis.fetch
 const originalSource = globalThis.EventSource
 globalThis.EventSource = Source as unknown as typeof EventSource
-const state = { status: 'running', sessions: [{ id: 'one', kind: 'shell', phase: 'running', title: 'Shell', cols: 80, rows: 24 }] }
+const state = { status: 'running', chatSessionId: 'one', sessions: [{ id: 'one', kind: 'provider', chat: { username: 'fixture' }, phase: 'running', title: 'Codex Terminal', cols: 80, rows: 24 }] }
 function reply(value: unknown, status = 200) { return new Response(JSON.stringify(value), { status, headers: { 'Content-Type': 'application/json' } }) }
 test.after(() => { globalThis.fetch = originalFetch; globalThis.EventSource = originalSource })
 
@@ -57,11 +57,12 @@ test('failed close preserves selection; reconnect replaces the stream and stale 
     await controller.refresh()
     const first = Source.all.at(-1)!
     globalThis.fetch = async () => reply({ error: 'permission denied' }, 500)
-    await assert.rejects(controller.close('one'), /permission denied/)
+    await assert.rejects(controller.close(), /permission denied/)
     assert.equal(controller.selected, 'one')
-    assert.equal(first.readyState, 1)
-    first.onerror!()
-    assert.equal(Source.all.filter(source => source.readyState !== 2).length, 0)
+    assert.equal(first.readyState, 2, 'failed control request replaces its released viewer')
+    assert.equal(Source.all.at(-1)!.readyState, 1)
+    Source.all.at(-1)!.onerror!()
+    assert.equal(Source.all.filter(source => source.readyState !== 2).length, 1, 'native EventSource retains reconnect ownership')
     globalThis.fetch = async () => reply(state)
     await controller.refresh()
     const count = events.length
@@ -72,29 +73,27 @@ test('failed close preserves selection; reconnect replaces the stream and stale 
   } finally { controller.dispose() }
 })
 
-test('input is ordered and a transport failure is surfaced without replay', async () => {
-  const writes: string[] = []
-  let release!: (value: Response) => void
-  let called!: () => void
-  const started = new Promise<void>(resolve => { called = resolve })
-  globalThis.fetch = async (_url, init) => {
-    const data = init?.body ? JSON.parse(String(init.body)) : null
-    if (!data) return reply(state)
-    writes.push(data.data)
-    called()
-    return new Promise<Response>(resolve => { release = resolve })
+test('messages use shared admission and reattach to the same session without shell input', async () => {
+  const writes: unknown[] = []
+  globalThis.fetch = async (url, init) => {
+    writes.push({ url: String(url), body: init?.body ? JSON.parse(String(init.body)) : undefined })
+    return reply({ sessionId: 'one', submissionId: 'receipt', status: 'submitted' })
   }
-  const errors: string[] = []
-  const controller = new TerminalController(() => {}, message => errors.push(message))
+  const controller = new TerminalController(() => {}, () => {})
   try {
-    await controller.refresh()
-    controller.input('first')
-    await started
-    controller.input('second')
-    release(reply({ error: 'input rejected' }, 409))
-    await new Promise(resolve => setTimeout(resolve, 10))
-    assert.deepEqual(writes, ['first'])
-    assert.deepEqual(errors, ['input rejected'])
+    await controller.send('first\nmessage')
+    const first = Source.all.at(-1)!
+    await controller.send('follow-up')
+    assert.equal(first.readyState, 2)
+    assert.equal(controller.selected, 'one')
+    assert.equal(Source.all.at(-1)!.url, '/api/terminal/events?id=one')
+    assert.deepEqual(writes, [
+      { url: '/api/terminal/message', body: { message: 'first\nmessage' } },
+      { url: '/api/terminal/message', body: { message: 'follow-up' } },
+    ])
+    globalThis.fetch = async () => reply({ error: 'provider unavailable' }, 500)
+    await assert.rejects(controller.send('third'), /provider unavailable/)
+    assert.equal(controller.selected, 'one')
   } finally { controller.dispose() }
 })
 
@@ -111,5 +110,61 @@ test('terminal opens alongside existing streams and disposal closes only its own
     controller.dispose()
     assert.equal(terminal.readyState, 2)
     assert.ok(background.every(source => source.readyState === 1))
+  } finally { controller.dispose(); background.forEach(source => source.close()) }
+})
+
+test('a delayed initial state cannot detach a newly submitted terminal session', async () => {
+  let release!: (response: Response) => void
+  globalThis.fetch = async url => String(url).endsWith('/state')
+    ? new Promise<Response>(resolve => { release = resolve })
+    : reply({ sessionId: 'new-chat', submissionId: 'first', status: 'submitted' })
+  const controller = new TerminalController(() => {}, () => {})
+  try {
+    const initial = controller.refresh()
+    await controller.send('first message')
+    release(reply({ status: 'stopped', sessions: [] }))
+    await initial
+    assert.equal(controller.selected, 'new-chat')
+    assert.equal(Source.all.at(-1)!.url, '/api/terminal/events?id=new-chat')
+    assert.equal(Source.all.at(-1)!.readyState, 1)
+  } finally { controller.dispose() }
+})
+
+test('every terminal browser request has an Astro transport route into the shared API router', async () => {
+  const { readFileSync, existsSync } = await import('node:fs')
+  for (const [name, method] of [['state', 'GET'], ['sessions', 'POST'], ['message', 'POST'], ['events', 'GET']]) {
+    const file = new URL(`../../pages/api/terminal/${name}.ts`, import.meta.url)
+    assert.equal(existsSync(file), true, `${method} /api/terminal/${name} must not fall through to an HTML 404`)
+    const source = readFileSync(file, 'utf8')
+    assert.match(source, /@metahuman\/core\/api\/adapters\/astro/)
+    assert.ok(source.includes(`export const ${method} = astroHandler`))
+  }
+})
+
+test('follow-up admission, reconnect and close release their own stream before competing for an HTTP connection', async () => {
+  const background = Array.from({ length: 5 }, (_, i) => new Source(`/occupied-${i}`))
+  const requests: string[] = []
+  globalThis.fetch = async (url, init) => {
+    assert.ok(Source.all.filter(source => source.readyState !== 2).length < 6,
+      'the terminal must release its viewer before a finite HTTP request can obtain a connection')
+    requests.push(String(url))
+    const body = init?.body ? JSON.parse(String(init.body)) : null
+    if (String(url).endsWith('/message')) return reply({ sessionId: 'one', submissionId: body.message, status: 'submitted' })
+    return reply(state)
+  }
+  const controller = new TerminalController(() => {}, () => {})
+  try {
+    await controller.refresh()
+    for (const message of ['first follow-up', 'second follow-up']) {
+      const previous = Source.all.at(-1)!
+      assert.equal(Source.all.filter(source => source.readyState !== 2).length, 6)
+      await controller.send(message)
+      assert.equal(previous.readyState, 2)
+      assert.equal(controller.selected, 'one')
+    }
+    await controller.refresh()
+    await controller.close()
+    assert.ok(requests.filter(url => url.endsWith('/message')).length === 2)
+    assert.ok(background.every(source => source.readyState === 1), 'only this view releases its own stream')
   } finally { controller.dispose(); background.forEach(source => source.close()) }
 })

@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict'
 import test from 'node:test'
-import { buildEnvironmentSelectorJsonSchema, validateEnvironmentSelectorOutput } from './helpers.js'
+import { buildEnvironmentSelectorJsonSchema, validateEnvironmentSelectorOutput } from '../../environment-interface/task-selection.js'
 import { environmentActionParserNode } from './action-parser.node.js'
 import { prepareEnvironmentCommand } from '../../environment-interface/store.js'
 

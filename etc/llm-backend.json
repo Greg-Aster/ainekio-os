@@ -28,18 +28,6 @@
     "keepAlive": "5m",
     "enableThinking": false
   },
-  "localModels": {
-    "enabled": true,
-    "endpoint": "http://127.0.0.1:4324",
-    "autoStart": true,
-    "downloadOnWifiOnly": true,
-    "embeddings": {
-      "model": "qwen3-embedding-0.6b"
-    },
-    "llm": {
-      "model": "qwen3-1.7b"
-    }
-  },
   "preferredLocalBackend": "llama-cpp",
   "version": "1.0.0",
   "description": "LLM backend configuration - controls which local inference engine is used",

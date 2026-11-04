@@ -7,9 +7,10 @@ async function host(robotId?: string) {
   const server = new WebSocketServer({ port: 0 });
   await new Promise<void>(resolve => server.once('listening', resolve));
   let robot = robotId;
+  let generation = 1;
   const sockets = new Set<WebSocket>();
   const message = () => JSON.stringify({ type: 'bridge.availability', version: 1,
-    sessionId: 'shared-session', gatewayInstance: String(server.address()), robotId: robot, connected: !!robot });
+    sessionId: 'shared-session', gatewayInstance: `${(server.address() as { port: number }).port}:${generation}`, robotId: robot, connected: !!robot });
   server.on('connection', socket => {
     sockets.add(socket);
     socket.on('close', () => sockets.delete(socket));
@@ -21,6 +22,8 @@ async function host(robotId?: string) {
   return {
     url: `ws://127.0.0.1:${(server.address() as { port: number }).port}/environment`,
     update(id?: string) { robot = id; sockets.forEach(socket => socket.send(message())); },
+    restart() { generation++; sockets.forEach(socket => socket.send(message())); },
+    disconnect() { sockets.forEach(socket => socket.terminate()); },
     async close() { sockets.forEach(socket => socket.terminate()); await new Promise<void>(resolve => server.close(() => resolve())); },
   };
 }
@@ -40,7 +43,7 @@ async function fixture(robotId?: string, availableRobot?: string) {
     },
     async changed(value) { snapshot = value; observed?.(); },
   }, controller.signal);
-  return { local, active, admitted,
+  return { local, active, admitted, snapshot: () => snapshot,
     async until(predicate: (value: BodyConnection[]) => boolean) {
       if (predicate(snapshot)) return;
       await new Promise<void>(resolve => { observed = () => { if (predicate(snapshot)) { observed = undefined; resolve(); } }; });
@@ -49,21 +52,21 @@ async function fixture(robotId?: string, availableRobot?: string) {
   };
 }
 
-test('selected host follows robot availability and reconnects without duplicate streams', { timeout: 10000 }, async () => {
+test('Body Control stays connected without a robot and retains one stream across robot reconnects', { timeout: 10000 }, async () => {
   const f = await fixture();
   try {
     await f.until(states => states.every(state => !!state.sessionId));
-    assert.equal(f.admitted.length, 0, 'Listening gateways without robots must not be activated');
-    f.local.update('robot-a');
-    await f.until(states => states[0].active);
-    f.local.update('robot-a');
-    await f.until(states => states[0].connected);
-    assert.equal(f.admitted.length, 1, 'An unchanged body must not replace its active connection');
-    f.local.update();
-    await f.until(states => states.every(state => !state.active));
-    f.local.update('robot-a');
-    await f.until(states => states[0].active);
-    assert.deepEqual(f.admitted, [f.local.url, f.local.url]);
+    assert.equal(f.snapshot()[0].adapterConnected, true, 'Authenticated Body Control is available independently of the robot');
+    await f.until(states => states[0].ready && !states[0].connected);
+    assert.equal(f.admitted.length, 1);
+    for (let cycle = 0; cycle < 2; cycle++) {
+      f.local.update('robot-a');
+      await f.until(states => states[0].connected && states[0].ready);
+      f.local.update();
+      await f.until(states => !states[0].connected && states[0].ready);
+      assert.equal(f.snapshot()[0].adapterConnected, true);
+    }
+    assert.deepEqual(f.admitted, [f.local.url], 'Robot loss does not tear down Body Control computer speech');
   } finally { await f.close(); }
 });
 
@@ -75,6 +78,8 @@ test('explicit robot selection does not activate a different body on the selecte
     selected.local.update('robot-b');
     await selected.until(states => states[0].active);
     selected.local.update();
+    await selected.until(states => !states[0].connected && states[0].ready);
+    selected.local.update('robot-a');
     await selected.until(states => states.every(state => !state.active));
     assert.deepEqual(selected.admitted, [selected.local.url]);
   } finally { await selected.close(); }
@@ -84,6 +89,20 @@ test('stopping a connection releases its active control stream', { timeout: 1000
   const f = await fixture(undefined, 'robot-a');
   try {
     await f.until(states => states[0].active);
+    assert.deepEqual([...f.active], [f.local.url]);
+  } finally { await f.close(); }
+});
+
+test('Body Control socket loss clears host readiness and reconnects without duplicating control', { timeout: 10000 }, async () => {
+  const f = await fixture();
+  try {
+    await f.until(states => states[0].ready);
+    f.local.disconnect();
+    await f.until(states => !states[0].adapterConnected && !states[0].ready && !states[0].active);
+    await f.until(states => states[0].adapterConnected && states[0].ready);
+    assert.deepEqual(f.admitted, [f.local.url, f.local.url]);
+    f.local.restart();
+    await f.until(states => states[0].ready && f.admitted.length === 3);
     assert.deepEqual([...f.active], [f.local.url]);
   } finally { await f.close(); }
 });
@@ -124,15 +143,17 @@ test('automatic following moves remote to local and back without restarting the 
     await f.until(states => states[1].ready);
     f.local.update('robot-a');
     await f.until(states => states[0].connected);
-    assert.deepEqual(f.admissions, [f.remote.url], 'A returning host cannot seize a working connection');
+    const initial = [...f.admissions];
+    assert.equal(initial.at(-1), f.remote.url);
+    assert.equal(f.admissions.filter(url => url === f.remote.url).length, 1, 'A returning host cannot seize a working robot connection');
     f.remote.update();
     await f.until(states => states[0].ready && !states[1].active);
     f.remote.update('robot-a');
     await f.until(states => states[1].connected);
-    assert.deepEqual(f.admissions, [f.remote.url, f.local.url]);
+    assert.deepEqual(f.admissions, [...initial, f.local.url]);
     f.local.update();
     await f.until(states => states[1].ready && !states[0].active);
-    assert.deepEqual(f.admissions, [f.remote.url, f.local.url, f.remote.url]);
+    assert.deepEqual(f.admissions, [...initial, f.local.url, f.remote.url]);
   } finally { await f.close(); }
 });
 
@@ -141,7 +162,7 @@ test('automatic following excludes a different robot and reports loss instead of
   try {
     await f.until(states => states[0].ready && states[1].connected);
     f.local.update();
-    await f.until(states => states.every(state => !state.active && !state.ready));
+    await f.until(states => states[0].ready && !states[0].connected && !states[1].active);
     assert.deepEqual(f.admissions, [f.local.url]);
     f.remote.update('robot-a');
     await f.until(states => states[1].ready);

@@ -142,7 +142,8 @@ export function prepareConversationEntries(inputs: Record<string, any>, context:
   });
 }
 
-const execute: NodeExecutor = async (inputs, context) => {
+const execute: NodeExecutor = async (inputs, context, properties) => {
+  const bufferMode = properties?.mode === 'terminal' ? 'terminal' : 'conversation';
   const passthrough = inputs.passthrough ?? null;
   const assistantResponse = assistantResponseText(inputs);
   const username = typeof context.username === 'string'
@@ -169,7 +170,7 @@ const execute: NodeExecutor = async (inputs, context) => {
       skipped: true,
       entries: [],
       reason: 'Inner compose turn is owned by the Inner Dialogue Buffer node',
-      bufferPath: getBufferPathForUser(username, 'conversation'),
+      bufferPath: getBufferPathForUser(username, bufferMode),
       response: assistantResponse,
       responseBufferId: inputs.responseBufferId || '',
       passthrough,
@@ -180,12 +181,12 @@ const execute: NodeExecutor = async (inputs, context) => {
   if (pending?.length && (inputs.userMessage || inputs.entry?.role === 'user')) {
     const results = [];
     for (const turn of pending) results.push(await execute({ userMessage: turn.userMessage, entry: turn.userMessageEntry },
-      { ...context, ...turn, pendingInstructionTurns: undefined }, {}));
+      { ...context, ...turn, pendingInstructionTurns: undefined }, properties));
     return { ...results.at(-1), entries: results.flatMap(result => result.entries), passthrough };
   }
   const admittedEntries: ConversationMessage[] = [];
   for (const entry of prepareConversationEntries(inputs, context)) {
-    admittedEntries.push(await admitBufferEntry(username, 'conversation', entry, context.graphExecution));
+    admittedEntries.push(await admitBufferEntry(username, bufferMode, entry, context.graphExecution));
   }
 
   return {
@@ -194,7 +195,7 @@ const execute: NodeExecutor = async (inputs, context) => {
     messageCount: admittedEntries.length,
     entry: admittedEntries[0],
     entries: admittedEntries,
-    bufferPath: getBufferPathForUser(username, 'conversation'),
+    bufferPath: getBufferPathForUser(username, bufferMode),
     response: admittedEntries.find(entry => entry.role === 'assistant')?.content || assistantResponse,
     responseBufferId: inputs.responseBufferId || '',
     passthrough,
@@ -226,5 +227,9 @@ export const ConversationBufferNode = defineNode({
     { name: 'passthrough', type: 'any' },
   ],
   description: 'Validates and persists voiced user/assistant entries to the canonical Conversation Buffer.',
+  properties: { mode: 'conversation' },
+  propertySchemas: {
+    mode: { type: 'select', default: 'conversation', label: 'Buffer', options: ['conversation', 'terminal'] },
+  },
   execute,
 });

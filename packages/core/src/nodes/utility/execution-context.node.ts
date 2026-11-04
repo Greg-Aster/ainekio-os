@@ -1,7 +1,7 @@
 import { defineNode } from '../types.js'
 import { isDeepStrictEqual } from 'node:util'
 import type { ExecutionEvent } from '../../durable-execution/types.js'
-import { projectSelectorState } from '../environment/helpers.js'
+import { projectSelectorState } from '../../environment-interface/task-selection.js'
 
 export const EXECUTION_OBSERVATION_ENCODING = 'First observation is complete; later observationChanges replace or remove the named path relative to the previous observation. Image references retain their recorded time.'
 

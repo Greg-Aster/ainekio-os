@@ -272,7 +272,7 @@ function normalizedBundlePath(value: unknown): string {
 }
 
 function profileBufferMode(relativePath: string): CanonicalBufferMode | undefined {
-  return /^state\/conversation-buffer-(conversation|inner|system|robot)\.json$/.exec(relativePath)?.[1] as CanonicalBufferMode | undefined
+  return /^state\/conversation-buffer-(conversation|inner|system|robot|terminal)\.json$/.exec(relativePath)?.[1] as CanonicalBufferMode | undefined
 }
 
 function isAllowedProfilePath(relativePath: string): boolean {

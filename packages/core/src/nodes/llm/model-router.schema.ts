@@ -12,6 +12,7 @@ export const modelRouterDefinition: Omit<NodeDefinition, 'execute' | 'color' | '
   category: 'model',
   execution: { modelOutput: 'response' },
   inputs: [
+    { name: 'toolAccess', type: 'string', optional: true },
     { name: 'messages', type: 'array', description: 'Complete provider message array supplied by the upstream prompt/context owner' },
     { name: 'role', type: 'string', optional: true, description: 'Optional runtime role override; a connection takes precedence over Model Role' },
     { name: 'jsonSchema', type: 'object', optional: true, description: 'Upstream structured-output contract applied only in JSON mode' },

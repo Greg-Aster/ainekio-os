@@ -77,7 +77,7 @@ export interface VectorIndexItem {
 
 export interface VectorIndexMeta {
   model: string
-  provider: string  // 'local-models', 'ollama', etc.
+  provider: string  // 'llama-cpp', 'ollama', etc.
   createdAt: string
   items: number
   dimensions?: number
@@ -177,15 +177,8 @@ export interface MemoryIndexRefreshResult {
   status: MemoryIndexStatus
 }
 
-// Default model name for index filename - must match embeddings.ts DEFAULTS.model
+// Default model name for index filename - must match embeddings.ts DEFAULT_EMBEDDING_MODEL
 const DEFAULT_INDEX_MODEL = 'qwen3-embedding-0.6b'
-const MAX_EMBEDDING_TEXT_LENGTH = 32_000
-
-function prepareEmbeddingText(text: string): string {
-  if (text.length <= MAX_EMBEDDING_TEXT_LENGTH) return text
-  console.warn(`[vector-index] Embedding text too long (${text.length} chars), truncating to ${MAX_EMBEDDING_TEXT_LENGTH}`)
-  return `${text.slice(0, MAX_EMBEDDING_TEXT_LENGTH)}... [truncated]`
-}
 
 export function indexFilePath(model?: string, username?: string): string {
   const { indexDir } = resolveMemoryPaths(username);
@@ -315,7 +308,7 @@ function walkFiles(dir: string, filter: (p: string) => boolean): string[] {
  * Build the memory index using embeddings from the model router.
  *
  * The model router automatically resolves the 'embedder' role from
- * the user's profile models.json, routing to local-models (llama.cpp)
+ * the user's profile models.json, routing to the shared native llama.cpp service
  * or other configured providers.
  *
  * @param options.include - Which memory types to include
@@ -344,7 +337,7 @@ async function buildMemoryIndex(options: {
 
   // Helper to get embedding and track dimensions
   const getEmbedding = async (text: string): Promise<number[]> => {
-    const response = await callEmbeddings({ text: prepareEmbeddingText(text), userId: username })
+    const response = await callEmbeddings({ text: text, userId: username })
     if (!embeddingModel) {
       embeddingModel = response.model
       embeddingProvider = response.provider
@@ -652,7 +645,7 @@ export async function queryIndex(
 
   // Step 2: Generate embedding for query using model router
   const embedStart = Date.now()
-  const queryEmbedding = await callEmbeddings({ text: prepareEmbeddingText(query), userId: options.username })
+  const queryEmbedding = await callEmbeddings({ text: query, userId: options.username })
   if (
     queryEmbedding.model !== idx.meta.model
     || queryEmbedding.provider !== idx.meta.provider
@@ -924,7 +917,7 @@ export async function appendEventToIndex(event: {
     .join(' ')
 
   // Use model router for embeddings
-  const embedding = await callEmbeddings({ text: prepareEmbeddingText(text), userId: options.username })
+  const embedding = await callEmbeddings({ text: text, userId: options.username })
   if (
     embedding.model !== idx.meta.model
     || embedding.provider !== idx.meta.provider

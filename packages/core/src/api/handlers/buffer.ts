@@ -12,8 +12,8 @@ import { loadBufferForUser } from '../../conversation-buffer.js';
 export async function handleGetSimpleBuffer(req: UnifiedRequest): Promise<UnifiedResponse> {
   const mode = req.query?.mode;
 
-  if (mode !== 'conversation' && mode !== 'inner' && mode !== 'system' && mode !== 'robot') {
-    return badRequestResponse('mode query param required (conversation|inner|system|robot)');
+  if (mode !== 'conversation' && mode !== 'inner' && mode !== 'system' && mode !== 'robot' && mode !== 'terminal') {
+    return badRequestResponse('mode query param required (conversation|inner|system|robot|terminal)');
   }
 
   try {

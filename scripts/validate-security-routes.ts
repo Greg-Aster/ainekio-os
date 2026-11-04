@@ -98,7 +98,6 @@ const HIGH_RISK_READ_PATTERNS = [
   '/api/cloudflare/status',
   '/api/training/',
   '/api/file_operations',
-  '/api/local-models/config',
 ];
 
 function check(name: string, pass: boolean, details?: string): Check {

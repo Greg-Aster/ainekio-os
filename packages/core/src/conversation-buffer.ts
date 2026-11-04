@@ -7,7 +7,7 @@ import { eventBus } from './infrastructure/event-bus/client.js';
 import { loadChatSettingsForUser } from './chat-settings.js';
 import type { GraphNodeExecution } from './durable-execution/graph-contract.js';
 
-export type CanonicalBufferMode = 'inner' | 'conversation' | 'system' | 'robot';
+export type CanonicalBufferMode = 'inner' | 'conversation' | 'system' | 'robot' | 'terminal';
 
 /**
  * Touch a notification file on LOCAL disk to signal buffer updates.
@@ -87,7 +87,7 @@ export async function admitBufferEntry(username: string, mode: CanonicalBufferMo
 
 /** Called only after the canonical execution has been retired. */
 export async function retireBufferAdmissions(username: string, executionId: string): Promise<void> {
-  for (const mode of ['conversation', 'inner', 'robot', 'system'] as const) {
+  for (const mode of ['conversation', 'inner', 'robot', 'system', 'terminal'] as const) {
     await withBufferLock(username, mode, 'retire_execution', async () => {
       const file = getBufferPathForUser(username, mode);
       if (!fs.existsSync(file)) return;
@@ -122,6 +122,7 @@ function getConversationBufferLimit(username: string, mode: CanonicalBufferMode)
   const settings = loadChatSettingsForUser(username);
   const limits: Record<CanonicalBufferMode, { value: number; fallback: number; minimum: number }> = {
     conversation: { value: settings.conversationBufferLimit, fallback: 30, minimum: 5 },
+    terminal: { value: settings.conversationBufferLimit, fallback: 30, minimum: 5 },
     inner: { value: settings.innerBufferLimit, fallback: 80, minimum: 20 },
     system: { value: settings.systemBufferLimit, fallback: 100, minimum: 20 },
     robot: { value: settings.robotBufferLimit, fallback: 100, minimum: 20 },

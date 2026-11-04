@@ -5,10 +5,10 @@ import { badRequestResponse, streamResponse } from '../types.js';
 import { getBufferNotificationPath, loadBufferForUser } from '../../conversation-buffer.js';
 import { eventBus } from '../../infrastructure/event-bus/client.js';
 
-type BufferMode = 'conversation' | 'inner' | 'system' | 'robot';
+type BufferMode = 'conversation' | 'inner' | 'system' | 'robot' | 'terminal';
 
 function isBufferMode(value: string): value is BufferMode {
-  return value === 'conversation' || value === 'inner' || value === 'system' || value === 'robot';
+  return value === 'conversation' || value === 'inner' || value === 'system' || value === 'robot' || value === 'terminal';
 }
 
 function sse(data: Record<string, unknown>): string {
@@ -18,7 +18,7 @@ function sse(data: Record<string, unknown>): string {
 export const handleBufferStream: UnifiedHandler = async (req) => {
   const modes = [...new Set(req.query?.mode?.split(',') ?? [])];
   if (!modes.length || !modes.every(isBufferMode)) {
-    return badRequestResponse('mode query param required (conversation|inner|system|robot, comma-separated)');
+    return badRequestResponse('mode query param required (conversation|inner|system|robot|terminal, comma-separated)');
   }
   if (!req.user.isAuthenticated) {
     return streamResponse((async function* () {

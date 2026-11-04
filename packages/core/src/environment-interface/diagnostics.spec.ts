@@ -5,11 +5,27 @@ import {
   getEnvironmentBridgeDiagnosticsSnapshot,
   recordEnvironmentBridgeDiagnosticObservation,
   recordEnvironmentBridgeTelemetry,
+  recordEnvironmentBodyConnections,
   resetEnvironmentBridgeDiagnosticsForTests,
   storeEnvironmentBridgeDiagnosticAudio,
 } from './diagnostics.js';
 
 afterEach(() => resetEnvironmentBridgeDiagnosticsForTests());
+
+test('connection diagnostics preserve independent Body Control, robot and Core stream availability', () => {
+  for (const connected of [false, true, false]) {
+    recordEnvironmentBodyConnections([{ endpoint: 'ws://body-control/environment', sessionId: 'body-control-session',
+      adapterConnected: true, connected, active: true, ready: true }]);
+    assert.deepEqual(getEnvironmentBridgeDiagnosticsSnapshot().connections, [{
+      endpoint: 'ws://body-control/environment', sessionId: 'body-control-session',
+      adapterConnected: true, connected, active: true, ready: true,
+    }]);
+  }
+  recordEnvironmentBodyConnections([{ endpoint: 'ws://body-control/environment',
+    adapterConnected: false, connected: false, active: false, ready: false, error: 'Connection closed' }]);
+  assert.equal(getEnvironmentBridgeDiagnosticsSnapshot().connections![0].adapterConnected, false);
+  assert.equal(getEnvironmentBridgeDiagnosticsSnapshot().connections![0].error, 'Connection closed');
+});
 
 test('aggregates bounded transport rates, media counts, robot state, and events', () => {
   recordEnvironmentBridgeTelemetry({

@@ -254,22 +254,12 @@ import {
   handleRemoteServerDisconnect,
 } from './handlers/remote-server.js';
 import {
-  handleGetLocalModelsStatus,
-  handleGetLocalModelsConfig,
-  handleSetLocalModelsConfig,
-  handleGetLocalModelsAvailable,
-  handleDownloadLocalModel,
-  handleLoadLocalModel,
-  handleUnloadLocalModel,
-  handleStartLocalModels,
-  handleStopLocalModels,
-} from './handlers/local-models.js';
-import {
   handleListUserGuide,
   handleGetUserGuideChapter,
   handleSearchUserGuide,
 } from './handlers/user-guide.js';
 import { handleSubmitFeedback } from './handlers/feedback.js';
+import { handleSystemError } from './handlers/system-error.js';
 import { handleGetTemplate } from './handlers/templates.js';
 import { handleGetEmbeddingsConfig, handleUpdateEmbeddingsConfig } from './handlers/embeddings.js';
 import { handleGetPersonaInsights } from './handlers/persona-insights.js';
@@ -408,7 +398,7 @@ import {
   handlePersonaGeneratorResetPersona,
   handlePersonaGeneratorPurgeSessions,
 } from './handlers/persona-generator.js';
-import { handleTerminalState, handleTerminalControl, handleTerminalSession, handleTerminalEvents } from './handlers/terminal.js';
+import { handleTerminalState, handleTerminalSession, handleTerminalEvents, handleTerminalMessage } from './handlers/terminal.js';
 import {
   handleGetActiveOperatorStatus,
   handleGetActiveOperatorConfig,
@@ -555,8 +545,8 @@ const routes: RouteDefinition[] = [
 
   // Terminal agent transport (all access is owner-only and same-origin).
   { method: 'GET', pattern: '/api/terminal/state', handler: handleTerminalState, requiresAuth: true, guard: 'owner' },
-  { method: 'POST', pattern: '/api/terminal/control', handler: handleTerminalControl, requiresAuth: true, guard: 'owner' },
   { method: 'POST', pattern: '/api/terminal/sessions', handler: handleTerminalSession, requiresAuth: true, guard: 'owner' },
+  { method: 'POST', pattern: '/api/terminal/message', handler: handleTerminalMessage, requiresAuth: true, guard: 'owner' },
   { method: 'GET', pattern: '/api/terminal/events', handler: handleTerminalEvents, requiresAuth: true, guard: 'owner' },
 
   // Active Operator
@@ -616,6 +606,7 @@ const routes: RouteDefinition[] = [
 
   // Feedback
   { method: 'POST', pattern: '/api/feedback', handler: handleSubmitFeedback, requiresAuth: true },
+  { method: 'POST', pattern: '/api/system-error', handler: handleSystemError, requiresAuth: true },
 
   // Embeddings
   { method: 'GET', pattern: '/api/embeddings', handler: handleGetEmbeddingsConfig },
@@ -1067,15 +1058,6 @@ const routes: RouteDefinition[] = [
   { method: 'DELETE', pattern: '/api/remote-server/disconnect', handler: handleRemoteServerDisconnect, requiresAuth: true },
 
   // Local Models (Transformers.js service for mobile/offline embeddings & LLM)
-  { method: 'GET', pattern: '/api/local-models/status', handler: handleGetLocalModelsStatus },
-  { method: 'GET', pattern: '/api/local-models/config', handler: handleGetLocalModelsConfig, requiresAuth: true, guard: 'owner' },
-  { method: 'PUT', pattern: '/api/local-models/config', handler: handleSetLocalModelsConfig, requiresAuth: true, guard: 'owner' },
-  { method: 'GET', pattern: '/api/local-models/models', handler: handleGetLocalModelsAvailable },
-  { method: 'POST', pattern: '/api/local-models/download', handler: handleDownloadLocalModel, requiresAuth: true, guard: 'owner' },
-  { method: 'POST', pattern: '/api/local-models/load', handler: handleLoadLocalModel, requiresAuth: true, guard: 'owner' },
-  { method: 'POST', pattern: '/api/local-models/unload', handler: handleUnloadLocalModel, requiresAuth: true, guard: 'owner' },
-  { method: 'POST', pattern: '/api/local-models/start', handler: handleStartLocalModels, requiresAuth: true, guard: 'owner' },
-  { method: 'POST', pattern: '/api/local-models/stop', handler: handleStopLocalModels, requiresAuth: true, guard: 'owner' },
 
   // User Guide (unified for web and mobile)
   { method: 'GET', pattern: '/api/user-guide', handler: handleListUserGuide },

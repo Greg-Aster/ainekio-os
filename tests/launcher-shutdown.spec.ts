@@ -6,49 +6,6 @@ import fs from 'node:fs'
 import os from 'node:os'
 import path from 'node:path'
 import test from 'node:test'
-import { fileURLToPath } from 'node:url'
-import { resolveModelsDirectory } from '../packages/local-model-service/src/config.js'
-
-test('standalone local models share repository storage from every startup directory', () => {
-  const originalCwd = process.cwd()
-  const repo = fileURLToPath(new URL('../', import.meta.url))
-  try {
-    for (const cwd of [repo, path.join(repo, 'apps/site'), path.join(repo, 'packages/local-model-service')]) {
-      process.chdir(cwd)
-      assert.equal(resolveModelsDirectory({}), path.join(repo, 'models'))
-      assert.equal(resolveModelsDirectory({ METAHUMAN_ROOT: '/installation' }), '/installation/models')
-      assert.equal(resolveModelsDirectory({ METAHUMAN_ROOT: '/installation', MODELS_DIR: 'shared-models' }), '/installation/shared-models')
-      assert.equal(resolveModelsDirectory({ MODELS_DIR: '/custom/models' }), '/custom/models')
-    }
-  } finally { process.chdir(originalCwd) }
-})
-
-test('local model inventory reads the same directory selected for model loading', async () => {
-  const { startLocalModelService, stopLocalModelService } = await import('../packages/local-model-service/src/index.js')
-  const fixture = fs.mkdtempSync(path.join(os.tmpdir(), 'metahuman-model-inventory-'))
-  const modelsDir = path.join(fixture, 'models')
-  const configPath = path.join(fixture, 'config.json')
-  fs.mkdirSync(modelsDir)
-  fs.writeFileSync(configPath, JSON.stringify({ modelsDir: path.join(fixture, 'obsolete-models') }))
-  const model = path.join(modelsDir, 'Qwen3-Embedding-0.6B-q4_k_m.gguf')
-  fs.writeFileSync(model, 'inventory fixture; never loaded')
-  try {
-    const server = await startLocalModelService({ port: 0, modelsDir, configPath })
-    const inventory = async () => {
-      const response = await server.inject({ method: 'GET', url: '/models' })
-      assert.equal(response.statusCode, 200)
-      return response.json().embeddings.find((entry: { id: string }) => entry.id === 'qwen3-embedding-0.6b')
-    }
-    assert.equal((await inventory()).downloaded, true)
-    fs.unlinkSync(model)
-    assert.equal((await inventory()).downloaded, false)
-    fs.writeFileSync(model, 'replacement fixture; never loaded')
-    assert.equal((await inventory()).downloaded, true)
-  } finally {
-    await stopLocalModelService()
-    fs.rmSync(fixture, { recursive: true, force: true })
-  }
-})
 
 const source = fs.readFileSync(new URL('../start.sh', import.meta.url), 'utf8')
 
@@ -96,7 +53,7 @@ test('web startup stays concurrent while its dispatcher reports branch failures'
   try {
     fs.mkdirSync(path.join(fixture, 'bin'))
     fs.copyFileSync(new URL('../bin/start-services', import.meta.url), path.join(fixture, 'bin/start-services'))
-    for (const name of ['start-event-bus', 'mh', 'pnpm', 'start-voice-server', 'start-local-models']) {
+    for (const name of ['start-event-bus', 'mh', 'pnpm', 'start-voice-server']) {
       fs.writeFileSync(path.join(fixture, 'bin', name), `#!/bin/bash
 while [ ! -f "$FIXTURE_ROOT/dispatched" ]; do sleep 0.01; done
 exit 23
@@ -108,7 +65,7 @@ exit 23
     })
     assert.equal(result.status, 1, result.stderr)
     assert.match(result.stdout, /dispatched/)
-    for (const name of ['event-bus', 'agents', 'cloudflare', 'voice-server', 'local-models']) {
+    for (const name of ['event-bus', 'agents', 'cloudflare', 'voice-server']) {
       assert.match(result.stderr, new RegExp(`${name} startup failed \\(exit 23\\)`))
       assert.match(fs.readFileSync(path.join(fixture, 'logs/run', `${name}.launcher.log`), 'utf8'), /exited with code 23/)
     }
@@ -214,7 +171,7 @@ test('shutdown continues after owner failure and reports incomplete cleanup', ()
   try {
     fs.mkdirSync(path.join(fixture, 'bin'))
     fs.copyFileSync(new URL('../stop.sh', import.meta.url), path.join(fixture, 'stop.sh'))
-    for (const name of ['mh', 'llama-cpp-services', 'stop-local-models', 'stop-event-bus', 'node']) {
+    for (const name of ['mh', 'llama-cpp-services', 'stop-event-bus', 'node']) {
       fs.writeFileSync(path.join(fixture, 'bin', name), `#!/bin/sh
 echo '${name}' "$@" >> "$FIXTURE_ROOT/calls"
 case "$*" in 'agent stop --all') exit 23;; esac
@@ -228,9 +185,9 @@ case "$*" in 'agent stop --all') exit 23;; esac
     assert.match(result.stderr, /Agents failed to stop/)
     assert.match(result.stderr, /shutdown incomplete/)
     const calls = fs.readFileSync(path.join(fixture, 'calls'), 'utf8')
-    assert.doesNotMatch(calls, /vllm|sovits|kitten/i)
+    assert.doesNotMatch(calls, /llama-cpp-services|vllm|sovits|kitten/i)
     assert.doesNotMatch(result.stdout, /vllm|sovits|kitten/i)
-    for (const command of ['terminal stop', 'agent stop --all', 'llama-cpp-services stop', 'stop-local-models', 'voice-server stop --all', 'stop-event-bus']) assert.ok(calls.includes(command), command)
+    for (const command of ['terminal stop', 'agent stop --all', 'voice-server stop --all', 'stop-event-bus']) assert.ok(calls.includes(command), command)
   } finally { fs.rmSync(fixture, { recursive: true, force: true }) }
 })
 
@@ -239,7 +196,7 @@ test('full shutdown stops the launcher without dispatching service shutdown twic
   fs.mkdirSync(path.join(fixture, 'bin'))
   fs.mkdirSync(path.join(fixture, 'logs/run'), { recursive: true })
   fs.copyFileSync(new URL('../stop.sh', import.meta.url), path.join(fixture, 'stop.sh'))
-  for (const name of ['mh', 'llama-cpp-services', 'stop-local-models', 'stop-voice-server', 'stop-event-bus', 'node']) {
+  for (const name of ['mh', 'llama-cpp-services', 'stop-voice-server', 'stop-event-bus', 'node']) {
     fs.writeFileSync(path.join(fixture, 'bin', name), `#!/bin/sh\necho '${name}' "$@" >> "$FIXTURE_ROOT/calls"\n`, { mode: 0o755 })
   }
   fs.writeFileSync(path.join(fixture, 'bin/pm2'), '#!/bin/sh\nexit 1\n', { mode: 0o755 })
@@ -287,7 +244,7 @@ test('cancelling startup terminates its unfinished launch commands before servic
   const fixture = fs.mkdtempSync(path.join(os.tmpdir(), 'metahuman-cancel-start-'))
   fs.mkdirSync(path.join(fixture, 'bin'))
   fs.copyFileSync(new URL('../bin/start-services', import.meta.url), path.join(fixture, 'bin/start-services'))
-  for (const name of ['start-event-bus', 'mh', 'pnpm', 'start-voice-server', 'start-local-models']) {
+  for (const name of ['start-event-bus', 'mh', 'pnpm', 'start-voice-server']) {
     fs.writeFileSync(path.join(fixture, 'bin', name), `#!/bin/bash
 echo $$ > "$FIXTURE_ROOT/${name}.pid"
 sleep 60
@@ -299,7 +256,7 @@ sleep 60
   const exited = once(child, 'exit')
   try {
     const deadline = Date.now() + 5000
-    while (fs.readdirSync(fixture).filter(file => file.endsWith('.pid')).length < 5) {
+    while (fs.readdirSync(fixture).filter(file => file.endsWith('.pid')).length < 4) {
       assert.ok(Date.now() < deadline, 'All independent launcher commands should start')
       await delay(10)
     }
@@ -329,106 +286,70 @@ kill() { echo unexpected-signal; exit 99; }
 })
 
 
-test('llama.cpp startup selects assigned endpoints and models; stop retains installation ownership', () => {
+test('llama.cpp clients start only the shared host; old per-model serve and stop paths are removed', () => {
   const directory = fs.mkdtempSync(path.join(os.tmpdir(), 'metahuman-llama-lifecycle-'))
   const script = new URL('../bin/llama-cpp-services', import.meta.url).pathname
-  const root = path.dirname(path.dirname(script))
   const log = path.join(directory, 'calls')
   fs.writeFileSync(path.join(directory, 'systemctl'), `#!/bin/sh
 printf '%s\\n' "$*" >> "$TEST_CALLS"
 if [ "$TEST_ERROR" = "$2" ]; then echo 'systemd failure' >&2; exit 23; fi
 case "$2" in
-  list-unit-files) printf '%s\\n' 'selected.service static -' 'obsolete.service disabled -' 'unrelated.service enabled -' 'worker@.service static -';;
-  show) case "$*" in *worker@.service*) exit 92;; esac
-cat <<'UNITS'
-Id=selected.service
-WorkingDirectory=${root}
-ExecStart={ path=${script} ; argv[]=${script} serve /binary/llama-server --model /configured.gguf --alias selected --host 127.0.0.1 --port 8081 ; }
-
-Id=obsolete.service
-WorkingDirectory=${root}
-ExecStart={ path=${script} ; argv[]=${script} serve /binary/llama-server --model /obsolete.gguf --alias obsolete --host 127.0.0.1 --port 8083 ; }
-
-Id=unrelated.service
-WorkingDirectory=/other/application
-ExecStart={ path=/binary/llama-server ; argv[]=/binary/llama-server --model /other.gguf ; }
-UNITS
-;;
+  show) printf '%s\\n' 'ExecStart={ path=/binary/llama-server ; argv[]=/binary/llama-server --models-preset /host/models.ini --host 127.0.0.1 --port 8080 --models-max 0 ; }';;
 esac
 `, { mode: 0o755 })
   const env = { ...process.env, PATH: `${directory}:${process.env.PATH}`, TEST_CALLS: log }
-  const selection = JSON.stringify([{ endpoint: 'http://localhost:8081', model: 'selected' }])
   try {
-    for (const [args, expected] of [
-      [['start', '[]'], undefined],
-      [['start', selection], '--user start selected.service'],
-      [['start', JSON.stringify([{ endpoint: 'http://127.0.0.1:8081', model: 'other' }])], undefined],
-      [['start', JSON.stringify([{ endpoint: 'https://remote.example:8081', model: 'selected' }])], undefined],
-      [['stop'], '--user stop selected.service obsolete.service'],
-    ] as const) {
+    for (const models of [[], [{ endpoint: 'http://localhost:8080', model: 'brain' }],
+      [{ endpoint: 'http://127.0.0.1:8080', model: 'motion' }],
+      [{ endpoint: 'http://127.0.0.1:8081', model: 'obsolete' }],
+      [{ endpoint: 'http://q6a.example:8080', model: 'motion' }]]) {
       fs.writeFileSync(log, '')
-      const result = spawnSync(script, [...args], { encoding: 'utf8', env })
-      assert.equal(result.status, 0, result.stderr)
-      const calls = fs.readFileSync(log, 'utf8').trim().split('\n')
-      assert.deepEqual(calls.filter(call => /^--user (start|stop) /.test(call)), expected ? [expected] : [])
+      for (let attempt = 0; attempt < 2; attempt++) {
+        const result = spawnSync(script, ['start', JSON.stringify(models)], { encoding: 'utf8', env })
+        assert.equal(result.status, 0, result.stderr)
+      }
+      const calls = fs.readFileSync(log, 'utf8').trim().split('\n').filter(Boolean)
+      const local = models.some(model => /(?:localhost|127.0.0.1):8080/.test(model.endpoint))
+      assert.deepEqual(calls.filter(call => /^--user start /.test(call)),
+        local ? ['--user start llama-cpp.service', '--user start llama-cpp.service'] : [])
+      assert.ok(calls.every(call => /^--user (show llama-cpp.service|start llama-cpp.service)/.test(call)))
+      if (models.some(model => model.endpoint.includes('q6a'))) assert.deepEqual(calls, [])
     }
-    assert.notEqual(spawnSync(script, ['start'], { encoding: 'utf8', env }).status, 0,
-      'Starting every installed model is no longer an implicit operation')
-    for (const operation of ['list-unit-files', 'show', 'start', 'stop']) {
-      const result = spawnSync(script, operation === 'stop' ? ['stop'] : ['start', selection], {
+    for (const operation of ['show', 'start']) {
+      const result = spawnSync(script, ['start', JSON.stringify([{ endpoint: 'http://localhost:8080', model: 'brain' }])], {
         encoding: 'utf8', env: { ...env, TEST_ERROR: operation },
       })
       assert.equal(result.status, 23)
       assert.match(result.stderr, /systemd failure/)
     }
+    for (const args of [['serve', '/binary/llama-server', '--model', '/old.gguf'], ['stop']]) {
+      assert.equal(spawnSync(script, args, { encoding: 'utf8', env }).status, 2)
+    }
   } finally { fs.rmSync(directory, { recursive: true, force: true }) }
 })
 
-test('native router starts without weights and retains GPU, adapter and inference options', () => {
-  const directory = fs.mkdtempSync(path.join(os.tmpdir(), 'metahuman-llama-preset-'))
+test('host installation runs native router directly and preserves its preset independently of either app', () => {
+  const directory = fs.mkdtempSync(path.join(os.tmpdir(), 'shared-llama-install-'))
   const script = new URL('../bin/llama-cpp-services', import.meta.url).pathname
-  const binary = path.join(directory, 'llama-server')
-  fs.writeFileSync(binary, `#!/usr/bin/env python3
-import sys, json
-from pathlib import Path
-args = sys.argv[1:]
-print(json.dumps({'args': args, 'preset': Path(args[args.index('--models-preset')+1]).read_text()}))
-`, { mode: 0o755 })
-  try {
-    const retained = ['--port', '12345', '--gpu-layers', 'all', '--lora-scaled', '/adapter.gguf:0',
-      '--ctx-size', '0', '--mmproj-on-demand', '--temp', '0.3']
-    const result = spawnSync(script, ['serve', binary, '--model', '/model with spaces.gguf',
-      '--alias', 'custom-model', '--mmproj', '/vision.gguf', ...retained], { encoding: 'utf8', env: { ...process.env, XDG_RUNTIME_DIR: directory } })
-    assert.equal(result.status, 0, result.stderr)
-    const { args, preset } = JSON.parse(result.stdout)
-    assert.deepEqual(args.slice(0, retained.length), retained)
-    assert.deepEqual(args.slice(retained.length, -2), ['--sleep-idle-seconds', '300'])
-    assert.equal(args.includes('--model'), false)
-    assert.equal(args.includes('--alias'), false)
-    assert.equal(preset, 'version = 1\n\n[custom-model]\nalias = custom-model\nmodel = /model with spaces.gguf\nmmproj = /vision.gguf\nload-on-startup = false\n')
-  } finally { fs.rmSync(directory, { recursive: true, force: true }) }
-})
-
-test('local model service starts and restarts unloaded despite obsolete preload settings', async t => {
-  const { startLocalModelService, stopLocalModelService } = await import('../packages/local-model-service/src/index.js')
-  const { ModelManager } = await import('../packages/local-model-service/src/model-manager.js')
-  const embeddingLoads = t.mock.method(ModelManager.prototype, 'loadEmbedder')
-  const languageLoads = t.mock.method(ModelManager.prototype, 'loadGenerator')
-  const fixture = fs.mkdtempSync(path.join(os.tmpdir(), 'metahuman-local-startup-'))
-  const configPath = path.join(fixture, 'config.json')
-  fs.writeFileSync(configPath, JSON.stringify({ embeddings: { model: 'unassigned-embedding', preloadAtStartup: true },
-    llm: { model: 'unassigned-text', preloadAtStartup: true } }))
+  const preset = path.join(directory, 'models.ini')
+  const contents = 'version = 1\n\n[brain]\nmodel = /brain.gguf\nmmproj = /vision.gguf\nlora-scaled = /brain-adapter.gguf:0\nctx-size = 0\nload-on-startup = false\n\n[motion]\nmodel = /motion.gguf\nparallel = 2\nload-on-startup = false\n'
+  fs.writeFileSync(preset, contents)
+  fs.writeFileSync(path.join(directory, 'systemctl'), '#!/bin/sh\nprintf "%s\\n" "$*" >> "$TEST_CALLS"\n', { mode: 0o755 })
   try {
     for (let attempt = 0; attempt < 2; attempt++) {
-      const server = await startLocalModelService({ port: 0, modelsDir: fixture, configPath })
-      const result = await server.inject({ method: 'GET', url: '/health' })
-      assert.deepEqual(result.json(), { status: 'ok', embedder: { loaded: false, model: null }, generator: { loaded: false, model: null } })
-      assert.equal(embeddingLoads.mock.callCount(), 0, 'startup must not attempt to load a model')
-      assert.equal(languageLoads.mock.callCount(), 0, 'startup must not attempt to load a model')
-      await stopLocalModelService()
+      const result = spawnSync(script, ['install', '/native/llama-server', '--models-preset', preset,
+        '--host', '127.0.0.1', '--port', '8080', '--models-max', '0'], {
+        encoding: 'utf8', env: { ...process.env, XDG_CONFIG_HOME: directory,
+          PATH: `${directory}:${process.env.PATH}`, TEST_CALLS: path.join(directory, 'calls') },
+      })
+      assert.equal(result.status, 0, result.stderr)
     }
-  } finally {
-    await stopLocalModelService()
-    fs.rmSync(fixture, { recursive: true, force: true })
-  }
+    const unit = fs.readFileSync(path.join(directory, 'systemd/user/llama-cpp.service'), 'utf8')
+    assert.match(unit, /ExecStart="\/native\/llama-server" "--models-preset"/)
+    assert.doesNotMatch(unit, /WorkingDirectory|metahuman|Ainekio|PartOf|BindsTo|llama-cpp-services/)
+    assert.equal(fs.readFileSync(preset, 'utf8'), contents)
+    assert.deepEqual(fs.readFileSync(path.join(directory, 'calls'), 'utf8').trim().split('\n'),
+      ['--user daemon-reload', '--user enable llama-cpp.service', '--user daemon-reload', '--user enable llama-cpp.service'])
+    assert.deepEqual(fs.readdirSync(path.join(directory, 'systemd/user')), ['llama-cpp.service'])
+  } finally { fs.rmSync(directory, { recursive: true, force: true }) }
 })

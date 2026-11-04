@@ -20,8 +20,6 @@ stop_services() {
   # Stop work producers before their transports and model services.
   stop_service "Terminal sessions" "$REPO_ROOT/bin/mh" terminal stop
   stop_service "Agents" "$REPO_ROOT/bin/mh" agent stop --all
-  stop_service "llama.cpp" "$REPO_ROOT/bin/llama-cpp-services" stop
-  stop_service "Local models" "$REPO_ROOT/bin/stop-local-models"
   stop_service "Voice services" "$REPO_ROOT/bin/stop-voice-server"
   stop_service "Cloudflare tunnel" node --import tsx --input-type=module -e '
 import { stopTunnel } from "./packages/core/src/cloudflare-tunnel.ts";

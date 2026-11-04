@@ -1,8 +1,8 @@
 # LLM Backend Configuration
 
 MetaHuman routes model requests through the deployment backend owner and model
-provider bridge. Supported target families include llama.cpp, Ollama, the maintained
-local-model service, configured remote providers, and automatic selection.
+provider bridge. Supported targets include the shared native llama.cpp service,
+Ollama, configured remote providers, and automatic selection.
 
 ## Configuration owner
 
@@ -13,7 +13,7 @@ CLI instead of creating provider-specific routing files.
 
 Important fields include:
 
-- `activeBackend`: `ollama`, `llama-cpp`, `local-models`, `remote`, or the supported automatic mode;
+- `activeBackend`: `ollama`, `llama-cpp`, `remote`, or the supported automatic mode;
 - `ollama.endpoint` and `ollama.defaultModel`;
 - `llamaCpp.endpoint`, served model name, context/output limits and capabilities;
 - `remote.serverUrl` and remote model identity;
@@ -58,7 +58,7 @@ The model named by `ollama.defaultModel` must be installed. Role-specific model 
 In **System → Backend**, choose **llama.cpp** or use its **Save and use llama.cpp**
 button. Enter the server root URL (for example `http://127.0.0.1:8080`, without
 `/v1`), the exact model name returned by `/v1/models`, and the context limit used
-when launching the server. Configure a smaller output-token budget. Enable image
+when launching the server. Configure the desired output-token budget. Enable image
 input only when the served model and its loaded vision projector support it.
 Text, image parts and structured output use the same provider path.
 
@@ -71,18 +71,16 @@ Assign models and adapters to roles in the **Status** widget. The selected profi
 and cognitive mode determine which assignments apply. Backend settings describe
 serving deployments; they do not replace assigned providers or models.
 Application startup (`mh backend start --assigned`) and Status assignment changes
-prepare only the selected installation-owned llama.cpp listeners. They start
-unloaded; actual requests load weights. Unassigned models in the inventory do not
-start. The bundled embedding service also starts unloaded and uses the selected
-Embedder on actual requests.
+can start this computer's one shared native service. Requests select model aliases;
+registered models stay unloaded until needed. The Embedder role calls that same
+service through `/v1/embeddings`. Its host-local model preset owns CPU/GPU placement,
+pooling and native context capacity. A CPU embedding preset uses `device=none`
+and `gpu-layers=0` so operation workspaces also stay on CPU. The former Node model
+service and its download/load/start/stop panel are removed.
 
 Server Status refreshes when opened, when the page becomes visible, after a
 control action, on backend-change events, or with its refresh button. It has no
 periodic status polling.
-
-The separate Local Model Service panel reads its inventory from that service.
-After requesting a download, use **Refresh model status** to check completion.
-Unavailable inventory is shown as an error.
 
 ## Remote backend
 

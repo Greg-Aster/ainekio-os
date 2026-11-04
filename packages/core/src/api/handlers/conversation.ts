@@ -13,7 +13,7 @@ import {
 } from '../../conversation-buffer.js';
 
 function isBufferMode(value: unknown): value is CanonicalBufferMode {
-  return value === 'conversation' || value === 'inner' || value === 'system' || value === 'robot';
+  return value === 'conversation' || value === 'inner' || value === 'system' || value === 'robot' || value === 'terminal';
 }
 
 /**

@@ -34,7 +34,6 @@ interface BackendAvailability {
   runpod: { available: boolean; configured: boolean; active: boolean };
   bigBrother: { available: boolean; enabled: boolean; provider?: string };
   remoteServer: { available: boolean; configured: boolean; serverUrl?: string };
-  localModels: { available: boolean; running: boolean; embeddingModel?: string | null; llmModel?: string | null };
 }
 
 /**
@@ -90,61 +89,6 @@ function detectBigBrotherAvailability(username?: string): { available: boolean; 
       enabled: false,
       provider: 'claude-code',
     };
-  }
-}
-
-/**
- * Detect local-model-service (Transformers.js) availability
- * Used for unified embeddings on desktop and mobile
- */
-async function detectLocalModelsAvailability(): Promise<{
-  available: boolean;
-  running: boolean;
-  embeddingModel: string | null;
-  llmModel: string | null;
-}> {
-  try {
-    // Check config first
-    const backendConfig = JSON.parse(
-      fs.readFileSync(path.join(systemPaths.root, 'etc', 'llm-backend.json'), 'utf-8')
-    );
-    const localModels = backendConfig.localModels || {};
-
-    if (!localModels.enabled) {
-      return { available: false, running: false, embeddingModel: null, llmModel: null };
-    }
-
-    const endpoint = localModels.endpoint || 'http://127.0.0.1:4324';
-
-    // Try to connect to the service
-    try {
-      const controller = new AbortController();
-      const timeout = setTimeout(() => controller.abort(), 2000);
-
-      const healthRes = await fetch(`${endpoint}/health`, { signal: controller.signal });
-      clearTimeout(timeout);
-
-      if (healthRes.ok) {
-        const health = await healthRes.json();
-        return {
-          available: true,
-          running: true,
-          embeddingModel: health.embedder?.model || localModels.embeddings?.model || null,
-          llmModel: health.generator?.model || localModels.llm?.model || null,
-        };
-      }
-    } catch {
-      // Service not running
-    }
-
-    return {
-      available: true, // Configured but not running
-      running: false,
-      embeddingModel: localModels.embeddings?.model || null,
-      llmModel: localModels.llm?.model || null,
-    };
-  } catch {
-    return { available: false, running: false, embeddingModel: null, llmModel: null };
   }
 }
 
@@ -459,7 +403,6 @@ export async function handleGetStatus(req: UnifiedRequest): Promise<UnifiedRespo
       // availableBackends already declared above for availableProviders check
       const runpodStatus = detectRunPodAvailability(isAuthenticated ? user.username : undefined);
       const bigBrotherStatus = detectBigBrotherAvailability(isAuthenticated ? user.username : undefined);
-      const localModelsStatus = await detectLocalModelsAvailability();
       // remoteServerStatus already defined above for fetching models
 
       // Determine which backend is the "active" one
@@ -488,12 +431,6 @@ export async function handleGetStatus(req: UnifiedRequest): Promise<UnifiedRespo
           available: remoteServerStatus.available,
           configured: remoteServerStatus.configured,
           serverUrl: remoteServerStatus.serverUrl,
-        },
-        localModels: {
-          available: localModelsStatus.available,
-          running: localModelsStatus.running,
-          embeddingModel: localModelsStatus.embeddingModel,
-          llmModel: localModelsStatus.llmModel,
         },
       } as BackendAvailability;
     } catch {

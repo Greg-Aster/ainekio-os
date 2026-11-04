@@ -18,7 +18,6 @@ import type { ModelRole } from './model-roles.js';
 import { audit } from './audit.js';
 import { DEFAULT_LLAMA_CPP_CONFIG, getLlamaCppStatus, validateLlamaCppConfig, type LlamaCppConfig } from './providers/llama-cpp.js';
 import { ollama, isRunning as isOllamaRunning, startOllamaService } from './ollama.js';
-import { isLocalModelServiceRunning, getLocalModelStatus } from './providers/local-models.js';
 import {
   listLocalModelArtifacts,
   resolveLocalModelArtifact,
@@ -37,14 +36,13 @@ const LOG_PREFIX = '[llm-backend]';
  * Backend types:
  * - 'ollama': Managed local LLM backends
  * - 'llama-cpp': An externally managed llama-server
- * - 'local-models': Bundled node-llama-cpp embedding/text service
  * - 'remote': Cloud provider (RunPod, Claude, OpenRouter, OpenAI)
  * - 'auto': Intelligent selection - prefer local if available, fallback to remote
  */
-export type BackendType = 'llama-cpp' | 'ollama' | 'local-models' | 'remote' | 'auto';
+export type BackendType = 'llama-cpp' | 'ollama' | 'remote' | 'auto';
 
 /** Local backend type (for when using 'auto' or 'remote' with local fallback) */
-export type LocalBackendType = 'llama-cpp' | 'ollama' | 'local-models';
+export type LocalBackendType = 'llama-cpp' | 'ollama';
 
 /** Remote provider types supported */
 export type RemoteProviderType = 'claude' | 'runpod' | 'openrouter' | 'openai' | 'server';
@@ -85,25 +83,6 @@ export interface RemoteBackendConfig {
   };
 }
 
-export interface LocalModelsBackendConfig {
-  /** Whether local-models backend is enabled */
-  enabled: boolean;
-  /** Service endpoint URL */
-  endpoint: string;
-  /** Auto-start the service on boot */
-  autoStart: boolean;
-  /** Only download models when connected to WiFi */
-  downloadOnWifiOnly: boolean;
-  /** Embedding model configuration */
-  embeddings: {
-    model: string;
-  };
-  /** Small LLM model configuration */
-  llm: {
-    model: string;
-  };
-}
-
 export interface BackendConfig {
   activeBackend: BackendType;
   llamaCpp: LlamaCppConfig;
@@ -112,15 +91,13 @@ export interface BackendConfig {
   ollama: OllamaBackendConfig;
   /** Remote/cloud provider configuration */
   remote?: RemoteBackendConfig;
-  /** Bundled local-model service configuration */
-  localModels?: LocalModelsBackendConfig;
 }
 
 export interface BackendStatus {
   /** Configured backend type */
   backend: BackendType;
   /** Actual active backend (resolved from 'auto') */
-  resolvedBackend: 'llama-cpp' | 'ollama' | 'local-models' | 'remote' | 'offline';
+  resolvedBackend: 'llama-cpp' | 'ollama' | 'remote' | 'offline';
   /** Remote provider if using remote */
   remoteProvider?: RemoteProviderType;
   running: boolean;
@@ -136,7 +113,6 @@ export interface BackendStatus {
 export interface AvailableBackends {
   llamaCpp: { configured: boolean; running: boolean; model?: string; error?: string };
   ollama: { installed: boolean; running: boolean; model?: string };
-  localModels: { installed: boolean; running: boolean; embeddingModel?: string; llmModel?: string };
   remote: { configured: boolean; provider?: RemoteProviderType; hasCredentials: boolean };
   sharedArtifacts?: LocalModelArtifact[];
 }
@@ -179,18 +155,6 @@ export function loadBackendConfig(forceFresh = false): BackendConfig {
       keepAlive: '5m',
       enableThinking: false,
     },
-    localModels: {
-      enabled: true,
-      endpoint: 'http://127.0.0.1:4324',
-      autoStart: false,
-      downloadOnWifiOnly: true,
-      embeddings: {
-        model: 'qwen3-embedding-0.6b',
-      },
-      llm: {
-        model: 'qwen3-1.7b',
-      },
-    },
   };
 
   try {
@@ -203,7 +167,6 @@ export function loadBackendConfig(forceFresh = false): BackendConfig {
         ...parsed,
         llamaCpp: { ...defaultConfig.llamaCpp, ...parsed.llamaCpp },
         ollama: { ...defaultConfig.ollama, ...parsed.ollama },
-        localModels: { ...defaultConfig.localModels, ...parsed.localModels },
       };
     } else {
       cachedConfig = defaultConfig;
@@ -234,15 +197,12 @@ export function saveBackendConfig(updates: Partial<BackendConfig>): void {
   if (updates.remote) {
     newConfig.remote = { ...config.remote, ...updates.remote };
   }
-  if (updates.localModels) {
-    newConfig.localModels = { ...config.localModels, ...updates.localModels };
-  }
 
   // Keep the manual backend auto-start preference aligned with selection.
   // Authenticated startup independently resolves the profile's assigned models.
   if (newConfig.activeBackend === 'ollama') {
     newConfig.ollama = { ...newConfig.ollama, autoStart: true };
-  } else if (newConfig.activeBackend === 'remote' || newConfig.activeBackend === 'local-models' || newConfig.activeBackend === 'llama-cpp') {
+  } else if (newConfig.activeBackend === 'remote' || newConfig.activeBackend === 'llama-cpp') {
     newConfig.ollama = { ...newConfig.ollama, autoStart: false };
   }
 
@@ -322,31 +282,6 @@ async function configuredBackendStatus(config: BackendConfig): Promise<BackendSt
     };
   }
 
-  if (backend === 'local-models') {
-    const localModelsConfig = config.localModels;
-    const endpoint = localModelsConfig?.endpoint || 'http://127.0.0.1:4324';
-    const running = await isLocalModelServiceRunning(endpoint);
-    let model: string | undefined;
-
-    if (running) {
-      try {
-        const status = await getLocalModelStatus(endpoint);
-        // Report the LLM model if loaded, otherwise the embedding model
-        model = status?.generator?.model || status?.embedder?.model || undefined;
-      } catch { }
-    }
-
-    return {
-      backend: 'local-models',
-      resolvedBackend: running ? 'local-models' : 'offline',
-      running,
-      model,
-      endpoint,
-      health: running ? 'healthy' : 'offline',
-      reason: running ? undefined : 'Local model service is not running. Enable auto-start in Settings.',
-    };
-  }
-
   return { backend, resolvedBackend: 'offline', running: false, health: 'offline',
     reason: `Unsupported backend: ${backend}` };
 }
@@ -412,11 +347,8 @@ export async function detectAvailableBackends(): Promise<AvailableBackends> {
   const config = loadBackendConfig();
   ollama.setEndpoint(config.ollama.endpoint);
 
-  const localModelsEndpoint = config.localModels?.endpoint || 'http://127.0.0.1:4324';
-
-  const [ollamaRunning, localModelsRunning, llamaCpp] = await Promise.all([
+  const [ollamaRunning, llamaCpp] = await Promise.all([
     isOllamaRunning(),
-    isLocalModelServiceRunning(localModelsEndpoint),
     getLlamaCppStatus(config.llamaCpp),
   ]);
 
@@ -432,26 +364,13 @@ export async function detectAvailableBackends(): Promise<AvailableBackends> {
     }
   }
 
-  // Local models is always "installed" (it's a Node.js service)
-  const localModelsInstalled = true;
-
   // Get loaded models if running
   let ollamaModel: string | undefined;
-  let localModelsEmbedding: string | undefined;
-  let localModelsLLM: string | undefined;
 
   if (ollamaRunning) {
     try {
       const result = await ollama.getRunningModels();
       ollamaModel = result.models[0]?.name;
-    } catch { }
-  }
-
-  if (localModelsRunning) {
-    try {
-      const status = await getLocalModelStatus(localModelsEndpoint);
-      localModelsEmbedding = status?.embedder?.model || undefined;
-      localModelsLLM = status?.generator?.model || undefined;
     } catch { }
   }
 
@@ -463,7 +382,6 @@ export async function detectAvailableBackends(): Promise<AvailableBackends> {
   return {
     llamaCpp: { configured: !!config.llamaCpp.model, ...llamaCpp, model: config.llamaCpp.model || undefined },
     ollama: { installed: ollamaInstalled, running: ollamaRunning, model: ollamaModel },
-    localModels: { installed: localModelsInstalled, running: localModelsRunning, embeddingModel: localModelsEmbedding, llmModel: localModelsLLM },
     remote: { configured: remoteConfigured, provider: config.remote?.provider, hasCredentials },
     sharedArtifacts: listLocalModelArtifacts(),
   };
@@ -588,14 +506,6 @@ export async function ensureBackendRunning(
       : { running: false, error: 'Remote backend is not configured.' };
   }
 
-  if (backend === 'local-models') {
-    const endpoint = config.localModels?.endpoint || 'http://127.0.0.1:4324';
-    const running = await isLocalModelServiceRunning(endpoint);
-    return running
-      ? { running: true }
-      : { running: false, error: 'Local model service is not running.' };
-  }
-
   if (backend === 'ollama') {
     const running = await isOllamaRunning();
     if (!running) {
@@ -614,7 +524,7 @@ export async function ensureBackendRunning(
   return { running: false, error: `Unsupported backend: ${backend}` };
 }
 
-/** Start serving endpoints selected by the same profile/mode resolver as Status and inference. */
+/** Prepare the shared host service for selected local deployments; never own its shutdown. */
 export async function startAssignedModelServices(username: string, roles?: ModelRole[]): Promise<void> {
   const { resolveAssignedModels } = await import('./model-resolver.js');
   const { readRecordedCognitiveMode } = await import('./cognitive-mode.js');

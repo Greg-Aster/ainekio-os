@@ -144,9 +144,6 @@
         case 'ProfileLocation':
           module = await import('./ProfileLocation.svelte');
           break;
-        case 'TerminalPanel':
-          module = await import('./terminal/TerminalPanel.svelte');
-          break;
         case 'AgencyDashboard':
           module = await import('./AgencyDashboard.svelte');
           break;
@@ -593,9 +590,6 @@ async function loadMemoryContent(relPath: string) {
           void loadComponent('TriggerManagerSettings');
         }
         break;
-      case 'terminal':
-        void loadComponent('TerminalPanel');
-        break;
       case 'projects':
         void loadComponent('ProjectDashboard');
         break;
@@ -619,8 +613,8 @@ async function loadMemoryContent(relPath: string) {
 
 <div class="flex flex-col h-full w-full overflow-hidden">
   <TTSQueueConsumer />
-  {#if $activeView === 'chat'}
-    <ChatInterface />
+  {#if $activeView === 'chat' || $activeView === 'terminal'}
+    <ChatInterface terminalSelected={$activeView === 'terminal'} />
   {:else if $activeView === 'dashboard'}
     <div class="view-container">
       <div class="view-header">
@@ -1479,20 +1473,6 @@ async function loadMemoryContent(relPath: string) {
         {/if}
       </div>
     </div>
-  {:else if $activeView === 'terminal'}
-    <div class="view-container terminal-view">
-      <div class="view-header">
-        <h2 class="view-title">💻 Terminal</h2>
-        <p class="view-subtitle">Shells and provider sessions</p>
-      </div>
-      <div class="view-content terminal-panel-container">
-        {#await loadComponent('TerminalPanel')}
-          <div class="loading-placeholder">Loading terminal…</div>
-        {:then Component}
-          <svelte:component this={Component} />
-        {/await}
-      </div>
-    </div>
   {:else if $activeView === 'projects'}
     <div class="view-container">
       {#await loadComponent('ProjectDashboard')}
@@ -1532,25 +1512,6 @@ async function loadMemoryContent(relPath: string) {
 
 <style>
   /* Minimal custom styles for CenterContent - essential styles only */
-
-  /* Terminal view - layout-specific */
-  .terminal-view {
-    @apply p-0 flex flex-col h-full;
-  }
-
-  .terminal-view .view-header {
-    @apply flex-shrink-0;
-  }
-
-  .terminal-view .view-content {
-    @apply flex-1 flex flex-col min-h-0;
-  }
-
-  .terminal-view .terminal-panel-container {
-    @apply p-0 flex-1 w-full relative min-h-0;
-  }
-
-
 
   /* Event body content */
   .event-body {

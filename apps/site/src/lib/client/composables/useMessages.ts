@@ -26,9 +26,9 @@ export interface ReasoningStage {
 
 interface UseMessagesOptions {
   /**
-   * Get the current conversation mode
+   * Get the selected buffer destination for history clearing
    */
-  getMode: () => 'conversation' | 'inner';
+  getMode: () => 'conversation' | 'inner' | 'terminal';
 
   /**
    * Callback when messages change

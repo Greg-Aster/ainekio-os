@@ -17,6 +17,7 @@
   {message}
   {index}
   {isSelected}
+  roleLabel={message.meta?.source === 'big-brother' ? 'Big Brother' : message.meta?.source === 'system-code-review' ? 'System Code Review' : ''}
   roleIcon=""
   accentColor={message.meta?.displayColor}
   on:messageClick

@@ -2,7 +2,7 @@ import { defineNode, NodeInputValidationError } from '../types.js'
 import { modelRouterDefinition } from '../llm/model-router.schema.js'
 import { environmentActionParserNode } from './action-parser.node.js'
 
-import { isPlanningDelegation } from './planning-contract.js'
+import { isPlanningDelegation } from '../../environment-interface/task-selection.js'
 
 /** Delegation is selected by the model; all programs use the existing parser. */
 export const environmentTaskPlannerNode = defineNode({

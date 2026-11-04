@@ -3,6 +3,7 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { EventEmitter } from 'node:events';
+import { PassThrough } from 'node:stream';
 import * as childProcess from 'node:child_process';
 import { after, beforeEach, mock, test } from 'node:test';
 
@@ -21,8 +22,17 @@ let spawnFixture = (..._args: any[]): any => { throw new Error('Unexpected subpr
 mock.module('node:child_process', { namedExports: {
   ...childProcess, spawn: (...args: any[]) => spawnFixture(...args),
 } });
+const voiceServices = await import('./voice-service-manager.js');
+let ensureFixture = async (..._args: any[]): Promise<any> => { throw new Error('Unexpected service startup in STT fixture'); };
+mock.module('./voice-service-manager.js', { namedExports: {
+  ...voiceServices,
+  ensureVoiceServiceRunning: (...args: any[]) => ensureFixture(...args),
+  getVoiceServiceStatus: async () => { throw new Error('Unexpected duplicate readiness polling'); },
+} });
 const { transcribeAudio } = await import('./stt.js');
 const { WhisperService } = await import('./stt/providers/whisper-service.js');
+const { MicInputNode } = await import('./nodes/input/mic-input.node.js');
+const { SpeechToTextNode } = await import('./nodes/input/speech-to-text.node.js');
 const originalFetch = globalThis.fetch;
 const requests: FormData[] = [];
 fs.mkdirSync(path.join(root, 'etc'), { recursive: true });
@@ -79,6 +89,34 @@ test('transcription without an active identity supplies no invented name', async
   assert.equal(requests[0].has('hotwords'), false);
 });
 
+test('speech node transcribes wired microphone bytes before context audio', async () => {
+  const audio = Buffer.from('current wired microphone');
+  const microphone = await MicInputNode.execute({}, { audioBuffer: audio }, {});
+  for (const context of [{}, { audioBuffer: Buffer.from('stale context audio') }]) {
+    const result = await SpeechToTextNode.execute({ audioBuffer: microphone.audioBuffer }, context, { audioFormat: 'webm' });
+    assert.equal(result.transcribed, true);
+    assert.equal(result.text, 'And next year.');
+    assert.equal(result.audioFormat, 'webm');
+    const file = requests.at(-1)!.get('file') as File;
+    assert.equal(file.name, 'audio.webm');
+    assert.deepEqual(Buffer.from(await file.arrayBuffer()), audio);
+  }
+});
+
+test('speech node retains context input and reports missing audio and provider failures', async () => {
+  const audio = Buffer.from('context microphone');
+  assert.equal((await SpeechToTextNode.execute({}, { audioBuffer: audio, audioFormat: 'mp3' }, {})).transcribed, true);
+  assert.equal((requests.at(-1)!.get('file') as File).name, 'audio.mp3');
+  const count = requests.length;
+  assert.equal((await SpeechToTextNode.execute({}, {}, {})).transcribed, false);
+  assert.equal(requests.length, count);
+  globalThis.fetch = async url => String(url).endsWith('/health')
+    ? Response.json({ status: 'ready' }) : new Response('Recognizer unavailable', { status: 500 });
+  const failed = await SpeechToTextNode.execute({ audioBuffer: audio }, {}, {});
+  assert.equal(failed.transcribed, false);
+  assert.match(failed.error, /Recognizer unavailable/);
+});
+
 function cliService() {
   const python = path.join(root, 'venv', 'bin', 'python3');
   fs.mkdirSync(path.dirname(python), { recursive: true });
@@ -89,7 +127,7 @@ function cliService() {
 }
 
 function cliChild() {
-  const child = Object.assign(new EventEmitter(), { stdout: new EventEmitter(), stderr: new EventEmitter() });
+  const child = Object.assign(new EventEmitter(), { stdout: new PassThrough(), stderr: new PassThrough() });
   return child;
 }
 
@@ -113,6 +151,28 @@ test('concurrent CLI requests transcribe their own audio and remove only their t
     });
     assert.deepEqual(await Promise.all([first, second]), ['first utterance', 'second utterance']);
     assert.ok(jobs.every(job => !fs.existsSync(job.file)), 'Each request cleans its own file after child completion');
+  } finally {
+    spawnFixture = () => { throw new Error('Unexpected subprocess in STT fixture'); };
+  }
+});
+
+test('CLI failures retain Unicode diagnostics split across pipe chunks', async () => {
+  const service = cliService();
+  const diagnostic = 'Unable to read /audio/你好-café-🤖.wav';
+  spawnFixture = () => {
+    const child = cliChild();
+    queueMicrotask(() => {
+      for (const byte of Buffer.from(diagnostic)) child.stderr.write(Buffer.from([byte]));
+      child.stderr.end();
+      child.stdout.end();
+      child.emit('close', 1);
+    });
+    return child;
+  };
+  try {
+    await assert.rejects(service.transcribe(Buffer.from('audio')), {
+      message: `Whisper process exited with code 1: ${diagnostic}`,
+    });
   } finally {
     spawnFixture = () => { throw new Error('Unexpected subprocess in STT fixture'); };
   }
@@ -171,5 +231,73 @@ test('CLI configuration remains data when model paths and language contain Pytho
     assert.equal(fs.existsSync(file), false);
   } finally {
     spawnFixture = () => { throw new Error('Unexpected subprocess in STT fixture'); };
+  }
+});
+
+
+test('health deadline covers the response body and releases a stalled probe', async context => {
+  context.mock.timers.enable({ apis: ['setTimeout'] });
+  let signal: AbortSignal | undefined;
+  let release: (() => void) | undefined;
+  globalThis.fetch = async (_url, init) => {
+    signal = init!.signal as AbortSignal;
+    return { ok: true, json: () => new Promise((_resolve, reject) => {
+      release = () => reject(new Error('Fixture cleanup'));
+      signal!.addEventListener('abort', () => reject(signal!.reason), { once: true });
+    }) } as Response;
+  };
+  const service = new WhisperService({ model: 'fixture', device: 'cpu', computeType: 'int8', language: 'en',
+    server: { useServer: true, autoStart: false, url: 'http://fixture.invalid', port: 0 } });
+  const status = service.getStatus();
+  await new Promise<void>(resolve => setImmediate(resolve));
+  try {
+    context.mock.timers.tick(2000);
+    assert.equal(signal!.aborted, true, 'The existing health deadline must remain active until JSON completes');
+    assert.equal((await status).serverAvailable, false);
+  } finally {
+    release?.();
+    await status;
+  }
+});
+
+
+test('failed health probes release their deadline timer', async context => {
+  context.mock.timers.enable({ apis: ['setTimeout'] });
+  let signal: AbortSignal | undefined;
+  globalThis.fetch = async (_url, init) => {
+    signal = init!.signal as AbortSignal;
+    throw new Error('Fixture connection refused');
+  };
+  const service = new WhisperService({ model: 'fixture', device: 'cpu', computeType: 'int8', language: 'en',
+    server: { useServer: true, autoStart: false, url: 'http://fixture.invalid', port: 0 } });
+  assert.equal((await service.getStatus()).serverAvailable, false);
+  context.mock.timers.tick(2000);
+  assert.equal(signal!.aborted, false, 'A completed failed probe must not retain a timer');
+});
+
+
+test('auto-start uses the readiness result from the service owner without a second polling loop', async () => {
+  let healthChecks = 0;
+  let starts = 0;
+  globalThis.fetch = async url => {
+    if (String(url).endsWith('/health')) {
+      healthChecks++;
+      return Response.json({ status: 'loading' });
+    }
+    assert.equal(new URL(String(url)).pathname, '/transcribe');
+    return Response.json({ text: 'Ready through the service owner.', language: 'en', language_probability: 1 });
+  };
+  ensureFixture = async id => {
+    assert.equal(id, 'whisper'); starts++;
+    return { healthy: true, readiness: 'ready', health: { status: 'ready' } };
+  };
+  try {
+    const service = new WhisperService({ model: 'fixture', device: 'cpu', computeType: 'int8', language: 'en',
+      server: { useServer: true, autoStart: true, url: 'http://fixture.invalid', port: 0 } });
+    assert.equal(await service.transcribe(Buffer.from('fixture')), 'Ready through the service owner.');
+    assert.equal(starts, 1);
+    assert.equal(healthChecks, 1);
+  } finally {
+    ensureFixture = async () => { throw new Error('Unexpected service startup in STT fixture'); };
   }
 });

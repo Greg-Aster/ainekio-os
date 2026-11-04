@@ -58,7 +58,6 @@ function areaFor(file: string): string {
   if (file === 'brain/mobile-agents.ts' || file === 'brain/mobile-handlers.ts') return 'mobile-runtime';
   if (file.startsWith('packages/cli/')) return 'cli';
   if (file.startsWith('packages/agent-runtime/')) return 'agent-runtime';
-  if (file.startsWith('packages/local-model-service/')) return 'local-model-service';
   if (file.startsWith('apps/react-native/')) return 'mobile-interface';
   if (file.startsWith('external/')) return 'external-integration';
   if (file.startsWith('scripts/')) return 'scripts';

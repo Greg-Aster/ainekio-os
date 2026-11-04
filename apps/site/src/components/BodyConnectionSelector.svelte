@@ -1,10 +1,11 @@
 <script lang="ts">
+  import type { EnvironmentBridgeDiagnosticsSnapshot } from '../lib/client/environment-bridge-diagnostics-types';
   interface ConnectionAgent {
     id: string;
     variables: { key: string; value: string | number | boolean | string[] | null }[];
   }
   export let agents: ConnectionAgent[] = [];
-  export let connections: { endpoint: string; robotId?: string; connected: boolean; active: boolean; error?: string }[] = [];
+  export let connections: EnvironmentBridgeDiagnosticsSnapshot['connections'] = [];
   let robotId = '';
   $: robotIds = [...new Set(connections.filter(item => item.connected && item.robotId).map(item => item.robotId!))];
   export let busy = false;
@@ -63,9 +64,9 @@
         </select>
       </label>
       {#each connections as connection}
-        <p class="break-all text-xs">{connection.robotId || 'No robot'} · {connection.endpoint} · {connection.active ? 'Selected' : connection.connected ? 'Available' : 'Disconnected'}{connection.error ? ` — ${connection.error}` : ''}</p>
+        <p class="break-all text-xs">{connection.endpoint} · Body Control: {connection.adapterConnected ? 'connected' : 'disconnected'} · Robot: {connection.connected ? connection.robotId || 'connected' : 'disconnected'} · Bridge: {connection.ready ? 'ready' : connection.active ? 'connecting' : 'not selected'}{connection.error ? ` — ${connection.error}` : ''}</p>
       {/each}
-      <p class="text-xs text-gray-500">{followRobot ? 'The local host and saved remote route are watched. One control stream follows the same robot; a working connection stays selected.' : 'Only the selected connection runs. Body Control must be running on that computer.'}</p>
+      <p class="text-xs text-gray-500">{followRobot ? 'The local host and saved remote route are watched. One stream follows the same robot; Body Control computer speech remains available when that robot disconnects.' : 'Only the selected connection runs. Body Control must be running on that computer.'}</p>
       {#if route === 'local' || followRobot}
       <label class="block text-xs">Local adapter URL
         <input required type="url" bind:value={localUrl} class="mt-1 w-full rounded border bg-transparent p-2" />

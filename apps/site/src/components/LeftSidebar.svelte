@@ -426,7 +426,6 @@
     runpod: { available: boolean; configured: boolean; active: boolean };
     bigBrother: { available: boolean; enabled: boolean; provider?: string };
     remoteServer: { available: boolean; configured: boolean; serverUrl?: string; connected?: boolean };
-    localModels: { available: boolean; running: boolean; embeddingModel?: string | null; llmModel?: string | null };
   }
   let backendAvailability: BackendAvailability = {
     llamaCpp: { available: false, running: false, active: false },
@@ -434,7 +433,6 @@
     runpod: { available: false, configured: false, active: false },
     bigBrother: { available: false, enabled: false },
     remoteServer: { available: false, configured: false, connected: false },
-    localModels: { available: false, running: false, embeddingModel: null, llmModel: null }
   };
 
 
@@ -467,18 +465,6 @@
     }
     return `Remote Server: Configured (testing connection...)\n${ba.serverUrl}`;
   }
-  function getLocalModelsTooltip(): string {
-    const ba = backendAvailability.localModels;
-    if (!ba.available) return 'Semantic Search: Not configured';
-    if (ba.running) {
-      const parts = ['Semantic Search: Running'];
-      if (ba.embeddingModel) parts.push(`Embeddings: ${ba.embeddingModel}`);
-      if (ba.llmModel) parts.push(`LLM: ${ba.llmModel}`);
-      return parts.join('\n');
-    }
-    return `Semantic Search: Configured but not running${ba.embeddingModel ? `\nModel: ${ba.embeddingModel}` : ''}`;
-  }
-
   function findAssignedModel(modelId: string): AvailableModel | undefined {
     return availableModels.find(model => (
       model.id === modelId || model.aliases?.includes(modelId)
@@ -790,14 +776,6 @@
             >🌐</span>
           {/if}
 
-          {#if backendAvailability.localModels.available}
-            <span
-              class="backend-icon local-models"
-              class:running={backendAvailability.localModels.running}
-              class:available={backendAvailability.localModels.available && !backendAvailability.localModels.running}
-              title={getLocalModelsTooltip()}
-            >🔍</span>
-          {/if}
 
           {#if !backendAvailability.llamaCpp?.available && !backendAvailability.ollama.available && !backendAvailability.runpod.available}
             <span class="backend-icon offline" title="No backends configured">❌</span>

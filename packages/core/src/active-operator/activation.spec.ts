@@ -11,6 +11,8 @@ const { eventBus } = await import('../infrastructure/event-bus/client.js')
 eventBus.disconnect()
 const { robotAutonomyControllerParserNode: parser, parseRobotAutonomyChoice, buildRobotAutonomyControllerJsonSchema } = await import('../nodes/robot-operator/autonomy-controller-parser.node.js')
 const update = (operationId: string, activation: number): ActivationUpdate => ({operationId, activation, reason: 'Recorded context', instruction: 'Full unchanged intention'})
+const adjustment = (operationId: string, delta: number) => ({ operationId, delta,
+  reason: 'Current environmental evidence', instruction: 'Model-selected function intention' })
 const operations = [{id:'reflector'}, {id:'daydreamer'}, {id:'boredom-observer'}]
 function connection(online: boolean, sessionId = 'fixture-body') {
   const now = new Date().toISOString()
@@ -24,6 +26,88 @@ function connection(online: boolean, sessionId = 'fixture-body') {
 connection(true)
 
 const levels = [update('reflector', 99.9), update('daydreamer',100), update('boredom-observer',100)]
+test('Semi accumulates signed adjustments across assessments and dispatches only updated functions reaching 100', async () => {
+  const { activeOperatorDispatchNode } = await import('../nodes/robot-operator/activation-dispatch.node.js')
+  fs.mkdirSync(path.join(root, 'etc'), { recursive: true })
+  fs.copyFileSync(new URL('../../../../etc/agents.json', import.meta.url), path.join(root, 'etc/agents.json'))
+  fs.writeFileSync(path.join(root, 'etc/active-operator.json'), JSON.stringify({ autonomyMode: 'semi' }))
+  const tasks = operations.map(operation => ({ ...operation, name: operation.id, kind: 'agent',
+    handler: `agent.${operation.id}`, taskType: 'generic', priority: 'low', tags: [] }))
+  const calls: any[] = []
+  let previous: any = null
+  for (const [index, changes] of [
+    [adjustment('daydreamer', 35), adjustment('reflector', 60)],
+    [adjustment('daydreamer', 35), adjustment('reflector', -25)],
+    [adjustment('daydreamer', 40), adjustment('reflector', -1000)],
+    [adjustment('boredom-observer', 1000)],
+  ].entries()) {
+    const context = { username: 'fixture', graphExecution: { executionId: `semi-progress-${index}`,
+      dispatch: (effect: any) => { calls.push(effect); return { effectId: `effect-${calls.length}` } } } } as any
+    const { assessment } = await parser.execute({ response: JSON.stringify({ updates: changes }),
+      availableTasks: tasks, activationState: { mode: 'semi', previous } }, context, {})
+    const dispatched = await activeOperatorDispatchNode.execute({ assessment, availableTasks: tasks }, context, {})
+    assert.deepEqual(assessment.updates.map((entry: any) => entry.delta), changes.map(entry => entry.delta))
+    if (index === 0) {
+      assert.equal(assessment.levels.daydreamer.activation, 35)
+      assert.equal(assessment.levels.reflector.activation, 60)
+    } else if (index === 1) {
+      assert.equal(assessment.levels.daydreamer.activation, 70)
+      assert.equal(assessment.levels.reflector.activation, 35)
+    } else {
+      assert.equal(assessment.levels.daydreamer.activation, 100)
+      assert.equal(assessment.levels.reflector.activation, 0)
+    }
+    assert.deepEqual(dispatched.requests.map((request: any) => request.input.agentId),
+      index < 2 ? [] : index === 2 ? ['daydreamer'] : ['boredom-observer'])
+    previous = assessment
+  }
+  assert.deepEqual(calls.map(effect => effect.payload.input.agentId), ['daydreamer', 'boredom-observer'])
+  assert.ok(calls.every(effect => effect.payload.executionScope === 'independent'))
+})
+
+test('Semi rejects empty, zero-change and superseded absolute-value decisions', async () => {
+  for (const updates of [[], [adjustment('reflector', 0)], [adjustment('reflector', -10)],
+    [adjustment('daydreamer', -10), adjustment('reflector', -10)], [update('reflector', 100)]]) {
+    await assert.rejects(parser.execute({ response: JSON.stringify({ updates }), availableTasks: operations,
+      activationState: { mode: 'semi', previous: null } },
+      { graphExecution: { executionId: 'invalid-semi' } } as any, {}))
+  }
+})
+
+test('Semi resumes accumulated activation from its durable checkpoint after reopening', async () => {
+  const { ExecutionStore } = await import('../durable-execution/store.js')
+  const { ExecutionCheckpointer } = await import('../durable-execution/checkpointer.js')
+  const filename = path.join(root, 'semi-restart.sqlite')
+  const definition = { graphId: 'operator', graphHash: 'semi-deltas', runtimeVersion: 'fixture',
+    checkpointSchemaVersion: 1, nodeVersions: { active_operator_dispatch: '1' } }
+  let store = new ExecutionStore(filename)
+  const record = store.enter('fixture', definition, 'semi-assessment', {})
+  const lease = store.claim(record.executionId, definition)
+  const { assessment } = await parser.execute({ response: JSON.stringify({ updates: [adjustment('daydreamer', 65)] }),
+    availableTasks: operations, activationState: { mode: 'semi', previous: null } },
+    { graphExecution: { executionId: record.executionId } } as any, {})
+  await new ExecutionCheckpointer(store, lease).put({ configurable: { thread_id: record.executionId } }, {
+    v: 4, id: randomUUID(), ts: new Date().toISOString(), channel_versions: {}, versions_seen: {},
+    channel_values: { nodeEntries: [['parser', { status: 'completed',
+      definition: { type: 'robot_autonomy_controller_parser' }, outputs: { assessment } }]] },
+  }, { source: 'loop', step: 0, parents: {} })
+  store.settle(lease, 'completed'); store.release(lease); store.close()
+  store = new ExecutionStore(filename)
+  try {
+    const saved = await new ExecutionCheckpointer(store, { executionId: '', generation: 0, owner: 'read-only' })
+      .getTuple({ configurable: { thread_id: record.executionId } })
+    const entries = saved!.checkpoint.channel_values.nodeEntries as Array<[string, { outputs: { assessment: typeof assessment } }]>
+    const previous = entries[0][1].outputs.assessment
+    assert.deepEqual(previous, assessment)
+    const next = await parser.execute({ response: JSON.stringify({ updates: [adjustment('daydreamer', 35)] }),
+      availableTasks: operations, activationState: { mode: 'semi', previous } },
+      { graphExecution: { executionId: 'after-restart' } } as any, {})
+    assert.equal(next.assessment.levels.daydreamer.activation, 100)
+    assert.deepEqual(next.assessment.selected, [{ ...adjustment('daydreamer', 35), activation: 100 }])
+    assert.deepEqual(previous!.selected, [], 'Restoring prior levels does not itself request work')
+  } finally { store.close() }
+})
+
 test('mode rules cover Semi boundary, all qualifying operations, Full ties, empty choices and Reactive', () => {
   assert.deepEqual(selectActivatedOperations(levels,'semi'),levels.slice(1))
   assert.deepEqual(selectActivatedOperations(levels,'full'),[levels[1]])
@@ -34,7 +118,7 @@ test('mode rules cover Semi boundary, all qualifying operations, Full ties, empt
 })
 test('two assessments preserve omitted levels but request only this assessment updates', async () => {
   const historical = { ...levels[2], assessedAt: '2026-10-14T12:00:00Z' }
-  const first = await parser.execute({ response: JSON.stringify({updates:levels.slice(0, 2)}), availableTasks:operations,
+  const first = await parser.execute({ response: JSON.stringify({updates:levels.slice(0, 2).map(entry => adjustment(entry.operationId, entry.activation))}), availableTasks:operations,
     activationState:{mode:'semi',previous:{ levels: { 'boredom-observer': historical } },assessedAt:'2026-10-15T12:00:00Z'} },{graphExecution:{executionId:'first'} as any},{})
   const second = await parser.execute({ response:JSON.stringify({updates:[{...update('reflector',55),target:null}],assessmentReason:'The present assessment selects reflection.',memoryRequest:null}), availableTasks:operations,
     activationState:{mode:'full',previous:first.assessment,assessedAt:'2026-10-15T12:01:00Z'} },{graphExecution:{executionId:'second'} as any},{})
@@ -45,8 +129,8 @@ test('two assessments preserve omitted levels but request only this assessment u
   assert.deepEqual(second.assessment.levels['boredom-observer'], historical, 'Old unattributed levels stay unknown')
   assert.equal('assessmentReason' in first.assessment, false, 'Semi does not acquire a reason it did not return')
   assert.deepEqual(second.assessment.selected,[{...update('reflector',55),target:null}])
-  assert.throws(()=>parseRobotAutonomyChoice(JSON.stringify({updates:[update('unknown',100)]}),operations))
-  assert.throws(()=>parseRobotAutonomyChoice(JSON.stringify({updates:[update('reflector',101)]}),operations))
+  assert.throws(()=>parseRobotAutonomyChoice(JSON.stringify({updates:[adjustment('unknown',100)]}),operations))
+  assert.throws(()=>parseRobotAutonomyChoice(JSON.stringify({updates:[adjustment('reflector',0)]}),operations))
 })
 test('assessment survives process reopening and unrelated queue-history eviction', async () => {
   const { ExecutionStore } = await import('../durable-execution/store.js')
@@ -185,8 +269,8 @@ test('Full preserves target and temporal recall while Semi keeps its contract', 
     reconsider: { on: ['queue'], at: null, now: false, environment: [] } }), tasks, 'full'))
   assert.throws(() => parseRobotAutonomyChoice(JSON.stringify({ updates: [{ ...choice, operationId: 'desire-agent' }],
     assessmentReason: 'Continue the selected pursuit.', memoryRequest: null }), tasks, 'full'))
-  assert.deepEqual(parseRobotAutonomyChoice(JSON.stringify({ updates: [update(tasks[0].id, 100)] }), tasks, 'semi'),
-    [update(tasks[0].id, 100)])
+  assert.deepEqual(parseRobotAutonomyChoice(JSON.stringify({ updates: [adjustment(tasks[0].id, 100)] }), tasks, 'semi'),
+    [{ ...adjustment(tasks[0].id, 100), activation: 100 }])
 })
 
 test('Full does not advertise or accept a suspension policy', () => {
@@ -196,7 +280,7 @@ test('Full does not advertise or accept a suspension policy', () => {
     reconsider: { on: ['input'], at: null, now: false, environment: [] } }), operations, 'full'), /mode contract/)
 })
 
-test('Full requires a positive activity selection while Semi preserves non-triggering updates', async () => {
+test('Full requires a positive activity selection while Semi requires signed adjustments', async () => {
   connection(true)
   const assessmentReason = '  The recorded outcomes support this selected activity.\nContinue with the complete intention.  '
   const zero = { ...update('reflector', 0), target: null }
@@ -220,9 +304,10 @@ test('Full requires a positive activity selection while Semi preserves non-trigg
     assert.throws(() => parseRobotAutonomyChoice(JSON.stringify({ ...body, assessmentReason: invalid }), operations, 'full'),
       invalid === undefined ? /mode contract/ : /assessment reason/)
   }
-  assert.deepEqual(parseRobotAutonomyChoice(JSON.stringify({ updates: [] }), operations, 'semi'), [])
-  const semiZero = update('reflector', 0)
-  assert.deepEqual(parseRobotAutonomyChoice(JSON.stringify({ updates: [semiZero] }), operations, 'semi'), [semiZero])
+  assert.throws(() => parseRobotAutonomyChoice(JSON.stringify({ updates: [] }), operations, 'semi'), /nonzero adjustment/)
+  assert.deepEqual(parseRobotAutonomyChoice(JSON.stringify({ updates: [adjustment('reflector', -20)] }), operations, 'semi',
+    { reflector: { ...update('reflector', 35), assessedAt: '2026-11-03T22:00:00Z' } }),
+    [{ ...adjustment('reflector', -20), activation: 15 }])
   assert.throws(() => parseRobotAutonomyChoice(JSON.stringify({ updates: [], assessmentReason }), operations, 'semi'),
     /mode contract/, 'Semi retains its existing exact field contract')
 })
@@ -306,7 +391,7 @@ test('a Desire target delegates its existing lifecycle operation without manufac
   }
 })
 
-test('Full instructions and selected recall are visibly wired without changing Semi instructions or schema', async () => {
+test('Semi adjustment and Full activity instructions reach their model with independent recall contracts', async () => {
   const { robotAutonomyControllerContextNode } = await import('../nodes/robot-operator/context-builder.node.js')
   const graph = JSON.parse(fs.readFileSync(new URL('../../../../etc/cognitive-graphs/robot-autonomy-controller-mode.json', import.meta.url), 'utf8'))
   const node = (id: string) => graph.nodes.find((item: any) => item.id === id)
@@ -324,13 +409,17 @@ test('Full instructions and selected recall are visibly wired without changing S
       activationState: { mode, operations: [], previous }, activeExecutions: [execution], selectedMemoryContext: [memory],
       availableTasks: [{ id: 'robot-autonomy-executor' }], memoryContext: [] }, {}, {})
     assert.equal(result.messages[0].content, mode === 'semi' ? base : full,
-      'Full receives its complete activity-selection instruction; Semi keeps its exact existing instruction')
+      'Each mode receives its complete graph-owned instruction')
     assert.equal(result.fullMode, mode === 'full', 'Reasoning follows the admitted assessment mode')
     assert.equal(result.jsonSchema.required.includes('reconsider'), false)
     assert.equal(result.jsonSchema.required.includes('assessmentReason'), mode === 'full')
     assert.equal(result.messages[0].content.includes('assessmentReason records the basis for the activity selected or continued by this assessment.'), mode === 'full')
-    if (mode === 'full') assert.equal(result.messages[0].content.includes('the updates list may be empty'), false,
-      'Full must not also receive Semi\'s permissive empty-selection contract')
+    assert.equal(result.messages[0].content.includes('the updates list may be empty'), false)
+    assert.equal(result.jsonSchema.properties.updates.minItems, 1)
+    if (mode === 'semi') {
+      assert.ok(result.messages[0].content.includes('delta is a signed, nonzero amount'))
+      assert.ok(result.messages[0].content.includes('An assessment may adjust activation without triggering an operation.'))
+    }
     const supplied = JSON.parse(result.messages[1].content)
     assert.deepEqual(supplied.activeExecutions, [execution])
     assert.deepEqual(supplied.activeOperator.previousDecision, mode === 'full' ? previous : undefined,

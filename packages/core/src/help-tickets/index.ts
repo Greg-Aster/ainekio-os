@@ -7,6 +7,7 @@
 
 import * as fs from 'node:fs';
 import * as path from 'node:path';
+import { createHash } from 'node:crypto';
 import { getProfilePaths } from '../path-builder.js';
 import { generateId } from '../paths.js';
 import { audit } from '../audit.js';
@@ -18,6 +19,7 @@ import type {
   TicketSummary,
   TicketHistoryEntry,
   HelpTicketTriggerResult,
+  SystemErrorEvidence,
 } from './types.js';
 
 export * from './types.js';
@@ -61,6 +63,7 @@ export function createHelpTicket(
     createdAt: now,
     updatedAt: now,
     status: 'new',
+    origin: 'feedback',
     feedbackRating: -1,
     feedbackComment,
     feedbackTargetType,
@@ -94,6 +97,32 @@ export function createHelpTicket(
   });
 
   return ticket;
+}
+
+/** A source event is one issue occurrence; delivery replay preserves its identity. */
+export function recordSystemError(username: string, evidence: SystemErrorEvidence): HelpTicket {
+  if (!evidence.source?.trim() || !evidence.eventId?.trim() || !evidence.message?.trim()
+    || !Number.isFinite(Date.parse(evidence.occurredAt))) {
+    throw new Error('System error evidence requires a source, event identity, message and timestamp');
+  }
+  const id = `ticket-${createHash('sha256').update(JSON.stringify([evidence.source, evidence.eventId])).digest('hex')}`;
+  const previous = getTicket(username, id);
+  if (previous) return previous;
+  const now = new Date().toISOString();
+  const ticket: HelpTicket = {
+    id, origin: 'system', createdAt: now, updatedAt: now, status: 'new',
+    feedbackTargetType: evidence.taskId ? 'task' : 'conversation',
+    feedbackTargetId: evidence.taskId || evidence.requestId || evidence.eventId,
+    category: 'system_error', priority: 'medium', errorEvidence: { ...evidence },
+    history: [{ timestamp: now, action: 'system_error_recorded', actor: 'system', details: { evidence } }],
+  };
+  fs.writeFileSync(path.join(ensureTicketsDir(username), `${id}.json`), JSON.stringify(ticket, null, 2));
+  return ticket;
+}
+
+export function getPendingTechnicalTickets(username: string): HelpTicket[] {
+  return getPendingTickets(username).filter(ticket => ticket.category === 'system_error'
+    || ticket.category === 'task_failure' || ticket.category === 'performance');
 }
 
 /**

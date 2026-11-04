@@ -23,6 +23,16 @@ export class TerminalScreen {
     await this.pending
     return this.serializer.serialize()
   }
-  resize(cols: number, rows: number): void { this.terminal.resize(cols, rows) }
+  async text(): Promise<string> {
+    await this.pending
+    const buffer = this.terminal.buffer.active
+    const lines: string[] = []
+    for (let index = 0; index < buffer.length; index++) {
+      const line = buffer.getLine(index)!
+      if (line.isWrapped && lines.length) lines[lines.length - 1] += line.translateToString(true)
+      else lines.push(line.translateToString(true))
+    }
+    return lines.join('\n').trimEnd()
+  }
   dispose(): void { this.terminal.dispose() }
 }

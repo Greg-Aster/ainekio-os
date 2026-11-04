@@ -2,7 +2,7 @@ import assert from 'node:assert/strict'
 import { test } from 'node:test'
 import { normalizeLocomotionGoal, evaluateLocomotionGoal } from './active-task.js'
 import type { EnvironmentLocomotionMeasurement } from './types.js'
-import { buildEnvironmentSelectorJsonSchema } from '../nodes/environment/helpers.js'
+import { buildEnvironmentSelectorJsonSchema } from './task-selection.js'
 
 const observedAt = new Date().toISOString()
 const evidence = { available: true, source: 'calibrated-ground-plane', robotId: 'robot', referenceId: 'reference', observedAt }

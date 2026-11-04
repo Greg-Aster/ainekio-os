@@ -55,6 +55,12 @@ export interface AgentCatalogDefinition {
  * unregistered finite agent may be safely introduced to Trigger Manager.
  */
 export const AGENT_CATALOG_DEFINITIONS: Record<string, AgentCatalogDefinition> = {
+  'system-code-review': {
+    id: 'system-code-review', displayName: 'System Code Review',
+    description: 'Reviews unresolved technical errors from chat and system execution, investigates their causes through an editable node workflow and Codex, and records findings and repair outcomes. Source repairs depend on the current trust authorization.',
+    lifecycle: 'scheduled-work', usesLLM: true, priority: 'normal', risk: 'privileged',
+    defaultTrigger: { type: 'manual', maxRetries: 0 }, tags: ['system', 'code', 'review'],
+  },
   'audio-organizer': {
     id: 'audio-organizer',
     displayName: 'Audio Organizer',
@@ -312,7 +318,7 @@ export const AGENT_CATALOG_DEFINITIONS: Record<string, AgentCatalogDefinition> =
   terminal: {
     id: 'terminal',
     displayName: 'Terminal',
-    description: 'Owns on-demand shell sessions, terminal screens, and Big Brother CLI execution.',
+    description: 'Owns persistent Codex conversations, terminal transcripts, and Big Brother CLI execution.',
     lifecycle: 'service',
     executionContext: 'system',
     servicePath: 'services/terminal.ts',

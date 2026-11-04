@@ -8,6 +8,34 @@ import { ROUTE_FIELDS } from './development-cases.js'
 import { DEVELOPMENT_CASES, EVALUATION_CASES, REGRESSION_CASES, buildDevelopmentRecords, loadGraphProperties, validateDevelopmentRecords } from './generate-training-data.js'
 
 const recordsPromise = buildDevelopmentRecords()
+test('conversational perception examples separate camera reads, status, history, new captures and quoted language', async () => {
+  const development = (await recordsPromise).filter(row => row.metadata.suite.startsWith('perception-'))
+  const evaluation = (await buildDevelopmentRecords(EVALUATION_CASES)).filter(row => row.metadata.suite.startsWith('perception-'))
+  const regression = (await buildDevelopmentRecords(REGRESSION_CASES)).filter(row => row.metadata.suite.startsWith('perception-'))
+  assert.equal(development.length, 32)
+  assert.equal(evaluation.length, 16)
+  assert.equal(regression.length, 1)
+  const fitted = new Set(development.map(row => row.user.toLowerCase()))
+  for (const row of [...evaluation, ...regression]) assert.ok(!fitted.has(row.user.toLowerCase()))
+  assert.match(regression[0]!.user, /Can you see me\?/)
+  for (const row of [...development, ...evaluation, ...regression]) {
+    const output = JSON.parse(row.output)
+    assert.equal(output.needsToolUse, false)
+    assert.equal(output.needsAction, row.metadata.suite === 'perception-new-photograph')
+    if (/perception-(person-visible|visible-detail|recheck-view|original-visibility)$/.test(row.metadata.suite)) {
+      assert.ok(output.conversationContext.includes('vision'))
+      assert.deepEqual(output.taskContext, [])
+    }
+    if (row.metadata.suite === 'perception-new-photograph') {
+      assert.equal(output.taskPlanner, 'vision')
+      assert.ok(output.taskContext.includes('environment'))
+    }
+    if (row.metadata.suite === 'perception-earlier-description') assert.deepEqual(output.conversationContext, ['conversationHistory'])
+    if (/perception-(social-see|quoted-see)$/.test(row.metadata.suite)) assert.ok(!output.conversationContext.includes('vision'))
+    const source = [...DEVELOPMENT_CASES, ...EVALUATION_CASES, ...REGRESSION_CASES].find(item => item.id === row.metadata.sourceCaseId)!
+    assert.deepEqual(validateDevelopmentRecords([row], [{ ...source, instructions: [source.instructions[row.metadata.instructionIndex]!] }]), [])
+  }
+})
 function plannerReference(row: Awaited<ReturnType<typeof buildDevelopmentRecords>>[number]) {
   if (row.plannerReferenceOutput) assert.deepEqual(JSON.parse(row.output), { delegatePlanning: true })
   return JSON.parse(row.plannerReferenceOutput ?? row.output)
@@ -352,13 +380,14 @@ test('fresh intent evaluation is separate from development and the old regressio
     && !record.metadata.suite.startsWith('speech-program-') && !record.metadata.suite.startsWith('planner-boundary-'))
   const previousIntent = (records: typeof development) => intent(records).filter(record =>
     !/^intent-(development|evaluation)-memory-/.test(record.metadata.sourceCaseId)
+      && !record.metadata.suite.startsWith('perception-')
       && !record.metadata.suite.startsWith('goal-routing-'))
   assert.equal(previousIntent(development).length, 1280, 'Previous Intent development families remain intact')
   assert.equal(previousIntent(evaluation).length, 253, 'Previous Intent evaluation families remain intact')
-  assert.equal(intent(development).length, 1432)
-  assert.equal(new Set(intent(development).map(record => record.user)).size, 1432)
-  assert.equal(intent(evaluation).length, 333)
-  assert.equal(intent(regression).length, 46)
+  assert.equal(intent(development).length, 1464)
+  assert.equal(new Set(intent(development).map(record => record.user)).size, 1464)
+  assert.equal(intent(evaluation).length, 349)
+  assert.equal(intent(regression).length, 47)
   const liveVisionFailure = intent(regression).find(record => record.user === 'Current user message: What can you see in front of you right now?')!
   assert.ok(liveVisionFailure)
   assert.ok(JSON.parse(liveVisionFailure.output).conversationContext.includes('vision'))

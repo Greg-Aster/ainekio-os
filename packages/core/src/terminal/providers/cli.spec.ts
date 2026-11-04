@@ -88,6 +88,27 @@ test('diagnostic invocation selects full access, high reasoning and the exact re
   } finally { await fs.rm(invocation.tempDir, { recursive: true, force: true }) }
 })
 
+test('read-only review overrides configured permission bypasses without changing ordinary diagnostics', async () => {
+  const configPath = path.join(root, 'etc', 'tool-executor.json')
+  const original = await fs.readFile(configPath, 'utf8')
+  const config = JSON.parse(original)
+  config.backends.codex.dangerouslySkipPermissions = true
+  config.backends.codex.args.push('--dangerously-bypass-approvals-and-sandbox', '--approve-for-me', '--sandbox=workspace-write', '-c', 'sandbox_mode="danger-full-access"')
+  await fs.writeFile(configPath, JSON.stringify(config))
+  try {
+    const invocation = buildBigBrotherCLIInvocation('codex', 'diagnose only', { diagnostic: { reasoning: true, access: 'read-only' } })
+    try {
+      assert.equal(invocation.args.includes('--dangerously-bypass-approvals-and-sandbox'), false)
+      assert.equal(invocation.args.includes('--approve-for-me'), false)
+      assert.equal(invocation.args.includes('--sandbox=workspace-write'), false)
+      assert.equal(invocation.args[invocation.args.indexOf('--sandbox') + 1], 'read-only')
+      assert.deepEqual(invocation.args.filter(arg => arg.startsWith('sandbox_mode=')), ['sandbox_mode="read-only"'])
+      assert.equal(invocation.args.includes('approval_policy="never"'), true)
+      assert.equal(invocation.timeout, 0)
+    } finally { await fs.rm(invocation.tempDir, { recursive: true, force: true }) }
+  } finally { await fs.writeFile(configPath, original) }
+})
+
 test('ordinary per-call reasoning requests high or none; absent retains configured effort', async () => {
   const { saveUserConfig } = await import('../../config.js')
   saveUserConfig('operator.json', { bigBrotherMode: {
@@ -146,4 +167,15 @@ test('native model context capacity overrides only when the graph supplies its c
       } finally { await fs.rm(invocation.tempDir, { recursive: true, force: true }) }
     }
   } finally { await fs.writeFile(configPath, original) }
+})
+
+test('planning model tool access is scoped to read-only without changing other native calls', async () => {
+  const invocation = buildBigBrotherCLIInvocation('codex', '', { toolAccess: 'read-only', modelRequest: {
+    messages: [{ role: 'system', content: 'Approved planning instructions' }, { role: 'user', content: 'Issue evidence' }],
+  } })
+  try {
+    assert.equal(invocation.args[0], 'app-server')
+    assert.deepEqual(invocation.args.filter(arg => arg.startsWith('sandbox_mode=')), ['sandbox_mode="read-only"'])
+    assert.ok(invocation.args.includes('approval_policy="never"'))
+  } finally { await fs.rm(invocation.tempDir, { recursive: true, force: true }) }
 })
