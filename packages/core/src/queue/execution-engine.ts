@@ -3,13 +3,10 @@
  */
 
 import { spawn } from 'node:child_process';
-import fs from 'node:fs';
-import path from 'node:path';
 import { UnifiedQueueManager, getQueueManager } from './unified-queue-manager.js';
 import { WorkOutcomeUnknownError, type QueueEvent, type QueuedTask } from './types.js';
 import { audit } from '../audit.js';
 import { ROOT } from '../paths.js';
-import { systemPaths } from '../path-builder.js';
 import { readSystemActivityTimestamp } from '../system-activity.js';
 import { loadSleepConfig } from '../sleep-config.js';
 import {
@@ -36,7 +33,7 @@ import { deliverDurableWorkReceipt } from '../durable-execution/work-results.js'
 import { ExecutionBusyError, ExecutionCancelledError, ExecutionConflictError } from '../durable-execution/types.js';
 import { openExecutionStore } from '../durable-execution/storage.js';
 import { reconcileEnvironmentDepthDemands } from '../environment-interface/store.js';
-import { executionWorkInput, relayExecutionOutbox, reconcileTerminatedExecutionWork } from '../durable-execution/coordinator-outbox.js';
+import { executionWorkInput, reconcileTerminatedExecutionWork } from '../durable-execution/coordinator-outbox.js';
 import { canWriteMemory } from '../cognitive-mode.js';
 import type { GraphExecutionState } from '../graph-executor.js';
 import { GraphConfigurationError } from '../graph-streaming.js';
@@ -468,7 +465,7 @@ export class ExecutionEngine {
             cognitiveMode: 'environment',
             mode: 'conversation',
             dialogueType: 'conversation',
-            allowMemoryWrites: canWriteMemory('environment'),
+            allowMemoryWrites: Boolean(conversationInput) && canWriteMemory('environment'),
             environment: 'server',
             environmentObservation: observation,
             environmentObservationCurrent: task.input.observationCurrent === true,
@@ -898,16 +895,4 @@ export class ExecutionEngine {
     const { queryIndex } = await import('../vector-index.js');
     return queryIndex(query, { topK: limit, username });
   }
-}
-
-let engineInstance: ExecutionEngine | null = null;
-
-export function getExecutionEngine(options?: ExecutionEngineOptions): ExecutionEngine {
-  if (!engineInstance) engineInstance = new ExecutionEngine(options);
-  return engineInstance;
-}
-
-export function resetExecutionEngine(): void {
-  if (engineInstance) void engineInstance.stop();
-  engineInstance = null;
 }

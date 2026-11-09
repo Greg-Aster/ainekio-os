@@ -96,7 +96,7 @@ class KokoroServerTests(unittest.TestCase):
         self.assertEqual(response.status_code, 200)
         self.assertEqual(self.model.calls, [("phonemes:i:Synthetic speech.", {
             "voice": "im_nicola", "speed": 0.9, "is_phonemes": True,
-            "trim": False, "sentence_pause": 0, "clause_pause": 0,
+            "trim": True, "sentence_pause": 0.2, "clause_pause": 0.08,
         })])
         samples, rate = sf.read(io.BytesIO(response.content))
         self.assertEqual(rate, 24000)

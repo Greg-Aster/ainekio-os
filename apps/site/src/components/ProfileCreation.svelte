@@ -1,8 +1,6 @@
 <script lang="ts">
   import { apiFetch } from '../lib/client/api-config';
 
-  export let onProfileCreated: (() => void) | undefined = undefined;
-
   let username = '';
   let password = '';
   let confirmPassword = '';
@@ -65,33 +63,18 @@
       });
 
       const data = await response.json();
+      if (!response.ok || !data.success) throw new Error(data.error || 'Failed to create profile');
 
-      if (data.success) {
-        const roleMessage =
-          role === 'owner'
-            ? 'User can now log in with owner privileges.'
-            : role === 'standard'
-            ? 'User can now log in with full access to their own profile.'
-            : 'User can now log in as a read-only guest.';
+      const roleMessage =
+        role === 'owner'
+          ? 'User can now log in with owner privileges.'
+          : role === 'standard'
+          ? 'User can now log in with full access to their own profile.'
+          : 'User can now log in as a read-only guest.';
 
-        success = `Profile '${username}' created successfully! ${roleMessage}`;
-
-        // Reset form
-        username = '';
-        password = '';
-        confirmPassword = '';
-        displayName = '';
-        email = '';
-        role = 'standard';
-        showForm = false;
-
-        // Notify parent to refresh
-        if (onProfileCreated) {
-          onProfileCreated();
-        }
-      } else {
-        error = data.error || 'Failed to create profile';
-      }
+      const message = `Profile '${username}' created successfully! ${roleMessage}`;
+      handleCancel();
+      success = message;
     } catch (err) {
       error = err instanceof Error ? err.message : 'Failed to create profile';
       console.error(err);
@@ -120,11 +103,11 @@
   </p>
 
   {#if error}
-    <div class="banner banner-error mb-4">{error}</div>
+    <div role="alert" class="banner banner-error mb-4">{error}</div>
   {/if}
 
   {#if success}
-    <div class="banner banner-success mb-4">{success}</div>
+    <div role="status" class="banner banner-success mb-4">{success}</div>
   {/if}
 
   {#if !showForm}

@@ -1025,3 +1025,89 @@ test('elapsed wall-clock time cannot cancel a running graph node', async () => {
     } finally { finish(); mock.timers.reset() }
   })
 })
+
+
+test('Agent Mode delegates commands through its native owner and preserves result, failure and cancellation', async () => {
+  const original = JSON.parse(fs.readFileSync(new URL('../../../etc/cognitive-graphs/agent-mode.json', import.meta.url), 'utf8')) as SvelteFlowGraph
+  const delegated = original.nodes.find(node => node.data.nodeType === 'claude_full_task')
+  assert.ok(delegated, 'Agent Mode must use the existing native tool owner')
+  assert.ok(!original.nodes.some(node => ['react_planner', 'skill_executor'].includes(node.data.nodeType)))
+  const response = original.nodes.find(node => node.id === '9')!
+  const eligibility = original.nodes.find(node => node.data.nodeType === 'operator_eligibility')!
+  const handoff = original.edges.find(edge => edge.source === delegated.id && edge.target === response.id)!
+  assert.equal(handoff.sourceHandle, 'result')
+  assert.equal(handoff.targetHandle, 'goal')
+  const { ensureBackendsInitialized, registerBackend } = await import('./escalation-backend.js')
+  await ensureBackendsInitialized()
+  const backendId = 'agent-mode-fixture'
+  fs.mkdirSync(path.join(isolatedRoot, 'etc'), { recursive: true })
+  fs.writeFileSync(path.join(isolatedRoot, 'etc/tool-executor.json'), JSON.stringify({ activeBackend: backendId, escalation: { defaultBackend: backendId } }))
+  let calls = 0
+  let fail = false
+  let cancel: AbortController | undefined
+  const prompts: string[] = []
+  registerBackend({ id: backendId, name: 'Fixture', description: 'External native provider fixture', supportsStreaming: true,
+    isAvailable: async () => true, isReady: () => true, start: async () => true, stop() {},
+    async execute(prompt, options) {
+      calls++
+      prompts.push(prompt)
+      if (cancel) {
+        assert.ok(options?.signal, 'Graph cancellation must reach the native provider')
+        const pending = new Promise<never>((_resolve, reject) => options.signal!.addEventListener('abort', () => reject(options.signal!.reason), { once: true }))
+        cancel.abort(new Error('Owner cancelled native work'))
+        return pending
+      }
+      return fail ? { success: false, output: '', error: 'Native fixture failed' }
+        : { success: true, output: 'Native result with exact details', executionTime: 1 }
+    },
+  })
+  const input = testNode('test_agent_mode_input', [], [{ name: 'message', type: 'string' }, { name: 'context', type: 'context' }], async () => ({
+    message: 'List my files', context: { memories: [{ content: 'Selected context' }], conversationHistory: [{ role: 'user', content: 'Earlier request' }] },
+  }))
+  const wire = (target: string, targetHandle: string, sourceHandle = 'message') => ({ id: `fixture-${target}-${targetHandle}`, source: 'fixture', target, sourceHandle, targetHandle })
+  const branch: SvelteFlowGraph = { ...original, nodes: [
+    ...graph([{ id: 'fixture', nodeType: input.id }], []).nodes, eligibility, delegated, response,
+  ], edges: [wire(eligibility.id, 'message'), wire(delegated.id, 'userMessage'), wire(delegated.id, 'contextPackage', 'context'), handoff] }
+  await withTestNodes([input], async () => {
+    for (let cycle = 0; cycle < 2; cycle++) {
+      const result = await executeGraph(branch, { userMessage: 'List my files', useOperator: true })
+      assert.equal(result.status, 'completed', result.error?.message)
+      assert.equal(result.nodes.get(response.id)?.outputs?.response, 'Native result with exact details')
+      assert.equal(calls, cycle + 1, 'Each command has exactly one native admission')
+      assert.ok(prompts[cycle].includes('List my files') && prompts[cycle].includes('Earlier request') && prompts[cycle].includes('Selected context'))
+    }
+    const bypass = await executeGraph(branch, { userMessage: 'Hello', useOperator: false })
+    assert.equal(bypass.nodes.get(delegated.id)?.status, 'skipped')
+    assert.equal(calls, 2)
+    fail = true
+    const failed = await executeGraph(branch, { userMessage: 'List my files', useOperator: true })
+    assert.equal(failed.status, 'failed')
+    assert.match(failed.error?.message || '', /Native fixture failed/)
+    fail = false
+    cancel = new AbortController()
+    const cancelled = await executeGraph(branch, { userMessage: 'List my files', useOperator: true }, undefined, cancel.signal)
+    assert.equal(cancelled.status, 'failed')
+    assert.match(cancelled.error?.message || '', /Owner cancelled native work/)
+  })
+})
+
+
+test('Agency catalog and plan validation consume the surviving native task capability', async () => {
+  const catalog = await nodeRegistry.get('tool_catalog_builder')!.execute({}, {}, {})
+  assert.equal(catalog.toolCount, 1)
+  assert.equal(catalog.entries[0].skill, 'claude_full_task')
+  assert.equal(catalog.entries[0].description, nodeRegistry.get('claude_full_task')!.description)
+  assert.match(catalog.catalog, /Skill: claude_full_task/)
+  assert.doesNotMatch(catalog.catalog, /fs_read|task_create/)
+  const candidate = { id: 'catalog-plan', version: 1, operatorGoal: 'Verify the native task capability',
+    completionCriteria: 'Native task result received', requiredSkills: ['claude_full_task'],
+    requiredTrustLevel: 'suggest', estimatedRisk: 'low', createdAt: '2026-11-04T00:00:00Z',
+    steps: [{ order: 1, action: 'Verify the native task', expectedOutcome: 'Native task verified',
+      executionTarget: 'operator', skill: 'claude_full_task', risk: 'low', requiresApproval: false }] }
+  const validator = nodeRegistry.get('plan_validator')!
+  const valid = await validator.execute({ plan: candidate }, {}, { checkTrustLevel: false })
+  assert.equal(valid.valid, true, JSON.stringify(valid.errors))
+  const invalid = await validator.execute({ plan: { ...candidate, requiredSkills: ['fs_read'] } }, {}, { checkTrustLevel: false })
+  assert.equal(invalid.valid, false)
+  assert.ok(invalid.errors.includes("Plan requires unavailable skill 'fs_read'"))
+})

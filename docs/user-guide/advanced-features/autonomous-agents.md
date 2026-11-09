@@ -1,6 +1,6 @@
 # Autonomous Work
 
-MetaHuman OS uses one work coordinator for user requests, scheduled agents,
+Ainekio OS uses one work coordinator for user requests, scheduled agents,
 memory indexing, and Ainekio environment work. The
 coordinator is owned by `packages/core/src/queue` and is visible in the Queue
 panel.
@@ -32,13 +32,12 @@ available in every mode.
 uses explicit work IDs and idempotency keys, then competes under the same global
 priority rules as manually submitted work.
 
-The default registrations have specific, distinct triggers:
+Registration defaults and installed schedules have distinct owners:
 
-- after 15 idle minutes, `reflector` has a 70 percent admission chance and
-  `curiosity` (implemented by `curiosity-service`) may run;
-- after 5 idle minutes, `daydreamer` has a 15 percent admission chance;
-- `curiosity-researcher` and `inner-curiosity` run on independent hourly
-  intervals in Semi-autonomous mode;
+- Agent Catalog registers `reflector`, `curiosity` (implemented by
+  `curiosity-service`), `daydreamer`, `curiosity-researcher`, and `inner-curiosity`
+  with manual triggers. Registration does not install their former idle or hourly
+  schedules. **Trigger Manager** owns any configured schedule in `etc/agents.json`;
 - `mood` is disabled by default; when enabled, it reviews configured buffers
   after each ten persisted user messages, and may apply its 30-minute idle
   baseline while Semi-autonomous mode is active;
@@ -127,7 +126,7 @@ as Desire Agent activity rather than separate agents.
 
 ## Operational boundary
 
-The following remain separate because they do not order executable MetaHuman
+The following remain separate because they do not order executable Ainekio OS
 work: approval state, SSE and WebSocket buffers, TTS playback queues, graph
 traversal structures, and robot firmware buffers. Ainekio's hardware emergency
 stop remains body-owned.

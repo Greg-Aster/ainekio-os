@@ -251,8 +251,8 @@ export class EventBusServer {
   private handleEvent(event: MetaHumanEvent): void {
     this.eventCount++;
 
-    // Persist to NDJSON file
-    this.writeToLog(event);
+    // Audit already owns its durable record. Keep live delivery without a second disk copy.
+    if (event.source !== 'audit') this.writeToLog(event);
 
     // Broadcast to all subscribers (debug UIs)
     this.broadcast(event);

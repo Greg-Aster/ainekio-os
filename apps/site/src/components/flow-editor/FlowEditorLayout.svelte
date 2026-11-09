@@ -1,10 +1,15 @@
 <script lang="ts">
   import type { EditorNode as Node } from '../../lib/client/flow-editor/template-converter';
-  import { onMount, onDestroy } from 'svelte';
+  import { onMount, onDestroy, untrack } from 'svelte';
   import { readServerEvents } from '../../lib/client/sse';
 
-  const streamObservation = new AbortController();
-  onDestroy(() => streamObservation.abort());
+  const componentLifetime = new AbortController();
+  onDestroy(() => {
+    componentLifetime.abort();
+    graphRead?.abort();
+    endExecutionObservation();
+    if (saveDialogTimer !== null) clearTimeout(saveDialogTimer);
+  });
   import FlowEditor from './FlowEditor.svelte';
   import NodePalette from '../NodePalette.svelte';
   import PropertyInspector from './PropertyInspector.svelte';
@@ -17,6 +22,7 @@
   import {
     enrichGraphWithSchemas,
     loadSchemas,
+    getCachedSchema,
     materializeSchemaProperties,
     serializeGraphForPersistence,
   } from '../../lib/client/flow-editor/template-converter';
@@ -28,6 +34,7 @@
   import {
     updateTimeline,
     type ExecutionTimelineEntry,
+    type GraphRunStatus,
   } from '../../lib/client/flow-editor/execution-observability';
   import {
     normalizeGraphFileName,
@@ -53,18 +60,26 @@
   let graphName = $state('Untitled Graph');
   let graphFileName = $state(''); // The filename (slug) for saving
   let isExecuting = $state(false);
+  let executionOutcome = $state<GraphRunStatus>('idle');
   let executionError = $state('');
   let showSaveDialog = $state(false);
   let saveFileName = $state(''); // Filename to save as
   let saveError = $state('');
   let saveSuccess = $state(false);
   let saveCreatedBackup = $state(false);
+  let saveRequest: { graphIdentity: number } | null = null;
+  let saveDialogTimer: ReturnType<typeof setTimeout> | null = null;
   let showLoadMenu = $state(false);
   let knownGraphFileNames = $state<string[]>([]);
   let savedGraphs = $state<GraphSummary[]>([]);
   let backupGraphs = $state<GraphSummary[]>([]);
   let graphsLoading = $state(false);
-  let schemas = $state<any[]>([]);
+  let graphListError = $state('');
+  let graphLoadError = $state('');
+  let graphLoading = $state(false);
+  let graphRead: AbortController | null = null;
+  let graphLoadTarget: { name: string; scope?: GraphScope; saveTargetName?: string } | null = null;
+  let executionRead: AbortController | null = null;
   let selectedNode = $state<Node | null>(null);
   let selectedEdge = $state<Edge | null>(null);
   let currentGraph = $state<SvelteFlowGraph | null>(null);
@@ -82,9 +97,13 @@
   const workflowGroups = $derived(groupWorkflows(savedGraphs));
 
   $effect(() => {
-    if (flowEditorRef && !currentGraph) {
-      handleGraphChange(flowEditorRef.getCurrentGraph());
-    }
+    const editor = flowEditorRef;
+    const mode = cognitiveMode;
+    if (!editor) return;
+    untrack(() => {
+      if (mode) void loadGraph(`${mode}-mode`);
+      else if (!currentGraph) handleGraphChange(editor.getCurrentGraph());
+    });
   });
 
   function graphSignature(graph: SvelteFlowGraph): string {
@@ -102,46 +121,29 @@
 
   // Load saved graphs list (including backups)
   async function refreshSavedGraphs() {
+    if (componentLifetime.signal.aborted) return;
     graphsLoading = true;
+    graphListError = '';
     try {
-      const res = await apiFetch('/api/cognitive-graphs?includeBackups=true');
-      if (res.ok) {
-        const data = await res.json();
-        // Show all graphs (builtin + custom), exclude the main modes already hardcoded
-        const excludeHardcoded = ['dual-mode', 'agent-mode', 'emulation-mode', 'environment-mode'];
-        const availableGraphs: GraphSummary[] = data.graphs || [];
-        knownGraphFileNames = availableGraphs.map(graph => graph.name);
-        savedGraphs = availableGraphs.filter(graph => !excludeHardcoded.includes(graph.name));
-        backupGraphs = data.backups || [];
-      }
+      const res = await apiFetch('/api/cognitive-graphs?includeBackups=true', { signal: componentLifetime.signal });
+      const data = await res.json();
+      if (componentLifetime.signal.aborted) return;
+      if (!res.ok) throw new Error(data.error || 'Failed to load saved workflows');
+      // Show all graphs (builtin + custom), exclude the main modes already hardcoded
+      const excludeHardcoded = ['dual-mode', 'agent-mode', 'emulation-mode', 'environment-mode'];
+      const availableGraphs: GraphSummary[] = data.graphs || [];
+      knownGraphFileNames = availableGraphs.map(graph => graph.name);
+      savedGraphs = availableGraphs.filter(graph => !excludeHardcoded.includes(graph.name));
+      backupGraphs = data.backups || [];
     } catch (e) {
-      console.error('[FlowEditorLayout] Failed to load graphs:', e);
+      if (!componentLifetime.signal.aborted) graphListError = (e as Error).message;
     } finally {
       graphsLoading = false;
     }
   }
 
-  // Load node schemas for palette
-  async function loadNodeSchemas() {
-    try {
-      const res = await apiFetch('/api/node-schemas');
-      if (res.ok) {
-        const data = await res.json();
-        // API returns array directly, not { schemas: [...] }
-        schemas = Array.isArray(data) ? data : (data.schemas || []);
-        console.log(`[FlowEditorLayout] Loaded ${schemas.length} schemas`);
-      }
-    } catch (e) {
-      console.error('[FlowEditorLayout] Failed to load schemas:', e);
-    }
-  }
-
   onMount(() => {
-    void (async () => {
-      await loadSchemas();
-      await loadNodeSchemas();
-      await refreshSavedGraphs();
-    })();
+    void refreshSavedGraphs();
 
     // Keyboard shortcuts
     const handleKeyDown = (e: KeyboardEvent) => {
@@ -173,6 +175,14 @@
 
   function newGraph() {
     if (!mayDiscardChanges()) return;
+    graphRead?.abort();
+    graphRead = null;
+    graphLoadTarget = null;
+    graphLoading = false;
+    graphLoadError = '';
+    endExecutionObservation();
+    saveRequest = null;
+    closeSaveDialog();
     flowEditorRef?.clearGraph();
     graphName = 'Untitled Graph';
     graphFileName = '';
@@ -182,16 +192,26 @@
     lastNodeOutputs = {};
     lastRunDurationMs = null;
     waitingExecutionId = null;
+    executionOutcome = 'idle';
+    executionError = '';
     executionTimeline = [];
     if (currentGraph) markGraphClean(currentGraph);
   }
 
   function openSaveDialog() {
+    closeSaveDialog();
+    saveRequest = null;
     saveFileName = saveDialogFileName(graphFileName, graphName);
     saveError = '';
     saveSuccess = false;
     saveCreatedBackup = false;
     showSaveDialog = true;
+  }
+
+  function closeSaveDialog() {
+    if (saveDialogTimer !== null) clearTimeout(saveDialogTimer);
+    saveDialogTimer = null;
+    showSaveDialog = false;
   }
 
   async function saveGraph() {
@@ -215,6 +235,8 @@
       return;
     }
 
+    const request = { graphIdentity: flowEditorRef.getGraphIdentity() };
+    saveRequest = request;
     try {
       const authoringGraph = flowEditorRef.getCurrentGraph();
       const blockingIssues = validateAuthoringGraph(authoringGraph).filter(issue => issue.level === 'error');
@@ -238,11 +260,16 @@
       }
 
       const result = await res.json();
+      if (componentLifetime.signal.aborted || saveRequest !== request || flowEditorRef?.getGraphIdentity() !== request.graphIdentity) {
+        await refreshSavedGraphs();
+        return;
+      }
       graphFileName = validFileName;
       saveSuccess = true;
       saveCreatedBackup = Boolean(result.backupCreated);
-      currentGraph = authoringGraph;
-      markGraphClean(authoringGraph);
+      currentGraph = flowEditorRef.getCurrentGraph();
+      cleanGraphSignature = JSON.stringify(graph);
+      isDirty = graphSignature(currentGraph) !== cleanGraphSignature;
 
       // Show backup info if one was created
       if (result.backupCreated) {
@@ -251,45 +278,71 @@
 
       await refreshSavedGraphs();
 
-      setTimeout(() => {
-        showSaveDialog = false;
-        saveSuccess = false;
-      }, 1500);
+      if (saveRequest === request) {
+        saveDialogTimer = setTimeout(() => {
+          if (saveRequest !== request) return;
+          closeSaveDialog();
+          saveSuccess = false;
+          saveRequest = null;
+        }, 1500);
+      }
     } catch (e) {
-      saveError = (e as Error).message;
+      if (saveRequest === request) saveError = (e as Error).message;
     }
   }
 
   async function loadGraph(name: string, scope?: GraphScope, saveTargetName?: string) {
     if (!mayDiscardChanges()) return;
+    graphRead?.abort();
+    const request = new AbortController();
+    graphRead = request;
+    graphLoadTarget = { name, scope, saveTargetName };
+    graphLoading = true;
+    graphLoadError = '';
     try {
       const url = scope
         ? `/api/cognitive-graph?name=${encodeURIComponent(name)}&scope=${scope}`
         : `/api/cognitive-graph?name=${encodeURIComponent(name)}`;
-      const res = await apiFetch(url);
-      if (res.ok) {
-        const data = await res.json();
-        if (data.graph && flowEditorRef) {
-          const sfGraph = enrichGraphWithSchemas(data.graph);
-          flowEditorRef.loadGraph(sfGraph);
-          graphName = sfGraph.name || name;
-          const resolvedName = typeof data.name === 'string' ? data.name : name;
-          const resolvedScope: GraphScope = data.scope || scope || 'custom';
-          graphFileName = resolvedScope === 'backup' ? (saveTargetName || '') : resolvedName;
-          currentGraph = sfGraph;
-          selectedNode = null;
-          selectedEdge = null;
-          lastNodeOutputs = {};
-          lastRunDurationMs = null;
-          waitingExecutionId = null;
-          executionTimeline = [];
-          markGraphClean(sfGraph);
-        }
-      }
+      const res = await apiFetch(url, { signal: request.signal });
+      const data = await res.json();
+      if (request.signal.aborted) return;
+      if (!res.ok) throw new Error(data.error || 'Failed to load workflow');
+      if (!data.graph) throw new Error('The response did not contain a graph to load.');
+      await loadSchemas();
+      if (request.signal.aborted || !flowEditorRef) return;
+      saveRequest = null;
+      closeSaveDialog();
+      endExecutionObservation();
+      const sfGraph = enrichGraphWithSchemas(data.graph);
+      flowEditorRef.loadGraph(sfGraph);
+      graphName = sfGraph.name || name;
+      const resolvedName = typeof data.name === 'string' ? data.name : name;
+      const resolvedScope: GraphScope = data.scope || scope || 'custom';
+      graphFileName = resolvedScope === 'backup' ? (saveTargetName || '') : resolvedName;
+      currentGraph = flowEditorRef.getCurrentGraph();
+      selectedNode = null;
+      selectedEdge = null;
+      lastNodeOutputs = {};
+      lastRunDurationMs = null;
+      waitingExecutionId = null;
+      executionOutcome = 'idle';
+      executionError = '';
+      executionTimeline = [];
+      markGraphClean(currentGraph);
+      graphLoadTarget = null;
+      showLoadMenu = false;
     } catch (e) {
-      console.error('[FlowEditorLayout] Failed to load graph:', e);
+      if (!request.signal.aborted) graphLoadError = (e as Error).message;
+    } finally {
+      if (graphRead === request) {
+        graphRead = null;
+        graphLoading = false;
+      }
     }
-    showLoadMenu = false;
+  }
+
+  function retryGraphLoad() {
+    if (graphLoadTarget) void loadGraph(graphLoadTarget.name, graphLoadTarget.scope, graphLoadTarget.saveTargetName);
   }
 
   async function loadBackup(backup: GraphSummary) {
@@ -314,7 +367,10 @@
       return;
     }
 
+    const request = new AbortController();
+    executionRead = request;
     isExecuting = true;
+    executionOutcome = 'running';
     executionError = '';
     lastNodeOutputs = {};
     lastRunDurationMs = null;
@@ -330,22 +386,25 @@
       // Use streaming endpoint for real-time node status
       const res = await apiFetch('/api/execute-graph-stream', {
         method: 'POST',
-        signal: streamObservation.signal,
+        signal: request.signal,
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
           graph,
           sessionId: `editor-${Date.now()}`,
         }),
       });
+      if (request.signal.aborted) return;
 
       if (!res.ok) {
+        executionOutcome = 'failed';
         const data = await res.json();
+        if (request.signal.aborted) return;
         throw new Error(data.error || 'Execution failed');
       }
 
       let finalResponse = '';
       let nodeOutputs: Record<string, any> | undefined;
-      for await (const frame of readServerEvents(res, streamObservation.signal)) {
+      for await (const frame of readServerEvents(res, request.signal)) {
         const data = JSON.parse(frame.data);
         handleStreamEvent(frame.event, data);
         if (frame.event === 'graph_complete' || frame.event === 'graph_waiting') {
@@ -359,21 +418,30 @@
         }
       }
 
-      console.log('[FlowEditorLayout] Streaming execution complete');
-
       // Update display nodes with final response and node outputs
-      if (finalResponse && flowEditorRef) {
+      if (!request.signal.aborted && finalResponse && flowEditorRef) {
         flowEditorRef.updateDisplayNodes(finalResponse, nodeOutputs);
       }
     } catch (e) {
-      executionError = (e as Error).message;
-      // Mark all nodes as failed on error
-      if (flowEditorRef) {
-        flowEditorRef.markAllNodesFailed();
-      }
+      if (!request.signal.aborted) executionError = (e as Error).message;
     } finally {
-      isExecuting = false;
+      if (executionRead === request) {
+        if (executionOutcome === 'running') {
+          executionOutcome = 'interrupted';
+          if (!executionError) {
+            executionError = 'Execution stream ended without a graph outcome. The result is unconfirmed.';
+          }
+        }
+        isExecuting = false;
+        executionRead = null;
+      }
     }
+  }
+
+  function endExecutionObservation() {
+    executionRead?.abort();
+    executionRead = null;
+    isExecuting = false;
   }
 
   /**
@@ -423,23 +491,25 @@
         break;
 
       case 'graph_error':
-        // Graph-level error - mark all running nodes as failed
+      case 'error':
+        executionOutcome = 'failed';
         executionError = data.error || 'Execution failed';
-        flowEditorRef.markAllNodesFailed();
         break;
 
       case 'graph_complete':
+        executionOutcome = 'completed';
         waitingExecutionId = null;
         console.log('[FlowEditorLayout] Graph complete:', data.durationMs + 'ms');
         break;
 
       case 'graph_waiting':
+        executionOutcome = 'waiting';
         waitingExecutionId = data.executionId;
         break;
     }
   }
 
-  function handleGraphChange(graph: SvelteFlowGraph) {
+  function handleGraphChange(graph: SvelteFlowGraph, change?: 'initial-view') {
     currentGraph = graph;
     if (selectedNode) {
       selectedNode = graph.nodes.find((node) => node.id === selectedNode?.id) || null;
@@ -451,19 +521,19 @@
     if (graph.name && graph.name !== 'Untitled Graph') {
       graphName = graph.name;
     }
+    if (change === 'initial-view' && cleanGraphSignature) {
+      const baseline = JSON.parse(cleanGraphSignature);
+      cleanGraphSignature = JSON.stringify({ ...baseline, viewport: graph.viewport });
+    }
     if (!cleanGraphSignature) markGraphClean(graph);
     else isDirty = graphSignature(graph) !== cleanGraphSignature;
-  }
-
-  function handleGraphLoaded(fileName: string, scope: GraphScope) {
-    if (scope !== 'backup') graphFileName = fileName;
   }
 
   function handleNodeSelected(nodeType: string) {
     if (!flowEditorRef) return;
 
     // Find schema for this node
-    const schema = schemas.find((s) => s.id === nodeType || `cognitive/${s.id}` === nodeType);
+    const schema = getCachedSchema(nodeType);
     if (!schema) {
       console.warn('[FlowEditorLayout] Schema not found for:', nodeType);
       return;
@@ -580,6 +650,12 @@
               Environment Mode
             </button>
 
+            {#if graphListError}
+              <div class="px-4 py-3 text-sm text-red-400" role="alert">
+                <p>{graphListError}</p>
+                <button type="button" class="editor-tool" onclick={refreshSavedGraphs}>Retry saved workflows</button>
+              </div>
+            {/if}
             {#if graphsLoading}
               <div class="px-4 py-3 text-sm text-neutral-500">Loading workflows…</div>
             {:else}
@@ -671,7 +747,7 @@
   <!-- Error Banner -->
   {#if executionError}
     <div class="flex items-center justify-between px-6 py-3 bg-red-900 border-b border-red-800 text-red-200">
-      <span>Execution failed: {executionError}</span>
+      <span>{executionOutcome === 'interrupted' ? 'Observation interrupted' : 'Execution error'}: {executionError}</span>
       <button class="px-3 py-1 bg-transparent border border-red-200 text-red-200 rounded cursor-pointer" onclick={() => (executionError = '')}>Dismiss</button>
     </div>
   {/if}
@@ -679,6 +755,15 @@
   {#if waitingExecutionId}
     <div class="px-6 py-3 bg-amber-950 border-b border-amber-800 text-amber-200">
       Execution saved and waiting: <code>{waitingExecutionId}</code>
+    </div>
+  {/if}
+
+  {#if graphLoading}
+    <div class="px-6 py-3 border-b border-neutral-800 text-neutral-300" role="status">Loading graph...</div>
+  {:else if graphLoadError}
+    <div class="px-6 py-3 bg-red-950 border-b border-red-800 text-red-300" role="alert">
+      {graphLoadError}
+      <button class="editor-tool" onclick={retryGraphLoad}>Retry</button>
     </div>
   {/if}
 
@@ -709,7 +794,6 @@
           bind:this={flowEditorRef}
           {cognitiveMode}
           onGraphChange={handleGraphChange}
-          onGraphLoaded={handleGraphLoaded}
           onSelectionChange={handleSelectionChange}
           onHistoryChange={(state) => (historyState = state)}
         />
@@ -720,7 +804,7 @@
             graph={currentGraph}
             entries={executionTimeline}
             nodeOutputs={lastNodeOutputs}
-            {isExecuting}
+            status={executionOutcome}
             onSelectNode={handleSelectNode}
           />
         </div>
@@ -802,7 +886,7 @@
           <div class="p-2 mb-4 bg-green-500/10 border border-green-600 rounded text-green-300 text-sm">{saveCreatedBackup ? 'Saved. Backup created.' : 'Saved as a new graph.'}</div>
         {/if}
         <div class="flex gap-3 justify-end">
-          <button class="px-5 py-2.5 rounded-md cursor-pointer text-sm border-none bg-neutral-700 text-neutral-300 hover:bg-neutral-600" onclick={() => (showSaveDialog = false)}>Cancel</button>
+          <button class="px-5 py-2.5 rounded-md cursor-pointer text-sm border-none bg-neutral-700 text-neutral-300 hover:bg-neutral-600" onclick={closeSaveDialog}>Cancel</button>
           <button class="px-5 py-2.5 rounded-md cursor-pointer text-sm border-none bg-blue-500 text-white hover:bg-blue-600 disabled:opacity-50 disabled:cursor-not-allowed" onclick={saveGraph} disabled={saveSuccess}>
             {saveSuccess ? 'Saved!' : 'Save'}
           </button>

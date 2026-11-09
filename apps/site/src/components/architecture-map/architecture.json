@@ -2,12 +2,12 @@
   "sourceDocument": "docs/robot/SYSTEM_ARCHITECTURE.md",
   "sourceSha256": "45351298a0ccc6a316fdda886e53eadc97a5d0d60073c6628bdab46406290a2c",
   "title": "Ainekio system architecture",
-  "description": "MetaHuman OS software ownership, runtime processes, stored state and external dependencies. This map is not live deployment or health status.",
+  "description": "Ainekio OS software ownership, runtime processes, stored state and external dependencies. This map is not live deployment or health status.",
   "groups": [
     {
       "id": "INPUTS",
       "title": "Clients and entry points",
-      "description": "Browser, terminal and Android interfaces for sending requests to MetaHuman.",
+      "description": "Browser, terminal and Android interfaces for sending requests to Ainekio OS.",
       "sourcePaths": [
         "apps/site/src/pages/index.astro",
         "packages/cli/src/entry.ts",
@@ -17,18 +17,18 @@
       "boundary": "area",
       "details": [
         "The browser sends requests to the Astro web server. The mh CLI calls the engine from a terminal. Android runs the interface and an embedded Node.js server on the phone.",
-        "These components belong to MetaHuman even when they run on different devices."
+        "These components belong to Ainekio OS even when they run on different devices."
       ]
     },
     {
       "id": "MH",
-      "title": "MetaHuman OS",
+      "title": "Ainekio OS",
       "description": "Software system \u00b7 clients, server, shared libraries, agents, state and training tools",
       "details": [
-        "This boundary identifies software belonging to MetaHuman OS. It is not one process, one computer, or a replacement for the host operating system.",
-        "The browser interface, mh CLI and Android app are MetaHuman clients. The web server is a Node.js process; Android has its own embedded Node.js HTTP server.",
+        "This boundary identifies software belonging to Ainekio OS. It is not one process, one computer, or a replacement for the host operating system.",
+        "The browser interface, mh CLI and Android app are Ainekio OS clients. The web server is a Node.js process; Android has its own embedded Node.js HTTP server.",
         "Core is a shared TypeScript library imported by the server, CLI and workers. It is not a separate engine server.",
-        "Finite agents execute as worker subprocesses. Active Operator, Environment Bridge, Terminal and Maintenance have independent persistent-service lifecycles. They still belong to MetaHuman OS.",
+        "Finite agents execute as worker subprocesses. Active Operator, Environment Bridge, Terminal and Maintenance have independent persistent-service lifecycles. They still belong to Ainekio OS.",
         "Stored profile information, durable work records, configuration and training artifacts belong to the system through their existing storage owners. Training tools are explicitly launched work, not another permanent server.",
         "Body Control, robot hardware and configured inference providers are separate systems connected through interfaces. This map shows software ownership and configured relationships, not current deployment or health."
       ],
@@ -76,7 +76,7 @@
       "details": [
         "The catalog, trigger manager, monitor and execution code are shared infrastructure, not individual autonomous agents.",
         "Finite agent families run admitted jobs in separate worker processes. Workflows compose work and are not themselves a permanent process.",
-        "The persistent services have their own Node.js processes and lifecycle. Being outside the web-server process does not put them outside MetaHuman OS."
+        "The persistent services have their own Node.js processes and lifecycle. Being outside the web-server process does not put them outside Ainekio OS."
       ],
       "parent": "MH",
       "boundary": "area"
@@ -84,15 +84,15 @@
     {
       "id": "BC",
       "title": "Body Control",
-      "description": "Connects MetaHuman and dashboard controls to the robot hardware.",
+      "description": "Connects Ainekio OS and dashboard controls to the robot hardware.",
       "sourcePaths": [
         "../Ainekio/Master/gateway/server/__main__.py",
         "../Ainekio/Master/gateway/README.md"
       ],
       "details": [
         "A Python application that manages robot connections, sends commands, receives telemetry and serves the Body Control dashboard.",
-        "Its environment adapter accepts MetaHuman actions. GatewayService sends commands to the selected robot. Freestyle turns movement requests into programs.",
-        "Can run beside MetaHuman on the desktop or on the computer near the robot, such as Q6A.",
+        "Its environment adapter accepts Ainekio OS actions. GatewayService sends commands to the selected robot. Freestyle turns movement requests into programs.",
+        "Can run beside Ainekio OS on the desktop or on the computer near the robot, such as Q6A.",
         "Code: /home/greggles/Ainekio/Master/gateway/. The Freestyle generator runs as a separate HTTP service."
       ],
       "parent": null,
@@ -124,7 +124,7 @@
         "etc/voice-servers.json"
       ],
       "details": [
-        "MetaHuman sends requests to the provider assigned to each model role. Body Control's Freestyle generator calls its configured motion model.",
+        "Ainekio OS sends requests to the provider assigned to each model role. Body Control's Freestyle generator calls its configured motion model.",
         "Addresses shown here are configured endpoints. A listed service may be stopped. Loopback addresses refer to the computer making the request."
       ],
       "parent": null,
@@ -140,7 +140,7 @@
       ],
       "details": [
         "Clients select a model alias through the shared HTTP API. Native llama.cpp workers load and run that model with its own settings.",
-        "On one computer, MetaHuman and Freestyle share this service. When Body Control runs on Q6A, its generator uses Q6A's own service.",
+        "On one computer, Ainekio OS and Freestyle share this service. When Body Control runs on Q6A, its generator uses Q6A's own service.",
         "Systemd runs llama-cpp.service. Host model settings are kept in ~/.config/llama.cpp/models.ini; bin/llama-cpp-services installs and starts the service."
       ],
       "parent": "INFERENCE",
@@ -170,7 +170,7 @@
         "packages/core/src/tts/providers/kokoro-service.ts"
       ],
       "details": [
-        "MetaHuman's speech clients call these HTTP services and return transcripts or generated audio.",
+        "Ainekio OS's speech clients call these HTTP services and return transcripts or generated audio.",
         "Audio playback is handled by the selected browser, computer or robot output."
       ],
       "parent": "INFERENCE",
@@ -212,7 +212,7 @@
     {
       "id": "HUMAN",
       "title": "Human",
-      "description": "The person using MetaHuman and the robot.",
+      "description": "The person using Ainekio OS and the robot.",
       "details": [
         "Types messages or commands, uses dashboard controls, or speaks into the robot microphone.",
         "Receives text replies, spoken replies, task results and status reports. Sees the robot move and respond."
@@ -229,7 +229,7 @@
       "title": "Web interface",
       "description": "The on-screen controls for chat, tasks, agents, voice, training and settings.",
       "details": [
-        "Runs the Svelte interface in the user's browser. Sends button clicks and messages to the MetaHuman web server and displays the replies.",
+        "Runs the Svelte interface in the user's browser. Sends button clicks and messages to the Ainekio OS web server and displays the replies.",
         "Shows task progress and system status. Also provides terminal sessions and configuration screens.",
         "Interface code: /home/greggles/metahuman/apps/site/src/. The browser runs on the user's device."
       ],
@@ -253,7 +253,7 @@
       "description": "The mh command-line app: chat, manage tasks and agents, search memory and check status.",
       "details": [
         "Accepts commands and typed messages in a terminal. Prints replies, results and errors.",
-        "Runs in Node.js and calls the MetaHuman engine directly.",
+        "Runs in Node.js and calls the Ainekio OS engine directly.",
         "Code: /home/greggles/metahuman/packages/cli/src/. bin/mh launches entry.ts; main.ts selects the command handler from commands/.",
         "Run ./bin/mh help from /home/greggles/metahuman/ to list commands."
       ],
@@ -273,10 +273,10 @@
     },
     {
       "id": "WEB",
-      "title": "MetaHuman web server",
-      "description": "Sends the interface to the browser and handles its requests using the MetaHuman engine.",
+      "title": "Ainekio OS web server",
+      "description": "Sends the interface to the browser and handles its requests using the Ainekio OS engine.",
       "details": [
-        "An Astro application running in Node.js on the MetaHuman host.",
+        "An Astro application running in Node.js on the Ainekio OS host.",
         "Receives page and API requests. Checks API login sessions, calls the requested engine functions and returns pages, data or audio.",
         "At startup, starts the engine's work queue, configured operating mode and model-service connections.",
         "Code: /home/greggles/metahuman/apps/site/. Pages are in src/pages/; API routes are in src/pages/api/; src/middleware.ts handles API sessions and startup.",
@@ -498,7 +498,7 @@
       "title": "Robot capabilities and feedback",
       "description": "Sends selected robot actions and records observations and action results.",
       "details": [
-        "Exposes the capabilities reported by the connected body to MetaHuman workflows.",
+        "Exposes the capabilities reported by the connected body to Ainekio OS workflows.",
         "Sends requested actions through Environment Bridge. Receives camera and sensor observations, progress reports and final results through the same connection.",
         "Keeps action identities so results and cancellations refer to the correct request."
       ],
@@ -516,17 +516,19 @@
     {
       "id": "TOOLS",
       "title": "Computer tools and sessions",
-      "description": "Loads skills and provides shell and provider sessions for computer work.",
+      "description": "Provides native tool execution and provider sessions for computer work.",
       "details": [
-        "skills.ts finds skill instructions for callers that need them.",
+        "Agent Mode delegates commands through the existing Full Task Delegation node and escalation backend.",
         "The terminal code starts sessions, accepts input and returns output and exit information. The Terminal service manages those sessions."
       ],
       "sourcePaths": [
-        "packages/core/src/skills.ts",
+        "packages/core/src/nodes/operator/claude-full-task.node.ts",
+        "packages/core/src/escalation-backend.ts",
         "packages/core/src/terminal/"
       ],
       "sourceLabels": [
-        "skills.ts",
+        "Full Task Delegation",
+        "escalation-backend.ts",
         "terminal/"
       ],
       "class": "engine",
@@ -711,7 +713,7 @@
       "title": "Thought and dreaming agents",
       "description": "Writes reflections, connected thoughts and dream narratives from saved information.",
       "details": [
-        "Mind Wandering (Reflector) generates reflections after conversation inactivity.",
+        "Mind Wandering (Reflector) generates reflections when selected by Active Operator or explicitly invoked.",
         "Train of Thought follows a supplied thought or memory through related memories and saves the resulting reasoning chain.",
         "Daydreamer writes short internal daydreams. Dreamer builds overnight dream narratives from memory fragments."
       ],
@@ -732,7 +734,7 @@
       "title": "Curiosity agents",
       "description": "Generates questions and investigates them using saved information.",
       "details": [
-        "Curiosity generates questions for the user after conversation inactivity.",
+        "Curiosity generates questions for the user when selected by Active Operator or explicitly invoked.",
         "Curiosity Researcher investigates pending questions and records findings from local memory.",
         "Inner Curiosity generates and investigates questions as private inner dialogue."
       ],
@@ -906,10 +908,10 @@
     {
       "id": "BRIDGE",
       "title": "Environment Bridge",
-      "description": "Carries commands and sensor feedback between MetaHuman and Body Control.",
+      "description": "Carries commands and sensor feedback between Ainekio OS and Body Control.",
       "details": [
         "Connects to the selected Body Control host and robot using the configured local, SSH or Cloudflare connection.",
-        "Sends actions and cancellation requests to Body Control. Returns observations, available capabilities and action results to MetaHuman.",
+        "Sends actions and cancellation requests to Body Control. Returns observations, available capabilities and action results to Ainekio OS.",
         "Also carries robot audio and speech messages over the connection."
       ],
       "sourcePaths": [
@@ -944,7 +946,7 @@
     {
       "id": "ADAPTER",
       "title": "Environment adapter",
-      "description": "Translates MetaHuman actions into Body Control commands and sends results back.",
+      "description": "Translates Ainekio OS actions into Body Control commands and sends results back.",
       "details": [
         "Accepts the authenticated Environment Bridge connection at /environment on port 8790.",
         "Translates requested actions for the selected body. Sends observations, advertised capabilities and correlated action results to the bridge.",
@@ -1040,7 +1042,7 @@
       "title": "Microphone",
       "description": "Captures nearby speech as audio for transcription.",
       "details": [
-        "The robot microphone feeds the P4 audio system. Captured utterances travel through Body Control and Environment Bridge to MetaHuman's speech input.",
+        "The robot microphone feeds the P4 audio system. Captured utterances travel through Body Control and Environment Bridge to Ainekio OS's speech input.",
         "Whisper produces the transcript; the microphone itself supplies audio."
       ],
       "sourcePaths": [
@@ -1059,7 +1061,7 @@
       "description": "Reports camera images, body orientation and measured joint positions.",
       "details": [
         "The camera supplies images. The IMU supplies motion and orientation readings. Servo feedback reports measured joint positions and feedback faults.",
-        "P4 firmware sends readings to Body Control, which makes observations available to the dashboard and MetaHuman."
+        "P4 firmware sends readings to Body Control, which makes observations available to the dashboard and Ainekio OS."
       ],
       "sourcePaths": [
         "../Ainekio/Slave/firmware/esp32p4-wifi6/components/ainekio_p4_media/camera.c",
@@ -1270,7 +1272,7 @@
       "title": "Ollama",
       "description": "Runs a selected model through Ollama's HTTP service.",
       "details": [
-        "MetaHuman sends model requests to the configured Ollama endpoint and returns generated output to the workflow.",
+        "Ainekio OS sends model requests to the configured Ollama endpoint and returns generated output to the workflow.",
         "Ollama owns its model files, loading and inference process. Model assignments determine whether this backend is used."
       ],
       "sourcePaths": [
@@ -1313,7 +1315,7 @@
       "description": "Transcribes recorded audio into text.",
       "details": [
         "The STT client sends an audio recording to the configured Whisper HTTP service and receives its transcript.",
-        "MetaHuman passes the transcript into the speech-input workflow with its source information."
+        "Ainekio OS passes the transcript into the speech-input workflow with its source information."
       ],
       "sourcePaths": [
         "external/whisper/whisper_server.py",
@@ -1359,7 +1361,7 @@
         "apps/react-native/README.md"
       ],
       "details": [
-        "React Native opens the MetaHuman interface in a WebView and handles native microphone permission and speech recognition.",
+        "React Native opens the Ainekio OS interface in a WebView and handles native microphone permission and speech recognition.",
         "The interface talks to an embedded Node.js server inside the app. The native bridge carries messages between web code and Android features.",
         "Code: /home/greggles/metahuman/apps/react-native/."
       ],
@@ -1372,7 +1374,7 @@
     {
       "id": "MOBILEBACKEND",
       "title": "Android local server",
-      "description": "Serves the MetaHuman interface and API inside the Android app.",
+      "description": "Serves the Ainekio OS interface and API inside the Android app.",
       "group": "INPUTS",
       "sourcePaths": [
         "apps/react-native/nodejs-assets/nodejs-project/main.js",
@@ -1507,7 +1509,7 @@
     {
       "id": "CHAT",
       "title": "Conversation interface",
-      "description": "Send messages to MetaHuman and read replies, task progress and conversation history.",
+      "description": "Send messages to Ainekio OS and read replies, task progress and conversation history.",
       "details": [
         "ChatInterface.svelte displays the conversation, message composer and response controls. CenterContent.svelte opens it as the Chat view.",
         "Submits chat work through /api/unified-queue and follows task streams for replies and progress. Buffer streams supply updates for the selected conversation views.",

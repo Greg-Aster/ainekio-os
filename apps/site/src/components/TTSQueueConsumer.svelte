@@ -99,7 +99,8 @@
     if (!audioUnlocked) {
       console.warn(`[tts-queue] Deferring ${item.id} until browser audio is unlocked`);
       await updateDelivery(item, 'retry');
-      pauseQueueUntilAudioUnlocked();
+      if (mounted) pauseQueueUntilAudioUnlocked();
+      queueInterruptedDeliveries.delete(item.id);
       if (activeDeliveryId === item.id) activeDeliveryId = '';
       return;
     }

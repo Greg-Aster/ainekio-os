@@ -68,5 +68,3 @@ export const CardInputNode: NodeDefinition = defineNode({
     };
   },
 });
-
-export default CardInputNode;

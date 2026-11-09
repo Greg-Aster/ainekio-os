@@ -79,7 +79,7 @@ export interface PsychoanalyzerTarget {
   role: string
 }
 
-export interface PsychoanalyzerExecutionReceipt {
+interface PsychoanalyzerExecutionReceipt {
   runId: string
   status: 'prepared' | 'completed'
   preparedAt: string

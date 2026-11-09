@@ -4,13 +4,19 @@ This chapter covers account roles, profile visibility, profile storage, recovery
 
 ## Roles
 
-- **Owner** — the first account; can administer the installation and owner-only surfaces.
+- **Owner** — can administer the installation and owner-only surfaces.
 - **Standard** — a named authenticated account with its own writable profile
   boundary, subject to policy.
 - **Guest** — an authenticated, read-only role limited to public profiles. The
   one-hour temporary guest session uses this same role.
 
 Role checks are enforced by server handlers. Hiding a button is not the security boundary.
+
+## Account Controls
+
+**System → Security** provides username, password, display-name and email updates. Changing a username requires the account's current password. Display name and email can be cleared explicitly.
+
+The profile deletion list uses **Refresh profiles** to load changes after creating or renaming accounts. Owners can delete other non-owner profiles except the special guest profile; standard accounts can delete themselves. Enter the target's exact username to confirm. An acknowledged self-deletion returns to the login page immediately. Deletion removes the profile's configured storage directory, which may be outside the repository. A list-refresh error remains visible alongside an acknowledged deletion.
 
 ## Profile Isolation
 
@@ -90,7 +96,7 @@ old data can restore it.
 
 ## Remote Access
 
-Remote access expands the trust boundary. Use HTTPS, restrict who can reach the origin, keep owner endpoints authenticated, and expose guest access only when at least one intentionally public profile exists.
+Cloudflare controls are in **System → Network**, linked from Security. Remote access expands the trust boundary. Use HTTPS, restrict who can reach the origin, keep owner endpoints authenticated, and expose guest access only when at least one intentionally public profile exists.
 
 Cloud model and training providers receive the data submitted to them. Local-first operation does not mean every configured workflow stays on the machine.
 

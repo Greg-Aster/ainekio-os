@@ -112,17 +112,14 @@ profiles/*/etc/*.pem
 # Runtime configuration (contains personal settings)
 /etc/agent.json
 /etc/audio.json
-/etc/boredom.json
 /etc/sleep.json
 /etc/voice.json
 /etc/autonomy.json
 /etc/auto-approval.json
 /etc/ingestor.json
 /etc/lifeline.json
-/etc/network.json
 /etc/logging.json
 /etc/runpod.json
-/etc/config
 /etc/legacy/
 /etc/default-user.txt
 /etc/model-registry.json

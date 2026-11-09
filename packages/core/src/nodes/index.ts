@@ -60,9 +60,6 @@ import * as controlFlowNodes from './control-flow/index.js';
 // Operator nodes
 import * as operatorNodes from './operator/index.js';
 
-// Skill nodes
-import * as skillNodes from './skill/index.js';
-
 // Agent nodes
 import * as agentNodes from './agent/index.js';
 
@@ -83,9 +80,6 @@ import * as curiosityNodes from './curiosity/index.js';
 
 // Curator nodes
 import * as curatorNodes from './curator/index.js';
-
-// Safety nodes
-import * as safetyNodes from './safety/index.js';
 
 // Emulation nodes
 import * as emulationNodes from './emulation/index.js';
@@ -139,7 +133,6 @@ export const allNodes: NodeDefinition[] = collectNodes(
   llmNodes,
   controlFlowNodes,
   operatorNodes,
-  skillNodes,
   agentNodes,
   utilityNodes,
   personaNodes,
@@ -147,7 +140,6 @@ export const allNodes: NodeDefinition[] = collectNodes(
   dreamerNodes,
   curiosityNodes,
   curatorNodes,
-  safetyNodes,
   emulationNodes,
   agencyNodes,
   cognitiveNodes,

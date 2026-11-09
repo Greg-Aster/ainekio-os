@@ -24,23 +24,7 @@ import { defineNode, type NodeDefinition } from '../types.js';
 import { projectEnvironmentHistory } from '../../environment-interface/task-selection.js';
 import { callLLM } from '../../model-router.js';
 import { renderPromptTemplate } from '../prompt-template.js';
-import { modelRouterDefinition } from './model-router.schema.js';
-
-// Action types that can trigger Big Brother
-export type ActionType =
-  | 'none'           // No action needed, just conversation
-  | 'file_read'      // Read a file
-  | 'file_write'     // Write/create a file
-  | 'file_list'      // List files/directories
-  | 'task_create'    // Create a new task
-  | 'task_update'    // Update/complete a task
-  | 'task_list'      // List tasks
-  | 'web_search'     // Search the web
-  | 'memory_search'  // Explicit memory search request
-  | 'code_execute'   // Run code or commands
-  | 'complex_task'   // Multi-step task requiring Big Brother
-  | 'setting_change' // Change system settings
-  | 'persona_update'; // Update persona/preferences
+import { modelRouterDefinition } from './model-router.schema.js'; // Update persona/preferences
 
 const DEFAULT_SYSTEM_PROMPT_TEMPLATE = `You are the Intent Orchestrator. Analyze the user's message and determine routing.
 
@@ -120,7 +104,7 @@ const temporalMemoryProperties = {
   },
 } as const;
 
-export const ENVIRONMENT_INTENT_JSON_SCHEMA = {
+const ENVIRONMENT_INTENT_JSON_SCHEMA = {
   type: 'object',
   additionalProperties: false,
   required: [...ENVIRONMENT_INTENT_FIELDS],
@@ -353,7 +337,6 @@ export const OrchestratorLLMNode: NodeDefinition = defineNode({
     const environmentContract = requestOnly || properties?.outputContract === 'environment';
     const inputData = inputs.message || inputs[0];
     const conversationHistory = requestOnly ? [] : inputs.conversationHistory || inputs[1] || context.conversationHistory || [];
-    const systemSettings = inputs.systemSettings || inputs[2] || {};
     const feedbackContext = requestOnly ? null : inputs.feedbackContext || inputs[3] || null;
     const userMessage = typeof inputData === 'string'
       ? inputData

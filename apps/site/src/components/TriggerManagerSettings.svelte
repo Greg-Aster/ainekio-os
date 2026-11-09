@@ -1,5 +1,5 @@
 <script lang="ts">
-  import { onDestroy, onMount } from 'svelte';
+  import { onMount } from 'svelte';
   import { openTriggerManagerDashboard, rightSidebarOpen } from '../stores/navigation';
   import { AUTONOMY_MODES, type AutonomyMode } from '../lib/client/active-operator-modes';
   import {
@@ -12,13 +12,11 @@
     type TriggerView,
   } from '../lib/stores/trigger-manager';
 
-  let release: (() => void) | undefined;
   let saving = '';
   let feedback = '';
   let errors: Record<string, string> = {};
 
-  onMount(() => release = useTriggerManager());
-  onDestroy(() => release?.());
+  onMount(useTriggerManager);
 
   function setError(key: string, message = '') {
     errors = { ...errors, [key]: message };
@@ -84,6 +82,7 @@
   async function runNow(trigger: TriggerView) {
     const key = `${trigger.id}.run`;
     saving = key;
+    feedback = '';
     setError(key);
     try {
       const taskId = await runTriggerNow(trigger.id);
@@ -95,8 +94,11 @@
     }
   }
 
-  function numberValue(event: Event): number {
-    return Number((event.currentTarget as HTMLInputElement).value);
+  function changedValue(event: Event, received: string | number): string {
+    const control = event.currentTarget as HTMLInputElement | HTMLSelectElement;
+    const value = control.value;
+    control.value = String(received);
+    return value;
   }
 </script>
 
@@ -115,9 +117,9 @@
   {#if feedback}<div class="mb-4 rounded border border-emerald-500/30 bg-emerald-500/10 p-3 text-sm text-emerald-700 dark:text-emerald-300">{feedback}</div>{/if}
   {#if $triggerManagerError}<div class="mb-4 rounded border border-red-500/30 bg-red-500/10 p-3 text-sm text-red-700 dark:text-red-300">{$triggerManagerError}</div>{/if}
 
-  {#if !$triggerManagerSnapshot}
-    <div class="py-12 text-center text-gray-500">Loading authoritative Trigger Manager configuration…</div>
-  {:else}
+  {#if !$triggerManagerSnapshot && !$triggerManagerError}
+    <div class="py-12 text-center text-gray-500">{$triggerManagerConnection === 'live' ? 'Trigger Manager configuration unavailable.' : 'Loading authoritative Trigger Manager configuration…'}</div>
+  {:else if $triggerManagerSnapshot}
     <section class="mb-5 rounded border border-gray-200 p-4 dark:border-gray-800">
       <div class="mb-4 flex flex-wrap items-center justify-between gap-2">
         <div><h3 class="font-semibold">Global admission policy</h3><p class="text-xs text-gray-500">This pause affects new trigger admissions, not execution of work already in the coordinator.</p></div>
@@ -126,18 +128,19 @@
       <div class="grid gap-4 md:grid-cols-2">
         <label class="flex items-center justify-between gap-3 rounded bg-gray-50 p-3 dark:bg-gray-900">
           <span><span class="block font-medium">Pause trigger admissions</span><span class="text-xs text-gray-500">Configured timers stay visible while new admissions stop.</span></span>
-          <input type="checkbox" checked={$triggerManagerSnapshot.admissionPaused} disabled={!!saving} on:change={event => saveGlobal('pauseAll', event.currentTarget.checked)} />
+          <input type="checkbox" checked={$triggerManagerSnapshot.admissionPaused} disabled={!!saving} on:click|preventDefault={() => saveGlobal('pauseAll', !$triggerManagerSnapshot!.admissionPaused)} />
+          {#if errors['global.pauseAll']}<span class="text-xs text-red-600 dark:text-red-300">{errors['global.pauseAll']}</span>{/if}
         </label>
         <label class="rounded bg-gray-50 p-3 dark:bg-gray-900">
           <span class="block font-medium">Timezone</span>
-          <input class="form-input mt-2 w-full" value={$triggerManagerSnapshot.timezone} disabled={!!saving} on:change={event => saveGlobal('timezone', event.currentTarget.value)} />
+          <input class="form-input mt-2 w-full" value={$triggerManagerSnapshot.timezone} disabled={!!saving} on:change={event => saveGlobal('timezone', changedValue(event, $triggerManagerSnapshot!.timezone))} />
           {#if errors['global.timezone']}<span class="mt-1 block text-xs text-red-600">{errors['global.timezone']}</span>{/if}
         </label>
         <div class="rounded bg-gray-50 p-3 dark:bg-gray-900 md:col-span-2">
-          <label class="flex items-center gap-2 font-medium"><input type="checkbox" checked={$triggerManagerSnapshot.globalSettings.quietHours?.enabled || false} disabled={!!saving} on:change={event => quietHours({ enabled: event.currentTarget.checked })} /> Quiet hours</label>
+          <label class="flex items-center gap-2 font-medium"><input type="checkbox" checked={$triggerManagerSnapshot.globalSettings.quietHours?.enabled || false} disabled={!!saving} on:click|preventDefault={() => quietHours({ enabled: !$triggerManagerSnapshot!.globalSettings.quietHours?.enabled })} /> Quiet hours</label>
           <div class="mt-3 grid grid-cols-2 gap-3">
-            <label class="text-xs text-gray-500">Start<input class="form-input mt-1 w-full" type="time" value={$triggerManagerSnapshot.globalSettings.quietHours?.start || '22:00'} disabled={!!saving} on:change={event => quietHours({ start: event.currentTarget.value })} /></label>
-            <label class="text-xs text-gray-500">End<input class="form-input mt-1 w-full" type="time" value={$triggerManagerSnapshot.globalSettings.quietHours?.end || '08:00'} disabled={!!saving} on:change={event => quietHours({ end: event.currentTarget.value })} /></label>
+            <label class="text-xs text-gray-500">Start<input class="form-input mt-1 w-full" type="time" value={$triggerManagerSnapshot.globalSettings.quietHours?.start || '22:00'} disabled={!!saving} on:change={event => quietHours({ start: changedValue(event, $triggerManagerSnapshot!.globalSettings.quietHours?.start || '22:00') })} /></label>
+            <label class="text-xs text-gray-500">End<input class="form-input mt-1 w-full" type="time" value={$triggerManagerSnapshot.globalSettings.quietHours?.end || '08:00'} disabled={!!saving} on:change={event => quietHours({ end: changedValue(event, $triggerManagerSnapshot!.globalSettings.quietHours?.end || '08:00') })} /></label>
           </div>
           {#if errors['global.quietHours']}<span class="mt-1 block text-xs text-red-600">{errors['global.quietHours']}</span>{/if}
         </div>
@@ -151,46 +154,46 @@
             <div><h3 class="font-semibold">{trigger.displayName}</h3><p class="mt-1 max-w-2xl text-xs text-gray-500">{trigger.description || trigger.handler}</p></div>
             <div class="flex items-center gap-3">
               <button class="rounded border px-3 py-1.5 text-xs disabled:opacity-50 dark:border-gray-700" disabled={!trigger.enabled || !!saving || !trigger.handlerRegistered || !trigger.sourceResolvable} on:click={() => runNow(trigger)}>Run now</button>
-              <label class="flex items-center gap-2 text-sm"><input type="checkbox" checked={trigger.enabled} disabled={!!saving} on:change={event => saveAgent(trigger, 'enabled', event.currentTarget.checked)} /> Enabled</label>
+              <label class="flex items-center gap-2 text-sm"><input type="checkbox" checked={trigger.enabled} disabled={!!saving} on:click|preventDefault={() => saveAgent(trigger, 'enabled', !trigger.enabled)} /> Enabled</label>
             </div>
           </div>
 
           <div class="mt-4 grid gap-3 sm:grid-cols-2 lg:grid-cols-4">
             <label class="text-xs text-gray-500">Trigger type
-              <select class="form-input mt-1 w-full" value={trigger.type} disabled={!!saving} on:change={event => saveAgentType(trigger, event.currentTarget.value as TriggerView['type'])}>
+              <select class="form-input mt-1 w-full" value={trigger.type} disabled={!!saving} on:change={event => saveAgentType(trigger, changedValue(event, trigger.type) as TriggerView['type'])}>
                 <option value="interval">Interval</option><option value="activity">Inactivity</option><option value="time-of-day">Time of day</option><option value="event">Event</option><option value="manual">Manual</option>
               </select>
             </label>
             {#if trigger.type === 'interval'}
-              <label class="text-xs text-gray-500">Interval (seconds)<input class="form-input mt-1 w-full" type="number" min="1" max="31536000" value={trigger.interval || 60} disabled={!!saving} on:change={event => saveAgent(trigger, 'interval', numberValue(event))} /></label>
+              <label class="text-xs text-gray-500">Interval (seconds)<input class="form-input mt-1 w-full" type="number" min="1" max="31536000" value={trigger.interval || 60} disabled={!!saving} on:change={event => saveAgent(trigger, 'interval', Number(changedValue(event, trigger.interval || 60)))} /></label>
             {:else if trigger.type === 'activity'}
-              <label class="text-xs text-gray-500">Inactivity (seconds)<input class="form-input mt-1 w-full" type="number" min="1" max="31536000" value={trigger.inactivityThreshold || 60} disabled={!!saving} on:change={event => saveAgent(trigger, 'inactivityThreshold', numberValue(event))} /></label>
+              <label class="text-xs text-gray-500">Inactivity (seconds)<input class="form-input mt-1 w-full" type="number" min="1" max="31536000" value={trigger.inactivityThreshold || 60} disabled={!!saving} on:change={event => saveAgent(trigger, 'inactivityThreshold', Number(changedValue(event, trigger.inactivityThreshold || 60)))} /></label>
             {:else if trigger.type === 'time-of-day'}
-              <label class="text-xs text-gray-500">Local time ({$triggerManagerSnapshot.timezone})<input class="form-input mt-1 w-full" type="time" value={trigger.schedule || '00:00'} disabled={!!saving} on:change={event => saveAgent(trigger, 'schedule', event.currentTarget.value)} /></label>
+              <label class="text-xs text-gray-500">Local time ({$triggerManagerSnapshot.timezone})<input class="form-input mt-1 w-full" type="time" value={trigger.schedule || '00:00'} disabled={!!saving} on:change={event => saveAgent(trigger, 'schedule', changedValue(event, trigger.schedule || '00:00'))} /></label>
             {:else if trigger.type === 'event'}
-              <label class="text-xs text-gray-500">Event pattern<input class="form-input mt-1 w-full" value={trigger.eventPattern || ''} disabled={!!saving} on:change={event => saveAgent(trigger, 'eventPattern', event.currentTarget.value)} /></label>
-              <label class="text-xs text-gray-500">Admit every N matching events<input class="form-input mt-1 w-full" type="number" min="1" max="10000" value={trigger.eventCountThreshold || 1} disabled={!!saving} on:change={event => saveAgent(trigger, 'eventCountThreshold', numberValue(event))} /></label>
-              <label class="text-xs text-gray-500">Monotonic event count field<input class="form-input mt-1 w-full" value={trigger.eventCountField || ''} placeholder="count" disabled={!!saving} on:change={event => saveAgent(trigger, 'eventCountField', event.currentTarget.value || null)} /></label>
-              <label class="text-xs text-gray-500">Semi-mode idle baseline/reset seconds<input class="form-input mt-1 w-full" type="number" min="0" max="31536000" value={trigger.idleResetSeconds || 0} disabled={!!saving} on:change={event => saveAgent(trigger, 'idleResetSeconds', numberValue(event) || null)} /></label>
+              <label class="text-xs text-gray-500">Event pattern<input class="form-input mt-1 w-full" value={trigger.eventPattern || ''} disabled={!!saving} on:change={event => saveAgent(trigger, 'eventPattern', changedValue(event, trigger.eventPattern || ''))} /></label>
+              <label class="text-xs text-gray-500">Admit every N matching events<input class="form-input mt-1 w-full" type="number" min="1" max="10000" value={trigger.eventCountThreshold || 1} disabled={!!saving} on:change={event => saveAgent(trigger, 'eventCountThreshold', Number(changedValue(event, trigger.eventCountThreshold || 1)))} /></label>
+              <label class="text-xs text-gray-500">Monotonic event count field<input class="form-input mt-1 w-full" value={trigger.eventCountField || ''} placeholder="count" disabled={!!saving} on:change={event => saveAgent(trigger, 'eventCountField', changedValue(event, trigger.eventCountField || '') || null)} /></label>
+              <label class="text-xs text-gray-500">Semi-mode idle baseline/reset seconds<input class="form-input mt-1 w-full" type="number" min="0" max="31536000" value={trigger.idleResetSeconds || 0} disabled={!!saving} on:change={event => saveAgent(trigger, 'idleResetSeconds', Number(changedValue(event, trigger.idleResetSeconds || 0)) || null)} /></label>
             {:else}
               <div class="rounded bg-gray-50 p-2 text-xs text-gray-500 dark:bg-gray-900">Manual triggers run only from an explicit user or API action.</div>
             {/if}
             <label class="text-xs text-gray-500">Priority
-              <select class="form-input mt-1 w-full" value={trigger.priority} disabled={!!saving} on:change={event => saveAgent(trigger, 'priority', event.currentTarget.value)}><option value="low">Low</option><option value="normal">Normal</option><option value="high">High</option></select>
+              <select class="form-input mt-1 w-full" value={trigger.priority} disabled={!!saving} on:change={event => saveAgent(trigger, 'priority', changedValue(event, trigger.priority))}><option value="low">Low</option><option value="normal">Normal</option><option value="high">High</option></select>
             </label>
             <label class="text-xs text-gray-500">Startup policy
-              <select class="form-input mt-1 w-full" value={trigger.startupPolicy} disabled={!!saving} on:change={event => saveAgent(trigger, 'startupPolicy', event.currentTarget.value)}><option value="skip">Skip</option><option value="run-once">Run once</option><option value="recover-missed">Recover missed</option></select>
+              <select class="form-input mt-1 w-full" value={trigger.startupPolicy} disabled={!!saving} on:change={event => saveAgent(trigger, 'startupPolicy', changedValue(event, trigger.startupPolicy))}><option value="skip">Skip</option><option value="run-once">Run once</option><option value="recover-missed">Recover missed</option></select>
             </label>
           </div>
 
-          <fieldset class="mt-4"><legend class="text-xs font-medium text-gray-500">Allowed Active Operator modes</legend><div class="mt-2 flex flex-wrap gap-3">{#each AUTONOMY_MODES as mode}<label class="flex items-center gap-2 text-sm"><input type="checkbox" checked={trigger.allowedModes.includes(mode.id)} disabled={!!saving} on:change={event => toggleMode(trigger, mode.id, event.currentTarget.checked)} /> {mode.label}</label>{/each}</div></fieldset>
+          <fieldset class="mt-4"><legend class="text-xs font-medium text-gray-500">Allowed Active Operator modes</legend><div class="mt-2 flex flex-wrap gap-3">{#each AUTONOMY_MODES as mode}<label class="flex items-center gap-2 text-sm"><input type="checkbox" checked={trigger.allowedModes.includes(mode.id)} disabled={!!saving} on:click|preventDefault={() => toggleMode(trigger, mode.id, !trigger.allowedModes.includes(mode.id))} /> {mode.label}</label>{/each}</div></fieldset>
 
           <details class="mt-4 rounded bg-gray-50 p-3 dark:bg-gray-900">
             <summary class="cursor-pointer text-sm font-medium">Advanced admission and retry controls</summary>
             <div class="mt-3 grid gap-3 sm:grid-cols-3">
-              <label class="text-xs text-gray-500">Maximum retries<input class="form-input mt-1 w-full" type="number" min="0" max="20" value={trigger.maxRetries} disabled={!!saving} on:change={event => saveAgent(trigger, 'maxRetries', numberValue(event))} /></label>
-              <label class="text-xs text-gray-500">Jitter (milliseconds)<input class="form-input mt-1 w-full" type="number" min="0" max="86400000" value={trigger.jitterMs || 0} disabled={!!saving} on:change={event => saveAgent(trigger, 'jitterMs', numberValue(event))} /></label>
-              <label class="text-xs text-gray-500">Admission probability (0–1)<input class="form-input mt-1 w-full" type="number" min="0" max="1" step="0.05" value={trigger.probability ?? 1} disabled={!!saving} on:change={event => saveAgent(trigger, 'probability', numberValue(event))} /></label>
+              <label class="text-xs text-gray-500">Maximum retries<input class="form-input mt-1 w-full" type="number" min="0" max="20" value={trigger.maxRetries} disabled={!!saving} on:change={event => saveAgent(trigger, 'maxRetries', Number(changedValue(event, trigger.maxRetries)))} /></label>
+              <label class="text-xs text-gray-500">Jitter (milliseconds)<input class="form-input mt-1 w-full" type="number" min="0" max="86400000" value={trigger.jitterMs || 0} disabled={!!saving} on:change={event => saveAgent(trigger, 'jitterMs', Number(changedValue(event, trigger.jitterMs || 0)))} /></label>
+              <label class="text-xs text-gray-500">Admission probability (0–1)<input class="form-input mt-1 w-full" type="number" min="0" max="1" step="0.05" value={trigger.probability ?? 1} disabled={!!saving} on:change={event => saveAgent(trigger, 'probability', Number(changedValue(event, trigger.probability ?? 1)))} /></label>
             </div>
           </details>
 

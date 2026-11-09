@@ -10,6 +10,7 @@ const encoder = new TextEncoder();
 const requests = new Map<string, ReadableStreamDefaultController<Uint8Array>>();
 const sources: Source[] = [];
 let syntheses = 0;
+const batchBodies: Record<string, unknown>[] = [];
 class Source {
   buffer: { duration: number } | null = null;
   onended: (() => void) | null = null;
@@ -45,11 +46,11 @@ function finish(id: string) {
 }
 globalThis.window = { AudioContext: Context, dispatchEvent: () => true } as unknown as Window & typeof globalThis;
 globalThis.fetch = async (url, init) => {
-  if (String(url).endsWith('/api/pause-state')) return Response.json({});
   if (String(url) === '/api/voice-settings') return Response.json({ provider: 'piper' });
-  if (String(url) === '/api/voice-models') return Response.json({ multiVoice: false });
+  if (String(url) === '/api/voice-models') return Response.json({ multiVoice: true, models: ['/first.onnx', '/second.onnx'] });
   if (String(url) === '/api/tts') {
     syntheses++;
+    batchBodies.push(JSON.parse(String(init?.body)));
     return new Response(new Uint8Array([1]));
   }
   assert.equal(String(url), '/api/tts-stream');
@@ -111,6 +112,20 @@ try {
   sources[2]!.onended?.();
   assert.equal(await batchPlayback, 'completed');
   assert.equal(syntheses, requestsBeforePlayback, 'batch playback also consumes its preparation without another synthesis');
+  assert.deepEqual(batchBodies.at(-1)?.models, ['/first.onnx', '/second.onnx'], 'ordinary profile speech retains every configured voice');
+
+  const preview = tts.speak('<think>Hidden thought</think>**Exact** preview speech.\n```ignored code```', { provider: 'piper', streaming: false,
+    voice: '/draft-voice.onnx', speed: 1.3, requestId: 'draft-preview' });
+  await until(() => sources.length === 4);
+  assert.deepEqual(batchBodies.at(-1), { text: 'Exact preview speech.', provider: 'piper', voiceId: '/draft-voice.onnx', speakingRate: 1.3 },
+    'an explicit batch preview honors the existing provider/voice/speed options without profile multi-voice substitution');
+  sources[3]!.onended?.();
+  assert.equal(await preview, 'completed');
+
+  const draft = tts.prepareSpeech('Prepared preview.', { provider: 'piper', voice: '/prepared.onnx', speed: 0.8 });
+  await draft.finished;
+  assert.deepEqual(batchBodies.at(-1), { text: 'Prepared preview.', provider: 'piper', voiceId: '/prepared.onnx', speakingRate: 0.8 });
+  draft.cancel();
   console.log('useTTS-preparation.spec.ts: overlapping preparation, ordered playback, cancellation, failure and batch audio passed');
 } finally {
   tts.cleanup();

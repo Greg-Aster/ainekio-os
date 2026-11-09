@@ -4,6 +4,7 @@
  */
 
 import { writable, get } from 'svelte/store';
+import type { ResponseEntryReference } from '@metahuman/core/cognitive-graph-contract';
 import { apiFetch } from '../api-config';
 
 // Types
@@ -14,6 +15,8 @@ export interface ChatMessage {
   content: string;
   timestamp: number;
   relPath?: string;
+  taskId?: string;
+  responseEntry?: ResponseEntryReference;
   meta?: Record<string, any> | null;
 }
 
@@ -30,11 +33,6 @@ interface UseMessagesOptions {
    */
   getMode: () => 'conversation' | 'inner' | 'terminal';
 
-  /**
-   * Callback when messages change
-   */
-  onMessagesChange?: (messages: ChatMessage[]) => void;
-
   /** Browser-only status notices are not durable System Buffer entries. */
   onTransientSystemMessage?: (message: string) => void;
 }
@@ -44,18 +42,13 @@ interface UseMessagesOptions {
  * Provides reactive state and methods for message management
  */
 export function useMessages(options: UseMessagesOptions) {
-  const { getMode, onMessagesChange, onTransientSystemMessage } = options;
+  const { getMode, onTransientSystemMessage } = options;
 
   // State
   const messages = writable<ChatMessage[]>([]);
   const selectedMessage = writable<ChatMessage | null>(null);
   const selectedMessageIndex = writable<number | null>(null);
   const conversationSessionId = writable<string>('');
-
-  // Subscribe to messages changes
-  if (onMessagesChange) {
-    messages.subscribe(onMessagesChange);
-  }
 
   /**
    * Push a new message to the conversation
@@ -205,24 +198,6 @@ export function useMessages(options: UseMessagesOptions) {
     return sessionId;
   }
 
-  /**
-   * Format timestamp for display
-   */
-  function formatTime(timestamp: number): string {
-    const date = new Date(timestamp);
-    return date.toLocaleTimeString('en-US', { hour: '2-digit', minute: '2-digit' });
-  }
-
-  /**
-   * Format reasoning stage label
-   */
-  function formatReasoningLabel(stage: ReasoningStage): string {
-    const stageName = String(stage.stage || 'plan')
-      .replace(/_/g, ' ')
-      .replace(/\b\w/g, c => c.toUpperCase());
-    return `🤔 Round ${stage.round}: ${stageName}`;
-  }
-
   return {
     // Stores
     messages,
@@ -239,8 +214,6 @@ export function useMessages(options: UseMessagesOptions) {
     getReplyToMetadata,
     clearSelection,
     generateSessionId,
-    formatTime,
-    formatReasoningLabel,
   };
 }
 

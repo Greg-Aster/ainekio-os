@@ -1,15 +1,18 @@
 <script lang="ts">
+  import { onMount, onDestroy } from 'svelte';
   import { apiFetch } from '../../lib/client/api-config';
 
+  export let recordedTasksCreated = 0;
   export let onNext: () => void;
   export let onBack: () => void;
   export let onSkip: () => void;
 
   interface Goal {
     id: string;
-    title: string;
     category: 'short' | 'mid' | 'long';
-    description?: string;
+    entry: { goal: string; status?: string; description?: string; [key: string]: unknown };
+    isNew: boolean;
+    taskReceipt?: string;
   }
 
   let goals: Goal[] = [];
@@ -21,12 +24,41 @@
 
   let saving = false;
   let error = '';
+  let loading = true;
+  let goalsLoaded = false;
+  let tasksCreated = recordedTasksCreated;
+  let active = true;
+
+  onMount(() => { void loadGoals(); });
+  onDestroy(() => { active = false; });
 
   const categories = [
     { value: 'short', label: 'Short-term (1-3 months)', icon: '🎯' },
     { value: 'mid', label: 'Mid-term (3-12 months)', icon: '📈' },
     { value: 'long', label: 'Long-term (1+ years)', icon: '🌟' },
   ] as const;
+
+  async function loadGoals() {
+    loading = true;
+    error = '';
+    try {
+      const response = await apiFetch('/api/persona-core');
+      const data = await response.json();
+      if (!response.ok || !data.persona) throw new Error(data.error || 'Failed to load existing goals');
+      goals = (['short', 'mid', 'long'] as const).flatMap(category => {
+        const tier = `${category}Term`;
+        return (data.persona.goals?.[tier] || []).map((entry: Goal['entry'] | string) => ({
+          id: crypto.randomUUID(), category, isNew: false,
+          entry: typeof entry === 'string' ? { goal: entry } : entry,
+        }));
+      });
+      goalsLoaded = true;
+    } catch (cause) {
+      error = (cause as Error).message;
+    } finally {
+      loading = false;
+    }
+  }
 
   function addGoal() {
     if (!currentGoal.title.trim()) {
@@ -36,9 +68,13 @@
 
     const newGoal: Goal = {
       id: crypto.randomUUID(),
-      title: currentGoal.title.trim(),
       category: currentGoal.category,
-      description: currentGoal.description.trim() || undefined,
+      isNew: true,
+      entry: {
+        goal: currentGoal.title.trim(),
+        status: currentGoal.category === 'short' ? 'active' : currentGoal.category === 'mid' ? 'planning' : 'aspirational',
+        description: currentGoal.description.trim() || undefined,
+      },
     };
 
     goals = [...goals, newGoal];
@@ -57,11 +93,8 @@
   }
 
   async function handleNext() {
-    if (goals.length === 0) {
-      // Skip is OK - user might want to add goals later
-      onNext();
-      return;
-    }
+    if (!active) return;
+    const selectedGoals = goals;
 
     saving = true;
     error = '';
@@ -69,9 +102,9 @@
     try {
       // Group goals by category for persona/core.json
       const groupedGoals = {
-        shortTerm: goals.filter(g => g.category === 'short').map(g => g.title),
-        midTerm: goals.filter(g => g.category === 'mid').map(g => g.title),
-        longTerm: goals.filter(g => g.category === 'long').map(g => g.title),
+        shortTerm: selectedGoals.filter(g => g.category === 'short').map(g => g.entry),
+        midTerm: selectedGoals.filter(g => g.category === 'mid').map(g => g.entry),
+        longTerm: selectedGoals.filter(g => g.category === 'long').map(g => g.entry),
       };
 
       // Save goals to persona/core.json
@@ -83,31 +116,31 @@
         }),
       });
 
-      if (!personaResponse.ok) {
-        throw new Error('Failed to save goals to persona');
-      }
+      const persona = await personaResponse.json();
+      if (!personaResponse.ok || !persona.success) throw new Error(persona.error || 'Failed to save goals to persona');
+      if (!active) return;
 
       // Create tasks for short-term goals
-      let tasksCreated = 0;
-      for (const goal of goals.filter(g => g.category === 'short')) {
+      for (const goal of selectedGoals.filter(g => g.isNew && g.category === 'short' && !g.taskReceipt)) {
         const taskResponse = await apiFetch('/api/tasks', {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify({
-            title: goal.title,
-            description: goal.description,
+            title: goal.entry.goal,
+            description: goal.entry.description,
             priority: 'medium',
-            status: 'active',
           }),
         });
 
-        if (taskResponse.ok) {
-          tasksCreated++;
-        }
+        const task = await taskResponse.json();
+        if (!taskResponse.ok || !task.filepath) throw new Error(task.error || `Task creation was not acknowledged: ${goal.entry.goal}`);
+        goal.taskReceipt = task.filepath;
+        tasksCreated++;
+        if (!active) return;
       }
 
       // Update onboarding state
-      await apiFetch('/api/onboarding/state', {
+      const progress = await apiFetch('/api/onboarding/state', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
@@ -119,7 +152,9 @@
         }),
       });
 
-      onNext();
+      const data = await progress.json();
+      if (!progress.ok || !data.state) throw new Error(data.error || 'Failed to save goal progress');
+      if (active && goals === selectedGoals) onNext();
     } catch (err) {
       error = (err as Error).message;
     } finally {
@@ -142,11 +177,19 @@
   <div>
     <h2 class="text-3xl font-semibold mb-2 text-gray-900 dark:text-gray-50">What Are Your Goals?</h2>
     <p class="text-base leading-relaxed text-gray-500 dark:text-gray-400">
-      Tell your MetaHuman what you want to achieve. These goals will guide its autonomous actions
+      Tell your Ainekio OS what you want to achieve. These goals will guide its autonomous actions
       and help it prioritize tasks that align with your objectives.
     </p>
   </div>
 
+  {#if !goalsLoaded}
+    {#if loading}
+      <p role="status">Loading existing goals...</p>
+    {:else}
+      <p role="alert">{error}</p>
+      <button class="btn-secondary" on:click={loadGoals}>Retry loading goals</button>
+    {/if}
+  {:else}
   <div class="flex flex-col gap-6 p-6 bg-gray-50 dark:bg-gray-800 border border-gray-200 dark:border-gray-700 rounded-xl">
     <div class="flex flex-col gap-2">
       <label for="title" class="text-sm font-semibold text-gray-700 dark:text-gray-300 flex items-center gap-1">
@@ -228,9 +271,9 @@
               </button>
             </div>
             <div class="flex flex-col gap-2">
-              <h4 class="text-lg font-semibold text-gray-900 dark:text-gray-50">{goal.title}</h4>
-              {#if goal.description}
-                <p class="text-sm leading-relaxed text-gray-500 dark:text-gray-400">{goal.description}</p>
+              <h4 class="text-lg font-semibold text-gray-900 dark:text-gray-50">{goal.entry.goal}</h4>
+              {#if goal.entry.description}
+                <p class="text-sm leading-relaxed text-gray-500 dark:text-gray-400">{goal.entry.description}</p>
               {/if}
             </div>
           </div>
@@ -250,8 +293,8 @@
     <div class="text-sm leading-relaxed text-blue-800 dark:text-blue-100">
       <strong class="text-blue-900 dark:text-blue-200">Why set goals?</strong>
       <ul class="my-2 pl-6">
-        <li>Your MetaHuman will prioritize actions that align with your objectives</li>
-        <li>Short-term goals will be automatically converted into actionable tasks</li>
+        <li>Your Ainekio OS will prioritize actions that align with your objectives</li>
+        <li>New short-term goals added here will be converted into actionable tasks; saved goals are retained without creating duplicate tasks</li>
         <li>The system will track progress and suggest next steps</li>
         <li>Autonomous agents will work towards these goals in the background</li>
       </ul>
@@ -268,6 +311,8 @@
     </p>
   </div>
 
+  {/if}
+
   <div class="flex justify-between gap-4 pt-4 border-t border-gray-200 dark:border-gray-700 md:flex-col">
     <button class="px-6 py-3 text-base font-semibold bg-gray-100 dark:bg-gray-700 text-gray-700 dark:text-gray-300 border border-gray-300 dark:border-gray-600 rounded-lg cursor-pointer transition-all hover:bg-gray-200 dark:hover:bg-gray-600 disabled:opacity-50 disabled:cursor-not-allowed" on:click={onBack} disabled={saving}>
       ← Back
@@ -275,6 +320,7 @@
     <button class="px-6 py-3 text-base font-semibold bg-transparent text-gray-500 dark:text-gray-400 border-none rounded-lg cursor-pointer transition-all hover:text-gray-900 dark:hover:text-gray-50 hover:bg-gray-100 dark:hover:bg-gray-700 disabled:opacity-50 disabled:cursor-not-allowed" on:click={onSkip} disabled={saving}>
       Skip
     </button>
+    {#if goalsLoaded}
     <button
       class="px-6 py-3 text-base font-semibold bg-gradient-to-br from-indigo-500 to-purple-600 text-white border-none rounded-lg cursor-pointer transition-all hover:-translate-y-0.5 hover:shadow-lg hover:shadow-indigo-500/40 disabled:opacity-50 disabled:cursor-not-allowed disabled:hover:transform-none disabled:hover:shadow-none"
       on:click={handleNext}
@@ -282,5 +328,6 @@
     >
       {saving ? 'Saving...' : 'Continue →'}
     </button>
+    {/if}
   </div>
 </div>

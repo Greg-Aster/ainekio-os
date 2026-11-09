@@ -8,7 +8,7 @@ import type { UnifiedRequest, UnifiedResponse } from '../types.js';
 import { successResponse, errorResponse, badRequestResponse } from '../types.js';
 import { generateSpeech, generateMultiVoiceSpeech, getTTSStatus } from '../../index.js';
 
-type TTSProvider = 'piper' | 'rvc' | 'kokoro';
+type TTSProvider = 'piper' | 'kokoro';
 
 /**
  * POST /api/tts - Generate speech from text
@@ -29,7 +29,7 @@ export async function handleTtsGenerate(req: UnifiedRequest): Promise<UnifiedRes
       const multiProvider = selectedProvider === 'kokoro' ? 'piper' : selectedProvider;
       audioBuffer = await generateMultiVoiceSpeech(text, models, {
         speakingRate,
-        provider: multiProvider as 'piper' | 'rvc' | undefined,
+        provider: multiProvider as 'piper' | undefined,
       });
     } else {
       // Single voice generation

@@ -179,3 +179,77 @@ test('planning model tool access is scoped to read-only without changing other n
     assert.ok(invocation.args.includes('approval_policy="never"'))
   } finally { await fs.rm(invocation.tempDir, { recursive: true, force: true }) }
 })
+
+test('gemini invocation builds stream-json agy flags, low effort, and parses NDJSON events', async () => {
+  const invocation = buildBigBrotherCLIInvocation('gemini', 'Hello Gemini', {
+    model: 'gemini-3.8-flash-low',
+    reasoningEffort: 'none',
+  })
+  try {
+    assert.equal(invocation.command, 'agy')
+    assert.ok(invocation.args.includes('--input-format'))
+    assert.ok(invocation.args.includes('--output-format'))
+    assert.ok(invocation.args.includes('--disable-slash-commands'))
+    assert.deepEqual(invocation.args.slice(invocation.args.indexOf('--model'), invocation.args.indexOf('--model') + 2), [
+      '--model', 'gemini-3.8-flash-low',
+    ])
+    assert.deepEqual(invocation.args.slice(invocation.args.indexOf('--effort'), invocation.args.indexOf('--effort') + 2), [
+      '--effort', 'low',
+    ])
+    assert.equal(invocation.args.at(-1), '--print=')
+    assert.equal(invocation.cwd, invocation.tempDir)
+    assert.deepEqual(JSON.parse(invocation.stdin.trim()), {
+      event: 'user',
+      message: { content: 'Hello Gemini' },
+    })
+
+    const init = parseBigBrotherTerminalEvent('gemini', JSON.stringify({
+      event: 'init',
+      conversation_id: 'conv-123',
+      init: { model: 'gemini-3.8-flash-low' },
+    }))
+    assert.equal(init.threadId, 'conv-123')
+    assert.match(init.displayLines[0], /\[Gemini\] Session conv-123/)
+
+    const delta = parseBigBrotherTerminalEvent('gemini', JSON.stringify({
+      event: 'step_update',
+      step_update: { step_type: 'agent_response', text_delta: 'Fast reply', thinking_delta: '' },
+    }))
+    assert.deepEqual(delta.displayLines, ['Fast reply'])
+
+    const result = parseBigBrotherTerminalEvent('gemini', JSON.stringify({
+      event: 'result',
+      result: { conversation_id: 'conv-123', status: 'SUCCESS', response: 'Fast reply' },
+    }))
+    assert.equal(result.finalText, 'Fast reply')
+    assert.equal(result.threadId, 'conv-123')
+  } finally {
+    await fs.rm(invocation.tempDir, { recursive: true, force: true })
+  }
+})
+
+test('gpt-6.1-sol coerces none reasoning effort to low while gemini materializes image attachments', async () => {
+  const codexSol = buildBigBrotherCLIInvocation('codex', '', {
+    model: 'gpt-6.1-sol',
+    reasoningEffort: 'none',
+    enableThinking: false,
+    modelRequest: { messages: [{ role: 'user', content: 'Hi' }] },
+  })
+  const geminiWithImage = buildBigBrotherCLIInvocation('gemini', 'What do you see?', {
+    model: 'gemini-3.8-flash-low',
+    images: [{ mimeType: 'image/jpeg', base64: '/9j/2Q==' }],
+  })
+  try {
+    assert.equal(codexSol.appServer?.reasoning, 'low')
+    assert.ok(codexSol.args.includes('model_reasoning_effort="low"'))
+    const parsedStdin = JSON.parse(geminiWithImage.stdin.trim())
+    assert.match(parsedStdin.message.content, /image-1\.jpg/)
+    assert.deepEqual(
+      await fs.readFile(path.join(geminiWithImage.tempDir, 'image-1.jpg')),
+      Buffer.from('/9j/2Q==', 'base64'),
+    )
+  } finally {
+    await fs.rm(codexSol.tempDir, { recursive: true, force: true })
+    await fs.rm(geminiWithImage.tempDir, { recursive: true, force: true })
+  }
+})

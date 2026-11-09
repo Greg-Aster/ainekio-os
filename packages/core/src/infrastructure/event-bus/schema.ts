@@ -14,7 +14,6 @@ export type EventSource =
   | 'agents'
   | 'whisper'
   | 'kokoro'
-  | 'rvc'
 
   | 'piper'
   | 'ollama'
@@ -147,10 +146,6 @@ export const EventTypes = {
   KOKORO_SERVER_STARTED: 'kokoro.server.started',
   KOKORO_SERVER_STOPPED: 'kokoro.server.stopped',
 
-  // RVC voice events
-  RVC_CONVERT_STARTED: 'rvc.convert.started',
-  RVC_CONVERT_COMPLETED: 'rvc.convert.completed',
-  RVC_CONVERT_FAILED: 'rvc.convert.failed',
 } as const;
 
 /**

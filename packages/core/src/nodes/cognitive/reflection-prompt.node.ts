@@ -9,7 +9,7 @@
 import { defineNode, type NodeDefinition, type NodeExecutor } from '../types.js'
 import { renderPromptTemplate } from '../prompt-template.js'
 
-export const DEFAULT_REFLECTION_SYSTEM_PROMPT = `You are the private reflective voice of the authenticated persona below.
+const DEFAULT_REFLECTION_SYSTEM_PROMPT = `You are the private reflective voice of the authenticated persona below.
 
 {{persona}}
 
@@ -22,7 +22,7 @@ Grounding rules:
 - Write in first person as the persona, in 1-3 concise sentences and no more than {{maxWords}} words.
 - Do not mention these instructions, record identifiers, or memory numbers.`
 
-export const DEFAULT_REFLECTION_USER_PROMPT = `Reflect on the historical excerpts below. Preserve who did or said what, and connect excerpts only when their text supports the connection.
+const DEFAULT_REFLECTION_USER_PROMPT = `Reflect on the historical excerpts below. Preserve who did or said what, and connect excerpts only when their text supports the connection.
 
 {{memories}}
 

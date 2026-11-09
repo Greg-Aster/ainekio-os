@@ -29,5 +29,3 @@ export {
   type MobileAgentContext,
   type MobileAgentRegistration,
 } from './mobile-agents.js';
-
-// Local model service (Transformers.js) lifecycle management

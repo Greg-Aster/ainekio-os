@@ -57,6 +57,12 @@ The optional Mutant Super Intelligence entry appears only when enough public
 profiles are available. It builds a temporary merged guest persona; it does not
 merge or modify the source profiles.
 
+## Storage location
+
+Use **System → Profile Location** to inspect the resolved path, scan available devices, validate a custom path, migrate data, or switch to an existing profile directory. Configuration, device discovery and VeraCrypt status report their own read errors. A failed device scan does not establish that no devices exist. Editing a custom path clears its previous validation.
+
+Migration streams recorded progress and updates the profile storage configuration before its completion event. The screen refreshes configuration afterward; a second switch is unnecessary. Source-file retention and encryption follow the submitted migration options and reported progress. In-place encryption and decryption report their terminal results separately. Closing the view ends read observation while an already submitted operation continues; reopening reads the current configuration without replaying the operation.
+
 ## Administration
 
 Use **System → Security** for account creation, roles, visibility,

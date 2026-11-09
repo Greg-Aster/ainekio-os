@@ -280,6 +280,7 @@ export const environmentContextBuilderNode = defineNode({
       const selected = Array.isArray(inputs.routingAnalysis?.conversationContext) ? JSON.parse(message) : (inputs.selectedContext ?? JSON.parse(message));
       const { capabilityRules: _rules, ...evidence } = selected;
       if (evidence.robotStatus?.live && liveStatus) evidence.robotStatus = { ...evidence.robotStatus, live: liveStatus };
+      if (evidence.robotStatus) evidence.robotStatus = projectRobotStatusContext(evidence.robotStatus, false);
       if (evidence.currentEnvironment && liveStatus) {
         // Rebuild frame association and ages for this model call, including saved
         // task context. A recent detection is not necessarily in an attached still.
@@ -309,9 +310,53 @@ export const environmentContextBuilderNode = defineNode({
       // Retain dated input images when this program returned none. Their old
       // frame times remain explicit alongside the new action evidence.
       if (returned && !hasReturnedImages) returned.currentEnvironment.visualFrames = environment?.visualFrames ?? [];
+      const includeLocomotionMeasurement = Boolean(taskResult || selectedTask.program);
+      const compactEnvironment = (env: unknown) => {
+        if (!isRecord(env)) return env;
+        const capabilities = isRecord(env.capabilities) ? (() => {
+          const { expressionLibrary: _expressions, robotCommandCatalog: _catalog, ...rest } = env.capabilities;
+          if (isRecord(rest.locomotion)) {
+            const { programSteps: _programSteps, ...locomotion } = rest.locomotion;
+            return { ...rest, locomotion };
+          }
+          return rest;
+        })() : env.capabilities;
+        const state = isRecord(env.state) ? (() => {
+          const {
+            locomotionMeasurement: _locomotionMeasurement,
+            freestyleMovement: _freestyleMovement,
+            activeMovementUpdates: _activeMovementUpdates,
+            ...restState
+          } = env.state;
+          let nextState: Record<string, unknown> = includeLocomotionMeasurement && env.state.locomotionMeasurement !== undefined
+            ? { ...restState, locomotionMeasurement: env.state.locomotionMeasurement }
+            : restState;
+          if (isRecord(nextState.recognition)) {
+            const {
+              receivedFrames: _rf, processedFrames: _pf, freshResults: _fr,
+              droppedFrames: _df, staleFrames: _sf, queueDepth: _qd,
+              queueWaitMs: _qw, inferenceMs: _im, processedFps: _pfps,
+              freshFps: _ffps, maxFrameAgeMs: _mfa, visionOperations: _vo,
+              ...recognition
+            } = nextState.recognition;
+            nextState = { ...nextState, recognition };
+          }
+          if (isRecord(nextState.gateway) && isRecord(nextState.gateway.selectedRobot)) {
+            const { status: _rawStatus, ...selectedRobot } = nextState.gateway.selectedRobot;
+            return { ...nextState, gateway: { ...nextState.gateway, selectedRobot } };
+          }
+          return nextState;
+        })() : env.state;
+        return { ...env, capabilities, state };
+      };
+      if (evidence.currentEnvironment) evidence.currentEnvironment = compactEnvironment(evidence.currentEnvironment);
+      const activePersona = isRecord(inputs.persona) ? (() => {
+        const { $schema: _s, version: _v, lastUpdated: _u, learningProvenance: _l, notes: _n, decisionHeuristics: _d, ...rest } = inputs.persona;
+        return rest;
+      })() : inputs.persona;
       const conversationMessage = serializeContext({ ...evidence,
         ...(inputs.event ? { event: inputs.event } : {}),
-        ...(Object.hasOwn(inputs, 'persona') ? { activePersona: inputs.persona } : {}),
+        ...(Object.hasOwn(inputs, 'persona') ? { activePersona } : {}),
         ...(Object.hasOwn(inputs, 'robotStatus') && !Array.isArray(inputs.routingAnalysis?.conversationContext)
           ? { robotStatus: projectRobotStatusContext(inputs.robotStatus, false) } : {}),
         ...(Array.isArray(inputs.frames) && !Array.isArray(inputs.routingAnalysis?.conversationContext)
@@ -319,7 +364,7 @@ export const environmentContextBuilderNode = defineNode({
         ...(inputs.goalAssessment ? { goalAssessment: inputs.goalAssessment } : {}),
         ...(inputs.toolWork ? { toolWork: inputs.toolWork } : inputs.routingAnalysis?.needsToolUse === true
           ? { toolWork: { state: 'selected', request: rawInstruction } } : {}),
-        ...(returned ? { currentEnvironment: returned.currentEnvironment,
+        ...(returned ? { currentEnvironment: compactEnvironment(returned.currentEnvironment),
           evidenceAvailability: returned.evidenceAvailability } : {}),
         ...(taskResult ? { execution: inputs.execution ?? evidence.execution,
           taskResult: { done: taskResult.done, objectiveComplete: taskResult.objectiveComplete,

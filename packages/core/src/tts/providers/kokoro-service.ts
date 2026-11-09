@@ -59,7 +59,7 @@ export class KokoroService implements ITextToSpeechService {
     text: string,
     options: TTSSynthesizeOptions = {},
   ): AsyncGenerator<KokoroStreamChunk> {
-    const chunks = splitSpeechText(text);
+    const chunks = splitSpeechText(text, options.chunkPolicy);
     if (chunks.length === 0) throw new Error('No speakable text to synthesize');
 
     const requestId = options.requestId || generateRequestId();
@@ -79,13 +79,15 @@ export class KokoroService implements ITextToSpeechService {
     });
 
     try {
+      let serverVerified = false;
       for (let index = 0; index < chunks.length; index += 1) {
         if (options.signal?.aborted) {
           throw new DOMException('TTS generation aborted', 'AbortError');
         }
         const chunkStartedAt = Date.now();
         const chunkText = chunks[index]!;
-        const result = await this.synthesizeWithMetadata(chunkText, options, requestId);
+        const result = await this.synthesizeWithMetadata(chunkText, options, requestId, serverVerified);
+        if (!result.cacheHit) serverVerified = true;
         const synthesisMs = Date.now() - chunkStartedAt;
         audioBytes += result.audio.length;
 
@@ -169,6 +171,7 @@ export class KokoroService implements ITextToSpeechService {
     text: string,
     options?: TTSSynthesizeOptions,
     correlatedRequestId?: string,
+    skipReadinessCheck = false,
   ): Promise<KokoroSynthesisResult> {
     const resolved = this.resolveOptions(options);
 
@@ -200,6 +203,7 @@ export class KokoroService implements ITextToSpeechService {
         resolved.useCustom,
         resolved.customPath,
         options?.signal,
+        skipReadinessCheck,
       );
 
       // Cache for future use
@@ -283,16 +287,20 @@ export class KokoroService implements ITextToSpeechService {
     speed: number,
     useCustom: boolean,
     customPath: string,
-    signal?: AbortSignal
+    signal?: AbortSignal,
+    skipReadinessCheck = false,
   ): Promise<{ audio: Buffer; readinessMs: number; requestMs: number }> {
     const serverUrl = getVoiceServiceUrl('kokoro');
 
     // Ensure server is ready (auto-start if needed)
-    const readinessStartedAt = performance.now();
-    const serverReady = await this._ensureServerReady();
-    const readinessMs = performance.now() - readinessStartedAt;
-    if (!serverReady) {
-      throw new Error(`Kokoro server could not be started at ${serverUrl}`);
+    let readinessMs = 0;
+    if (!skipReadinessCheck) {
+      const readinessStartedAt = performance.now();
+      const serverReady = await this._ensureServerReady();
+      readinessMs = performance.now() - readinessStartedAt;
+      if (!serverReady) {
+        throw new Error(`Kokoro server could not be started at ${serverUrl}`);
+      }
     }
 
     // Prepare request payload

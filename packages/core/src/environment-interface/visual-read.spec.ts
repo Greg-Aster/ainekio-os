@@ -23,6 +23,7 @@ const { ExecutionEngine } = await import('../queue/execution-engine.js');
 new ExecutionEngine({}, manager); // Adapter work must deliver receipts without a recovery sweep.
 const { openExecutionStore } = await import('../durable-execution/storage.js');
 const { validateSvelteFlowGraph } = await import('../cognitive-graph-schema.js');
+const { evaluateLocomotionGoal } = await import('./active-task.js');
 const sessionId = 'read-body';
 const username = 'read-fixture';
 const visual = { id: 'latest-stream', timestamp: '2026-10-11T01:00:00.000Z',
@@ -199,3 +200,39 @@ for (const outcome of ['failed', 'disconnected'] as const) {
     } finally { disconnect(); }
   });
 }
+
+test('evaluateLocomotionGoal tracks optical-flow ground contact across frames and steers toward horizontalOffset', () => {
+  const now = Date.parse('2026-11-07T10:00:02.000Z');
+  const goal = {
+    kind: 'approach' as const,
+    target: {
+      frameId: 'frame-1',
+      frameTimestamp: '2026-11-07T10:00:00.000Z',
+      box: { x: 0.3, y: 0.4, width: 0.2, height: 0.2 },
+      groundContact: { x: 0.5, y: 0.6 },
+    },
+    proximity: { kind: 'metric' as const, metres: 0.4, tolerance: 0.05 },
+  };
+  const trackedMeasurement = {
+    target: {
+      available: true,
+      source: 'selected-ground-contact-moge2-depth',
+      robotId: 'selected',
+      referenceId: 'ref-1',
+      observedAt: '2026-11-07T10:00:01.800Z',
+      expiresAt: '2026-11-07T10:00:02.800Z',
+      frameId: 'frame-2',
+      referenceFrameId: 'frame-1',
+      groundContact: { x: 0.38, y: 0.62 },
+      referencePoint: { x: 0.5, y: 0.6 },
+      horizontalOffset: 0.12,
+      rangeMetres: 0.85,
+      uncertaintyMetres: null,
+    },
+  };
+  const step = evaluateLocomotionGoal(goal, trackedMeasurement, trackedMeasurement, now);
+  assert.equal(step.reached, false);
+  assert.equal(step.reason, undefined);
+  assert.equal(step.forward, 100);
+  assert.equal(step.turn, 12);
+});

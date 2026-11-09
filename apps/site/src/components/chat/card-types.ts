@@ -10,8 +10,6 @@ export type CardComponent =
   | 'UserMessageCard'
   | 'AssistantMessageCard'
   | 'ReflectionCard'
-  | 'OperatorProposalCard'
-  | 'AgencyCard'
   | 'DreamCard'
   | 'CuriosityCard'
   | 'ReasoningCard'
@@ -24,31 +22,8 @@ export interface BaseCardProps {
   isSelected: boolean;
 }
 
-// Events that cards can emit
-export interface CardEvents {
-  messageClick: { message: ChatMessage; index: number };
-  deleteMessage: { relPath: string };
-  validateMessage: { relPath: string; status: 'correct' | 'incorrect' };
-  speakMessage: { content: string };
-}
-
-// Agency-specific events (extends base events)
-export interface AgencyCardEvents extends CardEvents {
-  desireApproved: { desireId: string };
-  desireRejected: { desireId: string };
-  desireFeedback: { desireId: string; feedback: string };
-}
-
 // Goal label configuration by type
 export interface GoalLabelConfig {
   label: string;
-  cssClass: string;
   icon: string;
-}
-
-// Card styling configuration
-export interface CardStyleConfig {
-  bgColor: string;
-  borderColor: string;
-  accentColor: string;
 }

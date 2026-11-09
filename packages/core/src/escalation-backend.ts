@@ -27,6 +27,10 @@ import type { ProviderMessage } from './providers/types.js';
  */
 export interface EscalationOptions {
   toolAccess?: 'read-only';
+  /** Explicit model override for provider calls. */
+  model?: string;
+  /** Explicit reasoning effort override for provider calls. */
+  reasoningEffort?: string;
   /** Ordinary model calls request high reasoning when true, none when false; absent retains configured effort. */
   enableThinking?: boolean;
   /** Timeout in milliseconds */
@@ -156,13 +160,7 @@ export function registerBackend(backend: EscalationBackend): void {
     });
   }
   backendRegistry.set(backend.id, backend);
-  audit({
-    level: 'info',
-    category: 'system',
-    event: 'escalation_backend_registered',
-    details: { backendId: backend.id, name: backend.name },
-    actor: 'escalation-backend',
-  });
+
 }
 
 /**
@@ -365,9 +363,6 @@ function initializeBackends(): Promise<void> {
   // Every caller waits for the complete registry, including concurrent requests.
   return backendsInitialization ??= (async () => {
     await import('./backends/claude-code-backend.js');
-    await import('./backends/aider-backend.js');
-    await import('./backends/gemini-cli-backend.js');
-    await import('./backends/qwen-code-backend.js');
     await import('./backends/codex-backend.js');
   })();
 }

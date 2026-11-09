@@ -1,9 +1,21 @@
+import type { ResponseEntryReference } from '@metahuman/core/cognitive-graph-contract';
+
 export type BufferSource = 'conversation' | 'inner' | 'system' | 'robot' | 'terminal';
 export type BufferView = 'conversation' | 'inner' | 'system' | 'terminal';
 
 export interface FeedMessage {
   timestamp?: number;
   meta?: Record<string, any> | null;
+  responseEntry?: ResponseEntryReference;
+  taskId?: string;
+}
+
+function deliveryIdentity(message: FeedMessage): string | undefined {
+  if (message.responseEntry) return JSON.stringify([message.responseEntry.mode, message.responseEntry.id]);
+  const source = message.meta?.bufferSource || (message.meta?.liveConversation ? 'conversation' : undefined);
+  const id = message.meta?.idempotencyKey;
+  if (source && id) return JSON.stringify([source, id]);
+  return message.taskId ? JSON.stringify(['task', message.taskId]) : undefined;
 }
 
 export function stampBufferSource<T extends FeedMessage>(
@@ -29,8 +41,9 @@ export function replaceBufferSlice<T extends FeedMessage>(
 
 /** Project replayed delivery identities once, while retaining distinct equal-text reactions. */
 export function receiveLiveConversation<T extends FeedMessage>(current: T[], message: T): T[] {
-  const id = message.meta?.idempotencyKey;
-  return [...current.filter(entry => !id || entry.meta?.idempotencyKey !== id), message];
+  const id = deliveryIdentity(message);
+  return [...current.filter(entry => !(message.taskId && entry.taskId === message.taskId)
+    && (!id || deliveryIdentity(entry) !== id)), message];
 }
 
 /**
@@ -40,8 +53,28 @@ export function receiveLiveConversation<T extends FeedMessage>(current: T[], mes
 export function projectBufferFeed<T extends FeedMessage>(
   messages: T[],
   selectedViews: ReadonlySet<BufferView>,
+  presentations: T[],
 ): T[] {
-  return messages
+  const projected = [...messages];
+  const positions = new Map<string, number>();
+  projected.forEach((message, index) => {
+    const id = deliveryIdentity(message);
+    if (id) positions.set(id, index);
+  });
+  for (const presentation of presentations) {
+    const id = deliveryIdentity(presentation);
+    const index = id ? positions.get(id) : undefined;
+    if (index !== undefined) {
+      const saved = projected[index];
+      projected[index] = { ...saved, ...presentation,
+        timestamp: saved.timestamp ?? presentation.timestamp,
+        meta: { ...saved.meta, ...presentation.meta } };
+    } else {
+      if (id) positions.set(id, projected.length);
+      projected.push(presentation);
+    }
+  }
+  return projected
     .filter(message => {
       if (message.meta?.liveConversation === true) return selectedViews.has('conversation');
       const source = message.meta?.bufferSource;

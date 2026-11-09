@@ -6,7 +6,6 @@
     name: string;
     displayName: string;
     endpoint: string;
-    port: number;
     status: 'running' | 'stopped' | 'unknown';
     healthy: boolean;
     installed: boolean;
@@ -46,21 +45,17 @@
     running: boolean;
     sessionOpen: boolean;
     healthy: boolean;
-    provider: string | null;
+    provider?: string;
     phase: string;
   }
 
   interface EventBusInfo {
     running: boolean;
     healthy: boolean;
-    port: number;
     endpoint: string;
-    uptime?: number;
     eventCount?: number;
     subscribers?: number;
   }
-
-  export let isVisible = true;
 
   let servers: ServerInfo[] = [];
   let astroServers: AstroServer[] = [];
@@ -69,15 +64,17 @@
   let eventBus: EventBusInfo | null = null;
   let loading = true;
   let actionInProgress: string | null = null;
+  let voiceActions: Record<string, boolean> = {};
   let mounted = false;
   let isPageVisible = true;
   let statusFetchInProgress = false;
+  let statusErrors: Record<string, string> = {};
 
   const STATUS_FETCH_TIMEOUT_MS = 15000;
 
   const serverConfigs = [
-    { name: 'whisper', displayName: 'Whisper STT', endpoint: '/api/whisper-server', port: 9883 },
-    { name: 'kokoro', displayName: 'Kokoro TTS', endpoint: '/api/kokoro-server', port: 9882 },
+    { name: 'whisper', displayName: 'Whisper STT', endpoint: '/api/whisper-server' },
+    { name: 'kokoro', displayName: 'Kokoro TTS', endpoint: '/api/kokoro-server' },
   ];
 
   async function fetchStatusEndpoint(endpoint: string): Promise<Response> {
@@ -96,9 +93,23 @@
   function reportStatusFetchFailure(label: string, error: unknown) {
     if (error instanceof Error && (error.name === 'AbortError' || error.name === 'TimeoutError')) {
       console.debug(`[ServerStatus] ${label} status request timed out`);
-      return;
+    } else {
+      console.error(`Failed to fetch ${label} status:`, error);
     }
-    console.error(`Failed to fetch ${label} status:`, error);
+    return `${label}: ${error instanceof Error ? error.message : String(error)}`;
+  }
+
+  async function fetchVoiceServiceStatus({ name, displayName, endpoint }: Pick<ServerInfo, 'name' | 'displayName' | 'endpoint'>): Promise<ServerInfo> {
+    try {
+      const response = await fetchStatusEndpoint(endpoint);
+      const data = await response.json();
+      if (!response.ok) throw new Error(data.error || `Status request failed (${response.status})`);
+      return { name, displayName, endpoint, ...normalizeServerState(data), installed: data.installed, details: data };
+    } catch (error) {
+      reportStatusFetchFailure(displayName, error);
+      return { name, displayName, endpoint, status: 'unknown', healthy: false, installed: false,
+        details: { error: error instanceof Error ? error.message : String(error) } };
+    }
   }
 
   async function fetchServerStatus() {
@@ -110,6 +121,7 @@
     statusFetchInProgress = true;
     loading = servers.length === 0 && astroServers.length === 0;
     const newServers: ServerInfo[] = [];
+    const errors: Record<string, string> = {};
 
     try {
       try {
@@ -126,9 +138,9 @@
               endpoint: data.config.ollama.endpoint,
             },
           };
-        }
+        } else throw new Error((await llmResponse.json()).error || `Status request failed (${llmResponse.status})`);
       } catch (error) {
-        reportStatusFetchFailure('LLM backend', error);
+        errors['LLM backend'] = reportStatusFetchFailure('LLM backend', error);
       }
 
       try {
@@ -136,15 +148,15 @@
         if (bigBrotherResponse.ok) {
           const data = await bigBrotherResponse.json();
           bigBrother = {
-            running: data.running ?? false,
-            sessionOpen: data.sessionOpen ?? false,
-            healthy: data.healthy ?? false,
-            provider: data.provider ?? null,
-            phase: data.phase || 'stopped',
+            running: data.running,
+            sessionOpen: data.sessionOpen,
+            healthy: data.healthy,
+            provider: data.provider,
+            phase: data.phase,
           };
-        }
+        } else throw new Error((await bigBrotherResponse.json()).error || `Status request failed (${bigBrotherResponse.status})`);
       } catch (error) {
-        reportStatusFetchFailure('Big Brother', error);
+        errors['Big Brother'] = reportStatusFetchFailure('Big Brother', error);
         bigBrother = null;
       }
 
@@ -153,85 +165,39 @@
         if (eventBusResponse.ok) {
           const data = await eventBusResponse.json();
           eventBus = {
-            running: data.running ?? false,
-            healthy: data.healthy ?? false,
-            port: data.port ?? 3100,
-            endpoint: data.endpoint || 'http://localhost:3100',
-            uptime: data.uptime,
+            running: data.running,
+            healthy: data.healthy,
+            endpoint: data.endpoint,
             eventCount: data.eventCount,
             subscribers: data.subscribers,
           };
-        }
+        } else throw new Error((await eventBusResponse.json()).error || `Status request failed (${eventBusResponse.status})`);
       } catch (error) {
-        reportStatusFetchFailure('Event Bus', error);
+        errors['Event Bus'] = reportStatusFetchFailure('Event Bus', error);
         eventBus = null;
       }
 
-      try {
-        for (const config of serverConfigs) {
-          try {
-            const response = await fetchStatusEndpoint(config.endpoint);
-            if (response.ok) {
-              const data = await response.json();
-              const state = normalizeServerState(data);
-              newServers.push({
-                name: config.name,
-                displayName: config.displayName,
-                endpoint: config.endpoint,
-                port: config.port,
-                ...state,
-                installed: data.installed ?? true,
-                details: data,
-              });
-            } else {
-              newServers.push({
-                name: config.name,
-                displayName: config.displayName,
-                endpoint: config.endpoint,
-                port: config.port,
-                status: 'unknown',
-                healthy: false,
-                installed: false,
-              });
-            }
-          } catch (error) {
-            reportStatusFetchFailure(config.displayName, error);
-            newServers.push({
-              name: config.name,
-              displayName: config.displayName,
-              endpoint: config.endpoint,
-              port: config.port,
-              status: 'unknown',
-              healthy: false,
-              installed: false,
-            });
-          }
-        }
-      } finally {
-        servers = newServers;
-      }
+      newServers.push(...await Promise.all(serverConfigs.map(fetchVoiceServiceStatus)));
+      servers = newServers;
 
       try {
         const astroResponse = await fetchStatusEndpoint('/api/astro-servers');
         if (astroResponse.ok) {
           const astroData = await astroResponse.json();
           astroServers = astroData.servers || [];
-        }
+        } else throw new Error((await astroResponse.json()).error || `Status request failed (${astroResponse.status})`);
       } catch (error) {
-        reportStatusFetchFailure('Astro servers', error);
+        errors['Astro servers'] = reportStatusFetchFailure('Astro servers', error);
         astroServers = [];
       }
     } finally {
+      statusErrors = errors;
       if (newServers.length > 0 || servers.length === 0) {
         servers = newServers;
       }
       loading = false;
       statusFetchInProgress = false;
     }
-  }
-
-  function isBackendActive(backend: 'ollama' | 'llama-cpp'): boolean {
-    return llmBackend?.activeBackend === backend;
   }
 
   function openBackendSettings() {
@@ -280,8 +246,9 @@
     }
   }
 
-  async function controlServer(server: ServerInfo, action: 'start' | 'stop' | 'restart') {
-    actionInProgress = `${server.name}-${action}`;
+  async function controlServer(server: ServerInfo, action: 'start' | 'stop') {
+    const pending = `${server.name}-${action}`;
+    voiceActions[pending] = true;
     try {
       const response = await apiFetch(server.endpoint, {
         method: 'POST',
@@ -290,18 +257,22 @@
       });
       const data = await response.json();
       if (!response.ok || !data.success) {
-        alert(`Failed to ${action} ${server.displayName}: ${data.error || 'Unknown error'}`);
+        alert(`Failed to ${action} ${server.displayName}: ${data.error || data.message || 'Unknown error'}`);
       } else {
-        await fetchServerStatus();
+        const updated = await fetchVoiceServiceStatus(server);
+        servers = servers.map(current => current.name === server.name ? updated : current);
       }
     } catch (error) {
       alert(`Error ${action}ing ${server.displayName}: ${(error as Error).message}`);
     } finally {
-      actionInProgress = null;
+      const updated = { ...voiceActions };
+      delete updated[pending];
+      voiceActions = updated;
     }
   }
 
   function getStatusIcon(server: ServerInfo): string {
+    if (server.status === 'unknown') return '⚪';
     if (!server.installed) return '⚠️';
     if (server.status === 'running' && server.healthy) return '🟢';
     if (server.status === 'running' && !server.healthy) return '🟡';
@@ -310,7 +281,10 @@
   }
 
   function getStatusText(server: ServerInfo): string {
+    if (server.status === 'unknown') return 'Unknown';
     if (!server.installed) return 'Not Installed';
+    if (server.details?.readiness === 'loading') return 'Starting...';
+    if (server.details?.readiness === 'error') return 'Error';
     if (server.status === 'running' && server.healthy) return 'Running';
     if (server.status === 'running' && !server.healthy) return 'Unhealthy';
     if (server.status === 'stopped') return 'Stopped';
@@ -320,7 +294,7 @@
   async function stopAstroServer(port: number, isCurrentServer: boolean) {
     if (isCurrentServer) {
       const confirmed = confirm(
-        `⚠️ Warning: This will stop the current Astro dev server.\n\n` +
+        `⚠️ Warning: This will stop the current web server.\n\n` +
         `The UI will disconnect and you'll need to restart the server manually.\n\n` +
         `Continue?`
       );
@@ -350,7 +324,7 @@
     }
   }
 
-  $: if (mounted && isVisible && isPageVisible) void fetchServerStatus();
+  $: if (mounted && isPageVisible) void fetchServerStatus();
 
   function handleVisibilityChange() {
     isPageVisible = !document.hidden;
@@ -380,6 +354,12 @@
     </button>
   </div>
 
+  {#if Object.keys(statusErrors).length}
+    <div class="banner banner-error">
+      {#each Object.values(statusErrors) as error}<p>{error}</p>{/each}
+    </div>
+  {/if}
+
   {#if loading && servers.length === 0 && astroServers.length === 0}
     <div class="text-center py-8 text-gray-500 dark:text-gray-400 text-sm">Loading server status...</div>
   {:else}
@@ -389,10 +369,13 @@
         <div class="flex items-center gap-2 py-2 mt-2 font-semibold text-xs text-gray-500 dark:text-gray-400 uppercase tracking-wide">
           <span class="text-base">🧠</span>
           <span class="flex-1">LLM Backend</span>
+          {#if statusErrors['LLM backend']}
+            <span class="normal-case font-normal">Last known status · refresh unavailable</span>
+          {/if}
         </div>
 
         {#if llmBackend.llamaCpp.configured}
-          <div class="border rounded-lg p-3 bg-white dark:bg-gray-800 {isBackendActive('llama-cpp') ? 'border-emerald-500' : 'border-gray-300 dark:border-gray-700'}">
+          <div class="border rounded-lg p-3 bg-white dark:bg-gray-800 {llmBackend.activeBackend === 'llama-cpp' ? 'border-emerald-500' : 'border-gray-300 dark:border-gray-700'}">
             <div class="flex items-center justify-between"><strong>llama.cpp</strong><span>{llmBackend.llamaCpp.running ? 'Running' : 'Offline'}</span></div>
             <div class="text-sm mt-2">{llmBackend.llamaCpp.model}</div>
             <div class="text-xs text-gray-500 mt-1">{llmBackend.llamaCpp.endpoint}</div>
@@ -402,7 +385,7 @@
         {/if}
 
         <!-- Ollama -->
-        <div class="border rounded-lg p-3 bg-white dark:bg-gray-800 transition-all hover:shadow-md dark:hover:shadow-black/30 {isBackendActive('ollama') ? 'border-2 border-emerald-500/40 dark:border-emerald-400/40 bg-emerald-500/[0.02] dark:bg-emerald-400/[0.03]' : 'border-blue-500/20 dark:border-blue-400/20'}">
+        <div class="border rounded-lg p-3 bg-white dark:bg-gray-800 transition-all hover:shadow-md dark:hover:shadow-black/30 {llmBackend.activeBackend === 'ollama' ? 'border-2 border-emerald-500/40 dark:border-emerald-400/40 bg-emerald-500/[0.02] dark:bg-emerald-400/[0.03]' : 'border-blue-500/20 dark:border-blue-400/20'}">
           <div class="mb-3">
             <div class="flex items-start gap-3">
               <span class="text-xl leading-none">
@@ -436,12 +419,15 @@
         </div>
 
 
+      {/if}
+
         <!-- Big Brother shared terminal session -->
         <div class="border rounded-lg p-3 bg-white dark:bg-gray-800 transition-all hover:shadow-md dark:hover:shadow-black/30 {bigBrother?.sessionOpen ? 'border-2 border-purple-500/40 dark:border-purple-400/40 bg-purple-500/[0.02] dark:bg-purple-400/[0.03]' : 'border-purple-500/20 dark:border-purple-400/20'}">
           <div class="mb-3">
             <div class="flex items-start gap-3">
               <span class="text-xl leading-none">
-                {#if bigBrother?.running && bigBrother?.healthy}🟢
+                {#if !bigBrother}⚪
+                {:else if bigBrother.running && bigBrother.healthy}🟢
                 {:else if bigBrother?.sessionOpen}🟡
                 {:else}🔴{/if}
               </span>
@@ -463,8 +449,10 @@
               <button class="flex-1 py-1.5 px-3 border-none rounded-md text-xs font-semibold cursor-pointer transition-all bg-red-500 text-white hover:bg-red-600 disabled:opacity-50 disabled:cursor-not-allowed" on:click={() => controlBigBrother('stop')} disabled={actionInProgress !== null}>
                 {actionInProgress === 'bigbrother-stop' ? '...' : 'Stop'}
               </button>
+            {:else if bigBrother}
+              <div class="text-xs text-gray-500 dark:text-gray-400 italic p-2 text-center bg-black/5 dark:bg-white/5 rounded-md">Starts when Terminal or an escalation requests it</div>
             {:else}
-              <div class="text-xs text-gray-500 dark:text-gray-400 italic p-2 text-center bg-black/5 dark:bg-white/5 rounded-md">Opens automatically when an escalation starts</div>
+              <div class="text-xs text-gray-500 dark:text-gray-400">Status unavailable</div>
             {/if}
           </div>
           {#if bigBrother?.sessionOpen}
@@ -479,7 +467,8 @@
           <div class="mb-3">
             <div class="flex items-start gap-3">
               <span class="text-xl leading-none">
-                {#if eventBus?.running && eventBus?.healthy}🟢
+                {#if !eventBus}⚪
+                {:else if eventBus.running && eventBus.healthy}🟢
                 {:else if eventBus?.running}🟡
                 {:else}🔴{/if}
               </span>
@@ -489,7 +478,10 @@
                   <span class="inline-block px-1.5 py-0.5 ml-2 bg-cyan-500/15 dark:bg-cyan-400/20 text-cyan-600 dark:text-cyan-400 rounded text-[0.6rem] font-bold tracking-tight">Telemetry</span>
                 </div>
                 <div class="text-xs text-gray-500 dark:text-gray-400">
-                  {eventBus?.endpoint || 'http://localhost:3100'}
+                  {eventBus ? eventBus.running ? eventBus.healthy ? 'Running' : 'Unhealthy' : 'Stopped' : 'Status unavailable'}
+                </div>
+                <div class="text-xs text-gray-500 dark:text-gray-400">
+                  {eventBus?.endpoint}
                   {#if eventBus?.running && eventBus?.eventCount !== undefined}
                     • {eventBus.eventCount} events
                   {/if}
@@ -511,27 +503,17 @@
               </button>
             {/if}
           </div>
-          {#if eventBus?.running}
+          {#if eventBus?.running && eventBus.subscribers !== undefined}
             <div class="flex flex-wrap gap-2 mt-3 pt-3 border-t border-black/10 dark:border-white/10">
-              {#if eventBus.subscribers !== undefined}
-                <span class="inline-block px-2 py-1 bg-cyan-500/10 dark:bg-cyan-400/15 text-cyan-600 dark:text-cyan-400 rounded text-[0.7rem] font-medium">📡 {eventBus.subscribers} subscriber{eventBus.subscribers !== 1 ? 's' : ''}</span>
-              {/if}
-              <a
-                href="/debug"
-                class="inline-block px-2 py-1 bg-cyan-500/10 dark:bg-cyan-400/15 text-cyan-600 dark:text-cyan-400 rounded text-[0.7rem] font-medium hover:bg-cyan-500/20 dark:hover:bg-cyan-400/25 transition-colors"
-              >
-                🔗 Debug Dashboard
-              </a>
+              <span class="inline-block px-2 py-1 bg-cyan-500/10 dark:bg-cyan-400/15 text-cyan-600 dark:text-cyan-400 rounded text-[0.7rem] font-medium">📡 {eventBus.subscribers} subscriber{eventBus.subscribers !== 1 ? 's' : ''}</span>
             </div>
           {/if}
         </div>
-      {/if}
-
-      <!-- Astro Dev Servers Section -->
+      <!-- Node/Astro processes -->
       {#if astroServers.length > 0}
         <div class="flex items-center gap-2 py-2 mt-2 font-semibold text-xs text-gray-500 dark:text-gray-400 uppercase tracking-wide">
           <span class="text-base">🚀</span>
-          <span class="flex-1">Astro Dev Servers</span>
+          <span class="flex-1">Node/Astro Processes</span>
         </div>
         {#each astroServers as astro (astro.port)}
           <div class="border rounded-lg p-3 bg-white dark:bg-gray-800 transition-all hover:shadow-md dark:hover:shadow-black/30 {astro.isCurrentServer ? 'border-2 border-violet-500/40 dark:border-violet-400/40 bg-violet-500/[0.02] dark:bg-violet-400/[0.03]' : 'border-violet-500/20 dark:border-violet-400/20'}">
@@ -540,7 +522,7 @@
                 <span class="text-xl leading-none">🟢</span>
                 <div class="flex-1 min-w-0">
                   <div class="font-semibold text-sm text-gray-900 dark:text-gray-100 mb-1">
-                    Astro Dev Server
+                    Node/Astro Process
                     {#if astro.isCurrentServer}
                       <span class="inline-block px-1.5 py-0.5 ml-2 bg-violet-500/15 dark:bg-violet-400/20 text-violet-600 dark:text-violet-400 rounded text-[0.65rem] font-bold tracking-wide">CURRENT</span>
                     {/if}
@@ -580,8 +562,14 @@
               <div class="flex-1 min-w-0">
                 <div class="font-semibold text-sm text-gray-900 dark:text-gray-100 mb-1">{server.displayName}</div>
                 <div class="text-xs text-gray-500 dark:text-gray-400">
-                  Port: {server.port} • {getStatusText(server)}
+                  {getStatusText(server)}
                 </div>
+                {#if server.details?.url}
+                  <div class="text-xs text-gray-500 dark:text-gray-400 break-all">{server.details.url}</div>
+                {/if}
+                {#if server.status === 'running' && server.details?.pid}
+                  <div class="text-xs text-gray-500 dark:text-gray-400">PID: {server.details.pid}</div>
+                {/if}
               </div>
             </div>
           </div>
@@ -589,32 +577,33 @@
           {#if server.installed}
             <div class="flex gap-2">
               {#if server.status === 'running'}
-                <button class="flex-1 py-1.5 px-3 border-none rounded-md text-xs font-semibold cursor-pointer transition-all bg-red-500 text-white hover:bg-red-600 disabled:opacity-50 disabled:cursor-not-allowed" on:click={() => controlServer(server, 'stop')} disabled={actionInProgress !== null}>
-                  {actionInProgress === `${server.name}-stop` ? '...' : 'Stop'}
-                </button>
-                <button class="flex-1 py-1.5 px-3 border-none rounded-md text-xs font-semibold cursor-pointer transition-all bg-amber-500 text-white hover:bg-amber-600 disabled:opacity-50 disabled:cursor-not-allowed" on:click={() => controlServer(server, 'restart')} disabled={actionInProgress !== null}>
-                  {actionInProgress === `${server.name}-restart` ? '...' : 'Restart'}
+                <button class="flex-1 py-1.5 px-3 border-none rounded-md text-xs font-semibold cursor-pointer transition-all bg-red-500 text-white hover:bg-red-600 disabled:opacity-50 disabled:cursor-not-allowed" on:click={() => controlServer(server, 'stop')} disabled={voiceActions[`${server.name}-stop`]}>
+                  {voiceActions[`${server.name}-stop`] ? '...' : 'Stop'}
                 </button>
               {:else}
-                <button class="flex-1 py-1.5 px-3 border-none rounded-md text-xs font-semibold cursor-pointer transition-all bg-emerald-500 text-white hover:bg-emerald-600 disabled:opacity-50 disabled:cursor-not-allowed" on:click={() => controlServer(server, 'start')} disabled={actionInProgress !== null}>
-                  {actionInProgress === `${server.name}-start` ? '...' : 'Start'}
+                <button class="flex-1 py-1.5 px-3 border-none rounded-md text-xs font-semibold cursor-pointer transition-all bg-emerald-500 text-white hover:bg-emerald-600 disabled:opacity-50 disabled:cursor-not-allowed" on:click={() => controlServer(server, 'start')} disabled={voiceActions[`${server.name}-start`]}>
+                  {voiceActions[`${server.name}-start`] ? '...' : 'Start'}
                 </button>
               {/if}
             </div>
-          {:else}
+          {:else if server.status !== 'unknown'}
             <div class="text-xs text-gray-500 dark:text-gray-400 italic p-2 text-center bg-black/5 dark:bg-white/5 rounded-md">Not installed or configured</div>
+          {/if}
+
+          {#if server.details?.error || (server.details?.readiness === 'error' && server.details.health?.message)}
+            <div class="banner banner-error mt-3">{server.details.error || server.details.health.message}</div>
           {/if}
 
           {#if server.details && server.status === 'running'}
             <div class="flex flex-wrap gap-2 mt-3 pt-3 border-t border-black/10 dark:border-white/10">
-              {#if server.details.model}
-                <span class="inline-block px-2 py-1 bg-violet-500/10 dark:bg-violet-400/15 text-violet-600 dark:text-violet-400 rounded text-[0.7rem] font-medium">Model: {server.details.model}</span>
+              {#if server.details.health?.model}
+                <span class="inline-block px-2 py-1 bg-violet-500/10 dark:bg-violet-400/15 text-violet-600 dark:text-violet-400 rounded text-[0.7rem] font-medium">Model: {server.details.health.model}</span>
               {/if}
-              {#if server.details.device}
-                <span class="inline-block px-2 py-1 bg-violet-500/10 dark:bg-violet-400/15 text-violet-600 dark:text-violet-400 rounded text-[0.7rem] font-medium">Device: {server.details.device}</span>
+              {#if server.details.health?.device}
+                <span class="inline-block px-2 py-1 bg-violet-500/10 dark:bg-violet-400/15 text-violet-600 dark:text-violet-400 rounded text-[0.7rem] font-medium">Device: {server.details.health.device}</span>
               {/if}
-              {#if server.details.voice}
-                <span class="inline-block px-2 py-1 bg-violet-500/10 dark:bg-violet-400/15 text-violet-600 dark:text-violet-400 rounded text-[0.7rem] font-medium">Voice: {server.details.voice}</span>
+              {#if server.details.health?.defaults?.voice}
+                <span class="inline-block px-2 py-1 bg-violet-500/10 dark:bg-violet-400/15 text-violet-600 dark:text-violet-400 rounded text-[0.7rem] font-medium">Voice: {server.details.health.defaults.voice}</span>
               {/if}
             </div>
           {/if}

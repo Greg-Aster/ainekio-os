@@ -115,39 +115,20 @@ test('absent or incomplete settings report a configuration error before inferenc
   assert.equal(requests.length, 0);
 });
 
-test('voice recording upload feeds the shared sample list and RVC export without a reference server', async () => {
-  const { handleVoiceProfileUpload } = await import('./api/handlers/audio-uploads.js');
-  const { handleGetVoiceTraining, handlePostRvcTraining, handleGetRvcTraining } = await import('./api/handlers/voice-training-routes.js');
-  const username = 'recording-owner';
-  writeProfile(username, voiceConfig());
-  await withUserContext({ userId: username, username, role: 'owner' }, async () => {
-    const audio = Buffer.from('RIFF synthetic WAV fixture');
-    const request = { method: 'POST', user: { username, role: 'owner', isAuthenticated: true }, body: {
-      audio: { name: 'recording.wav', type: 'audio/wav', size: audio.length, buffer: audio },
-      transcript: 'Synthetic recording for the training handoff.', duration: '10', quality: '1.0',
-    } } as any;
-    const upload = await handleVoiceProfileUpload(request);
-    assert.equal(upload.status, 200);
-    const saved = upload.data as { sampleId: string; audioPath: string };
-    assert.deepEqual(fs.readFileSync(saved.audioPath), audio);
-    const available = await handleGetVoiceTraining({ ...request, method: 'GET', query: { action: 'samples', limit: '1000' } });
-    assert.deepEqual((available.data as { samples: Array<{ id: string }> }).samples.map(s => s.id), [saved.sampleId]);
-    for (let pass = 0; pass < 2; pass++) {
-      const copied = await handlePostRvcTraining({ ...request, body: { action: 'copy-samples', speakerId: 'default', sampleIds: [saved.sampleId] } });
-      assert.equal(copied.status, 200);
-      const exported = await handleGetRvcTraining({ ...request, method: 'GET', query: { action: 'list-samples', speakerId: 'default' } });
-      assert.equal((exported.data as { samples: unknown[] }).samples.length, 1);
-      assert.deepEqual(fs.readFileSync(saved.audioPath), audio, 'export preserves the original recording');
-    }
-  });
-});
-
-for (const provider of ['kitten', 'gpt-sovits']) {
+for (const provider of ['kitten', 'gpt-sovits', 'rvc']) {
   test(`retired ${provider} selections report unsupported instead of synthesizing another voice`, async () => {
     writeProfile('retired-provider', voiceConfig());
     await assert.rejects(generateSpeech('Do not substitute this voice.', {
       username: 'retired-provider', provider: provider as any,
     }), new RegExp(`Unsupported TTS provider: ${provider}`));
+    const legacy = voiceConfig();
+    legacy.tts.provider = provider;
+    const stored = writeProfile('retired-provider', legacy);
+    const before = fs.readFileSync(stored, 'utf8');
+    await assert.rejects(generateSpeech('Do not substitute the configured voice.', {
+      username: 'retired-provider',
+    }), new RegExp(`Unsupported TTS provider: ${provider}`));
+    assert.equal(fs.readFileSync(stored, 'utf8'), before, 'retirement does not rewrite saved profile preferences');
     assert.equal(requests.length, 0);
   });
 }

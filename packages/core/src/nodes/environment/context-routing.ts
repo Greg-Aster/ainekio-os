@@ -4,7 +4,7 @@ export const ENVIRONMENT_CONTEXT_ENTRIES = [
   'conversationHistory', 'memory', 'robotStatus', 'environment', 'vision', 'executionContext',
 ] as const;
 
-export type EnvironmentContextEntry = typeof ENVIRONMENT_CONTEXT_ENTRIES[number];
+type EnvironmentContextEntry = typeof ENVIRONMENT_CONTEXT_ENTRIES[number];
 export interface EnvironmentRequestRouting {
   needsResponse: boolean;
   needsAction: boolean;

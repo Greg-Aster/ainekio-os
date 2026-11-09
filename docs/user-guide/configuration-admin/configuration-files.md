@@ -1,6 +1,6 @@
 # Configuration Ownership
 
-MetaHuman configuration has machine and profile owners:
+Ainekio OS configuration has machine and profile owners:
 
 - root `etc/` contains machine-wide service policy and sanitized seeds used
   when profiles are initialized;
@@ -27,7 +27,7 @@ Common system-owned files include:
 - `cloudflare.json` — Cloudflare tunnel settings;
 - `deployment.json` — deployment mode, storage, and provider endpoints;
 - `runtime.json` — the machine-wide headless state flag;
-- `logging.json` — system logging policy; and
+- `logging.json` — module logging plus machine-wide audit enablement and retention; and
 - `tool-executor.json` — external tool-executor policy.
 
 Training settings have one seed, `training.json`. The Training Wizard reads and
@@ -39,26 +39,40 @@ authenticated profile's `runpod.json`; never commit real credentials.
 owns schedule and event admission for bounded work. The service lifecycle owner
 controls long-running processes. Do not register one responsibility in both.
 
+Audit history is available at `/audit`. Choose a date, category or severity and
+use **Load older entries** to read further pages. Each page retains complete
+records. Security events, actions, training and failures remain recorded; routine
+request context creation and successful lock bookkeeping are not audit events.
+The separate training screens own training progress and outcomes.
+
+**Settings → System → Audit Logging** changes the shared persisted policy.
+`logging.json` stores it under `audit.enabled` and `audit.retentionDays` (defaults
+`true` and `7`). Disabling recording keeps existing history. Maintenance and
+explicit housekeeping use the same retention policy for dated audit files;
+changing enablement does not delete files. Live event transport does not retain
+a second disk copy of audit records. The module log level is read from the same
+machine file. Obsolete HTTP timing, suppression and console appearance controls
+are removed; profile creation no longer copies a separate logging policy. Existing
+profile files are preserved.
+
 ## Profile configuration
 
 Common logical profile files include:
 
 - `models.json` — provider and model assignments by role;
-- `runtime.json` — cognitive graph-runtime selection through
-  `cognitive.useNodePipeline`;
+- `runtime.json` — headless mode and UI claim state;
 - `operator.json` — Operator scratchpad, execution, and Big Brother settings;
 - `chat-settings.json` — context, history, temperature, and buffer limits;
 - `training.json` — dataset and training parameters;
 - `runpod.json` — profile-owned remote-training credentials and settings;
-- `voice.json` — profile TTS, STT, cache, and voice-training settings;
+- `voice.json` — profile TTS, STT, and cache settings;
 - `autonomy.json` — permitted autonomous actions and approvals;
 - `agency.json` — desire generation, risk, and execution limits;
 - `agents.json` — profile-specific Trigger Manager overrides;
 - `boredom.json` — reflection presentation and compatibility settings;
 - `sleep.json` — sleep workflow schedule and limits;
 - `curiosity.json` — user-facing and private curiosity controls;
-- `trust-coupling.json` — cognitive-mode to trust-level mapping; and
-- `logging.json` — profile logging preferences.
+- `trust-coupling.json` — cognitive-mode to trust-level mapping.
 
 Profile creation copies supported seeds and generates required state. Core's
 configuration and storage owners resolve the authenticated profile; business
@@ -88,7 +102,7 @@ merged GGUF-backed model. Full fine-tuning also retains its native weights.
 All remain candidates until reviewed in Training History
 and assigned through Model Settings. See [AI Training](/user-guide#ai-training).
 
-Profile `voice.json` selects Kokoro, Piper, or RVC and stores
+Profile `voice.json` selects Kokoro or Piper and stores
 profile-specific values. Machine ports, commands, and auto-start policy remain
 in root `etc/voice-servers.json`. See [Voice Features](/user-guide#voice-features).
 
@@ -99,7 +113,6 @@ inputs include:
 
 - `HIGH_SECURITY=true` — restrict selectable cognitive modes to Emulation;
 - `WETWARE_DECEASED=true` — disable Dual mode;
-- `USE_NODE_PIPELINE` — select the maintained node-pipeline default;
 - `MH_EXPOSURE_MODE`, `MH_ALLOWED_HOSTS`, and `MH_ALLOWED_ORIGINS` — define
   network exposure and origin policy;
 - `DEPLOYMENT_MODE` — select the deployment-mode contract; and

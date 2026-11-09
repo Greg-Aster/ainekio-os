@@ -14,11 +14,10 @@ setAuditEnabled(false);
 const {
   handleEnvironmentBridgeDiagnosticAudio,
   handleEnvironmentBridgeDiagnosticMedia,
-  handleEnvironmentBridgeDiagnostics,
   handleEnvironmentBridgeTelemetry,
 } = await import('../api/handlers/environment-bridge.js');
 import type { UnifiedRequest } from '../api/types.js';
-import { resetEnvironmentBridgeDiagnosticsForTests } from './diagnostics.js';
+import { getEnvironmentBridgeDiagnosticsSnapshot, resetEnvironmentBridgeDiagnosticsForTests } from './diagnostics.js';
 
 const originalToken = process.env.MH_ENVIRONMENT_BRIDGE_TOKEN;
 after(() => { eventBus.disconnect(); fs.rmSync(root, { recursive: true, force: true }); });
@@ -73,8 +72,11 @@ test('service-token telemetry is aggregated and robot status is allowlisted', as
   }));
 
   assert.equal(response.status, 200);
-  const snapshot = await handleEnvironmentBridgeDiagnostics(request({ method: 'GET' }));
-  const session = snapshot.data.sessions[0];
+  const snapshot = getEnvironmentBridgeDiagnosticsSnapshot();
+  const session = snapshot.sessions[0];
+  assert.ok(session.robotStatus);
+  assert.ok(session.freestyleMovement);
+  assert.ok(session.movementPlan);
   assert.equal(session.transport.inboundBytes, 640);
   assert.equal(session.microphoneLevel, 0.25);
   assert.equal(session.robotStatus.vbat, 7.2);
@@ -104,10 +106,11 @@ test('latest bounded diagnostic WAV can be read from the owner media handler', a
     rawBody: wav,
   }));
   assert.equal(stored.status, 200);
-  const snapshot = await handleEnvironmentBridgeDiagnostics(request({ method: 'GET' }));
-  assert.equal(snapshot.data.sessions.length, 1);
-  assert.equal(snapshot.data.sessions[0].sessionId, sessionId);
-  assert.equal(snapshot.data.sessions[0].latestAudio.utteranceId, utteranceId);
+  const snapshot = getEnvironmentBridgeDiagnosticsSnapshot();
+  assert.equal(snapshot.sessions.length, 1);
+  assert.equal(snapshot.sessions[0].sessionId, sessionId);
+  assert.ok(snapshot.sessions[0].latestAudio);
+  assert.equal(snapshot.sessions[0].latestAudio.utteranceId, utteranceId);
 
   const media = await handleEnvironmentBridgeDiagnosticMedia(request({
     path: '/api/environment-bridge/diagnostics/media',

@@ -17,17 +17,8 @@
     created: string;
     updated: string;
     completed?: string;
-    listId?: string;
     start?: string;
     end?: string;
-  }
-
-  interface TaskList {
-    id: string;
-    name: string;
-    description?: string;
-    color?: string;
-    owner?: string;
   }
 
   interface CalendarDay {
@@ -39,11 +30,14 @@
 
   let tasks: Task[] = [];
   let completedTasks: Task[] = [];
-  let taskLists: TaskList[] = [];
 
   let loading = true;
   let error = '';
   let agentStatus = '';
+  let disposed = false;
+  let requestId = 0;
+  let publishedRequest = 0;
+  let loadError = '';
 
   let newTaskTitle = '';
   let showNewTask = false;
@@ -51,7 +45,6 @@
   let filterStatus: 'all' | TaskStatus = 'all';
   let showCompleted = false;
   let searchTerm = '';
-  let selectedList: string = 'all';
 
   let viewMode: 'list' | 'calendar' = 'list';
   let calendarAnchor = new Date();
@@ -101,17 +94,11 @@
     return false;
   }
 
-  function rebuildCalendar(): void {
-    const weekStart = startOfWeek(calendarAnchor);
+  function buildCalendar(active: Task[], anchor: Date): CalendarDay[] {
+    const weekStart = startOfWeek(anchor);
     const days: CalendarDay[] = [];
     const today = new Date();
     today.setHours(0, 0, 0, 0);
-
-    const active = tasks.filter(task => {
-      if (task.status === 'done' || task.status === 'cancelled') return false;
-      if (filterStatus !== 'all' && task.status !== filterStatus) return false;
-      return matchesSearch(task);
-    });
 
     for (let i = 0; i < 7; i++) {
       const date = addDays(weekStart, i);
@@ -121,55 +108,41 @@
       days.push({ date, label, isToday, tasks: tasksForDay });
     }
 
-    calendarDays = days;
+    return days;
   }
 
   async function loadTasks() {
-    loading = true;
+    const request = ++requestId;
     try {
-      const params = new URLSearchParams();
-      if (selectedList !== 'all') {
-        params.set('list', selectedList);
-      }
-
-      const url = params.size ? `/api/tasks?${params.toString()}` : '/api/tasks';
-      const res = await apiFetch(url);
+      const res = await apiFetch('/api/tasks');
       if (!res.ok) throw new Error('Failed to load tasks');
 
       const data = await res.json();
       const active = Array.isArray(data?.tasks) ? data.tasks : [];
       const completed = Array.isArray(data?.completedTasks) ? data.completedTasks : [];
 
+      if (disposed || request < publishedRequest) return;
+      publishedRequest = request;
       tasks = active;
       completedTasks = completed;
-      error = '';
+      loadError = '';
     } catch (e) {
-      error = (e as Error).message;
+      if (!disposed && request >= publishedRequest) {
+        publishedRequest = request;
+        loadError = (e as Error).message;
+      }
     } finally {
-      loading = false;
-      rebuildCalendar();
-    }
-  }
-
-  async function loadTaskLists() {
-    try {
-      const res = await apiFetch('/api/task-lists');
-      if (!res.ok) throw new Error('Failed to load task lists');
-      const data = await res.json();
-      taskLists = Array.isArray(data?.lists) ? data.lists : [];
-    } catch (e) {
-      error = (e as Error).message;
+      if (!disposed) loading = false;
     }
   }
 
   async function createTask() {
     if (!newTaskTitle.trim()) return;
 
+    error = '';
+    const draft = newTaskTitle;
     try {
-      const payload: Record<string, unknown> = { title: newTaskTitle.trim() };
-      if (selectedList !== 'all') {
-        payload.listId = selectedList;
-      }
+      const payload: Record<string, unknown> = { title: draft.trim() };
 
       const res = await apiFetch('/api/tasks', {
         method: 'POST',
@@ -179,8 +152,10 @@
 
       if (!res.ok) throw new Error('Failed to create task');
 
-      newTaskTitle = '';
-      showNewTask = false;
+      if (newTaskTitle === draft) {
+        newTaskTitle = '';
+        showNewTask = false;
+      }
       await loadTasks();
     } catch (e) {
       error = (e as Error).message;
@@ -188,6 +163,7 @@
   }
 
   async function updateTaskStatus(taskId: string, status: TaskStatus) {
+    error = '';
     try {
       const res = await apiFetch('/api/tasks', {
         method: 'PATCH',
@@ -209,9 +185,8 @@
       title: task.title,
       description: task.description || '',
       priority: task.priority || 'P2',
-      due: task.due || '',
+      due: localDateTime(task.due),
       tags: task.tags || [],
-      listId: task.listId || '',
     };
   }
 
@@ -222,20 +197,21 @@
 
   async function saveEdit() {
     if (!editingTaskId || !editForm.title?.trim()) return;
+    error = '';
+    const taskId = editingTaskId;
+    const draft = editForm;
+    const submitted = JSON.stringify(draft);
     editSaving = true;
 
     try {
       const payload: Record<string, unknown> = {
-        taskId: editingTaskId,
+        taskId,
         title: editForm.title.trim(),
         description: editForm.description || '',
         priority: editForm.priority || 'P2',
-        due: editForm.due || undefined,
+        due: editForm.due ? new Date(editForm.due).toISOString() : '',
         tags: editForm.tags || [],
       };
-      if (editForm.listId) {
-        payload.listId = editForm.listId;
-      }
 
       const res = await apiFetch('/api/tasks', {
         method: 'PATCH',
@@ -245,8 +221,9 @@
 
       if (!res.ok) throw new Error('Failed to update task');
 
-      editingTaskId = null;
-      editForm = {};
+      if (editingTaskId === taskId && editForm === draft && JSON.stringify(editForm) === submitted) {
+        cancelEdit();
+      }
       await loadTasks();
     } catch (e) {
       error = (e as Error).message;
@@ -271,6 +248,13 @@
     editForm.tags = (editForm.tags || []).filter(t => t !== tag);
   }
 
+  function localDateTime(iso?: string): string {
+    if (!iso) return '';
+    const date = new Date(iso);
+    const pad = (value: number) => String(value).padStart(2, '0');
+    return `${date.getFullYear()}-${pad(date.getMonth() + 1)}-${pad(date.getDate())}T${pad(date.getHours())}:${pad(date.getMinutes())}:${pad(date.getSeconds())}.${String(date.getMilliseconds()).padStart(3, '0')}`;
+  }
+
   function formatDate(iso?: string): string {
     if (!iso) return '—';
     const d = new Date(iso);
@@ -285,8 +269,6 @@
       agentStatus = `Organizer queued as ${taskId}`;
     } catch (e) {
       agentStatus = (e as Error).message;
-    } finally {
-      setTimeout(() => (agentStatus = ''), 5000);
     }
   }
 
@@ -310,9 +292,9 @@
     }
   }
 
-  function matchesSearch(task: Task): boolean {
-    if (!searchTerm.trim()) return true;
-    const term = searchTerm.trim().toLowerCase();
+  function matchesSearch(task: Task, query: string): boolean {
+    if (!query.trim()) return true;
+    const term = query.trim().toLowerCase();
     const haystack = [
       task.title,
       task.description || '',
@@ -325,26 +307,16 @@
     filterStatus = status;
   }
 
-  function selectList(id: string) {
-    selectedList = id;
-    void loadTasks();
-  }
-
   function toggleView(mode: 'list' | 'calendar') {
     viewMode = mode;
-    if (mode === 'calendar') {
-      rebuildCalendar();
-    }
   }
 
   function changeWeek(offset: number) {
     calendarAnchor = addDays(calendarAnchor, offset * 7);
-    rebuildCalendar();
   }
 
   function resetWeek() {
     calendarAnchor = new Date();
-    rebuildCalendar();
   }
 
   function dayTaskTime(task: Task): string {
@@ -355,54 +327,26 @@
     return d.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
   }
 
-  async function promptNewList() {
-    if (typeof window === 'undefined') return;
-    const name = window.prompt('Task list name?');
-    if (!name || !name.trim()) return;
-    try {
-      const res = await apiFetch('/api/task-lists', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ name: name.trim() }),
-      });
-      if (!res.ok) throw new Error('Failed to create list');
-      const data = await res.json();
-      await loadTaskLists();
-      const filepath = data?.filepath;
-      if (typeof filepath === 'string') {
-        const id = filepath.split('/').pop()?.replace('.json', '');
-        if (id) {
-          selectedList = id;
-          await loadTasks();
-        }
-      }
-    } catch (e) {
-      error = (e as Error).message;
-    }
-  }
-
   $: filteredTasks = (filterStatus === 'all'
     ? tasks
-    : tasks.filter(task => task.status === filterStatus)).filter(matchesSearch);
+    : tasks.filter(task => task.status === filterStatus)).filter(task => matchesSearch(task, searchTerm));
 
-  $: filteredCompletedTasks = completedTasks.filter(matchesSearch);
+  $: filteredCompletedTasks = completedTasks.filter(task => matchesSearch(task, searchTerm));
 
-  $: {
-    filteredTasks;
-    filteredCompletedTasks;
-    calendarAnchor;
-    rebuildCalendar();
-  }
+  $: calendarDays = buildCalendar(filteredTasks.filter(task => task.status !== 'done' && task.status !== 'cancelled'), calendarAnchor);
 
   onMount(() => {
-    void loadTaskLists();
+    disposed = false;
     void loadTasks();
     const interval = setInterval(loadTasks, 10000);
-    return () => clearInterval(interval);
+    return () => { disposed = true; clearInterval(interval); };
   });
 </script>
 
 <div class="space-y-4">
+  {#if loadError}
+    <p role="alert" class="text-red-500">{loadError}</p>
+  {/if}
   <!-- Header -->
   <div class="flex flex-wrap items-center justify-between gap-3">
     <div class="flex items-center gap-3">
@@ -523,32 +467,6 @@
     {/if}
   </div>
 
-  <!-- Task Lists -->
-  <div class="flex items-center gap-2 text-xs overflow-x-auto pb-2">
-    <span class="uppercase tracking-wide text-gray-500 dark:text-gray-400">Lists:</span>
-    <button
-      on:click={() => selectList('all')}
-      class={`px-3 py-1 rounded-full border ${selectedList === 'all' ? 'bg-brand text-white border-brand' : 'border-gray-300 dark:border-gray-600'}`}
-    >
-      All
-    </button>
-    {#each taskLists as list (list.id)}
-      <button
-        on:click={() => selectList(list.id)}
-        class={`px-3 py-1 rounded-full border ${selectedList === list.id ? 'bg-brand text-white border-brand' : 'border-gray-300 dark:border-gray-600'}`}
-        title={list.description}
-      >
-        {list.name}
-      </button>
-    {/each}
-    <button
-      class="px-3 py-1 rounded-full border border-dashed border-brand text-brand hover:bg-brand/5"
-      on:click={promptNewList}
-    >
-      + New List
-    </button>
-  </div>
-
   <!-- New Task Form -->
   {#if showNewTask}
     <div class="card p-4 border-2 border-brand/40">
@@ -637,23 +555,11 @@
                     <input
                       id="task-edit-due"
                       type="datetime-local"
+                      step="0.001"
                       bind:value={editForm.due}
                       class="w-full px-3 py-2 rounded border border-gray-300 dark:border-gray-600 bg-white dark:bg-gray-800 text-sm"
                     />
                   </div>
-                </div>
-                <div>
-                  <label for="task-edit-list" class="block text-xs font-semibold mb-1">List</label>
-                  <select
-                    id="task-edit-list"
-                    bind:value={editForm.listId}
-                    class="w-full px-3 py-2 rounded border border-gray-300 dark:border-gray-600 bg-white dark:bg-gray-800 text-sm"
-                  >
-                    <option value="">No List</option>
-                    {#each taskLists as list (list.id)}
-                      <option value={list.id}>{list.name}</option>
-                    {/each}
-                  </select>
                 </div>
                 <div>
                   <label for="task-edit-tag" class="block text-xs font-semibold mb-1">Tags</label>
@@ -706,11 +612,6 @@
                     <span class="text-xs px-2 py-0.5 rounded-full font-semibold {getStatusColor(task.status)}">
                       {task.status.replace('_', ' ')}
                     </span>
-                    {#if task.listId}
-                      <span class="text-[11px] px-2 py-0.5 rounded-full bg-gray-200 dark:bg-gray-700">
-                        {taskLists.find(l => l.id === task.listId)?.name ?? task.listId}
-                      </span>
-                    {/if}
                   </div>
                   <h3 class="font-semibold mb-1">{task.title}</h3>
                   {#if task.description}
@@ -892,11 +793,6 @@
                     <div class="font-semibold">{task.title}</div>
                     {#if dayTaskTime(task)}
                       <div class="text-[11px] text-gray-600 dark:text-gray-400">{dayTaskTime(task)}</div>
-                    {/if}
-                    {#if task.listId}
-                      <div class="text-[11px] text-gray-500 dark:text-gray-400">
-                        List: {taskLists.find(l => l.id === task.listId)?.name ?? task.listId}
-                      </div>
                     {/if}
                   </div>
                 {/each}

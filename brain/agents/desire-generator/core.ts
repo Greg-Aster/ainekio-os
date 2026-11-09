@@ -249,10 +249,6 @@ function selectFreshPersonaGoals(persona: Awaited<ReturnType<typeof loadPersonaC
     return goals;
 }
 
-export async function loadPersonaGoals(): Promise<PersonaGoal[]> {
-  return selectFreshPersonaGoals(await loadPersonaCore());
-}
-
 async function loadPersonaGoalContext(): Promise<{ fresh: PersonaGoal[]; standing: PersonaGoal[] }> {
   const persona = await loadPersonaCore();
   const fresh = selectFreshPersonaGoals(persona);
@@ -268,7 +264,7 @@ async function loadPersonaGoalContext(): Promise<{ fresh: PersonaGoal[]; standin
 /**
  * Load active tasks, separating urgent from regular
  */
-export async function loadTasks(): Promise<{ urgent: TaskSummary[]; regular: TaskSummary[] }> {
+async function loadTasks(): Promise<{ urgent: TaskSummary[]; regular: TaskSummary[] }> {
     const tasks = await listActiveTasks();
 
     const urgent: TaskSummary[] = [];
@@ -314,7 +310,7 @@ async function loadEpisodicDocuments(): Promise<EpisodicDocument[]> {
   }));
 }
 
-export async function loadRecentMemories(days: number = 7): Promise<MemorySummary[]> {
+async function loadRecentMemories(days: number = 7): Promise<MemorySummary[]> {
   const cutoff = Date.now() - days * 24 * 60 * 60 * 1000;
   const documents = await loadEpisodicDocuments();
   return documents.flatMap(document => {
@@ -342,7 +338,7 @@ export async function loadRecentMemories(days: number = 7): Promise<MemorySummar
  * Detect patterns in memories based on recurring tags and themes.
  * Analyzes tag frequency and co-occurrences to identify patterns.
  */
-export function detectMemoryPatterns(memories: MemorySummary[]): import('@metahuman/core').MemoryPattern[] {
+function detectMemoryPatterns(memories: MemorySummary[]): import('@metahuman/core').MemoryPattern[] {
   if (memories.length < 3) {
     // Not enough memories to detect meaningful patterns
     return [];
@@ -510,7 +506,7 @@ function detectTimePatterns(
 /**
  * Load pending curiosity questions
  */
-export async function loadCuriosityQuestions(): Promise<CuriosityQuestion[]> {
+async function loadCuriosityQuestions(): Promise<CuriosityQuestion[]> {
   const username = getUserContext()?.username;
   if (!username) throw new Error('Curiosity desire input requires an authenticated user context');
   return (await curiosityQuestionStore.listPending(username)).map(record => ({
@@ -523,7 +519,7 @@ export async function loadCuriosityQuestions(): Promise<CuriosityQuestion[]> {
 /**
  * Load recent reflections
  */
-export async function loadReflections(count: number = 5): Promise<ReflectionSummary[]> {
+async function loadReflections(count: number = 5): Promise<ReflectionSummary[]> {
   const documents = await loadEpisodicDocuments();
   return documents.flatMap(document => {
     const tags = Array.isArray(document.tags)
@@ -545,7 +541,7 @@ export async function loadReflections(count: number = 5): Promise<ReflectionSumm
 /**
  * Load recent dreams
  */
-export async function loadDreams(count: number = 3): Promise<DreamSummary[]> {
+async function loadDreams(count: number = 3): Promise<DreamSummary[]> {
   const documents = await loadEpisodicDocuments();
   return documents.flatMap(document => {
     if (document.type !== 'dream') return [];
@@ -597,7 +593,7 @@ export function selectRecentUserRequests(
     });
 }
 
-export function loadRecentUserRequests(): DesireGeneratorInputs['userRequests'] {
+function loadRecentUserRequests(): DesireGeneratorInputs['userRequests'] {
   const username = getUserContext()?.username;
   if (!username) throw new Error('Conversation desire input requires an authenticated user context');
   return selectRecentUserRequests(loadBufferForUser(username, 'conversation').messages);

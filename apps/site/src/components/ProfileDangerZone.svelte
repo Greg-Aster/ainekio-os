@@ -15,15 +15,10 @@
   }
 
   let profiles: Profile[] = [];
-  let currentUser: CurrentUser | null = null;
+  export let currentUser: CurrentUser;
   let loading = true;
   let error = '';
   let success = '';
-
-  // Export function so parent can trigger refresh
-  export async function refreshProfiles() {
-    await loadProfiles();
-  }
 
   // Deletion modal state
   let showDeleteModal = false;
@@ -31,26 +26,7 @@
   let confirmUsername = '';
   let deleting = false;
 
-  onMount(async () => {
-    await loadCurrentUser();
-    await loadProfiles();
-  });
-
-  async function loadCurrentUser() {
-    try {
-      const response = await apiFetch('/api/auth/me');
-      const data = await response.json();
-
-      if (data.success && data.user) {
-        currentUser = {
-          username: data.user.username,
-          role: data.user.role,
-        };
-      }
-    } catch (err) {
-      console.error('Failed to load current user:', err);
-    }
-  }
+  onMount(() => { void loadProfiles(); });
 
   async function loadProfiles() {
     loading = true;
@@ -60,16 +36,16 @@
       const response = await apiFetch('/api/profiles/list');
       const data = await response.json();
 
-      if (data.success) {
+      if (response.ok && data.success) {
         // Filter out special profiles (mutant-super-intelligence)
         let fetchedProfiles: Profile[] = data.profiles.filter(
           (p: Profile) => p.username !== 'mutant-super-intelligence'
         );
 
         // Standard users should only ever see their own account
-        if (currentUser?.role === 'standard' && currentUser.username) {
+        if (currentUser.role === 'standard' && currentUser.username) {
           fetchedProfiles = fetchedProfiles.filter(
-            (p) => p.username === currentUser?.username
+            (p) => p.username === currentUser.username
           );
         }
 
@@ -79,7 +55,6 @@
       }
     } catch (err) {
       error = err instanceof Error ? err.message : 'Failed to load profiles';
-      console.error(err);
     } finally {
       loading = false;
     }
@@ -107,6 +82,7 @@
       return;
     }
 
+    const profile = profileToDelete;
     deleting = true;
     error = '';
     success = '';
@@ -116,26 +92,22 @@
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
-          username: profileToDelete.username,
+          username: profile.username,
           confirmUsername,
         }),
       });
 
       const data = await response.json();
 
-      if (data.success) {
-        success = `Profile '${profileToDelete.username}' has been deleted successfully. ${data.details.sessionsDeleted} session(s) terminated.`;
+      if (response.ok && data.success) {
+        success = `Profile '${data.details.username}' has been deleted successfully. ${data.details.sessionsDeleted} session(s) terminated.`;
 
-        // If user deleted their own account, log them out after a brief delay
-        const deletedSelf = profileToDelete.username === currentUser?.username;
-
+        const deletedSelf = profile.username === currentUser.username;
+        profiles = profiles.filter(p => p.username !== profile.username);
         closeDeleteModal();
 
         if (deletedSelf) {
-          // Show success message briefly, then redirect to splash/login
-          setTimeout(() => {
-            window.location.href = '/';
-          }, 2000);
+          window.location.assign('/');
         } else {
           // Refresh profile list for the owner
           await loadProfiles();
@@ -145,43 +117,21 @@
       }
     } catch (err) {
       error = err instanceof Error ? err.message : 'Failed to delete profile';
-      console.error(err);
     } finally {
       deleting = false;
     }
   }
 
-  function canDeleteProfile(profile: Profile): boolean {
-    if (!currentUser) return false;
-
-    // Owner can delete any non-owner, non-guest profiles (except their own)
-    if (currentUser.role === 'owner') {
-      if (profile.role === 'owner') return false;
-      if (profile.username === currentUser.username) return false;
-      if (profile.username === 'guest') return false;
-      return true;
-    }
-
-    // Standard users can ONLY delete their own account
-    if (currentUser.role === 'standard') {
-      return profile.username === currentUser.username;
-    }
-
-    // Guests and anonymous cannot delete anything
-    return false;
-  }
-
-  function getDeleteDisabledReason(profile: Profile): string {
-    if (!currentUser) return 'Not authenticated';
-
+  function getDeleteDisabledReason(profile: Profile): string | null {
     if (currentUser.role === 'owner') {
       if (profile.role === 'owner') return 'Cannot delete owner account';
       if (profile.username === currentUser.username) return 'Cannot delete your own account as owner';
       if (profile.username === 'guest') return 'Cannot delete guest profile';
+      return null;
     }
 
     if (currentUser.role === 'standard') {
-      if (profile.username !== currentUser.username) return 'Can only delete your own account';
+      return profile.username === currentUser.username ? null : 'Can only delete your own account';
     }
 
     if (currentUser.role === 'guest') {
@@ -192,10 +142,10 @@
   }
 </script>
 
-<div class="mt-8 p-6 border-2 border-red-600 rounded-lg bg-red-50 dark:bg-red-950 dark:border-red-800">
-  <h2 class="m-0 mb-2 text-xl font-semibold text-red-600 dark:text-red-300">⚠️ Danger Zone</h2>
+<section>
+  <h3 class="m-0 mb-2 text-lg font-semibold text-red-600 dark:text-red-300">Delete profiles</h3>
   <p class="m-0 mb-4 text-sm text-red-800 dark:text-red-300">
-    {#if currentUser?.role === 'standard'}
+    {#if currentUser.role === 'standard'}
       Delete your account and all associated data. This action is irreversible.
     {:else}
       Actions in this section are irreversible and permanently delete user data.
@@ -204,13 +154,19 @@
 
   {#if loading}
     <div class="p-4 text-center text-gray-500">Loading profiles...</div>
-  {:else if error && !success}
-    <div class="p-3 mb-4 bg-red-100 dark:bg-red-900 border border-red-200 dark:border-red-800 rounded text-red-800 dark:text-red-200 text-sm">{error}</div>
+  {/if}
+
+  {#if error}
+    <div role="alert" class="p-3 mb-4 bg-red-100 dark:bg-red-900 border border-red-200 dark:border-red-800 rounded text-red-800 dark:text-red-200 text-sm">{error}</div>
   {/if}
 
   {#if success}
-    <div class="p-3 mb-4 bg-green-100 dark:bg-green-900 border border-green-200 dark:border-green-700 rounded text-green-800 dark:text-green-200 text-sm">{success}</div>
+    <div role="status" class="p-3 mb-4 bg-green-100 dark:bg-green-900 border border-green-200 dark:border-green-700 rounded text-green-800 dark:text-green-200 text-sm">{success}</div>
   {/if}
+
+  <button class="btn-secondary mb-4" on:click={loadProfiles} disabled={loading || deleting}>
+    {error ? 'Retry loading profiles' : 'Refresh profiles'}
+  </button>
 
   {#if !loading && profiles.length > 0}
     <div class="overflow-x-auto">
@@ -226,6 +182,7 @@
         </thead>
         <tbody>
           {#each profiles as profile, i}
+            {@const disabledReason = getDeleteDisabledReason(profile)}
             <tr>
               <td class="p-3 border-b border-gray-200 dark:border-gray-700 text-sm dark:text-gray-300 {i === profiles.length - 1 ? 'border-b-0' : ''}"><strong>{profile.username}</strong></td>
               <td class="p-3 border-b border-gray-200 dark:border-gray-700 text-sm dark:text-gray-300 {i === profiles.length - 1 ? 'border-b-0' : ''}">{profile.displayName}</td>
@@ -240,22 +197,14 @@
                 </span>
               </td>
               <td class="p-3 border-b border-gray-200 dark:border-gray-700 text-sm {i === profiles.length - 1 ? 'border-b-0' : ''}">
-                {#if canDeleteProfile(profile)}
-                  <button
-                    class="px-3 py-1.5 bg-red-600 text-white border-none rounded text-sm cursor-pointer transition-colors hover:enabled:bg-red-700 disabled:bg-gray-300 dark:disabled:bg-gray-700 disabled:text-gray-400 dark:disabled:text-gray-500 disabled:cursor-not-allowed"
-                    on:click={() => openDeleteModal(profile)}
-                  >
-                    {profile.username === currentUser?.username ? 'Delete My Account' : 'Delete Profile'}
-                  </button>
-                {:else}
-                  <button
-                    class="px-3 py-1.5 bg-red-600 text-white border-none rounded text-sm cursor-pointer transition-colors hover:enabled:bg-red-700 disabled:bg-gray-300 dark:disabled:bg-gray-700 disabled:text-gray-400 dark:disabled:text-gray-500 disabled:cursor-not-allowed"
-                    disabled
-                    title={getDeleteDisabledReason(profile)}
-                  >
-                    {profile.username === currentUser?.username ? 'Delete My Account' : 'Delete Profile'}
-                  </button>
-                {/if}
+                <button
+                  class="px-3 py-1.5 bg-red-600 text-white border-none rounded text-sm cursor-pointer transition-colors hover:enabled:bg-red-700 disabled:bg-gray-300 dark:disabled:bg-gray-700 disabled:text-gray-400 dark:disabled:text-gray-500 disabled:cursor-not-allowed"
+                  disabled={disabledReason !== null}
+                  title={disabledReason || undefined}
+                  on:click={() => openDeleteModal(profile)}
+                >
+                  {profile.username === currentUser.username ? 'Delete My Account' : 'Delete Profile'}
+                </button>
               </td>
             </tr>
           {/each}
@@ -263,7 +212,7 @@
       </table>
     </div>
   {/if}
-</div>
+</section>
 
 <!-- Delete Confirmation Modal -->
 {#if showDeleteModal && profileToDelete}
@@ -280,7 +229,7 @@
         <ul class="m-0 mb-2 pl-6 text-sm">
           <li class="mb-1">Terminate all active sessions for this user</li>
           <li class="mb-1">Remove the user account from the system</li>
-          <li class="mb-1">Permanently delete the <code class="bg-red-100 dark:bg-red-900 px-1 py-0.5 rounded font-mono text-[0.8em]">profiles/{profileToDelete.username}/</code> directory</li>
+          <li class="mb-1">Permanently delete this profile’s configured storage directory</li>
           <li class="mb-1">Delete all memories, tasks, configurations, and persona data</li>
         </ul>
         <p class="mt-2 mb-0 text-red-600 dark:text-red-300 font-bold">⚠️ <strong>This action is irreversible</strong></p>
@@ -301,7 +250,7 @@
       </div>
 
       {#if error}
-        <div class="p-3 mb-4 bg-red-100 dark:bg-red-900 border border-red-200 dark:border-red-800 rounded text-red-800 dark:text-red-200 text-sm">{error}</div>
+        <div role="alert" class="p-3 mb-4 bg-red-100 dark:bg-red-900 border border-red-200 dark:border-red-800 rounded text-red-800 dark:text-red-200 text-sm">{error}</div>
       {/if}
 
       <div class="flex gap-3 justify-end">

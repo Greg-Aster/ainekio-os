@@ -26,16 +26,19 @@
   }
 
   // State
-  let projects: Project[] = [];
-  let actionableTasks: Task[] = [];
-  let blockedTasks: Task[] = [];
+  let projects: Project[] | null = null;
+  let actionableTasks: Task[] | null = null;
+  let blockedTasks: Task[] | null = null;
   let loading = true;
   let error = '';
   let activeTab: 'projects' | 'actionable' | 'blocked' = 'projects';
   let searchQuery = '';
   let showCreateModal = false;
   let selectedProject: Project | null = null;
-  let projectTasks: Task[] = [];
+  let projectTasks: Task[] | null = null;
+  let projectError = '';
+  let projectRead = 0;
+  let readErrors = { projects: '', actionable: '', blocked: '' };
 
   // New project form
   let newProject = {
@@ -45,72 +48,74 @@
     targetDate: '',
   };
 
-  // Load data
-  async function loadProjects() {
+  let disposed = false;
+  const requests = { projects: 0, actionable: 0, blocked: 0 };
+  const published = { projects: 0, actionable: 0, blocked: 0 };
+
+  async function readList<T>(key: keyof typeof requests, url: string, field: string, commit: (items: T[]) => void) {
+    const request = ++requests[key];
     try {
-      const res = await apiFetch('/api/projects');
-      if (!res.ok) throw new Error('Failed to load projects');
+      const res = await apiFetch(url);
       const data = await res.json();
-      projects = data.projects || [];
+      if (!res.ok) throw new Error(data.error || `Failed to load ${key}`);
+      if (disposed || request < published[key]) return;
+      published[key] = request;
+      commit(data[field]);
+      readErrors[key] = '';
     } catch (e) {
-      error = (e as Error).message;
+      if (!disposed && request >= published[key]) {
+        published[key] = request;
+        readErrors[key] = (e as Error).message;
+      }
     }
   }
 
-  async function loadActionableTasks() {
-    try {
-      const res = await apiFetch('/api/tasks/actionable');
-      if (!res.ok) return;
-      const data = await res.json();
-      actionableTasks = data.tasks || [];
-    } catch (e) {
-      console.warn('Failed to load actionable tasks:', e);
-    }
+  function loadProjects() {
+    return readList<Project>('projects', '/api/projects', 'projects', items => { projects = items; });
   }
-
-  async function loadBlockedTasks() {
-    try {
-      const res = await apiFetch('/api/tasks/blocked');
-      if (!res.ok) return;
-      const data = await res.json();
-      blockedTasks = data.tasks || [];
-    } catch (e) {
-      console.warn('Failed to load blocked tasks:', e);
-    }
+  function loadActionableTasks() {
+    return readList<Task>('actionable', '/api/tasks/actionable', 'tasks', items => { actionableTasks = items; });
+  }
+  function loadBlockedTasks() {
+    return readList<Task>('blocked', '/api/tasks/blocked', 'tasks', items => { blockedTasks = items; });
   }
 
   async function loadAll() {
-    loading = true;
-    error = '';
     await Promise.all([
       loadProjects(),
       loadActionableTasks(),
       loadBlockedTasks(),
     ]);
-    loading = false;
+    if (!disposed) loading = false;
   }
 
   onMount(() => {
-    loadAll();
+    disposed = false;
+    void loadAll();
     const interval = setInterval(loadAll, 30000);
-    return () => clearInterval(interval);
+    return () => { disposed = true; clearInterval(interval); };
   });
 
   // Actions
   async function createProject() {
     if (!newProject.title.trim()) return;
 
+    error = '';
+    const draft = newProject;
+    const submitted = JSON.stringify(draft);
     try {
       const res = await apiFetch('/api/projects', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify(newProject),
+        body: submitted,
       });
 
       if (!res.ok) throw new Error('Failed to create project');
 
-      showCreateModal = false;
-      newProject = { title: '', description: '', priority: 'P2', targetDate: '' };
+      if (newProject === draft && JSON.stringify(newProject) === submitted) {
+        showCreateModal = false;
+        newProject = { title: '', description: '', priority: 'P2', targetDate: '' };
+      }
       await loadProjects();
     } catch (e) {
       error = (e as Error).message;
@@ -118,15 +123,17 @@
   }
 
   async function selectProject(project: Project) {
+    const request = ++projectRead;
     selectedProject = project;
+    projectTasks = null;
+    projectError = '';
     try {
-      const res = await apiFetch(`/api/projects/${project.id}`);
+      const res = await apiFetch(`/api/projects/${encodeURIComponent(project.id)}`);
       if (!res.ok) throw new Error('Failed to load project');
       const data = await res.json();
-      projectTasks = data.tasks || [];
+      if (!disposed && request === projectRead && selectedProject === project) projectTasks = data.tasks;
     } catch (e) {
-      console.warn('Failed to load project tasks:', e);
-      projectTasks = [];
+      if (!disposed && request === projectRead && selectedProject === project) projectError = (e as Error).message;
     }
   }
 
@@ -153,9 +160,9 @@
     }
   }
 
-  $: filteredProjects = projects.filter(p =>
+  $: filteredProjects = projects?.filter(p =>
     !searchQuery || p.title.toLowerCase().includes(searchQuery.toLowerCase())
-  );
+  ) ?? [];
 </script>
 
 <div class="p-6 max-w-[1400px] mx-auto">
@@ -175,18 +182,22 @@
   <!-- Stats Row -->
   <div class="grid grid-cols-3 max-md:grid-cols-1 gap-4 mb-6">
     <div class="panel text-center">
-      <div class="text-3xl font-bold text-blue-500">{projects.filter(p => p.status === 'active').length}</div>
+      <div class="text-3xl font-bold text-blue-500">{projects?.filter(p => p.status === 'active').length ?? '—'}</div>
       <div class="text-xs text-gray-500 dark:text-gray-400 uppercase tracking-wide">Active Projects</div>
     </div>
     <div class="panel text-center">
-      <div class="text-3xl font-bold text-blue-500">{actionableTasks.length}</div>
+      <div class="text-3xl font-bold text-blue-500">{actionableTasks?.length ?? '—'}</div>
       <div class="text-xs text-gray-500 dark:text-gray-400 uppercase tracking-wide">Actionable Tasks</div>
     </div>
     <div class="panel text-center">
-      <div class="text-3xl font-bold text-blue-500">{blockedTasks.length}</div>
+      <div class="text-3xl font-bold text-blue-500">{blockedTasks?.length ?? '—'}</div>
       <div class="text-xs text-gray-500 dark:text-gray-400 uppercase tracking-wide">Blocked Tasks</div>
     </div>
   </div>
+
+  {#each Object.values(readErrors).filter(Boolean) as readError}
+    <p role="alert" class="mb-3 text-red-500">{readError}</p>
+  {/each}
 
   <!-- Error display -->
   {#if error}
@@ -202,19 +213,19 @@
       class="px-4 py-3 bg-transparent border-none text-gray-500 dark:text-gray-400 text-sm cursor-pointer border-b-2 border-transparent transition-colors hover:text-blue-500 {activeTab === 'projects' ? '!text-blue-500 dark:!text-blue-400 !border-blue-500 dark:!border-blue-400' : ''}"
       on:click={() => activeTab = 'projects'}
     >
-      Projects ({projects.length})
+      Projects ({projects?.length ?? '—'})
     </button>
     <button
       class="px-4 py-3 bg-transparent border-none text-gray-500 dark:text-gray-400 text-sm cursor-pointer border-b-2 border-transparent transition-colors hover:text-blue-500 {activeTab === 'actionable' ? '!text-blue-500 dark:!text-blue-400 !border-blue-500 dark:!border-blue-400' : ''}"
       on:click={() => activeTab = 'actionable'}
     >
-      Actionable ({actionableTasks.length})
+      Actionable ({actionableTasks?.length ?? '—'})
     </button>
     <button
       class="px-4 py-3 bg-transparent border-none text-gray-500 dark:text-gray-400 text-sm cursor-pointer border-b-2 border-transparent transition-colors hover:text-blue-500 {activeTab === 'blocked' ? '!text-blue-500 dark:!text-blue-400 !border-blue-500 dark:!border-blue-400' : ''}"
       on:click={() => activeTab = 'blocked'}
     >
-      Blocked ({blockedTasks.length})
+      Blocked ({blockedTasks?.length ?? '—'})
     </button>
   </div>
 
@@ -236,11 +247,13 @@
         />
       </div>
 
-      {#if filteredProjects.length === 0}
+      {#if projects === null}
+        <p>Project data is unavailable.</p>
+      {:else if filteredProjects.length === 0}
         <div class="text-center py-12 text-gray-500">
           <div class="text-5xl mb-4">📁</div>
-          <div class="text-xl font-semibold text-gray-600 dark:text-gray-300 mb-2">No projects yet</div>
-          <div class="text-sm">Create your first project to organize related tasks</div>
+          <div class="text-xl font-semibold text-gray-600 dark:text-gray-300 mb-2">{projects.length ? 'No matching projects' : 'No projects yet'}</div>
+          <div class="text-sm">{projects.length ? 'Change the search to see other projects' : 'Create your first project to organize related tasks'}</div>
         </div>
       {:else}
         <div class="grid grid-cols-[repeat(auto-fill,minmax(320px,1fr))] gap-4">
@@ -268,7 +281,7 @@
               </div>
               {#if project.tags?.length}
                 <div class="flex flex-wrap gap-1">
-                  {#each project.tags.slice(0, 3) as tag}
+                  {#each project.tags as tag}
                     <span class="text-[0.7rem] px-1.5 py-0.5 bg-gray-100 dark:bg-gray-700 text-gray-500 dark:text-gray-400 rounded">{tag}</span>
                   {/each}
                 </div>
@@ -280,7 +293,9 @@
 
     {:else if activeTab === 'actionable'}
       <!-- Actionable Tasks Tab -->
-      {#if actionableTasks.length === 0}
+      {#if actionableTasks === null}
+        <p>Actionable task data is unavailable.</p>
+      {:else if actionableTasks.length === 0}
         <div class="text-center py-12 text-gray-500">
           <div class="text-5xl mb-4">✅</div>
           <div class="text-xl font-semibold text-gray-600 dark:text-gray-300 mb-2">No actionable tasks</div>
@@ -307,7 +322,9 @@
 
     {:else if activeTab === 'blocked'}
       <!-- Blocked Tasks Tab -->
-      {#if blockedTasks.length === 0}
+      {#if blockedTasks === null}
+        <p>Blocked task data is unavailable.</p>
+      {:else if blockedTasks.length === 0}
         <div class="text-center py-12 text-gray-500">
           <div class="text-5xl mb-4">🔓</div>
           <div class="text-xl font-semibold text-gray-600 dark:text-gray-300 mb-2">No blocked tasks</div>
@@ -353,8 +370,12 @@
               <span class="text-sm text-gray-600 dark:text-gray-300">{selectedProject.progress}% complete</span>
             {/if}
           </div>
-          <h4 class="font-semibold text-gray-800 dark:text-gray-100 mb-2">Tasks ({projectTasks.length})</h4>
-          {#if projectTasks.length === 0}
+          <h4 class="font-semibold text-gray-800 dark:text-gray-100 mb-2">Tasks ({projectTasks?.length ?? '—'})</h4>
+          {#if projectError}
+            <p role="alert" class="text-red-500">{projectError}</p>
+          {:else if projectTasks === null}
+            <p>Loading project tasks…</p>
+          {:else if projectTasks.length === 0}
             <p class="text-gray-500 text-sm">No tasks in this project yet</p>
           {:else}
             <div class="flex flex-col gap-2 mt-2">

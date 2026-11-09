@@ -1,6 +1,6 @@
 <script lang="ts">
   import { onMount } from 'svelte';
-  import { apiFetch } from '../lib/client/api-config';
+  import { loadSchemas } from '../lib/client/flow-editor/template-converter';
   import type { NodeSchema } from '@metahuman/core/nodes/types';
   import { schemaSearchText } from '../lib/client/flow-editor/graph-authoring';
 
@@ -13,22 +13,22 @@
   let expandedCategories = $state<Set<string>>(new Set(['input', 'output'])); // Default expanded
   let allNodes = $state<NodeSchema[]>([]);
   let loading = $state(true);
+  let catalogError = $state('');
 
-  // Fetch schemas from API (dynamic - auto-updates when new nodes are added)
-  onMount(async () => {
+  // The converter owns the registered schema cache used by both editor surfaces.
+  async function loadNodes() {
+    loading = true;
+    catalogError = '';
     try {
-      const res = await apiFetch('/api/node-schemas');
-      if (res.ok) {
-        const data = await res.json();
-        allNodes = Array.isArray(data) ? data : (data.schemas || []);
-        console.log(`[NodePalette] Loaded ${allNodes.length} node schemas`);
-      }
+      allNodes = await loadSchemas();
     } catch (e) {
-      console.error('[NodePalette] Failed to load schemas:', e);
+      catalogError = (e as Error).message;
     } finally {
       loading = false;
     }
-  });
+  }
+
+  onMount(() => { void loadNodes(); });
 
   // Group nodes by category (reactive)
   const nodesByCategory = $derived(
@@ -97,12 +97,6 @@
     expandedCategories = newSet;
   }
 
-  function handleNodeClick(nodeId: string) {
-    console.log('[NodePalette] Node clicked:', nodeId);
-    const fullType = `cognitive/${nodeId}`;
-    console.log('[NodePalette] Calling onNodeSelected with:', fullType);
-    onNodeSelected(fullType);
-  }
 </script>
 
 <div class="node-palette" class:collapsed>
@@ -146,10 +140,15 @@
           <span class="loading-spinner"></span>
           <p>Loading nodes...</p>
         </div>
+      {:else if catalogError}
+        <div class="flex flex-col items-center justify-center py-12 px-4 gap-3 text-center text-red-400" role="alert">
+          <p>{catalogError}</p>
+          <button type="button" class="palette-btn" onclick={loadNodes}>Retry node catalog</button>
+        </div>
       {:else if allNodes.length === 0}
         <div class="flex flex-col items-center justify-center py-12 px-4 text-center text-neutral-500">
           <p>No nodes available</p>
-          <p class="text-xs text-neutral-600">Check server connection</p>
+          <p class="text-xs text-neutral-600">The registered node catalog is empty.</p>
         </div>
       {:else}
       {#each filteredCategories as { category, nodes }}
@@ -171,7 +170,7 @@
               {#each nodes as node}
                 <button
                   class="node-item"
-                  onclick={() => handleNodeClick(node.id)}
+                  onclick={() => onNodeSelected(`cognitive/${node.id}`)}
                   title={node.description}
                   style="--node-color: {node.color}; --node-bg: {node.bgColor};"
                 >

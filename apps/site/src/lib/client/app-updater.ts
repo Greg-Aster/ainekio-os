@@ -6,12 +6,12 @@
  * - Web/Desktop: Uses git pull to update server code
  */
 
-import { writable, derived, type Writable } from 'svelte/store';
+import { writable, type Writable } from 'svelte/store';
 import { apiFetch, isMobileApp, isReactNativeWebView } from './api-config';
 import { getRemoteSyncConfig } from './profile-sync';
 
 // Types for mobile APK updates
-export interface MobileVersionInfo {
+interface MobileVersionInfo {
   version: string;
   versionCode: number;
   releaseDate: string;
@@ -23,7 +23,7 @@ export interface MobileVersionInfo {
 }
 
 // Types for server (git) updates
-export interface ServerUpdateInfo {
+interface ServerUpdateInfo {
   updateAvailable: boolean;
   currentVersion: string;
   latestVersion: string | null;
@@ -56,7 +56,7 @@ export interface UpdateState {
   serverUpdateInfo: ServerUpdateInfo | null;
 }
 
-export interface AppInfo {
+interface AppInfo {
   version: string;
   versionCode: number;
   packageName: string;
@@ -80,10 +80,6 @@ const initialState: UpdateState = {
 
 // Stores
 export const updateState: Writable<UpdateState> = writable(initialState);
-
-export const isUpdateAvailable = derived(updateState, $state => $state.updateAvailable);
-export const isChecking = derived(updateState, $state => $state.checking);
-export const isUpdating = derived(updateState, $state => $state.updating);
 let nativeUpdateListenerInstalled = false;
 let mobileReleaseBaseUrl: string | null = null;
 
@@ -151,7 +147,7 @@ function parseAppInfo(value: unknown): AppInfo {
 /**
  * Detect current platform
  */
-export function detectPlatform(): 'mobile' | 'server' {
+function detectPlatform(): 'mobile' | 'server' {
   return isMobileApp() ? 'mobile' : 'server';
 }
 
@@ -212,7 +208,7 @@ async function checkMobileUpdate(): Promise<boolean> {
   const appInfo = await getCurrentAppInfo();
   const remoteConfig = await getRemoteSyncConfig();
   if (!remoteConfig.configured || !remoteConfig.serverUrl) {
-    throw new Error('Configure a remote MetaHuman server before checking for mobile updates');
+    throw new Error('Configure a remote Ainekio OS server before checking for mobile updates');
   }
   const versionUrl = new URL('/api/mobile/version', remoteConfig.serverUrl);
   versionUrl.searchParams.set('current', appInfo.version);
@@ -325,7 +321,7 @@ async function downloadMobileRelease(): Promise<void> {
       }));
       updateState.update(s => ({ ...s, updateProgress: 10 }));
     } else {
-      throw new Error('This mobile runtime cannot install MetaHuman updates');
+      throw new Error('This mobile runtime cannot install Ainekio OS updates');
     }
   } catch (e) {
     const errorMsg = e instanceof Error ? e.message : 'Download failed';
@@ -409,26 +405,12 @@ export async function restartServer(): Promise<void> {
     throw new Error('Server restart is not available on mobile');
   }
 
-  try {
-    const response = await apiFetch('/api/server-update/restart', {
-      method: 'POST',
-    });
-
-    // Server will exit, so connection may be lost
-    if (!response.ok) {
-      const errorData = await response.json().catch(() => ({ error: 'Unknown error' }));
-      throw new Error(errorData.error || 'Restart failed');
-    }
-
-    // Server is restarting - page will need to reload
-    console.log('[app-updater] Server restarting...');
-  } catch (e) {
-    // Connection reset is expected when server exits
-    if (e instanceof TypeError && e.message.includes('fetch')) {
-      console.log('[app-updater] Server is restarting...');
-      return;
-    }
-    throw e;
+  const response = await apiFetch('/api/server-update/restart', {
+    method: 'POST',
+  });
+  if (!response.ok) {
+    const errorData = await response.json().catch(() => ({ error: 'Unknown error' }));
+    throw new Error(errorData.error || 'Restart failed');
   }
 }
 

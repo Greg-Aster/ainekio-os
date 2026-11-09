@@ -271,11 +271,14 @@ export class ExecutionCheckpointer extends SqliteSaver {
     this.deleteTerminalThread(threadId)
   }
 
-  private deleteTerminalThread(threadId: string): void {
+  private deleteTerminalThread(threadId: string, allowIdle = false): void {
     this.store.db.transaction(() => {
       const state = this.store.get(threadId)
+      const allowedStatuses = allowIdle
+        ? ['completed', 'failed', 'cancelled', 'idle']
+        : ['completed', 'failed', 'cancelled']
       // An abandoned owner ID is not a live writer after assertLease rejects it.
-      if (!['completed', 'failed', 'cancelled'].includes(state.status)
+      if (!allowedStatuses.includes(state.status)
         || this.store.hasLiveWriter(state.executionId)) {
         throw new ExecutionConflictError('Cannot prune an active execution')
       }
@@ -283,12 +286,26 @@ export class ExecutionCheckpointer extends SqliteSaver {
         AND status IN ('pending', 'admitted', 'accepted', 'outcome_unknown') LIMIT 1`).get(threadId)) {
         throw new ExecutionConflictError('Cannot prune an unresolved dispatch')
       }
+      const observationIds = (this.store.db.prepare('SELECT observation_id FROM execution_observation_refs WHERE execution_id = ?')
+        .all(threadId) as { observation_id: string }[]).map(row => row.observation_id)
+      const blobHashes = (this.store.db.prepare('SELECT hash FROM execution_blob_refs WHERE execution_id = ?')
+        .all(threadId) as { hash: string }[]).map(row => row.hash)
       this.store.db.prepare('DELETE FROM writes WHERE thread_id = ?').run(threadId)
-      this.store.db.prepare('INSERT INTO execution_retirements VALUES (?, ?)').run(threadId, Date.now())
+      this.store.db.prepare('INSERT OR REPLACE INTO execution_retirements VALUES (?, ?)').run(threadId, Date.now())
       this.store.db.prepare('DELETE FROM checkpoints WHERE thread_id = ?').run(threadId)
       this.store.db.prepare('DELETE FROM executions WHERE execution_id = ?').run(threadId)
-      this.store.db.prepare('DELETE FROM execution_observations WHERE observation_id NOT IN (SELECT observation_id FROM execution_observation_refs)').run()
-      this.store.db.prepare('DELETE FROM execution_blobs WHERE hash NOT IN (SELECT hash FROM execution_blob_refs)').run()
+      if (observationIds.length) {
+        const deleteObservation = this.store.db.prepare(
+          'DELETE FROM execution_observations WHERE observation_id = ? AND NOT EXISTS (SELECT 1 FROM execution_observation_refs WHERE observation_id = ?)'
+        )
+        for (const id of observationIds) deleteObservation.run(id, id)
+      }
+      if (blobHashes.length) {
+        const deleteBlob = this.store.db.prepare(
+          'DELETE FROM execution_blobs WHERE hash = ? AND NOT EXISTS (SELECT 1 FROM execution_blob_refs WHERE hash = ?)'
+        )
+        for (const hash of blobHashes) deleteBlob.run(hash, hash)
+      }
     }).immediate()
   }
 
@@ -310,21 +327,27 @@ export class ExecutionCheckpointer extends SqliteSaver {
     return this.store.db.transaction(() => {
       this.assertProfileHistoryCanBeReset(username)
       const records = this.store.list()
-      for (const record of records) this.deleteTerminalThread(record.executionId)
-      return records.length
+      let count = 0
+      for (const record of records) {
+        if (!this.store.db.prepare('SELECT 1 FROM executions WHERE execution_id = ?').get(record.executionId)) continue
+        this.deleteTerminalThread(record.executionId, true)
+        count++
+      }
+      return count
     }).immediate()
   }
 
   async pruneTerminal(before: number, unfinishedWork = new Set<string>()): Promise<number> {
     const candidates = this.store.db.prepare(`SELECT execution_id FROM executions e
-      WHERE e.status IN ('completed', 'failed', 'cancelled') AND e.updated_at < ?
+      WHERE e.status IN ('completed', 'failed', 'cancelled', 'idle') AND e.updated_at < ?
         AND NOT EXISTS (SELECT 1 FROM execution_outbox o WHERE o.execution_id=e.execution_id
           AND o.status IN ('pending', 'admitted', 'accepted', 'outcome_unknown'))`)
       .all(before) as { execution_id: string }[]
     let count = 0
     for (const { execution_id: id } of candidates) {
+      if (!this.store.db.prepare('SELECT 1 FROM executions WHERE execution_id = ?').get(id)) continue
       if (unfinishedWork.has(id) || this.store.hasLiveWriter(id)) continue
-      await this.deleteThread(id)
+      this.deleteTerminalThread(id, true)
       count++
     }
     return count

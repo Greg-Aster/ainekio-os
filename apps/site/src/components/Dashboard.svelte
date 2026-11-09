@@ -1,64 +1,45 @@
 <script lang="ts">
   import { onMount } from 'svelte';
   import { apiFetch } from '../lib/client/api-config';
+  import { statusStore, statusRefreshTrigger, currentUserStore, openAgentCatalogDashboard } from '../stores/navigation';
   import TriggerManagerOverviewCard from './TriggerManagerOverviewCard.svelte';
 
   interface SystemStatus {
-    identity: { name: string; role: string; trustLevel: string; icon?: string };
+    identity: { name: string; role: string; trustLevel: string };
     tasks: {
       active: number;
       byStatus: { todo: number; in_progress: number; blocked: number };
     };
     values: Array<{ value: string; description: string; priority: number }>;
-    goals: Array<{ goal: string; status: string; timeframe: string }>;
+    goals: Array<{ goal: string; status: string }>;
     lastUpdated: string;
     cognitiveMode?: string;
     memoryStats?: {
       totalIndexed: number;
       totalFiles: number;
       indexAvailable: boolean;
-      indexModel: string | null;
-      lastIndexed: string | null;
-      lastCapture: string | null;
-      byType: Record<string, number>;
       byCategory?: Record<string, number>;
       percentages?: Record<string, number>;
     };
-    agentActivity?: {
-      available: Array<{ name: string; lastRun: string | null; runCount: number }>;
-      processing: { agent: string; status: string; lastActivity: string } | null;
-    };
-    systemHealth?: { ollama: string; auditLogSize: number; storageUsed: number };
+    systemHealth?: { resolvedBackend: string; llmBackend: string; auditLogSize: number };
     recentActivity?: Array<{ type: string; content: string; timestamp: string }>;
     modelRoles?: Record<string, any>;
   }
 
   interface VoiceStatus {
-    tts: { provider: string; available: boolean; serverUrl?: string; error?: string };
-    training: {
-      totalSamples: number;
-      totalDuration: number;
-      recentSamples: Array<{
-        filename: string;
-        size: number;
-        created: string;
-        transcript: string;
-      }>;
-      providers: {
-        rvc: { samples: number; hasTrained: boolean };
-      };
-    };
+    tts: { provider: string; available: boolean; error?: string };
   }
 
-  let status: SystemStatus | null = null;
+  $: status = $statusStore?.data as SystemStatus | undefined;
+  $: loading = !$statusStore;
   let voiceStatus: VoiceStatus | null = null;
-  let loading = true;
-  let error = '';
+  let voiceError = '';
+  let voiceCheckedAt: number | undefined;
+  let voiceRead: AbortController | undefined;
 
   // Collapsible sections (some expanded by default)
   let collapsed = {
     memory: true,
-    agents: true,
     values: true,
     activity: true,
     models: true,
@@ -87,47 +68,72 @@
     return `${days}d ago`;
   }
 
-  async function loadStatus() {
+  async function loadVoiceStatus() {
+    voiceRead?.abort();
+    const controller = voiceRead = new AbortController();
     try {
-      const [statusRes, voiceRes] = await Promise.all([
-        apiFetch('/api/status'),
-        apiFetch('/api/voice-status'),
-      ]);
-
-      if (!statusRes.ok) throw new Error('Failed to load status');
-      status = await statusRes.json();
-
-      if (voiceRes.ok) {
-        voiceStatus = await voiceRes.json();
-      }
-
-      loading = false;
-    } catch (e) {
-      error = (e as Error).message;
-      loading = false;
+      const response = await apiFetch('/api/voice-status', { signal: controller.signal });
+      const data = await response.json();
+      if (!response.ok) throw new Error(data.error);
+      if (controller.signal.aborted) return;
+      voiceStatus = data;
+      voiceCheckedAt = Date.now();
+      voiceError = '';
+    } catch (error) {
+      if (!controller.signal.aborted) voiceError = (error as Error).message;
     }
   }
 
+  function refreshSnapshot() {
+    statusRefreshTrigger.update(version => version + 1);
+    void loadVoiceStatus();
+  }
+
   onMount(() => {
-    loadStatus();
-    const interval = setInterval(loadStatus, 30000);
-    return () => clearInterval(interval);
+    const unsubscribe = currentUserStore.subscribe(() => {
+      voiceStatus = null;
+      voiceCheckedAt = undefined;
+      voiceError = '';
+      void loadVoiceStatus();
+    });
+    const foreground = () => { if (!document.hidden) void loadVoiceStatus(); };
+    window.addEventListener('focus', foreground);
+    document.addEventListener('visibilitychange', foreground);
+    return () => {
+      voiceRead?.abort();
+      unsubscribe();
+      window.removeEventListener('focus', foreground);
+      document.removeEventListener('visibilitychange', foreground);
+    };
   });
+
 </script>
 
+{#if $statusStore?.error}
+  <div class="card p-6 border-red-500" role="alert">
+    <p class="text-red-600 dark:text-red-400">{$statusStore.error}</p>
+    {#if !status}<button class="btn-secondary mt-3" on:click={refreshSnapshot}>Refresh snapshot</button>{/if}
+  </div>
+{/if}
+{#if voiceError}
+  <div class="card p-4 border-red-500" role="alert">Voice snapshot: {voiceError}</div>
+{/if}
 {#if loading}
   <div class="animate-pulse space-y-4">
     <div class="h-8 bg-gray-200 dark:bg-gray-700 rounded w-1/3"></div>
     <div class="h-32 bg-gray-200 dark:bg-gray-700 rounded"></div>
   </div>
-{:else if error}
-  <div class="card p-6 border-red-500">
-    <p class="text-red-600 dark:text-red-400">Error: {error}</p>
-    <p class="text-sm text-gray-500 dark:text-gray-400 mt-2">Run: ./bin/mh init</p>
-  </div>
 {:else if status}
   <div class="max-w-[1200px] mx-auto p-4 flex flex-col gap-4">
+    <div class="flex items-center justify-between gap-4">
+      <span class="text-xs text-gray-500 dark:text-gray-400">Status snapshot · {new Date($statusStore.receivedAt).toLocaleString()}</span>
+      <button class="btn-secondary" on:click={refreshSnapshot}>Refresh snapshot</button>
+    </div>
     <TriggerManagerOverviewCard />
+    <button class="card p-5 text-left" on:click={openAgentCatalogDashboard}>
+      <h3 class="text-lg font-semibold">Agent Catalog</h3>
+      <p class="text-sm text-gray-500 dark:text-gray-400">Inspect registered agents and services, current state and run history.</p>
+    </button>
     <!-- Identity & Quick Stats -->
     <section class="card p-6">
       <div class="flex items-start justify-between mb-4">
@@ -159,10 +165,11 @@
       </div>
     </section>
 
-    <!-- Voice System (if available) -->
+    <!-- Voice snapshot -->
     {#if voiceStatus}
       <section class="card p-6">
-        <h3 class="text-lg font-semibold mb-4">🎤 Voice System</h3>
+        <h3 class="text-lg font-semibold">🎤 Voice Snapshot</h3>
+        <p class="text-xs text-gray-500 dark:text-gray-400 mb-4">Checked {new Date(voiceCheckedAt!).toLocaleString()}</p>
         <div class="grid gap-4 sm:grid-cols-2">
           <div class="p-4 rounded-md bg-gray-50 dark:bg-gray-900">
             <div class="flex justify-between items-center mb-2">
@@ -172,36 +179,10 @@
             <div class="text-lg font-semibold capitalize">{voiceStatus.tts.provider}</div>
             <div class="text-xs text-gray-500 dark:text-gray-400 mt-1">
               {voiceStatus.tts.available ? 'Ready' : 'Unavailable'}
-            </div>
-          </div>
-          <div class="p-4 rounded-md bg-gray-50 dark:bg-gray-900">
-            <span class="text-xs uppercase tracking-wide text-gray-500 dark:text-gray-400">Training Samples</span>
-            <div class="text-lg font-semibold mt-2">{voiceStatus.training.totalSamples}</div>
-
-            <div class="text-xs text-gray-500 dark:text-gray-400">
-              RVC: {voiceStatus.training.providers.rvc.samples}
-              {#if voiceStatus.training.providers.rvc.hasTrained}
-                <span class="text-green-600 dark:text-green-400">✓ Trained</span>
-              {/if}
+              {#if voiceStatus.tts.error}<span class="block text-red-600 dark:text-red-400">{voiceStatus.tts.error}</span>{/if}
             </div>
           </div>
         </div>
-        {#if voiceStatus.training.recentSamples.length > 0}
-          <details class="mt-4">
-            <summary class="cursor-pointer text-xs uppercase tracking-wide text-gray-500 dark:text-gray-400 list-none">Recent Samples ({voiceStatus.training.recentSamples.length})</summary>
-            <div class="mt-2 space-y-2">
-              {#each voiceStatus.training.recentSamples.slice(0, 3) as sample}
-                <div class="p-2 rounded bg-gray-50 dark:bg-gray-900 border border-gray-200 dark:border-gray-700">
-                  <div class="font-mono text-xs">{sample.filename}</div>
-                  <div class="text-xs text-gray-500 dark:text-gray-400">{formatBytes(sample.size)} • {formatTimestamp(sample.created)}</div>
-                  {#if sample.transcript}
-                    <div class="text-xs italic text-gray-500 dark:text-gray-400">"{sample.transcript}..."</div>
-                  {/if}
-                </div>
-              {/each}
-            </div>
-          </details>
-        {/if}
       </section>
     {/if}
 
@@ -209,22 +190,19 @@
     {#if status.systemHealth}
       <section class="card p-6">
         <h3 class="text-lg font-semibold mb-4">System Health</h3>
-        <div class="grid gap-4 sm:grid-cols-3">
+        <div class="grid gap-4 sm:grid-cols-2">
           <div class="p-4 rounded-md bg-gray-50 dark:bg-gray-900">
-            <div class="text-xs uppercase tracking-wide text-gray-500 dark:text-gray-400 mb-1">Ollama</div>
+            <div class="text-xs uppercase tracking-wide text-gray-500 dark:text-gray-400 mb-1">Model Backend</div>
             <div class="flex items-center gap-2">
-              <span class="w-2 h-2 rounded-full" class:bg-green-500={status.systemHealth.ollama === 'connected'} class:bg-red-500={status.systemHealth.ollama !== 'connected'}></span>
-              <span class="text-sm font-semibold capitalize">{status.systemHealth.ollama}</span>
+              <span class="w-2 h-2 rounded-full" class:bg-green-500={status.systemHealth.llmBackend === 'connected'} class:bg-red-500={status.systemHealth.llmBackend !== 'connected'}></span>
+              <span class="text-sm font-semibold capitalize">{status.systemHealth.resolvedBackend} · {status.systemHealth.llmBackend}</span>
             </div>
           </div>
           <div class="p-4 rounded-md bg-gray-50 dark:bg-gray-900">
             <div class="text-xs uppercase tracking-wide text-gray-500 dark:text-gray-400 mb-1">Audit Log</div>
             <div class="text-sm font-semibold">{formatBytes(status.systemHealth.auditLogSize)}</div>
           </div>
-          <div class="p-4 rounded-md bg-gray-50 dark:bg-gray-900">
-            <div class="text-xs uppercase tracking-wide text-gray-500 dark:text-gray-400 mb-1">Storage Used</div>
-            <div class="text-sm font-semibold">{formatBytes(status.systemHealth.storageUsed)}</div>
-          </div>
+
         </div>
       </section>
     {/if}
@@ -276,40 +254,6 @@
                   {/if}
                 </div>
               </div>
-            </div>
-          </div>
-        {/if}
-      </section>
-    {/if}
-
-    <!-- Agent Activity (Collapsible) -->
-    {#if status.agentActivity}
-      <section class="card">
-        <button class="collapsible-header" on:click={() => collapsed.agents = !collapsed.agents}>
-          <h3 class="text-lg font-semibold">Agent Activity</h3>
-          <span class="text-xs text-gray-400 ml-2">{collapsed.agents ? '▶' : '▼'}</span>
-        </button>
-        {#if !collapsed.agents}
-          <div class="p-6 pt-0">
-            {#if status.agentActivity.processing}
-              <div class="p-3 rounded-md bg-blue-50 dark:bg-blue-500/15 border border-blue-200 dark:border-blue-900 mb-4">
-                <div class="flex items-center gap-2">
-                  <div class="w-2 h-2 rounded-full bg-green-500 animate-pulse"></div>
-                  <span class="text-sm font-semibold">{status.agentActivity.processing.agent}</span>
-                  <span class="text-xs text-gray-500 dark:text-gray-400">- {status.agentActivity.processing.status}</span>
-                </div>
-              </div>
-            {/if}
-            <div class="grid gap-3 sm:grid-cols-2 lg:grid-cols-3">
-              {#each status.agentActivity.available.slice(0, 6) as agent}
-                <div class="p-3 rounded bg-gray-50 dark:bg-gray-900">
-                  <div class="flex justify-between items-start mb-1">
-                    <span class="text-sm font-semibold">{agent.name}</span>
-                    <span class="text-xs py-0.5 px-2 rounded-full bg-gray-200 dark:bg-gray-700 text-gray-600 dark:text-gray-300">{agent.runCount}</span>
-                  </div>
-                  <div class="text-xs text-gray-500 dark:text-gray-400">Last: {formatTimestamp(agent.lastRun)}</div>
-                </div>
-              {/each}
             </div>
           </div>
         {/if}
@@ -392,6 +336,7 @@
                   <span class="text-gray-500 dark:text-gray-400 capitalize">{role}</span>
                   <div class="text-right">
                     <div class="font-mono text-xs">{config.model}</div>
+                    {#if config.unavailableReason}<div class="text-xs text-red-600 dark:text-red-400">{config.unavailableReason}</div>{/if}
                     {#if config.adapters && config.adapters.length > 0}
                       <div class="text-xs text-gray-500 dark:text-gray-400">+ {config.adapters.length} adapter(s)</div>
                     {/if}
@@ -405,25 +350,30 @@
     {/if}
 
     <div class="text-xs text-gray-500 dark:text-gray-400 text-center mt-6">
-      Last updated: {new Date(status.lastUpdated).toLocaleString()}
+      Persona updated: {new Date(status.lastUpdated).toLocaleString()}
     </div>
   </div>
 {/if}
 
 <style>
   /* Collapsible header button */
+
   .collapsible-header {
-    @apply w-full flex items-center justify-between p-6 bg-transparent border-0 cursor-pointer text-left transition-colors;
-  }
-  .collapsible-header:hover {
-    @apply bg-black/[0.02] dark:bg-white/5;
+    @apply text-gray-900 text-sm font-medium;
+    @apply w-full flex items-center justify-between p-6 bg-transparent border-0 cursor-pointer text-left
+           transition-colors;
   }
 
-  /* Hide details marker */
-  details summary {
-    list-style: none;
+  :global(.dark) .collapsible-header {
+    @apply text-gray-100;
   }
-  details summary::-webkit-details-marker {
-    display: none;
+
+  .collapsible-header:hover {
+    @apply bg-black/[0.02];
   }
+
+  :global(.dark) .collapsible-header:hover {
+    @apply bg-white/5;
+  }
+
 </style>

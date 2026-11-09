@@ -2,8 +2,7 @@
   import { onMount } from 'svelte';
   import OnboardingWizard from './OnboardingWizard.svelte';
   import ProfileSelector from './ProfileSelector.svelte';
-  import { apiFetch, getApiBaseUrl, initServerUrl, getSyncServerUrl, normalizeUrl, isMobileApp, isHostedUi, setBackendUrl } from '../lib/client/api-config';
-  import { healthStatus, forceHealthCheck } from '../lib/client/server-health';
+  import { apiFetch, getApiBaseUrl, getSyncServerUrl, normalizeUrl, isMobileApp, isHostedUi, setBackendUrl } from '../lib/client/api-config';
   import { canSyncOnLogin } from '../lib/client/sync-settings';
   import { getRemoteSyncConfig, runProfileSyncAgent } from '../lib/client/profile-sync';
   import { clearSecurityPolicy, fetchSecurityPolicy } from '../stores/security-policy';
@@ -32,19 +31,20 @@
     }
   }
 
-  async function handleApiAuthFailure(event: Event): Promise<void> {
-    const detail = (event as CustomEvent<{ status?: number; path?: string; payload?: unknown }>).detail;
+  async function handleApiAuthFailure(): Promise<void> {
     if (handlingAuthFailure || !isAuthenticated) return;
 
     handlingAuthFailure = true;
-    console.warn('[AuthGate] API auth failure detected:', detail);
-    clearStoredSession();
-    currentUserStore.set(null);
-    statusStore.set(null);
-    clearSecurityPolicy();
+    let storageError = '';
+    try { clearStoredSession(); }
+    catch (cause) {
+      storageError = ' The saved browser session could not be removed.';
+      console.warn('[AuthGate] Saved session cleanup failed:', cause);
+    }
+    clearSessionState();
     await clearServerSessionCookie();
 
-    error = 'Your session expired or became invalid. Please log in again.';
+    error = `Your session expired or became invalid. Please log in again.${storageError}`;
     view = 'login';
     isAuthenticated = false;
     isCheckingAuth = false;
@@ -76,7 +76,7 @@
     }
   }
 
-  let view: 'splash' | 'login' | 'register' | 'register-type' | 'register-local' | 'post-register' | 'onboarding' | 'forgot-password' | 'recovery-codes' | 'sync-prompt' = isMobileApp() ? 'splash' : 'login';
+  let view: 'splash' | 'login' | 'register' | 'post-register' | 'onboarding' | 'forgot-password' | 'sync-prompt' = isMobileApp() ? 'splash' : 'login';
   let isAuthenticated = false;
   let isCheckingAuth = true;
   let error = '';
@@ -84,9 +84,6 @@
   let showProfileSelector = false;
   let guestSessionError = '';
   let successMessage = '';
-
-  // Server connection state
-  let serverConnected = false;
 
   // Form fields
   let username = '';
@@ -97,9 +94,6 @@
   let displayName = '';
   let email = '';
 
-  // Local profile options
-  let profileType: 'local' | 'server' = 'local';  // Default to local-first
-
   // Sync server URL (for pulling profiles from a remote server)
   let syncServerUrl = getSyncServerUrl();
   let syncLoading = false;
@@ -108,8 +102,6 @@
   let recoveryCode = '';
   let newPassword = '';
   let confirmNewPassword = '';
-  let generatedRecoveryCodes: string[] = [];
-  let registeredUsername = '';
 
   // Track if login failure suggests user doesn't exist (for sync hint)
   let showSyncHint = false;
@@ -117,9 +109,6 @@
   // Agreement checkboxes
   let agreeToTerms = false;
   let agreeToEthicalUse = false;
-
-  // Subscribe to health status
-  $: serverConnected = $healthStatus.connected;
 
   function selectLoginMachine(): boolean {
     if (!isHostedUi()) return true;
@@ -138,49 +127,40 @@
     if (selectLoginMachine()) view = next;
   }
 
-  // Check if user is already authenticated
-  async function checkAuth() {
-    console.log('[AuthGate] checkAuth() starting');
+  function clearSessionState(): void {
     currentUserStore.set(null);
-    isAuthenticated = false;
-
-    try {
-      const res = await apiFetch('/api/auth/me');
-      if (res.ok) {
-        const data = await res.json();
-        if (data.user) {
-          console.log('[AuthGate] Auth successful for:', data.user.username);
-          await fetchSecurityPolicy();
-          currentUserStore.set(data.user);
-          isAuthenticated = true;
-          isCheckingAuth = false;
-          return;
-        }
-      } else {
-        // Check if this is an encryption locked error
-        try {
-          const errorData = await res.json();
-          if (errorData.data?.encryptionLocked) {
-            console.log('[AuthGate] Encrypted storage is locked for:', errorData.data.username);
-            // Pre-fill username and show login form with unlock message
-            username = errorData.data.username;
-            error = `Your encrypted storage is locked. Please enter your password to unlock.`;
-            view = 'login';
-            isCheckingAuth = false;
-            return;
-          }
-        } catch {
-          // Failed to parse error response, continue to show login screen
-        }
-      }
-    } catch (error) {
-      console.warn('[AuthGate] Auth check failed:', error);
-    }
-
-    // No authentication found - show login screen
-    console.log('[AuthGate] No auth found, showing login screen');
+    statusStore.set(null);
     clearSecurityPolicy();
-    isCheckingAuth = false;
+  }
+
+  function reloadApp(): void {
+    window.location.reload();
+  }
+
+  // Core's restored session is the authority for mounting the authenticated app.
+  async function checkAuth() {
+    clearSessionState();
+    isAuthenticated = false;
+    try {
+      const response = await apiFetch('/api/auth/me');
+      const data = await response.json();
+      if (response.ok && data.user) {
+        await fetchSecurityPolicy();
+        currentUserStore.set(data.user);
+        isAuthenticated = true;
+      } else if (data.data?.encryptionLocked) {
+        username = data.data.username;
+        error = 'Your encrypted storage is locked. Please enter your password to unlock.';
+        view = 'login';
+      } else if (!response.ok && response.status !== 401) {
+        error = data.error || `Authentication check failed (${response.status})`;
+      }
+    } catch (cause) {
+      error = cause instanceof Error ? cause.message : 'Authentication check failed';
+      console.warn('[AuthGate] Auth check failed:', cause);
+    } finally {
+      isCheckingAuth = false;
+    }
   }
 
   // Handle login - IDENTICAL for web and mobile
@@ -244,6 +224,7 @@
         }
 
         successMessage = `LOGIN SUCCESS! Welcome back, ${data.user.username}. Profile loaded and ready.`;
+        let syncErrorMessage = '';
         try {
           if (await canSyncOnLogin() && (await getRemoteSyncConfig()).configured) {
             // The agent owns incremental checkpoints; keep device configuration local.
@@ -259,14 +240,18 @@
             successMessage += ' Profile sync queued in the background.';
           }
         } catch (syncError) {
-          successMessage += ` Automatic sync could not start: ${syncError instanceof Error ? syncError.message : 'Unknown error'}. Use Sync Manager to retry.`;
+          syncErrorMessage = `Automatic sync could not start: ${syncError instanceof Error ? syncError.message : 'Unknown error'}. Use Sync Manager to retry.`;
+          successMessage += ` ${syncErrorMessage}`;
         }
         error = ''; // Clear any previous errors
 
-        setTimeout(() => {
-          isAuthenticated = true;
-          window.location.reload();
-        }, 1500);
+        await checkAuth();
+        if (!isAuthenticated) {
+          successMessage = '';
+          error = `${error || 'Your login was accepted, but the session could not be restored.'}${syncErrorMessage ? ` ${syncErrorMessage}` : ''}`;
+        } else if (syncErrorMessage) {
+          handleApiAction(new CustomEvent('mh:api-action', { detail: { state: 'error', message: syncErrorMessage } }));
+        }
         return; // Don't fall through to error handling
       }
 
@@ -331,8 +316,7 @@
       successMessage = `SYNC SUCCESS! Imported your profile and completed memory sync from ${normalizedSyncUrl}.`;
       error = ''; // Clear any previous errors
 
-      isAuthenticated = true;
-      window.location.reload();
+      reloadApp();
     } catch (err) {
       // Browser transport failures may never reach the server. Do not log the
       // request, credentials, source URL, or arbitrary remote error payloads.
@@ -346,45 +330,32 @@
     }
   }
 
-  // Create local profile via API - IDENTICAL for web and mobile
+  async function createAccount(emailAddress?: string) {
+    const response = await apiFetch('/api/auth/register', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ username, password, displayName: displayName || username, email: emailAddress || undefined }),
+    });
+    const data = await response.json();
+    if (!response.ok || !data.success) throw new Error(data.error || 'Failed to create profile');
+    if (data.sessionId) storeSession(data.sessionId, data.user?.username || username);
+  }
+
+  // The sync screen's local-profile shortcut uses the same Core registration.
   async function handleOfflineLogin() {
     error = '';
     loading = true;
-
     try {
-      // Create profile via API - works for both web and mobile
-      const res = await apiFetch('/api/auth/register', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          username,
-          password,
-          displayName: displayName || username,
-        }),
-      });
-
-      const data = await res.json();
-      if (!data.success) {
-        error = data.error || 'Failed to create profile';
-        return;
-      }
-
-      // Store session and reload
-      if (data.sessionId) {
-        storeSession(data.sessionId, username);
-      }
-
-      console.log('[AuthGate] Created local profile:', username);
-      isAuthenticated = true;
-      window.location.reload();
-    } catch (err) {
-      if (err instanceof Error && err.message.includes('already exists')) {
+      await createAccount();
+      reloadApp();
+    } catch (cause) {
+      if (cause instanceof Error && cause.message.includes('already exists')) {
         error = 'User already exists locally. Try logging in normally.';
         view = 'login';
       } else {
-        error = err instanceof Error ? err.message : 'Failed to create profile';
+        error = cause instanceof Error ? cause.message : 'Failed to create profile';
       }
-      console.error('Create profile error:', err);
+      console.error('Create profile error:', cause);
     } finally {
       loading = false;
     }
@@ -415,82 +386,12 @@
     loading = true;
 
     try {
-      const res = await apiFetch('/api/auth/register', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          username,
-          password,
-          displayName: displayName || username,
-          email: email || undefined,
-        }),
-      });
-
-      const data = await res.json();
-
-      if (data.success) {
-        isAuthenticated = true;
-        registeredUsername = username;
-        // Recovery codes are stored server-side and can be found in Settings > Security
-        // Skip directly to post-register options
-        view = 'post-register';
-      } else {
-        error = data.error || 'Registration failed';
-      }
-    } catch (err) {
-      error = 'Network error. Please try again.';
-      console.error('Registration error:', err);
-    } finally {
-      loading = false;
-    }
-  }
-
-  // Handle local profile registration (for offline use)
-  // Uses the same API as handleRegister - IDENTICAL code path for web and mobile
-  async function handleLocalRegister() {
-    error = '';
-
-    if (password !== confirmPassword) {
-      error = 'Passwords do not match';
-      return;
-    }
-
-    if (password.length < 6) {
-      error = 'Password must be at least 6 characters';
-      return;
-    }
-
-    loading = true;
-
-    try {
-      // Use API to create profile - SAME code path for both web and mobile
-      const res = await apiFetch('/api/auth/register', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          username,
-          password,
-          displayName: displayName || username,
-        }),
-      });
-
-      const data = await res.json();
-      if (!data.success) {
-        error = data.error || 'Failed to create profile';
-        return;
-      }
-
-      // Store session and reload
-      if (data.sessionId) {
-        storeSession(data.sessionId, username);
-      }
-
-      console.log('[AuthGate] Created local profile:', username);
+      await createAccount(email);
       isAuthenticated = true;
-      window.location.reload();
-    } catch (err) {
-      error = err instanceof Error ? err.message : 'Failed to create local profile';
-      console.error('Local registration error:', err);
+      view = 'post-register';
+    } catch (cause) {
+      error = cause instanceof Error ? cause.message : 'Registration failed';
+      console.error('Registration error:', cause);
     } finally {
       loading = false;
     }
@@ -541,10 +442,7 @@
         // Show login with success message
         error = '';
         view = 'login';
-        // Show success (reuse error field with success styling)
-        setTimeout(() => {
-          alert('Password reset successfully! Please login with your new password.');
-        }, 100);
+        alert('Password reset successfully! Please login with your new password.');
       } else {
         error = data.error || 'Password reset failed';
       }
@@ -556,35 +454,20 @@
     }
   }
 
-  // Handle onboarding completion
-  function handleOnboardingComplete() {
-    window.location.reload(); // Reload to initialize full app
-  }
-
-  // Start onboarding wizard
   function startOnboarding() {
     view = 'onboarding';
-  }
-
-  // Skip onboarding and go to app
-  function skipOnboarding() {
-    window.location.reload(); // Reload to initialize full app
   }
 
   // Continue as guest (anonymous access)
   async function continueAsGuest() {
     if (!selectLoginMachine()) return;
     try {
-      console.log('[AuthGate] Continue as guest clicked');
       guestSessionError = '';
       const res = await apiFetch('/api/auth/guest', { method: 'POST' });
       const data = await res.json();
-      console.log('[AuthGate] Guest session response:', data);
 
-      if (data.success) {
-        console.log('[AuthGate] Setting showProfileSelector = true');
+      if (res.ok && data.success) {
         showProfileSelector = true; // Show profile selector modal
-        console.log('[AuthGate] showProfileSelector is now:', showProfileSelector);
       } else {
         guestSessionError = data.error || 'Failed to create guest session';
       }
@@ -594,12 +477,6 @@
     }
   }
 
-  // Handle profile selection
-  function handleProfileSelected(username: string) {
-    console.log('[AuthGate] Profile selected:', username);
-    // Navigation handled by ProfileSelector
-  }
-
   // Handle profile selector cancel
   function handleProfileCancel() {
     showProfileSelector = false;
@@ -607,7 +484,6 @@
   }
 
   onMount(() => {
-    console.log('[AuthGate] Component mounted, starting auth check');
     window.addEventListener('mh:api-auth-failure', handleApiAuthFailure);
     window.addEventListener('mh:api-action', handleApiAction);
     const url = new URL(window.location.href);
@@ -626,7 +502,7 @@
   });
 </script>
 
-{#if !isAuthenticated || view === 'post-register' || view === 'onboarding' || view === 'recovery-codes'}
+{#if !isAuthenticated || view === 'post-register' || view === 'onboarding'}
   <div class="fixed inset-0 flex items-center justify-center z-[10000] p-4 overflow-y-auto
               bg-gradient-to-br from-slate-800 via-slate-900 to-slate-950
               dark:from-slate-800 dark:via-slate-900 dark:to-slate-950
@@ -643,20 +519,20 @@
               <span class="text-4xl font-bold text-white">🧠💻</span>
             </div>
             <h1 class="text-3xl font-bold m-0 mb-2 bg-gradient-to-r from-blue-400 to-purple-400 bg-clip-text text-transparent
-                       [html:not(.dark)_&]:from-blue-600 [html:not(.dark)_&]:to-purple-600">MetaHuman OS</h1>
+                       [html:not(.dark)_&]:from-blue-600 [html:not(.dark)_&]:to-purple-600">Ainekio OS</h1>
             <p class="text-base text-white/60 m-0 [html:not(.dark)_&]:text-black/60">Checking authentication...</p>
           </div>
         </div>
       {:else if view === 'onboarding'}
         <!-- Onboarding Wizard -->
-        <OnboardingWizard onComplete={handleOnboardingComplete} />
+        <OnboardingWizard onComplete={reloadApp} />
       {:else if view === 'post-register'}
         <!-- Post-Registration Options -->
         <div class="relative">
           <div class="text-center mb-8">
             <div class="w-16 h-16 mx-auto mb-4 bg-gradient-to-br from-emerald-500 to-emerald-600 rounded-full flex items-center justify-center text-3xl text-white">✓</div>
             <h2 class="text-2xl font-bold m-0 mb-2 text-white [html:not(.dark)_&]:text-gray-900">Account Created Successfully!</h2>
-            <p class="text-base text-white/60 m-0 [html:not(.dark)_&]:text-black/60">Welcome to MetaHuman OS</p>
+            <p class="text-base text-white/60 m-0 [html:not(.dark)_&]:text-black/60">Welcome to Ainekio OS</p>
           </div>
 
           <div class="flex flex-col gap-4 my-8">
@@ -681,7 +557,7 @@
                 I'll add my data later through Memory Capture, Chat, File Ingestion,
                 or other utilities. Let me explore the system first.
               </p>
-              <button class="btn-secondary w-full" on:click={skipOnboarding}>
+              <button class="btn-secondary w-full" on:click={reloadApp}>
                 Continue to App
               </button>
             </div>
@@ -706,13 +582,13 @@
               <span class="text-4xl font-bold text-white">🧠💻</span>
             </div>
             <h1 class="text-3xl font-bold m-0 mb-2 bg-gradient-to-r from-blue-400 to-purple-400 bg-clip-text text-transparent
-                       [html:not(.dark)_&]:from-blue-600 [html:not(.dark)_&]:to-purple-600">MetaHuman OS</h1>
+                       [html:not(.dark)_&]:from-blue-600 [html:not(.dark)_&]:to-purple-600">Ainekio OS</h1>
             <p class="text-base text-white/60 m-0 [html:not(.dark)_&]:text-black/60">Autonomous Digital Personality Extension</p>
           </div>
 
           <div class="my-8 p-6 bg-white/5 rounded-xl border border-white/10 [html:not(.dark)_&]:bg-black/5 [html:not(.dark)_&]:border-black/10">
             <p class="m-0 leading-relaxed text-white/80 [html:not(.dark)_&]:text-black/70">
-              MetaHuman OS is a personal AI system that mirrors your identity, memories, and
+              Ainekio OS is a personal AI system that mirrors your identity, memories, and
               personality. It operates autonomously as a seamless extension of yourself.
             </p>
           </div>
@@ -752,7 +628,7 @@
                 </svg>
                 User Guide
               </a>
-              <a href="https://github.com/Greg-Aster/metahuman-os" target="_blank" class="inline-flex items-center gap-1.5 py-2 px-3.5 bg-white/5 border border-white/15 rounded-full text-sm text-white/70 no-underline transition-all hover:bg-white/10 hover:border-white/30 hover:text-white/90 hover:-translate-y-0.5
+              <a href="https://github.com/Greg-Aster/ainekio-os" target="_blank" class="inline-flex items-center gap-1.5 py-2 px-3.5 bg-white/5 border border-white/15 rounded-full text-sm text-white/70 no-underline transition-all hover:bg-white/10 hover:border-white/30 hover:text-white/90 hover:-translate-y-0.5
                          [html:not(.dark)_&]:bg-black/5 [html:not(.dark)_&]:border-black/15 [html:not(.dark)_&]:text-black/60 [html:not(.dark)_&]:hover:bg-black/10 [html:not(.dark)_&]:hover:border-black/30 [html:not(.dark)_&]:hover:text-black/90">
                 <svg width="16" height="16" viewBox="0 0 16 16" fill="none">
                   <path fill-rule="evenodd" d="M8 0C3.58 0 0 3.58 0 8c0 3.54 2.29 6.53 5.47 7.59.4.07.55-.17.55-.38 0-.19-.01-.82-.01-1.49-2.01.37-2.53-.49-2.69-.94-.09-.23-.48-.94-.82-1.13-.28-.15-.68-.52-.01-.53.63-.01 1.08.58 1.23.82.72 1.21 1.87.87 2.33.66.07-.52.28-.87.51-1.07-1.78-.2-3.64-.89-3.64-3.95 0-.87.31-1.59.82-2.15-.08-.2-.36-1.02.08-2.12 0 0 .67-.21 2.2.82.64-.18 1.32-.27 2-.27.68 0 1.36.09 2 .27 1.53-1.04 2.2-.82 2.2-.82.44 1.1.16 1.92.08 2.12.51.56.82 1.27.82 2.15 0 3.07-1.87 3.75-3.65 3.95.29.25.54.73.54 1.48 0 1.07-.01 1.93-.01 2.2 0 .21.15.46.55.38A8.013 8.013 0 0016 8c0-4.42-3.58-8-8-8z" fill="currentColor"/>
@@ -775,8 +651,8 @@
           {/if}
 
           <div class="text-center mb-8">
-            <h2 class="text-2xl font-bold m-0 mb-2 text-white [html:not(.dark)_&]:text-gray-900">Sign in to MetaHuman OS</h2>
-            <p class="text-base text-white/60 m-0 [html:not(.dark)_&]:text-black/60">Sign in to your MetaHuman OS account</p>
+            <h2 class="text-2xl font-bold m-0 mb-2 text-white [html:not(.dark)_&]:text-gray-900">Sign in to Ainekio OS</h2>
+            <p class="text-base text-white/60 m-0 [html:not(.dark)_&]:text-black/60">Sign in to your Ainekio OS account</p>
           </div>
 
           <form on:submit={handleLogin}>
@@ -879,7 +755,7 @@
 
           <div class="text-center mb-8">
             <h2 class="text-2xl font-bold m-0 mb-2 text-white [html:not(.dark)_&]:text-gray-900">Create Account</h2>
-            <p class="text-base text-white/60 m-0 [html:not(.dark)_&]:text-black/60">Set up your personal MetaHuman OS instance</p>
+            <p class="text-base text-white/60 m-0 [html:not(.dark)_&]:text-black/60">Set up your personal Ainekio OS instance</p>
           </div>
 
           <form on:submit={handleRegister}>
@@ -1096,7 +972,7 @@
           </div>
         </div>
       {:else if view === 'sync-prompt'}
-        <!-- User Not Found - shown when user not found locally -->
+        <!-- Explicit profile import or creation on the selected machine. -->
         <div class="relative">
           <button aria-label="Back to sign in" class="absolute -top-4 -left-2 w-9 h-9 rounded-lg border-none bg-white/10 text-white/70 cursor-pointer flex items-center justify-center transition-all hover:bg-white/20 hover:text-white
                         [html:not(.dark)_&]:bg-black/5 [html:not(.dark)_&]:text-black/60 [html:not(.dark)_&]:hover:bg-black/10 [html:not(.dark)_&]:hover:text-black/90" on:click={() => view = 'login'}>
@@ -1107,8 +983,8 @@
 
           <div class="text-center mb-8">
             <div class="w-16 h-16 mx-auto mb-4 bg-gradient-to-br from-orange-500 to-red-600 rounded-full flex items-center justify-center text-3xl">👤</div>
-            <h2 class="text-2xl font-bold m-0 mb-2 text-white [html:not(.dark)_&]:text-gray-900">User Not Found</h2>
-            <p class="text-base text-white/60 m-0 [html:not(.dark)_&]:text-black/60">No local profile for "{username}"</p>
+            <h2 class="text-2xl font-bold m-0 mb-2 text-white [html:not(.dark)_&]:text-gray-900">Sync or Create Profile</h2>
+            <p class="text-base text-white/60 m-0 [html:not(.dark)_&]:text-black/60">Import an existing profile or create one on the selected machine.</p>
           </div>
 
           {#if error}
@@ -1124,7 +1000,7 @@
             <div class="p-6 bg-gradient-to-br from-blue-400/10 to-purple-400/10 border border-blue-400 rounded-xl transition-all">
               <div class="text-3xl mb-3">🔄</div>
               <h3 class="text-xl font-semibold m-0 mb-2 text-white [html:not(.dark)_&]:text-gray-900">Sync from Server</h3>
-              <p class="m-0 mb-4 text-sm leading-relaxed text-white/70 [html:not(.dark)_&]:text-black/70">Pull existing profile from a MetaHuman server</p>
+              <p class="m-0 mb-4 text-sm leading-relaxed text-white/70 [html:not(.dark)_&]:text-black/70">Pull existing profile from an Ainekio OS server</p>
 
               <div class="mb-2">
                 <label for="sync-server" class="block text-xs opacity-80 mb-1">Server URL</label>
@@ -1173,154 +1049,11 @@
             <div class="p-6 bg-white/5 border border-white/10 rounded-xl transition-all [html:not(.dark)_&]:bg-black/5 [html:not(.dark)_&]:border-black/10">
               <div class="text-3xl mb-3">➕</div>
               <h3 class="text-xl font-semibold m-0 mb-2 text-white [html:not(.dark)_&]:text-gray-900">Create Local Profile</h3>
-              <p class="m-0 mb-4 text-sm leading-relaxed text-white/70 [html:not(.dark)_&]:text-black/70">Create a new profile as "{username}" on this device</p>
+              <p class="m-0 mb-4 text-sm leading-relaxed text-white/70 [html:not(.dark)_&]:text-black/70">Create a new profile as "{username}" on the selected machine</p>
               <button class="btn-secondary w-full" on:click={handleOfflineLogin} disabled={loading}>
                 {loading ? 'Creating...' : 'Create Profile'}
               </button>
             </div>
-          </div>
-        </div>
-      {:else if view === 'register-local'}
-        <!-- Local Profile Registration -->
-        <div class="relative">
-          <button aria-label={isHostedUi() ? 'Back to login' : 'Back to welcome'} class="absolute -top-4 -left-2 w-9 h-9 rounded-lg border-none bg-white/10 text-white/70 cursor-pointer flex items-center justify-center transition-all hover:bg-white/20 hover:text-white
-                        [html:not(.dark)_&]:bg-black/5 [html:not(.dark)_&]:text-black/60 [html:not(.dark)_&]:hover:bg-black/10 [html:not(.dark)_&]:hover:text-black/90" on:click={() => view = isHostedUi() ? 'login' : 'splash'}>
-            <svg width="20" height="20" viewBox="0 0 16 16" fill="none">
-              <path d="M8 14L2 8l6-6M2 8h12" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/>
-            </svg>
-          </button>
-
-          <div class="text-center mb-8">
-            <h2 class="text-2xl font-bold m-0 mb-2 text-white [html:not(.dark)_&]:text-gray-900">Create Local Profile</h2>
-            <p class="text-base text-white/60 m-0 [html:not(.dark)_&]:text-black/60">This profile will be stored on your device only</p>
-          </div>
-
-          <form on:submit|preventDefault={handleLocalRegister}>
-            <div class="mb-5">
-              <label for="local-username" class="block text-sm font-medium text-white/80 mb-2 [html:not(.dark)_&]:text-black/80">Username *</label>
-              <input
-                id="local-username"
-                type="text"
-                bind:value={username}
-                required
-                disabled={loading}
-                autocomplete="username"
-                pattern="[a-zA-Z0-9_-]+"
-                title="Letters, numbers, underscore, and hyphen only"
-                minlength="3"
-                maxlength="50"
-                class="input-field"
-              />
-            </div>
-
-            <div class="mb-5">
-              <label for="local-display-name" class="block text-sm font-medium text-white/80 mb-2 [html:not(.dark)_&]:text-black/80">Display Name</label>
-              <input
-                id="local-display-name"
-                type="text"
-                bind:value={displayName}
-                disabled={loading}
-                placeholder="Optional"
-                class="input-field"
-              />
-            </div>
-
-            <div class="mb-5">
-              <label for="local-password" class="block text-sm font-medium text-white/80 mb-2 [html:not(.dark)_&]:text-black/80">Password *</label>
-              <input
-                id="local-password"
-                type="password"
-                bind:value={password}
-                required
-                disabled={loading}
-                autocomplete="new-password"
-                minlength="6"
-                class="input-field"
-              />
-            </div>
-
-            <div class="mb-5">
-              <label for="local-confirm-password" class="block text-sm font-medium text-white/80 mb-2 [html:not(.dark)_&]:text-black/80">Confirm Password *</label>
-              <input
-                id="local-confirm-password"
-                type="password"
-                bind:value={confirmPassword}
-                required
-                disabled={loading}
-                autocomplete="new-password"
-                minlength="6"
-                class="input-field"
-              />
-            </div>
-
-            {#if error}
-              <div class="py-3 px-4 bg-red-500/10 border border-red-500/30 rounded-lg text-red-500 text-sm mb-4">{error}</div>
-            {/if}
-
-            <div class="flex gap-2 p-3 bg-blue-400/10 border border-blue-400/30 rounded-lg mb-4 text-sm text-white/80 [html:not(.dark)_&]:text-black/80">
-              <svg width="16" height="16" viewBox="0 0 16 16" fill="none" class="flex-shrink-0 text-blue-400">
-                <path d="M8 1C4.13 1 1 4.13 1 8s3.13 7 7 7 7-3.13 7-7-3.13-7-7-7zm0 2c.55 0 1 .45 1 1s-.45 1-1 1-1-.45-1-1 .45-1 1-1zm1 9H7V7h2v5z" fill="currentColor"/>
-              </svg>
-              <span>This creates a local profile. Connect to a server later to sync your data.</span>
-            </div>
-
-            <button type="submit" class="btn-primary w-full" disabled={loading}>
-              {loading ? 'Creating...' : 'Create Local Profile'}
-            </button>
-          </form>
-        </div>
-      {:else if view === 'recovery-codes'}
-        <!-- Recovery Codes Display (After Registration) -->
-        <div class="relative max-w-[600px]">
-          <div class="text-center mb-8">
-            <div class="w-16 h-16 mx-auto mb-4 bg-gradient-to-br from-emerald-500 to-emerald-600 rounded-full flex items-center justify-center text-3xl text-white">🔑</div>
-            <h2 class="text-2xl font-bold m-0 mb-2 text-white [html:not(.dark)_&]:text-gray-900">Save Your Recovery Codes</h2>
-            <p class="text-base text-white/60 m-0 [html:not(.dark)_&]:text-black/60">These codes can be used to reset your password if you forget it</p>
-          </div>
-
-          <div class="flex gap-3 p-4 bg-amber-500/10 border border-amber-500/30 rounded-lg my-6 text-amber-400 text-sm leading-relaxed
-                      [html:not(.dark)_&]:bg-amber-500/10 [html:not(.dark)_&]:border-amber-500/40 [html:not(.dark)_&]:text-amber-700">
-            <svg width="20" height="20" viewBox="0 0 16 16" fill="none" class="flex-shrink-0">
-              <path d="M8 1L1 14h14L8 1z" stroke="currentColor" stroke-width="2" stroke-linejoin="round"/>
-              <path d="M8 6v3M8 11v1" stroke="currentColor" stroke-width="2"/>
-            </svg>
-            <div>
-              <strong class="text-amber-500 [html:not(.dark)_&]:text-amber-800">IMPORTANT:</strong> Save these codes in a secure location (password manager, printed copy, etc.).
-              Each code can only be used once. You won't see them again!
-            </div>
-          </div>
-
-          <div class="grid grid-cols-2 gap-3 my-6 max-sm:grid-cols-1">
-            {#each generatedRecoveryCodes as code, index}
-              <div class="flex items-center gap-2 py-3 px-4 bg-white/5 border border-white/10 rounded-lg [html:not(.dark)_&]:bg-black/5 [html:not(.dark)_&]:border-black/10">
-                <span class="text-xs text-white/50 min-w-[20px] [html:not(.dark)_&]:text-black/50">{index + 1}.</span>
-                <code class="font-mono text-sm text-blue-400 bg-blue-400/10 py-1 px-2 rounded tracking-wide [html:not(.dark)_&]:text-blue-600 [html:not(.dark)_&]:bg-blue-600/10">{code}</code>
-              </div>
-            {/each}
-          </div>
-
-          <div class="flex flex-col gap-3 my-6">
-            <button
-              class="btn-secondary"
-              on:click={() => {
-                const codesText = generatedRecoveryCodes.map((c, i) => `${i + 1}. ${c}`).join('\n');
-                navigator.clipboard.writeText(codesText);
-                alert('Recovery codes copied to clipboard!');
-              }}
-            >
-              📋 Copy All Codes
-            </button>
-            <button
-              class="btn-primary"
-              on:click={() => view = 'post-register'}
-            >
-              I've Saved My Codes →
-            </button>
-          </div>
-
-          <div class="mt-6 pt-6 border-t border-white/10 text-sm text-white/60 [html:not(.dark)_&]:border-black/10 [html:not(.dark)_&]:text-black/60">
-            <p class="my-2"><strong class="text-white/90 [html:not(.dark)_&]:text-black/90">What are recovery codes?</strong></p>
-            <p class="my-2">Recovery codes allow you to reset your password if you forget it. Keep them safe and never share them with anyone.</p>
           </div>
         </div>
       {/if}
@@ -1330,7 +1063,6 @@
   <!-- Profile Selector Modal (for guest access) -->
   {#if showProfileSelector}
     <ProfileSelector
-      onSelect={handleProfileSelected}
       onCancel={handleProfileCancel}
     />
   {/if}

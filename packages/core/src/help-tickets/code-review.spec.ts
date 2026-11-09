@@ -56,9 +56,31 @@ test('existing trust policy controls source repair while every level permits dia
   for (const trustLevel of ['observe', 'suggest', 'supervised_auto', 'bounded_auto', 'adaptive_auto']) {
     fs.mkdirSync(profile.persona, { recursive: true });
     fs.writeFileSync(path.join(profile.persona, 'decision-rules.json'), JSON.stringify({ trustLevel }));
-    assert.equal(systemCodeReviewAuthorization(username).canRepair, trustLevel === 'adaptive_auto');
+    assert.deepEqual(systemCodeReviewAuthorization(username), {
+      trustLevel,
+      approval: trustLevel === 'observe' ? 'observe_only' : trustLevel === 'adaptive_auto' ? 'auto_approve' : 'require_approval',
+      canRepair: trustLevel === 'adaptive_auto',
+      access: trustLevel === 'adaptive_auto' ? 'repair' : 'read-only',
+    });
   }
   fs.writeFileSync(path.join(profile.persona, 'decision-rules.json'), JSON.stringify({ trustLevel: 'observe' }));
+});
+
+test('code review preserves its existing unreadable and unsupported trust policy behavior', () => {
+  const file = path.join(profile.persona, 'decision-rules.json');
+  const suggested = { trustLevel: 'suggest', approval: 'require_approval', canRepair: false, access: 'read-only' };
+  try {
+    fs.rmSync(file);
+    assert.deepEqual(systemCodeReviewAuthorization(username), suggested);
+    fs.writeFileSync(file, 'malformed rules');
+    assert.deepEqual(systemCodeReviewAuthorization(username), suggested);
+    for (const trustLevel of [undefined, 'unsupported']) {
+      fs.writeFileSync(file, JSON.stringify({ trustLevel }));
+      assert.deepEqual(systemCodeReviewAuthorization(username), {
+        trustLevel, approval: 'require_approval', canRepair: false, access: 'read-only',
+      });
+    }
+  } finally { fs.writeFileSync(file, JSON.stringify({ trustLevel: 'observe' })); }
 });
 
 test('real workflow preserves an unfixed diagnosis in conversation and Persona Memory before recording ticket outcome', async () => {

@@ -45,5 +45,3 @@ export const DesirePlanReviewRecorderNode: NodeDefinition = defineNode({
   properties: {},
   execute,
 })
-
-export default DesirePlanReviewRecorderNode

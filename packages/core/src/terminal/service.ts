@@ -87,7 +87,7 @@ export async function runTerminalService(): Promise<void> {
         result = await owner.diagnosticInput(data.id, data.message)
       }
       else if (req.method === 'POST' && url.pathname === '/execute') {
-        if (!['claude-code', 'codex'].includes(data.provider) || typeof data.prompt !== 'string') throw new TerminalError('Invalid provider request', 400)
+        if (!['claude-code', 'codex', 'gemini'].includes(data.provider) || typeof data.prompt !== 'string') throw new TerminalError('Invalid provider request', 400)
         stream(res)
         const execution = await owner.execute(data.provider, data.prompt, data.options || {}, abort.signal,
           event => send(res, { type: 'provider_event', event }))

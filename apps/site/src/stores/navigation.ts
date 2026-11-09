@@ -1,4 +1,5 @@
 import { writable, derived } from 'svelte/store';
+import type { Writable } from 'svelte/store';
 import {
   GRAPH_EDITOR_WORKSPACE,
   graphEditorLocation,
@@ -11,7 +12,7 @@ export const navigationItems = [
   { id: 'projects', label: 'Projects', icon: '📁', description: 'Task graph & projects' },
   { id: 'agency', label: 'Agency', icon: '🎯', description: 'Desires and Active Operator' },
   { id: 'persona', label: 'Persona', icon: '👤', description: 'Identity & personality' },
-  { id: 'voice', label: 'Voice', icon: '🎤', description: 'Audio & training' },
+  { id: 'voice', label: 'Voice', icon: '🎤', description: 'Speech settings' },
   { id: 'training', label: 'AI Training', icon: '🧠', description: 'LoRA adapters' },
   { id: 'terminal', label: 'Terminal', icon: '⌨', description: 'Codex terminal conversation' },
   { id: 'system', label: 'System', icon: '⚙️', description: 'Settings & tools' },
@@ -54,7 +55,9 @@ function createNavigationStore(defaultValue: string) {
     // Sync store changes to URL hash and localStorage
     store.subscribe(value => {
       // Update URL hash without triggering navigation
-      const newHash = `view=${value}`;
+      const params = new URLSearchParams(window.location.hash.slice(1));
+      params.set('view', value);
+      const newHash = params.toString();
       if (window.location.hash !== `#${newHash}`) {
         history.replaceState(null, '', `#${newHash}`);
       }
@@ -80,7 +83,7 @@ function createNavigationStore(defaultValue: string) {
 // Navigation store with URL hash persistence - survives dev server reloads
 export const activeView = createNavigationStore('chat');
 
-export type DashboardSection = 'overview' | 'tasks' | 'approvals' | 'sleep' | 'agent-catalog' | 'trigger-manager';
+export type DashboardSection = 'overview' | 'tasks' | 'sleep' | 'agent-catalog' | 'trigger-manager';
 export type SystemSection = 'chat' | 'settings' | 'backend' | 'security' | 'network' | 'storage' | 'addons' | 'agent-catalog' | 'trigger-manager';
 
 export type AgencySection = 'desires' | 'operator';
@@ -109,14 +112,14 @@ export function openAgentCatalogSettings(): void {
   activeView.set('system');
 }
 
-// ChatLayout publishes status after AuthGate mounts the authenticated app.
+// ChatLayout owns { data, error, receivedAt }; AuthGate clears it on session changes.
 export const statusStore = writable<any>(null);
 export const statusRefreshTrigger = writable<number>(0); // Increment to trigger refresh
 
 // Derived persona name from status store (for chat cards)
 export const personaNameStore = derived(
   statusStore,
-  ($status) => $status?.identity?.name || 'MetaHuman'
+  ($status) => $status?.data?.identity?.name || 'Ainekio OS'
 );
 
 // AuthGate publishes the verified session; mounted components consume it.
@@ -182,26 +185,74 @@ export function graphEditorHref(): string {
   return graphEditorLocation(window.location.href, true);
 }
 
-// Right sidebar open state - shared between ChatLayout and RightSidebar
-// Used to pause polling in ServerStatus when sidebar is collapsed
-const savedRightSidebar = typeof localStorage !== 'undefined'
-  ? localStorage.getItem('rightSidebarOpen') === 'true'
-  : false;
-export const rightSidebarOpen = writable<boolean>(savedRightSidebar);
+export type RightSidebarTab = 'queue' | 'monitor' | 'servers';
+type RightSidebarNavigation = {
+  open: Writable<boolean>;
+  tab: Writable<RightSidebarTab>;
+  section: Writable<'body-connection' | null>;
+};
 
-// Auto-persist rightSidebarOpen to localStorage
-if (typeof localStorage !== 'undefined') {
-  let rightSidebarPreferenceReady = false;
-  rightSidebarOpen.subscribe(open => {
-    if (!rightSidebarPreferenceReady) {
-      rightSidebarPreferenceReady = true;
-      return;
-    }
+function createRightSidebarNavigation(): RightSidebarNavigation {
+  const globalKey = '__MH_RIGHT_SIDEBAR_STORES__';
+  if (typeof window !== 'undefined' && (window as any)[globalKey]) {
+    return (window as any)[globalKey];
+  }
+  function locationSelection(): { tab: RightSidebarTab | null; section: 'body-connection' | null } {
+    const params = new URLSearchParams(typeof window === 'undefined' ? '' : window.location.hash.slice(1));
+    const value = params.get('sidebar');
+    const tab: RightSidebarTab | null = value === 'queue' || value === 'monitor' || value === 'servers' ? value : null;
+    const section = tab === 'monitor' && params.get('section') === 'body-connection' ? 'body-connection' : null;
+    return { tab, section };
+  }
+
+  let savedOpen = false;
+  let savedTab: RightSidebarTab = 'queue';
+  if (typeof localStorage !== 'undefined') {
     try {
-      localStorage.setItem('rightSidebarOpen', String(open));
+      savedOpen = localStorage.getItem('rightSidebarOpen') === 'true';
+      const value = localStorage.getItem('mh_right_sidebar_tab');
+      if (value === 'queue' || value === 'monitor' || value === 'servers') savedTab = value;
     } catch {}
-  });
+  }
+  const initial = locationSelection();
+  const open = writable(initial.tab !== null || savedOpen);
+  const tab = writable<RightSidebarTab>(initial.tab ?? savedTab);
+  const section = writable<'body-connection' | null>(initial.section);
+
+  if (typeof window !== 'undefined') {
+    let syncingFromHistory = false;
+    let preferenceReady = false;
+    derived([open, tab, section], values => values).subscribe(([visible, selected, target]) => {
+      if (preferenceReady) {
+        try {
+          localStorage.setItem('rightSidebarOpen', String(visible));
+          localStorage.setItem('mh_right_sidebar_tab', selected);
+        } catch {}
+      }
+      preferenceReady = true;
+      if (syncingFromHistory) return;
+      const params = new URLSearchParams(window.location.hash.slice(1));
+      if (visible) params.set('sidebar', selected); else params.delete('sidebar');
+      if (visible && selected === 'monitor' && target) params.set('section', target); else params.delete('section');
+      const hash = `#${params.toString()}`;
+      if (window.location.hash !== hash) history.replaceState(history.state, '', hash);
+    });
+    window.addEventListener('hashchange', () => {
+      const selected = locationSelection();
+      syncingFromHistory = true;
+      if (selected.tab) tab.set(selected.tab);
+      section.set(selected.section);
+      open.set(selected.tab !== null);
+      syncingFromHistory = false;
+    });
+  }
+  const state = { open, tab, section };
+  if (typeof window !== 'undefined') (window as any)[globalKey] = state;
+  return state;
 }
+
+// One navigation owner for the sidebar's URL, saved preferences and mounted view.
+export const { open: rightSidebarOpen, tab: rightSidebarTab, section: rightSidebarSection } = createRightSidebarNavigation();
 
 // Load YOLO mode from localStorage on init
 if (typeof localStorage !== 'undefined') {

@@ -18,7 +18,6 @@
     trainingEnvironmentError: string | null;
     hasUnsloth: boolean;
     hasRunpodKey: boolean;
-    hasPreviousModel: boolean;
   }
 
   interface RunpodConfig {
@@ -83,6 +82,14 @@
   }
 
   let baseModelOptions: BaseModelOption[] = [];
+  const runpodGpuTypes = [
+    { value: 'NVIDIA GeForce RTX 5090', label: 'NVIDIA GeForce RTX 5090' },
+    { value: 'NVIDIA GeForce RTX 4090', label: 'NVIDIA GeForce RTX 4090' },
+    { value: 'NVIDIA A100-PCIE-40GB', label: 'NVIDIA A100 PCIe 40GB' },
+    { value: 'NVIDIA A100 80GB PCIe', label: 'NVIDIA A100 PCIe 80GB' },
+    { value: 'NVIDIA H100 PCIe', label: 'NVIDIA H100 PCIe' },
+    { value: 'NVIDIA H100 80GB HBM3', label: 'NVIDIA H100 SXM' },
+  ];
 
   const loraConfigPreset: TrainingConfig = {
     base_model: DEFAULT_TRAINING_MODEL,
@@ -124,16 +131,8 @@
   let currentStep: WizardStep = 1;
   let selectedMethod: TrainingMethod = null;
   let trainingTarget: TrainingTarget = 'llama-cpp';
-  let systemCapabilities: SystemCapabilities = {
-    hasLocalGPU: false,
-    gpuModel: null,
-    vramGB: null,
-    freeVramGB: null,
-    trainingEnvironmentError: null,
-    hasUnsloth: false,
-    hasRunpodKey: false,
-    hasPreviousModel: false
-  };
+  let trainingTargetEdited = false;
+  let systemCapabilities: SystemCapabilities | null = null;
   let runpodConfig: RunpodConfig = {
     apiKey: '',
     templateId: 'metahuman-runpod-trainer',
@@ -150,6 +149,9 @@
   let validatingRunpod = false;
   let runpodValid = false;
   let runpodConfigLoaded = false;
+  let runpodConfigRead: Set<keyof RunpodConfig> | null = null;
+  let capabilityError = '';
+  let runpodConfigError = '';
 
   // Current user
   let username = '';
@@ -161,7 +163,10 @@
 
   // Training data configuration
   let dataSettings = parseTrainingDataSettings();
-  let trainingDataSaving = false;
+  let trainingDataSaving: { submitted: string } | null = null;
+  let trainingDataRead: AbortController | null = null;
+  let datasetRead: AbortController | null = null;
+  const observation = new AbortController();
   let trainingDataError = '';
   let trainingDataLoadAttempted = false;
   let trainingDataConfigLoaded = false;
@@ -170,7 +175,16 @@
   let trainingPid: number | null = null;
   let trainingRunLabel = '';
   let preferencesLoaded = false;
+  let preferencesError = '';
   let settingsMessage = '';
+  type MonitoringRead = 'events' | 'console' | 'status' | 'history';
+  let monitoringErrors: Partial<Record<MonitoringRead, string>> = {};
+  interface RunningTraining {
+    success: boolean;
+    running: boolean;
+    pid: number | null;
+    runLabel?: string;
+  }
   let trainingLogs: Array<{ timestamp: string; event: string; details?: any }> = [];
   let consoleLogs: string[] = [];
   let logsInterval: number | null = null;
@@ -180,16 +194,6 @@
   let trainingComplete = false;
   let trainingFailed = false;
   let failureReason = '';
-
-  // Progress tracking state
-  interface ProgressInfo {
-    stage: string;
-    percentage: number;
-    attemptCurrent: number;
-    attemptMax: number;
-    message: string;
-  }
-  let currentProgress: ProgressInfo | null = null;
 
   // Computed
   $: canProceed = (() => {
@@ -220,21 +224,28 @@
   }
 
   async function loadTrainingPreferences() {
+    preferencesError = '';
+    const draft = { ...trainingConfig };
     try {
-      const response = await apiFetch('/api/training-config');
-      if (!response.ok) throw new Error('Could not load saved training settings');
+      const response = await apiFetch('/api/training-config', { signal: observation.signal });
       const saved = await response.json();
-      const catalog = await apiFetch('/api/training-models');
+      if (observation.signal.aborted) return;
+      if (!response.ok) throw new Error(saved.error || 'Could not load saved training settings');
+      const catalog = await apiFetch('/api/training-models', { signal: observation.signal });
       const models = await catalog.json();
+      if (observation.signal.aborted) return;
       if (!catalog.ok || !models.success) throw new Error(models.error || 'Could not load training base models');
       baseModelOptions = models.models.map((model: any) => ({ value: model.id, label: model.name, description: model.description, targets: ['llama-cpp', 'ollama'] }));
       for (const key of Object.keys(trainingConfig)) {
-        if (saved[key] !== undefined) (trainingConfig as any)[key] = saved[key];
+        if (saved[key] !== undefined && (trainingConfig as any)[key] === (draft as any)[key]) {
+          (trainingConfig as any)[key] = saved[key];
+        }
       }
+      if (saved.load_in_4bit !== undefined && trainingConfig.load_in_4bit === draft.load_in_4bit) trainingConfig.load_in_4bit = saved.load_in_4bit;
       trainingConfig = { ...trainingConfig };
-      trainingTarget = saved.trainingTarget || 'llama-cpp';
+      if (!trainingTargetEdited) trainingTarget = saved.trainingTarget || 'llama-cpp';
       preferencesLoaded = true;
-    } catch (err) { error = (err as Error).message; }
+    } catch (err) { if (!observation.signal.aborted) preferencesError = (err as Error).message; }
   }
 
   async function saveTrainingPreferences() {
@@ -255,63 +266,62 @@
 
   async function detectCapabilities() {
     loading = true;
-    error = '';
+    capabilityError = '';
     try {
-      const res = await apiFetch('/api/system/gpu-info');
-      if (res.ok) {
-        const data = await res.json();
-        systemCapabilities = {
-          hasLocalGPU: data.hasLocalGPU || false,
-          gpuModel: data.gpuModel || null,
-          vramGB: data.vramGB || null,
-          freeVramGB: data.freeVramGB ?? null,
-          trainingEnvironmentError: data.trainingEnvironmentError ?? null,
-          hasUnsloth: data.hasUnsloth || false,
-          hasRunpodKey: data.hasRunpodKey || false,
-          hasPreviousModel: data.hasPreviousModel || false
-        };
-        hasS3Configured = data.hasS3Configured || false;
-      }
+      const res = await apiFetch('/api/system/gpu-info', { signal: observation.signal });
+      const data = await res.json();
+      if (observation.signal.aborted) return;
+      if (!res.ok) throw new Error(data.error || 'Failed to detect system capabilities');
+      systemCapabilities = {
+        hasLocalGPU: data.hasLocalGPU || false,
+        gpuModel: data.gpuModel || null,
+        vramGB: data.vramGB || null,
+        freeVramGB: data.freeVramGB ?? null,
+        trainingEnvironmentError: data.trainingEnvironmentError ?? null,
+        hasUnsloth: data.hasUnsloth || false,
+        hasRunpodKey: data.hasRunpodKey || false
+      };
+      hasS3Configured = data.hasS3Configured || false;
     } catch (err) {
       console.error('[TrainingWizard] Failed to detect capabilities:', err);
-      error = 'Failed to detect system capabilities';
+      if (!observation.signal.aborted) capabilityError = (err as Error).message;
     } finally {
       loading = false;
     }
   }
 
   async function loadRunpodConfig() {
+    const edits = new Set<keyof RunpodConfig>();
+    runpodConfigRead = edits;
+    runpodConfigError = '';
     try {
-      const res = await apiFetch('/api/runpod/config');
-      if (res.ok) {
-        const data = await res.json();
-        if (data.apiKey) {
-          runpodConfig.apiKey = data.apiKey;
-          runpodConfigLoaded = true;
-        }
-        if (data.templateId) {
-          runpodConfig.templateId = data.templateId;
-        }
-        if (data.gpuType) {
-          const predefinedGpus = [
-            'NVIDIA GeForce RTX 5090',
-            'NVIDIA GeForce RTX 4090',
-            'NVIDIA A100-PCIE-40GB',
-            'NVIDIA A100 80GB PCIe',
-            'NVIDIA H100 PCIe',
-            'NVIDIA H100 80GB HBM3'
-          ];
-          if (predefinedGpus.includes(data.gpuType)) {
-            runpodConfig.gpuType = data.gpuType;
-          } else {
-            customGpuType = data.gpuType;
-            runpodConfig.gpuType = data.gpuType;
-            useCustomGpu = true;
-          }
+      const res = await apiFetch('/api/runpod/config', { signal: observation.signal });
+      const data = await res.json();
+      if (observation.signal.aborted || runpodConfigRead !== edits) return;
+      if (!res.ok) throw new Error(data.error || 'Failed to load saved RunPod configuration');
+      if (data.apiKey && !edits.has('apiKey')) {
+        if (data.apiKey !== runpodConfig.apiKey) runpodValid = false;
+        runpodConfig.apiKey = data.apiKey;
+        runpodConfigLoaded = true;
+      }
+      if (data.templateId && !edits.has('templateId')) {
+        runpodConfig.templateId = data.templateId;
+      }
+      if (data.gpuType && !edits.has('gpuType')) {
+        if (runpodGpuTypes.some(gpu => gpu.value === data.gpuType)) {
+          runpodConfig.gpuType = data.gpuType;
+          useCustomGpu = false;
+        } else {
+          customGpuType = data.gpuType;
+          runpodConfig.gpuType = data.gpuType;
+          useCustomGpu = true;
         }
       }
     } catch (err) {
       console.error('[TrainingWizard] Failed to load RunPod config:', err);
+      if (!observation.signal.aborted && runpodConfigRead === edits) runpodConfigError = (err as Error).message;
+    } finally {
+      if (runpodConfigRead === edits) runpodConfigRead = null;
     }
   }
 
@@ -339,6 +349,11 @@
   }
 
   async function loadDatasetStats() {
+    if (observation.signal.aborted) return;
+    datasetRead?.abort();
+    const read = new AbortController();
+    datasetRead = read;
+    const signal = AbortSignal.any([observation.signal, read.signal]);
     loading = true;
     error = '';
     try {
@@ -348,56 +363,67 @@
         query.set('recentDays', String(trainingConfig.days_recent));
         query.set('olderSamples', String(trainingConfig.old_samples));
       }
-      const res = await apiFetch('/api/training/dataset-stats?' + query.toString());
+      const res = await apiFetch('/api/training/dataset-stats?' + query.toString(), { signal });
       const data = await res.json();
+      if (signal.aborted) return;
       if (!res.ok) throw new Error(data.error || 'Failed to load dataset stats');
       datasetStats = data;
     } catch (err) {
       console.error('[TrainingWizard] Failed to load dataset stats:', err);
-      error = (err as Error).message;
+      if (!signal.aborted) error = (err as Error).message;
     } finally {
-      loading = false;
+      if (!signal.aborted) loading = false;
     }
   }
 
   async function loadTrainingDataConfig() {
+    trainingDataRead?.abort();
+    const read = new AbortController();
+    trainingDataRead = read;
+    const signal = AbortSignal.any([observation.signal, read.signal]);
     trainingDataLoadAttempted = true;
     trainingDataError = '';
     try {
-      const res = await apiFetch('/api/training-data');
+      const res = await apiFetch('/api/training-data', { signal });
       const data = await res.json();
+      if (signal.aborted) return;
       if (!res.ok || !data.success) throw new Error(data.error || 'Failed to load training data settings');
       dataSettings = parseTrainingDataSettings(data.config);
       trainingDataConfigLoaded = true;
     } catch (err) {
+      if (signal.aborted) return;
       trainingDataError = (err as Error).message;
       trainingDataConfigLoaded = false;
     }
   }
 
   async function saveTrainingDataConfig() {
-    trainingDataSaving = true;
+    const save = { submitted: JSON.stringify(dataSettings) };
+    trainingDataSaving = save;
     trainingDataError = '';
     try {
       const res = await apiFetch('/api/training-data', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify(dataSettings),
+        body: save.submitted,
       });
       const data = await res.json();
+      if (observation.signal.aborted || trainingDataSaving !== save) return;
       if (!res.ok || !data.success) throw new Error(data.error || 'Failed to save training data settings');
-      dataSettings = parseTrainingDataSettings(data.config);
+      if (JSON.stringify(dataSettings) === save.submitted) dataSettings = parseTrainingDataSettings(data.config);
       trainingDataConfigLoaded = true;
       await loadDatasetStats();
     } catch (err) {
+      if (observation.signal.aborted || trainingDataSaving !== save) return;
       trainingDataError = (err as Error).message;
       trainingDataConfigLoaded = false;
     } finally {
-      trainingDataSaving = false;
+      if (trainingDataSaving === save) trainingDataSaving = null;
     }
   }
 
   function handleDataSettingsChange(event: CustomEvent<TrainingDataSettings>) {
+    trainingDataRead?.abort();
     dataSettings = event.detail;
     void saveTrainingDataConfig();
   }
@@ -408,22 +434,22 @@
       return;
     }
     validatingRunpod = true;
+    const apiKey = runpodConfig.apiKey;
     error = '';
     try {
       const res = await apiFetch('/api/runpod/validate', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ apiKey: runpodConfig.apiKey })
+        body: JSON.stringify({ apiKey })
       });
-      if (!res.ok) throw new Error('Invalid RunPod API key');
       const data = await res.json();
+      if (observation.signal.aborted || runpodConfig.apiKey !== apiKey) return;
+      if (!res.ok || !data.valid) throw new Error(data.error || 'Invalid RunPod API key');
       runpodValid = data.valid;
-      if (runpodValid) {
-
-      }
     } catch (err) {
+      if (observation.signal.aborted || runpodConfig.apiKey !== apiKey) return;
       console.error('[TrainingWizard] RunPod validation failed:', err);
-      error = 'Invalid RunPod API key. Please check and try again.';
+      error = (err as Error).message;
       runpodValid = false;
     } finally {
       validatingRunpod = false;
@@ -431,90 +457,65 @@
   }
 
   function isProgressLine(line: string): boolean {
-    return /\[ProgressTracker\]|Attempt\s+\d+\/\d+|\bSTEP\s+\d+\/\d+|\bStage\s+\d+\/\d+/i.test(line);
+    return line.includes('[ProgressTracker]');
   }
 
-  function extractProgress(logs: string[]): ProgressInfo | null {
-    for (let i = logs.length - 1; i >= 0; i--) {
-      const line = logs[i];
-      const progressMatch = line.match(/\[ProgressTracker\]\s+📊\s+(\w+):\s+(\d+)%\s+-\s+Attempt\s+(\d+)\/(\d+)\s+-\s+(.+)/);
-      if (progressMatch) {
-        return {
-          stage: progressMatch[1],
-          percentage: parseInt(progressMatch[2]),
-          attemptCurrent: parseInt(progressMatch[3]),
-          attemptMax: parseInt(progressMatch[4]),
-          message: progressMatch[5].trim()
-        };
-      }
-      const loraMatch = line.match(/\[lora-trainer\]\s+(.+?)\s+\(Attempt\s+(\d+)\/(\d+)\)/);
-      if (loraMatch) {
-        const attemptCurrent = parseInt(loraMatch[2]);
-        const attemptMax = parseInt(loraMatch[3]);
-        return {
-          stage: 'ssh_connection',
-          percentage: Math.round((attemptCurrent / attemptMax) * 100),
-          attemptCurrent,
-          attemptMax,
-          message: loraMatch[1].trim()
-        };
-      }
-      const stageMatch = line.match(/\[(?:lora-trainer|full-cycle|fine-tune-cycle)\]\s+(?:STEP|Stage)\s+(\d+)\/(\d+):\s+(.+)/i);
-      if (stageMatch) {
-        const stageCurrent = parseInt(stageMatch[1]);
-        const stageMax = parseInt(stageMatch[2]);
-        return {
-          stage: `step_${stageCurrent}`,
-          percentage: Math.round((stageCurrent / stageMax) * 100),
-          attemptCurrent: stageCurrent,
-          attemptMax: stageMax,
-          message: stageMatch[3].trim()
-        };
-      }
+  async function readMonitoring<T extends { success: boolean }>(kind: MonitoringRead, url: string): Promise<T | null> {
+    if (observation.signal.aborted) return null;
+    const runLabel = trainingRunLabel;
+    try {
+      const response = await apiFetch(url, { signal: observation.signal });
+      const data = await response.json();
+      if (observation.signal.aborted || trainingRunLabel !== runLabel) return null;
+      if (!response.ok || !data.success) throw new Error(data.error || `Could not read training ${kind}`);
+      monitoringErrors = { ...monitoringErrors };
+      delete monitoringErrors[kind];
+      return data;
+    } catch (err) {
+      if (!observation.signal.aborted && trainingRunLabel === runLabel) monitoringErrors = { ...monitoringErrors, [kind]: (err as Error).message };
+      return null;
     }
-    return null;
+  }
+
+  async function checkRunningTraining() {
+    const runLabel = trainingRunLabel;
+    const data = await readMonitoring<RunningTraining>('status', '/api/training/running');
+    if (trainingRunLabel !== runLabel) return;
+    if (data?.running) {
+      trainingPid = data.pid;
+      trainingRunLabel = data.runLabel || '';
+      currentStep = 5;
+      startLogsPolling();
+    }
   }
 
   async function pollTrainingLogs() {
-    try {
-      const logsRes = await apiFetch('/api/training/logs?maxLines=30');
-      if (logsRes.ok) {
-        const logsData = await logsRes.json();
-        if (logsData.success && logsData.logs) {
-          trainingLogs = logsData.logs;
-          requestAnimationFrame(() => scrollLogsIfNeeded('events'));
-        }
+    const runLabel = trainingRunLabel;
+    const logs = await readMonitoring<{ success: boolean; logs: typeof trainingLogs }>('events', '/api/training/logs?maxLines=30');
+    if (trainingRunLabel !== runLabel) return;
+    if (logs) {
+      trainingLogs = logs.logs;
+      requestAnimationFrame(() => scrollLogsIfNeeded('events'));
+    }
+    const output = await readMonitoring<{ success: boolean; logs: string[] }>('console', '/api/training/console-logs?maxLines=200');
+    if (trainingRunLabel !== runLabel) return;
+    if (output) {
+      consoleLogs = output.logs;
+      requestAnimationFrame(() => scrollLogsIfNeeded('console'));
+    }
+    const status = await readMonitoring<RunningTraining>('status', '/api/training/running');
+    if (trainingRunLabel !== runLabel) return;
+    if (status) {
+      trainingPid = status.running ? status.pid : null;
+      if (!status.running && !trainingComplete) {
+        const history = await readMonitoring<{ success: boolean; runs: Array<{ runLabel: string; status: string; error?: string }> }>('history', '/api/training/history');
+        if (!history || trainingRunLabel !== runLabel) return;
+        const run = history.runs.find(item => item.runLabel === runLabel);
+        trainingComplete = true;
+        trainingFailed = !run || run.status !== 'completed';
+        failureReason = trainingFailed ? (run?.error || 'No successful terminal receipt was found. Check Training History.') : '';
+        stopLogsPolling();
       }
-      const consoleRes = await apiFetch('/api/training/console-logs?maxLines=200');
-      if (consoleRes.ok) {
-        const consoleData = await consoleRes.json();
-        if (consoleData.success && consoleData.logs) {
-          consoleLogs = consoleData.logs;
-          currentProgress = extractProgress(consoleData.logs);
-          requestAnimationFrame(() => scrollLogsIfNeeded('console'));
-        }
-      }
-      const statusRes = await apiFetch('/api/training/running');
-      if (statusRes.ok) {
-        const statusData = await statusRes.json();
-        if (statusData.success) {
-          trainingPid = statusData.running ? statusData.pid : null;
-          if (!statusData.running && !trainingComplete) {
-            currentProgress = null;
-            const historyRes = await apiFetch('/api/training/history');
-            if (!historyRes.ok) throw new Error('Could not verify the terminal training result');
-            const history = await historyRes.json();
-            const run = history.runs?.find((item: any) => item.runLabel === trainingRunLabel);
-            trainingComplete = true;
-            trainingFailed = !run || run.status !== 'completed';
-            failureReason = trainingFailed ? (run?.error || 'No successful terminal receipt was found. Check Training History.') : '';
-            stopLogsPolling();
-          }
-        }
-      }
-    } catch (err) {
-      console.warn('[TrainingWizard] Failed to poll logs:', err);
-      settingsMessage = 'Monitoring could not verify the current result: ' + (err as Error).message;
     }
   }
 
@@ -528,6 +529,7 @@
   }
 
   function startLogsPolling() {
+    if (observation.signal.aborted) return;
     if (logsInterval) {
       clearInterval(logsInterval);
     }
@@ -613,13 +615,22 @@
     }
   }
 
-  async function retryTraining() {
+  function resetTrainingResult() {
+    stopLogsPolling();
+    trainingPid = null;
+    trainingRunLabel = '';
     trainingComplete = false;
     trainingFailed = false;
     failureReason = '';
     consoleLogs = [];
     trainingLogs = [];
+    monitoringErrors = {};
+    settingsMessage = '';
     error = '';
+  }
+
+  async function retryTraining() {
+    resetTrainingResult();
     await launchTraining();
   }
 
@@ -628,26 +639,18 @@
     void loadTrainingPreferences();
     void loadTrainingDataConfig();
     loadRunpodConfig();
-    apiFetch('/api/session')
+    apiFetch('/api/auth/me', { signal: observation.signal })
       .then(res => res.json())
       .then(data => {
-        if (data.authenticated && data.username) {
-          username = data.username;
+        if (observation.signal.aborted) return;
+        if (data.success && data.user?.username) {
+          username = data.user.username;
         }
       })
       .catch(err => console.error('[TrainingWizard] Failed to fetch session:', err));
-    apiFetch('/api/training/running')
-      .then(res => res.json())
-      .then(data => {
-        if (data.success && data.running) {
-          trainingPid = data.pid;
-          trainingRunLabel = data.runLabel || '';
-          currentStep = 5;
-          startLogsPolling();
-        }
-      })
-      .catch(err => console.warn('Could not check training status:', err));
+    void checkRunningTraining();
     return () => {
+      observation.abort();
       stopLogsPolling();
     };
   });
@@ -699,6 +702,16 @@
     </div>
   {/if}
 
+  {#if Object.keys(monitoringErrors).length > 0}
+    <div class="banner banner-error mb-6" role="alert">
+      <p>Some training observations could not be refreshed. Displayed observations may be from the last successful read.</p>
+      {#each Object.entries(monitoringErrors) as [kind, message]}
+        <p>{kind}: {message}</p>
+      {/each}
+      <button type="button" class="btn-secondary mt-2" on:click={() => trainingRunLabel || trainingPid ? pollTrainingLogs() : checkRunningTraining()}>Retry monitoring reads</button>
+    </div>
+  {/if}
+
   <!-- Step Content -->
   <div class="min-h-[400px] mb-8">
     {#if currentStep === 1}
@@ -707,6 +720,18 @@
         <p class="text-base text-gray-500 dark:text-gray-400 mb-8 text-center">
           Select your training target and method based on your hardware and goals.
         </p>
+        {#if capabilityError}
+          <div class="banner banner-error mb-6" role="alert">
+            <p>{capabilityError}</p>
+            <button type="button" class="btn-secondary mt-2" on:click={detectCapabilities}>Retry capability check</button>
+          </div>
+        {/if}
+        {#if preferencesError}
+          <div class="banner banner-error mb-6" role="alert">
+            <p>{preferencesError}</p>
+            <button type="button" class="btn-secondary mt-2" on:click={loadTrainingPreferences}>Retry settings and model catalog</button>
+          </div>
+        {/if}
 
         <!-- Training Target Selection -->
         <div class="mb-8 pb-6 border-b border-gray-700">
@@ -715,9 +740,10 @@
 
           <div class="flex justify-center gap-4 flex-wrap">
             <button
+              id="trainingTargetLlamaCpp"
               class="flex items-center gap-3 px-6 py-4 rounded-xl border-2 cursor-pointer transition-all min-w-[160px]
                 {trainingTarget === 'llama-cpp' ? 'border-emerald-600 bg-emerald-600/10' : 'border-gray-700 bg-gray-900 hover:border-emerald-600'}"
-              on:click={() => trainingTarget = 'llama-cpp'}
+              on:click={() => { trainingTargetEdited = true; trainingTarget = 'llama-cpp'; }}
             >
               <div>
                 <h5 class="m-0 text-base text-white">llama.cpp</h5>
@@ -725,9 +751,10 @@
               </div>
             </button>
             <button
+              id="trainingTargetOllama"
               class="flex items-center gap-3 px-6 py-4 rounded-xl border-2 cursor-pointer transition-all min-w-[160px]
                 {trainingTarget === 'ollama' ? 'border-emerald-600 bg-emerald-600/10' : 'border-gray-700 bg-gray-900 hover:border-emerald-600'}"
-              on:click={() => trainingTarget = 'ollama'}
+              on:click={() => { trainingTargetEdited = true; trainingTarget = 'ollama'; }}
             >
               <div class="text-2xl">🦙</div>
               <div>
@@ -758,21 +785,21 @@
             <p class="text-sm text-gray-500 m-0">Train on your local machine</p>
 
             <div class="flex flex-col gap-2">
-              <div class="text-sm flex items-center gap-2 {systemCapabilities.hasLocalGPU ? 'text-emerald-500' : ''}">
-                {systemCapabilities.hasLocalGPU ? '✅' : '❌'} NVIDIA GPU; 4B LoRA is the starting preset
+              <div class="text-sm flex items-center gap-2 {systemCapabilities?.hasLocalGPU ? 'text-emerald-500' : ''}">
+                {systemCapabilities ? (systemCapabilities.hasLocalGPU ? '✅' : '❌') : 'Not checked:'} NVIDIA GPU; 4B LoRA is the starting preset
               </div>
-              <div class="text-sm flex items-center gap-2 {systemCapabilities.hasUnsloth ? 'text-emerald-500' : ''}">
-                {systemCapabilities.hasUnsloth ? '✅' : '❌'} Python + unsloth
+              <div class="text-sm flex items-center gap-2 {systemCapabilities?.hasUnsloth ? 'text-emerald-500' : ''}">
+                {systemCapabilities ? (systemCapabilities.hasUnsloth ? '✅' : '❌') : 'Not checked:'} Python + unsloth
               </div>
             </div>
 
-            {#if systemCapabilities.hasLocalGPU && systemCapabilities.gpuModel}
+            {#if systemCapabilities?.hasLocalGPU && systemCapabilities?.gpuModel}
               <div class="text-sm text-gray-500 pt-2 border-t border-gray-700">
-                Detected: {systemCapabilities.gpuModel} ({systemCapabilities.vramGB?.toFixed(1)} GB total, {systemCapabilities.freeVramGB?.toFixed(1)} GB free)
+                Detected: {systemCapabilities?.gpuModel} ({systemCapabilities?.vramGB?.toFixed(1)} GB total, {systemCapabilities?.freeVramGB?.toFixed(1)} GB free)
               </div>
             {/if}
 
-            {#if systemCapabilities.trainingEnvironmentError}<p class="text-sm text-amber-400 break-words">{systemCapabilities.trainingEnvironmentError}</p>{/if}
+            {#if systemCapabilities?.trainingEnvironmentError}<p class="text-sm text-amber-400 break-words">{systemCapabilities?.trainingEnvironmentError}</p>{/if}
 
             <div class="flex items-center gap-2 text-emerald-500 font-semibold">
               <span>→</span>
@@ -791,8 +818,8 @@
             <p class="text-sm text-gray-500 m-0">Train on RunPod cloud</p>
 
             <div class="flex flex-col gap-2">
-              <div class="text-sm flex items-center gap-2 {systemCapabilities.hasRunpodKey ? 'text-emerald-500' : ''}">
-                {systemCapabilities.hasRunpodKey ? '✅' : '⚠️'} RunPod API key
+              <div class="text-sm flex items-center gap-2 {systemCapabilities?.hasRunpodKey ? 'text-emerald-500' : ''}">
+                {systemCapabilities ? (systemCapabilities.hasRunpodKey ? '✅' : '⚠️') : 'Not checked:'} RunPod API key
               </div>
               <div class="text-sm flex items-center gap-2 text-emerald-500">
                 ✅ No local GPU needed
@@ -820,8 +847,8 @@
             <p class="text-sm text-gray-500 m-0">Advanced continuous learning</p>
 
             <div class="flex flex-col gap-2">
-              <div class="text-sm flex items-center gap-2 {systemCapabilities.hasRunpodKey ? 'text-emerald-500' : ''}">
-                {systemCapabilities.hasRunpodKey ? '✅' : '⚠️'} RunPod API key
+              <div class="text-sm flex items-center gap-2 {systemCapabilities?.hasRunpodKey ? 'text-emerald-500' : ''}">
+                {systemCapabilities ? (systemCapabilities.hasRunpodKey ? '✅' : '⚠️') : 'Not checked:'} RunPod API key
               </div>
               <div class="text-sm flex items-center gap-2">
                 Requires memory for all weights and optimizer state
@@ -839,7 +866,7 @@
           </button>
         </div>
 
-        {#if !systemCapabilities.hasLocalGPU && !systemCapabilities.hasRunpodKey}
+        {#if systemCapabilities && !systemCapabilities.hasLocalGPU && !systemCapabilities.hasRunpodKey}
           <div class="banner banner-warning flex items-center gap-3">
             <span class="text-2xl">💡</span>
             <span class="text-sm">
@@ -856,6 +883,12 @@
           Configure your RunPod credentials for cloud training. Don't have an account?
           <a href="https://runpod.io" target="_blank" rel="noopener" class="text-emerald-500 hover:underline">Sign up here</a>
         </p>
+        {#if runpodConfigError}
+          <div class="banner banner-error mb-6" role="alert">
+            <p>{runpodConfigError}</p>
+            <button type="button" class="btn-secondary mt-2" on:click={loadRunpodConfig}>Retry saved RunPod configuration</button>
+          </div>
+        {/if}
 
         {#if runpodConfigLoaded}
           <div class="banner banner-success mb-6 flex items-center gap-3">
@@ -872,6 +905,7 @@
               id="apiKey"
               class="input-field"
               bind:value={runpodConfig.apiKey}
+              on:input={() => { runpodConfigRead?.add('apiKey'); runpodValid = false; }}
               placeholder="Enter your RunPod API key"
               required
             />
@@ -885,6 +919,7 @@
               id="templateId"
               class="input-field"
               bind:value={runpodConfig.templateId}
+              on:input={() => runpodConfigRead?.add('templateId')}
               placeholder="metahuman-runpod-trainer"
             />
             <small class="block mt-2 text-sm text-gray-500">Uses <code class="bg-black/20 px-1.5 py-0.5 rounded text-xs font-mono">docker.io/gregoryaster/metahuman-runpod-trainer:v3-xformers-5090</code></small>
@@ -892,13 +927,10 @@
 
           <div class="form-group">
             <label class="form-label" for="gpuType">Preferred GPU Type</label>
-            <select id="gpuType" class="select-field w-full" bind:value={runpodConfig.gpuType} on:change={() => useCustomGpu = runpodConfig.gpuType === 'custom'}>
-              <option value="NVIDIA GeForce RTX 5090">NVIDIA GeForce RTX 5090 (~$0.60/hr)</option>
-              <option value="NVIDIA GeForce RTX 4090">NVIDIA GeForce RTX 4090 (~$0.40/hr)</option>
-              <option value="NVIDIA A100-PCIE-40GB">NVIDIA A100 PCIe 40GB (~$1.00/hr)</option>
-              <option value="NVIDIA A100 80GB PCIe">NVIDIA A100 PCIe 80GB (~$1.50/hr)</option>
-              <option value="NVIDIA H100 PCIe">NVIDIA H100 PCIe (~$2.50/hr)</option>
-              <option value="NVIDIA H100 80GB HBM3">NVIDIA H100 SXM (~$2.70/hr)</option>
+            <select id="gpuType" class="select-field w-full" bind:value={runpodConfig.gpuType} on:change={() => { runpodConfigRead?.add('gpuType'); useCustomGpu = runpodConfig.gpuType === 'custom'; }}>
+              {#each runpodGpuTypes as gpu}
+                <option value={gpu.value}>{gpu.label}</option>
+              {/each}
               <option value="custom">Custom GPU Type...</option>
             </select>
             <small class="block mt-2 text-sm text-gray-500">Higher-end GPUs are faster but more expensive. <a href="https://docs.runpod.io/references/gpu-types" target="_blank" class="text-emerald-500 hover:underline">View all GPU types</a></small>
@@ -913,7 +945,7 @@
                 class="input-field"
                 bind:value={customGpuType}
                 placeholder="e.g., NVIDIA L40S"
-                on:input={() => runpodConfig.gpuType = customGpuType}
+                on:input={() => { runpodConfigRead?.add('gpuType'); runpodConfig.gpuType = customGpuType; }}
               />
               <small class="block mt-2 text-sm text-gray-500">Enter the exact GPU name as it appears in RunPod</small>
             </div>
@@ -1077,14 +1109,16 @@
             </p>
             <TrainingDataControls
               settings={dataSettings}
-              disabled={loading || trainingDataSaving}
+              disabled={loading || trainingDataSaving !== null}
               on:settingsChange={handleDataSettingsChange}
             />
-            {#if trainingDataError}
-              <p class="text-sm text-red-400 mt-3" role="alert">{trainingDataError}</p>
-              <button type="button" class="btn-secondary mt-2" on:click={loadTrainingDataConfig}>Reload data settings</button>
-            {/if}
           </div>
+        {:else}
+          <button type="button" class="btn-secondary" on:click={loadDatasetStats}>Retry dataset preview</button>
+        {/if}
+        {#if trainingDataError}
+          <p class="text-sm text-red-400 mt-3" role="alert">{trainingDataError}</p>
+          <button type="button" class="btn-secondary mt-2" on:click={loadTrainingDataConfig}>Reload data settings</button>
         {/if}
       </div>
 
@@ -1238,16 +1272,20 @@
                       </div>
                       <span class="text-sm flex items-center gap-2">
                         Back up verified candidate to S3
-                        {#if !hasS3Configured}
+                        {#if !hasS3Configured && systemCapabilities}
                           <span class="text-xs px-1.5 py-0.5 rounded bg-blue-500/20 text-blue-500 font-semibold">⚙️ Not Configured</span>
+                        {:else if !systemCapabilities}
+                          <span class="text-xs px-1.5 py-0.5 rounded bg-blue-500/20 text-blue-500 font-semibold">Not checked</span>
                         {/if}
                       </span>
                     </label>
                     <small class="pl-14 text-sm text-gray-500">
                       {#if hasS3Configured}
                         After downloading and verifying the candidate, terminate the pod and upload a backup through the configured S3 connection.
-                      {:else}
+                      {:else if systemCapabilities}
                         Configure the documented RunPod S3 environment settings to enable backup.
+                      {:else}
+                        Capability configuration has not been checked. Retry the capability check on the method step.
                       {/if}
                     </small>
                   </div>
@@ -1261,7 +1299,7 @@
     {:else if currentStep === 5}
       <!-- Step 5: Training Monitor -->
       <div class="w-full">
-        {#if !trainingPid && !trainingComplete}
+        {#if !trainingPid && !trainingComplete && !monitoringErrors.history}
           <!-- Pre-launch confirmation -->
           <div class="max-w-[600px] mx-auto bg-gray-900 border-2 border-emerald-600 rounded-2xl p-8">
             <h3 class="text-2xl text-center mb-6 text-gray-100">Ready to Start Training?</h3>
@@ -1382,6 +1420,8 @@
               <button class="btn-danger btn-sm" on:click={cancelTraining} disabled={cancelling}>
                 {cancelling ? 'Cancelling...' : '🛑 Cancel Training'}
               </button>
+            {:else if !trainingComplete}
+              <p role="status">Terminal result not yet verified.</p>
             {:else if trainingComplete && trainingFailed}
               <div class="flex items-center gap-3 px-4 py-2 rounded-md font-semibold bg-red-500/10 text-red-500 border border-red-500/30">
                 <span>❌ Training Failed</span>
@@ -1390,7 +1430,7 @@
                 <button class="btn-sm px-4 py-2 rounded-md font-semibold cursor-pointer transition-all bg-gradient-to-br from-yellow-500 to-orange-500 text-white hover:from-yellow-600 hover:to-orange-600" on:click={retryTraining} disabled={loading}>
                   {loading ? 'Starting...' : '🔄 Retry Training'}
                 </button>
-                <button class="btn-secondary btn-sm" on:click={() => currentStep = 1}>
+                <button class="btn-secondary btn-sm" on:click={() => { resetTrainingResult(); currentStep = 1; }}>
                   ⚙️ Change Settings
                 </button>
               </div>
@@ -1400,7 +1440,7 @@
               </div>
               <div class="flex gap-3 flex-wrap items-center">
                 <button class="btn-secondary btn-sm" on:click={() => dispatch('history')}>Review candidate in Training History</button>
-                <button class="btn-ghost btn-sm border border-gray-700" on:click={() => currentStep = 1}>
+                <button class="btn-ghost btn-sm border border-gray-700" on:click={() => { resetTrainingResult(); currentStep = 1; }}>
                   🔄 New Training
                 </button>
               </div>
@@ -1418,26 +1458,6 @@
           {/if}
 
           <div class="flex flex-col gap-6">
-            <!-- Training Progress Banner -->
-            {#if trainingPid && currentProgress}
-              <div class="bg-gradient-to-br from-emerald-600/15 to-cyan-500/15 border-2 border-emerald-600 rounded-xl p-6 shadow-lg shadow-emerald-600/20">
-                <div class="flex justify-between items-center mb-4">
-                  <div class="flex items-center gap-3">
-                    <span class="text-2xl animate-spin-slow">⚙️</span>
-                    <span class="text-lg font-bold text-emerald-500 uppercase tracking-wide">{currentProgress.stage.replace(/_/g, ' ')}</span>
-                  </div>
-                  <div class="flex items-center gap-4">
-                    <span class="text-2xl font-bold text-cyan-400" style="text-shadow: 0 0 10px rgba(0, 212, 255, 0.5);">{currentProgress.percentage}%</span>
-                    <span class="text-sm font-semibold text-gray-400 bg-black/30 px-3 py-1.5 rounded-lg">Attempt {currentProgress.attemptCurrent}/{currentProgress.attemptMax}</span>
-                  </div>
-                </div>
-                <div class="text-sm text-gray-100 mb-4 p-2 px-3 bg-black/20 rounded-lg italic">{currentProgress.message}</div>
-                <div class="w-full h-2 bg-black/30 rounded overflow-hidden">
-                  <div class="h-full bg-gradient-to-r from-emerald-500 to-cyan-400 rounded transition-all duration-300" style="width: {currentProgress.percentage}%; box-shadow: 0 0 10px rgba(0, 212, 255, 0.5);"></div>
-                </div>
-              </div>
-            {/if}
-
             <!-- Console Output -->
             <div class="panel overflow-hidden">
               <h4 class="px-4 py-3 bg-gray-950 border-b border-gray-700 m-0 text-sm font-semibold text-gray-100">🖥️ Console Output</h4>
@@ -1508,16 +1528,20 @@
 </div>
 
 <style>
+  .stats-grid {
+    @apply grid grid-cols-2 sm:grid-cols-3 md:grid-cols-4 gap-4;
+  }
+
   /* Only keyframe animations need to stay */
+
   @keyframes spin {
-    to { transform: rotate(360deg); }
+    to {
+      transform: rotate(360deg);
+    }
   }
 
   .animate-spin {
     animation: spin 1s linear infinite;
   }
 
-  .animate-spin-slow {
-    animation: spin 3s linear infinite;
-  }
 </style>

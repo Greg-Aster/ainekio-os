@@ -1,4 +1,5 @@
 import type { EnvironmentBridgeDiagnosticsSnapshot } from './environment-interface/diagnostics.js';
+import type { AgentCatalogSnapshot } from './agent-catalog.js';
 
 export interface AgentStatus {
   name: string;
@@ -96,6 +97,7 @@ export interface AgentDataPanel {
 
 export interface AgentMonitorSnapshot {
   timestamp: string;
+  catalog: AgentCatalogSnapshot;
   runningAgents: AgentMonitorCard[];
   recentFailures: AgentMonitorCard[];
   startableAgents: AgentDescriptor[];

@@ -1,6 +1,6 @@
 # LLM Backend Configuration
 
-MetaHuman routes model requests through the deployment backend owner and model
+Ainekio OS routes model requests through the deployment backend owner and model
 provider bridge. Supported targets include the shared native llama.cpp service,
 Ollama, configured remote providers, and automatic selection.
 
@@ -42,7 +42,7 @@ instead of adding a second backend or a call-site-specific override.
 
 ## Ollama
 
-Start Ollama using the installation's normal service mechanism or `ollama serve`, then inspect it through MetaHuman:
+Start Ollama using the installation's normal service mechanism or `ollama serve`, then inspect it through Ainekio OS:
 
 ```bash
 ./bin/mh ollama status
@@ -62,7 +62,7 @@ when launching the server. Configure the desired output-token budget. Enable ima
 input only when the served model and its loaded vision projector support it.
 Text, image parts and structured output use the same provider path.
 
-Start `llama-server` with the installation's existing service. MetaHuman checks
+Start `llama-server` with the installation's existing service. Ainekio OS checks
 its health and model identity; it does not start a competing process or download
 weights. `mh backend start` verifies an externally managed llama.cpp server is
 ready. Connection failures and model mismatches remain visible errors.

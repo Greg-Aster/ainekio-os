@@ -17,7 +17,7 @@
   const dispatch = createEventDispatcher();
 
   // Compute display name based on role
-  // IMPORTANT: If roleLabel is explicitly provided (e.g., by AgencyCard, CuriosityCard),
+  // IMPORTANT: If roleLabel is explicitly provided (e.g., by ReflectionCard, CuriosityCard),
   // use it instead of the default persona/user name. This allows specialized cards
   // to override the header display.
   $: displayName = (() => {
@@ -32,9 +32,6 @@
     // For other roles, derive from role
     return message.role;
   })();
-
-  // Compute icon based on role (only for special message types)
-  $: displayIcon = roleIcon || '';
 
   function handleClick() {
     dispatch('messageClick', { message, index });
@@ -60,13 +57,7 @@
   }
 
   function handleKeydown(e: KeyboardEvent) {
-    // Don't intercept keyboard events when user is typing in an input/textarea
-    const target = e.target as HTMLElement;
-    if (target.tagName === 'TEXTAREA' || target.tagName === 'INPUT' || target.isContentEditable) {
-      return;
-    }
-
-    if (e.key === 'Enter' || e.key === ' ') {
+    if (e.target === e.currentTarget && (e.key === 'Enter' || e.key === ' ')) {
       e.preventDefault();
       handleClick();
     }
@@ -76,11 +67,11 @@
 <div class="card-wrapper" class:align-right={message.role === 'user' || message.role === 'thought'}>
   <!-- Header outside card -->
   <div class="card-outer-header" class:align-right={message.role === 'user' || message.role === 'thought'}>
-    <span class="text-[0.8125rem] font-semibold text-gray-100 flex items-center gap-1" style={accentColor ? `color: ${accentColor}` : ''}>
-      {#if displayIcon}<span class="text-sm">{displayIcon}</span>{/if}
+    <span class="text-[0.8125rem] font-semibold text-gray-900 dark:text-gray-100 flex items-center gap-1" style={accentColor ? `color: ${accentColor}` : ''}>
+      {#if roleIcon}<span class="text-sm">{roleIcon}</span>{/if}
       {displayName}
     </span>
-    <span class="text-xs text-gray-400">{formatTimestamp(message.timestamp)}</span>
+    <span class="text-xs text-gray-500 dark:text-gray-400">{formatTimestamp(message.timestamp)}</span>
     {#if showActions && message.relPath}
       <span class="header-actions">
         <button class="action-btn delete" title="Delete" on:click={handleDelete}>−</button>
@@ -94,8 +85,7 @@
     class="card-base card-{message.role}"
     class:card-selected={isSelected}
     class:card-accented={!!accentColor}
-    data-facet={message.meta?.facet || 'default'}
-    style={accentColor ? `--card-accent: ${accentColor}; --message-accent-color: ${accentColor}` : ''}
+    style={accentColor ? `--card-accent: ${accentColor}` : ''}
     on:click={handleClick}
     on:keydown={handleKeydown}
     role="button"
@@ -144,21 +134,20 @@
   .header-actions {
     @apply flex gap-1 opacity-0 transition-opacity;
   }
-  .card-wrapper:hover .header-actions {
+  .card-wrapper:hover .header-actions,
+  .card-wrapper:focus-within .header-actions {
     @apply opacity-100;
   }
 
   /* Card base with CSS variables for theming */
   .card-base {
     @apply w-full relative py-3 px-4 rounded-xl border cursor-pointer transition-all;
-    --card-bg: var(--bg-secondary, #1e1e1e);
-    --card-border: var(--border-color, #333);
-    --card-text: var(--text-primary, #f3f4f6);
-    --card-muted: var(--text-muted, #9ca3af);
-    --card-accent: var(--accent-color, #3b82f6);
+    --card-bg: var(--bg-secondary);
+    --card-border: var(--border-color);
+    --card-accent: var(--accent-color);
     border-color: var(--card-border);
     background: var(--card-bg);
-    color: var(--card-text);
+    color: var(--text-primary);
   }
   .card-base:hover { border-color: var(--card-accent); }
   .card-base:focus { @apply outline-none; border-color: var(--card-accent); box-shadow: 0 0 0 2px rgba(59, 130, 246, 0.3); }
@@ -168,10 +157,8 @@
   .card-user { --card-bg: rgba(59, 130, 246, 0.1); --card-border: rgba(59, 130, 246, 0.2); --card-accent: #3b82f6; }
   .card-thought { --card-bg: rgba(139, 92, 246, 0.1); --card-border: rgba(139, 92, 246, 0.25); --card-accent: #8b5cf6; }
   .card-robot { --card-bg: rgba(20, 184, 166, 0.1); --card-border: rgba(20, 184, 166, 0.25); --card-accent: #14b8a6; }
-  .card-assistant { --card-bg: var(--bg-secondary, #1e1e1e); }
   .card-reflection { --card-bg: rgba(139, 92, 246, 0.1); --card-border: rgba(139, 92, 246, 0.2); --card-accent: #8b5cf6; }
   .card-dream { --card-bg: rgba(99, 102, 241, 0.1); --card-border: rgba(99, 102, 241, 0.2); --card-accent: #6366f1; }
-  .card-reasoning { --card-bg: rgba(234, 179, 8, 0.1); --card-border: rgba(234, 179, 8, 0.2); --card-accent: #eab308; }
   .card-system { --card-bg: rgba(107, 114, 128, 0.1); --card-border: rgba(107, 114, 128, 0.2); --card-accent: #6b7280; }
 
   /* Accented card (persona color) */
@@ -183,24 +170,18 @@
   /* Action buttons */
   .action-btn {
     @apply w-5 h-5 border-0 rounded bg-transparent cursor-pointer text-base font-bold flex items-center justify-center transition-all;
-    color: var(--card-muted);
+    color: var(--text-muted);
   }
-  .action-btn:hover { @apply bg-white/10; }
+  .action-btn:hover { @apply bg-black/5 dark:bg-white/10; }
   .action-btn.delete:hover { @apply text-red-500; }
   .action-btn.validate:hover { @apply text-green-500; }
 
   /* Speak button */
   .speak-btn {
     @apply absolute bottom-2 right-2 w-6 h-6 border-0 rounded bg-transparent cursor-pointer opacity-0 transition-opacity flex items-center justify-center;
-    color: var(--card-muted);
+    color: var(--text-muted);
   }
-  .card-base:hover .speak-btn { @apply opacity-100; }
-  .speak-btn:hover { @apply bg-white/10; color: var(--card-text); }
-
-  /* Light mode */
-  :global(.light) .card-base { --card-bg: #ffffff; --card-border: #e5e7eb; --card-text: #1f2937; --card-muted: #6b7280; }
-  :global(.light) .card-user { --card-bg: rgba(59, 130, 246, 0.08); }
-  :global(.light) .card-reflection { --card-bg: rgba(139, 92, 246, 0.08); }
-  :global(.light) .card-dream { --card-bg: rgba(99, 102, 241, 0.08); }
-  :global(.light) .action-btn:hover, :global(.light) .speak-btn:hover { @apply bg-black/5; }
+  .card-base:hover .speak-btn,
+  .card-base:focus-within .speak-btn { @apply opacity-100; }
+  .speak-btn:hover { @apply bg-black/5 dark:bg-white/10; color: var(--text-primary); }
 </style>

@@ -1,6 +1,6 @@
 # Setup and First Login
 
-This chapter covers the first authenticated session on a running MetaHuman OS
+This chapter covers the first authenticated session on a running Ainekio OS
 installation.
 
 ## Open the application
@@ -88,7 +88,7 @@ The owner controls profile visibility.
 ## Sync an existing profile
 
 Use **Sync from Server** when this device has no local copy of an account that
-already exists on another MetaHuman server.
+already exists on another Ainekio OS server.
 
 Provide the server URL, username, and password. `localhost` always refers to the
 computer running the browser or sync agent; use the source computer's reachable
@@ -96,10 +96,10 @@ LAN address or configured tunnel URL. A desktop started in the default local
 exposure mode accepts connections only on that desktop. A configured Cloudflare
 tunnel can forward to that desktop's local listener. The receiving device needs
 outbound HTTPS access to the tunnel; it does not need its own tunnel or a shared
-Wi-Fi network with the source. Keep the source MetaHuman server and tunnel running.
+Wi-Fi network with the source. Keep the source Ainekio OS server and tunnel running.
 See [Deployment and Remote Access](/user-guide#deployment) for exposure settings.
 
-The browser submits the source URL and credentials to its own local MetaHuman
+The browser submits the source URL and credentials to its own local Ainekio OS
 server. Node performs the remote requests, so source browser CORS permissions
 are not needed for the transfer. The bootstrap authenticates, downloads the validated
 priority bundle, creates the missing local profile, imports its files and saves
@@ -192,7 +192,7 @@ Open **Dashboard → Tasks**, create a small task, and move it through its inten
 The CLI alternative is:
 
 ```bash
-./bin/mh --user USERNAME task add "Review the MetaHuman User Guide"
+./bin/mh --user USERNAME task add "Review the Ainekio OS User Guide"
 ./bin/mh --user USERNAME task
 ```
 

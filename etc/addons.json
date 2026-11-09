@@ -1,22 +1,5 @@
 {
   "addons": {
-    "rvc": {
-      "name": "RVC Voice Conversion",
-      "description": "Voice conversion backed by the upstream Applio command-line runtime.",
-      "category": "tts",
-      "size": "~2 GB",
-      "requirements": {
-        "python": ">=3.9",
-        "gpu": "recommended",
-        "vram": "4 GB+ recommended"
-      },
-      "dependencies": {
-        "system": [
-          "ffmpeg"
-        ]
-      },
-      "note": "A trained RVC model is required before conversion can run."
-    },
     "kokoro": {
       "name": "Kokoro TTS",
       "description": "Neural speech synthesis with the maintained Kokoro server integration and built-in multilingual voices.",
@@ -38,7 +21,7 @@
   "categories": {
     "tts": {
       "name": "Voice",
-      "description": "Optional speech synthesis and voice conversion runtimes"
+      "description": "Optional speech synthesis runtimes"
     }
   }
 }

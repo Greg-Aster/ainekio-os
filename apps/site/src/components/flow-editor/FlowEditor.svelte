@@ -1,6 +1,6 @@
 <script lang="ts">
   import type { EditorNode as Node } from '../../lib/client/flow-editor/template-converter';
-  import { onMount, onDestroy } from 'svelte';
+  import { onMount } from 'svelte';
   import {
     SvelteFlow,
     Controls,
@@ -16,8 +16,6 @@
 
   import BaseNode from './BaseNode.svelte';
   import {
-    loadSchemas,
-    convertLiteGraphToSvelteFlow,
     DEFAULT_GRAPH_SCHEDULER,
     getCachedSchema,
     materializeSchemaProperties,
@@ -25,7 +23,6 @@
   } from '../../lib/client/flow-editor/template-converter';
   import { provideFlowEditorActions } from '../../lib/client/flow-editor/flow-editor-context';
   import { withUpdatedNodeProperty } from '../../lib/client/flow-editor/node-property-state';
-  import { apiFetch } from '../../lib/client/api-config';
   import {
     autoLayoutNodes,
     connectionProblem,
@@ -42,16 +39,12 @@
   // Props
   let {
     cognitiveMode = null,
-    onExecute = null,
     onGraphChange = null,
-    onGraphLoaded = null,
     onSelectionChange = null,
     onHistoryChange = null,
   }: {
     cognitiveMode?: string | null;
-    onExecute?: ((graph: SvelteFlowGraph) => Promise<void>) | null;
-    onGraphChange?: ((graph: SvelteFlowGraph) => void) | null;
-    onGraphLoaded?: ((fileName: string, scope: 'builtin' | 'custom' | 'backup') => void) | null;
+    onGraphChange?: ((graph: SvelteFlowGraph, change?: 'initial-view') => void) | null;
     onSelectionChange?: ((node: Node | null, edge: Edge | null) => void) | null;
     onHistoryChange?: ((state: { canUndo: boolean; canRedo: boolean; canPaste: boolean }) => void) | null;
   } = $props();
@@ -65,8 +58,6 @@
   let graphName = $state('Untitled Graph');
   let graphDescription = $state('');
   let scheduler = $state({ ...DEFAULT_GRAPH_SCHEDULER });
-  let isLoading = $state(true);
-  let error = $state<string | null>(null);
   let showMiniMap = $state(false);
   const miniMapAllowed = $derived(nodes.length <= 40);
   const miniMapVisible = $derived(showMiniMap && miniMapAllowed);
@@ -179,18 +170,8 @@
     notifyHistoryChange();
   }
 
-  // Load template when cognitive mode changes
-  $effect(() => {
-    if (cognitiveMode) {
-      loadTemplateForMode(cognitiveMode);
-    }
-  });
-
   onMount(() => {
-    if (!cognitiveMode) {
-      isLoading = false;
-      notifyGraphChange();
-    }
+    notifyGraphChange();
     const handleKeyboard = (event: KeyboardEvent) => {
       const target = event.target;
       if (target instanceof Element
@@ -221,58 +202,6 @@
     window.addEventListener('keydown', handleKeyboard);
     return () => window.removeEventListener('keydown', handleKeyboard);
   });
-
-  /**
-   * Load template for a cognitive mode
-   */
-  async function loadTemplateForMode(mode: string) {
-    isLoading = true;
-    error = null;
-
-    try {
-      const templateName = `${mode}-mode`;
-      const response = await apiFetch(`/api/cognitive-graph?name=${templateName}`);
-
-      if (!response.ok) {
-        throw new Error(`Failed to load template: ${response.statusText}`);
-      }
-
-      const data = await response.json();
-      if (!data.graph) {
-        throw new Error('Invalid template response');
-      }
-
-      await loadSchemas();
-
-      // Convert from LiteGraph format to Svelte Flow format
-      const sfGraph = convertLiteGraphToSvelteFlow(data.graph);
-
-      nodes = sfGraph.nodes;
-      edges = sfGraph.edges;
-      restoreGraphViewport(sfGraph.viewport);
-      graphName = sfGraph.name;
-      graphDescription = sfGraph.description;
-      scheduler = { ...sfGraph.scheduler };
-      resetHistory();
-
-      console.log(`[FlowEditor] Loaded template: ${templateName}`, {
-        nodes: nodes.length,
-        edges: edges.length,
-      });
-
-      // Update unconnected status after loading
-      updateUnconnectedStatusInternal();
-
-      // Preserve the exact API-resolved file identity independently from graph metadata.
-      onGraphLoaded?.(data.name || templateName, data.scope || 'builtin');
-      notifyGraphChange();
-    } catch (e) {
-      console.error('[FlowEditor] Error loading template:', e);
-      error = (e as Error).message;
-    } finally {
-      isLoading = false;
-    }
-  }
 
   // XYFlow owns edge insertion. Decorate and capture undo before it mutates
   // bound state; the completion callback publishes the resulting graph.
@@ -331,8 +260,10 @@
   }
 
   function handleViewportMoveEnd(event: MouseEvent | TouchEvent | null, nextViewport: Viewport) {
+    const initialFit = !hasStoredViewport && event === null;
     handleViewportMove(event, nextViewport);
-    onGraphChange?.(getCurrentGraph());
+    hasStoredViewport = true;
+    onGraphChange?.(getCurrentGraph(), initialFit ? 'initial-view' : undefined);
   }
 
   /**
@@ -383,6 +314,11 @@
     };
   }
 
+  /** Identity of the current document; changes on load/new, not ordinary edits. */
+  export function getGraphIdentity(): number {
+    return flowInstanceKey;
+  }
+
   /**
    * Load a graph from data
    */
@@ -394,6 +330,7 @@
     graphDescription = graph.description;
     scheduler = { ...(graph.scheduler || DEFAULT_GRAPH_SCHEDULER) };
     resetHistory();
+    updateUnconnectedStatusInternal();
   }
 
   /**
@@ -653,7 +590,6 @@
           data: {
             ...node.data,
             executionOutput: output,
-            executionState: 'completed' as const,
           },
         };
       }
@@ -677,20 +613,6 @@
         },
       };
     });
-  }
-
-  /**
-   * Mark all nodes as failed
-   */
-  export function markAllNodesFailed() {
-    nodes = nodes.map((node) => ({
-      ...node,
-      data: {
-        ...node.data,
-        executionState: 'failed' as const,
-      },
-    }));
-    refreshExecutionEdges();
   }
 
   export function copySelected(): void {
@@ -845,71 +767,56 @@
 </script>
 
 <div class="flow-editor-container">
-  {#if isLoading}
-    <div class="loading-overlay">
-      <div class="loading-spinner"></div>
-      <span>Loading graph...</span>
-    </div>
-  {:else if error}
-    <div class="error-overlay">
-      <span class="error-icon">!</span>
-      <span>{error}</span>
-      <button onclick={() => cognitiveMode && loadTemplateForMode(cognitiveMode)}>
-        Retry
-      </button>
-    </div>
-  {:else}
-    {#key flowInstanceKey}
-      <SvelteFlow
-        bind:nodes
-        bind:edges
-        {nodeTypes}
-        colorMode="dark"
-        fitView={!hasStoredViewport}
-        initialViewport={hasStoredViewport ? viewport : undefined}
-        snapGrid={[15, 15]}
-        minZoom={0.1}
-        maxZoom={2}
-        onlyRenderVisibleElements
-        selectionOnDrag
-        deleteKey={['Delete', 'Backspace']}
-        selectionKey="Shift"
-        multiSelectionKey="Shift"
-        onbeforeconnect={handleBeforeConnect}
-        onconnect={notifyGraphChange}
-        ondelete={notifyGraphChange}
-        onselectionchange={handleSelectionChange}
-        onbeforedelete={handleBeforeDelete}
-        onnodedragstart={handleNodeDragStart}
-        onbeforereconnect={handleBeforeReconnect}
-        onreconnect={notifyGraphChange}
-        isValidConnection={isConnectionValid}
-        onmove={handleViewportMove}
-        onmoveend={handleViewportMoveEnd}
-      >
-        <Background variant={BackgroundVariant.Dots} gap={20} patternColor="#333" />
-        <Controls />
-        {#if miniMapVisible}
-          <MiniMap
-            nodeColor={(node: Node) => node.data?.schema?.bgColor || '#475569'}
-            maskColor="rgba(0, 0, 0, 0.8)"
-            pannable
-            zoomable
-          />
-        {/if}
-      </SvelteFlow>
-    {/key}
-    <button
-      type="button"
-      class="minimap-toggle"
-      class:active={miniMapVisible}
-      disabled={!miniMapAllowed}
-      title={miniMapAllowed
-        ? 'Toggle overview map'
-        : 'Overview map is disabled above 40 nodes to protect canvas performance'}
-      onclick={() => (showMiniMap = !showMiniMap)}
-    >Map{miniMapAllowed ? '' : ' · large graph'}</button>
-  {/if}
+  {#key flowInstanceKey}
+    <SvelteFlow
+      bind:nodes
+      bind:edges
+      {nodeTypes}
+      colorMode="dark"
+      fitView={!hasStoredViewport}
+      initialViewport={hasStoredViewport ? viewport : undefined}
+      snapGrid={[15, 15]}
+      minZoom={0.1}
+      maxZoom={2}
+      onlyRenderVisibleElements
+      selectionOnDrag
+      deleteKey={['Delete', 'Backspace']}
+      selectionKey="Shift"
+      multiSelectionKey="Shift"
+      onbeforeconnect={handleBeforeConnect}
+      onconnect={notifyGraphChange}
+      ondelete={notifyGraphChange}
+      onselectionchange={handleSelectionChange}
+      onbeforedelete={handleBeforeDelete}
+      onnodedragstart={handleNodeDragStart}
+      onbeforereconnect={handleBeforeReconnect}
+      onreconnect={notifyGraphChange}
+      isValidConnection={isConnectionValid}
+      onmove={handleViewportMove}
+      onmoveend={handleViewportMoveEnd}
+    >
+      <Background variant={BackgroundVariant.Dots} gap={20} patternColor="#333" />
+      <Controls />
+      {#if miniMapVisible}
+        <MiniMap
+          nodeColor={(node: Node) => node.data?.schema?.bgColor || '#475569'}
+          maskColor="rgba(0, 0, 0, 0.8)"
+          pannable
+          zoomable
+        />
+      {/if}
+    </SvelteFlow>
+  {/key}
+  <button
+    type="button"
+    class="minimap-toggle"
+    class:active={miniMapVisible}
+    disabled={!miniMapAllowed}
+    title={miniMapAllowed
+      ? 'Toggle overview map'
+      : 'Overview map is disabled above 40 nodes to protect canvas performance'}
+    onclick={() => (showMiniMap = !showMiniMap)}
+  >Map{miniMapAllowed ? '' : ' · large graph'}</button>
 </div>
 
 <style>
@@ -927,69 +834,6 @@
   }
   .minimap-toggle:disabled {
     @apply cursor-not-allowed opacity-60;
-  }
-
-  .loading-overlay,
-  .error-overlay {
-    position: absolute;
-    top: 0;
-    left: 0;
-    right: 0;
-    bottom: 0;
-    display: flex;
-    flex-direction: column;
-    align-items: center;
-    justify-content: center;
-    gap: 1rem;
-    background: rgba(10, 10, 10, 0.9);
-    color: #fff;
-    font-size: 1rem;
-    z-index: 100;
-  }
-
-  .loading-spinner {
-    width: 40px;
-    height: 40px;
-    border: 3px solid #333;
-    border-top-color: #3b82f6;
-    border-radius: 50%;
-    animation: spin 1s linear infinite;
-  }
-
-  @keyframes spin {
-    to {
-      transform: rotate(360deg);
-    }
-  }
-
-  .error-overlay {
-    color: #fca5a5;
-  }
-
-  .error-icon {
-    width: 48px;
-    height: 48px;
-    border: 3px solid #ef4444;
-    border-radius: 50%;
-    display: flex;
-    align-items: center;
-    justify-content: center;
-    font-size: 24px;
-    font-weight: bold;
-  }
-
-  .error-overlay button {
-    padding: 0.5rem 1rem;
-    background: #3b82f6;
-    border: none;
-    border-radius: 6px;
-    color: #fff;
-    cursor: pointer;
-    font-size: 0.875rem;
-  }
-
-  .error-overlay button:hover {
-    background: #2563eb;
   }
 
   /* Svelte Flow theme overrides */

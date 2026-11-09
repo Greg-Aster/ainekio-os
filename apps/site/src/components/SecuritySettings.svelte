@@ -1,6 +1,6 @@
 <script lang="ts">
   import { onMount } from 'svelte';
-  import { activeView, rightSidebarOpen, statusRefreshTrigger } from '../stores/navigation';
+  import { activeView, rightSidebarOpen, statusRefreshTrigger, currentUserStore, systemSection } from '../stores/navigation';
   import ProfileDangerZone from './ProfileDangerZone.svelte';
   import ProfileCreation from './ProfileCreation.svelte';
   import { apiFetch } from '../lib/client/api-config';
@@ -13,18 +13,16 @@
       displayName?: string;
       email?: string;
     };
-    createdAt?: string;
-    lastLogin?: string;
   }
 
   let currentUser: User | null = null;
-  let loading = true;
   let error = '';
   let success = '';
 
   // Change username state
   let showChangeUsername = false;
   let newUsername = '';
+  let usernamePassword = '';
   let usernameChanging = false;
 
   // Change password state
@@ -41,30 +39,18 @@
   let profileChanging = false;
 
   // Profile visibility state
-  let profileVisibility: 'private' | 'public' = 'private';
+  let profileVisibility: 'private' | 'public' | null = null;
+  let visibilityLoading = true;
+  let visibilityError = '';
   let savingVisibility = false;
 
   // Recovery codes state
-  let recoveryCodes: string[] = [];
-  let recoveryCodesLoading = false;
+  let recoveryCodes: string[] | null = null;
+  let recoveryError = '';
+  let recoveryCodesLoading = true;
   let showRecoveryCodes = false;
   let regeneratingCodes = false;
   let showRegenerateConfirm = false;
-
-  interface TunnelStatus {
-    installed: boolean;
-    running: boolean;
-    enabled: boolean;
-    hostname: string;
-    pid?: number;
-  }
-
-  let tunnelStatus: TunnelStatus | null = null;
-  let tunnelStatusLoading = false;
-  let tunnelActionPending = false;
-
-  // Reference to ProfileDangerZone component for refreshing
-  let profileDangerZone: any;
 
   // Profile memory reset state
   let resettingFactory = false;
@@ -72,33 +58,16 @@
   let resetError = '';
   let resetComplete = false;
 
-  onMount(async () => {
-    await fetchCurrentUser();
-    await loadTrustLevel();
-    await loadAgentConfig();
-    await loadTrustCoupling();
-    await fetchVisibility();
-    await loadTunnelStatus();
-    await loadRecoveryCodes();
-  });
+  $: currentUser = $currentUserStore;
 
-  async function fetchCurrentUser() {
-    try {
-      const response = await apiFetch('/api/auth/me');
-      const data = await response.json();
+  onMount(() => { void loadSettings(); });
 
-      if (data.success && data.user) {
-        currentUser = data.user;
-        newDisplayName = data.user.metadata?.displayName || '';
-        newEmail = data.user.metadata?.email || '';
-      } else {
-        error = 'Not authenticated';
-      }
-    } catch (err) {
-      error = 'Failed to load user information';
-      console.error(err);
-    } finally {
-      loading = false;
+  async function loadSettings() {
+    if (currentUser) {
+      await Promise.all([
+        fetchVisibility(), loadRecoveryCodes(),
+        ...(currentUser.role === 'owner' ? [loadTrustLevel(), loadAgentConfig(), loadTrustCoupling()] : []),
+      ]);
     }
   }
 
@@ -108,6 +77,7 @@
       return;
     }
 
+    const account = currentUser!;
     usernameChanging = true;
     error = '';
     success = '';
@@ -116,22 +86,23 @@
       const response = await apiFetch('/api/auth/change-username', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ newUsername }),
+        body: JSON.stringify({ newUsername, password: usernamePassword }),
       });
 
       const data = await response.json();
 
-      if (data.success) {
+      if (response.ok && data.success) {
         success = 'Username changed successfully!';
         showChangeUsername = false;
         newUsername = '';
-        await fetchCurrentUser();
+        usernamePassword = '';
+        account.username = data.username;
+        currentUserStore.update(user => user);
       } else {
         error = data.error || 'Failed to change username';
       }
     } catch (err) {
-      error = 'Network error. Please try again.';
-      console.error(err);
+      error = (err as Error).message;
     } finally {
       usernameChanging = false;
     }
@@ -148,8 +119,8 @@
       return;
     }
 
-    if (newPassword.length < 4) {
-      error = 'Password must be at least 4 characters';
+    if (newPassword.length < 6) {
+      error = 'Password must be at least 6 characters';
       return;
     }
 
@@ -166,7 +137,7 @@
 
       const data = await response.json();
 
-      if (data.success) {
+      if (response.ok && data.success) {
         success = 'Password changed successfully!';
         showChangePassword = false;
         currentPassword = '';
@@ -176,40 +147,40 @@
         error = data.error || 'Failed to change password';
       }
     } catch (err) {
-      error = 'Network error. Please try again.';
-      console.error(err);
+      error = (err as Error).message;
     } finally {
       passwordChanging = false;
     }
   }
 
   async function handleChangeProfile() {
+    const account = currentUser!;
     profileChanging = true;
     error = '';
     success = '';
 
     try {
       const response = await apiFetch('/api/auth/update-profile', {
-        method: 'POST',
+        method: 'PUT',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
-          displayName: newDisplayName || undefined,
-          email: newEmail || undefined,
+          displayName: newDisplayName,
+          email: newEmail,
         }),
       });
 
       const data = await response.json();
 
-      if (data.success) {
+      if (response.ok && data.success) {
         success = 'Profile updated successfully!';
         showChangeProfile = false;
-        await fetchCurrentUser();
+        account.metadata = data.user.metadata;
+        currentUserStore.update(user => user);
       } else {
         error = data.error || 'Failed to update profile';
       }
     } catch (err) {
-      error = 'Network error. Please try again.';
-      console.error(err);
+      error = (err as Error).message;
     } finally {
       profileChanging = false;
     }
@@ -218,6 +189,7 @@
   function cancelChangeUsername() {
     showChangeUsername = false;
     newUsername = '';
+    usernamePassword = '';
     error = '';
   }
 
@@ -229,128 +201,89 @@
     error = '';
   }
 
+  function openProfileForm() {
+    newDisplayName = currentUser?.metadata?.displayName || '';
+    newEmail = currentUser?.metadata?.email || '';
+    showChangeProfile = true;
+  }
+
   function cancelChangeProfile() {
     showChangeProfile = false;
-    if (currentUser) {
-      newDisplayName = currentUser.metadata?.displayName || '';
-      newEmail = currentUser.metadata?.email || '';
-    }
+    newDisplayName = '';
+    newEmail = '';
     error = '';
   }
 
   // Profile visibility functions
   async function fetchVisibility() {
+    visibilityLoading = true;
+    visibilityError = '';
     try {
       const res = await apiFetch('/api/profiles/visibility');
-      if (res.ok) {
-        const data = await res.json();
-        profileVisibility = data.visibility || 'private';
-      }
-    } catch (e) {
-      console.error('Failed to fetch visibility:', e);
+      const data = await res.json();
+      if (!res.ok || !data.success) throw new Error(data.error || 'Failed to load visibility');
+      profileVisibility = data.visibility;
+    } catch (err) {
+      visibilityError = (err as Error).message;
+    } finally {
+      visibilityLoading = false;
     }
   }
 
-  async function saveVisibility() {
-    if (savingVisibility) return;
+  async function saveVisibility(event: Event) {
+    const target = event.target as HTMLSelectElement;
     savingVisibility = true;
     error = '';
     success = '';
-
     try {
       const res = await apiFetch('/api/profiles/visibility', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ visibility: profileVisibility }),
+        method: 'POST', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ visibility: target.value }),
       });
-
       const data = await res.json();
-      if (data.success) {
-        success = 'Profile visibility updated successfully';
-        setTimeout(() => success = '', 3000);
-      } else {
-        error = data.error || 'Failed to update visibility';
-      }
+      if (!res.ok || !data.success) throw new Error(data.error || 'Failed to update visibility');
+      profileVisibility = data.visibility;
+      success = 'Profile visibility updated successfully';
     } catch (err) {
-      error = 'Network error. Please try again.';
-      console.error('Failed to save visibility:', err);
+      error = (err as Error).message;
+      target.value = profileVisibility!;
     } finally {
       savingVisibility = false;
     }
   }
 
-  async function loadTunnelStatus() {
-    tunnelStatusLoading = true;
-    try {
-      const res = await apiFetch('/api/cloudflare/status');
-      if (res.ok) {
-        tunnelStatus = await res.json();
-      } else {
-        console.warn('Failed to load tunnel status');
-      }
-    } catch (err) {
-      console.error('Failed to load tunnel status:', err);
-    } finally {
-      tunnelStatusLoading = false;
-    }
-  }
-
-  async function setTunnelEnabled(enable: boolean) {
-    if (tunnelActionPending) return;
-
-    tunnelActionPending = true;
-    error = '';
-    success = '';
-
-    try {
-      const res = await apiFetch('/api/cloudflare/toggle', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ enabled: enable }),
-      });
-
-      const data = await res.json();
-      if (res.ok && data.success) {
-        success = enable ? 'Cloudflare tunnel enabled' : 'Cloudflare tunnel disabled';
-        await loadTunnelStatus();
-      } else {
-        error = data.error || 'Failed to update Cloudflare tunnel';
-      }
-    } catch (err) {
-      error = 'Network error. Please try again.';
-      console.error('Failed to toggle tunnel:', err);
-    } finally {
-      tunnelActionPending = false;
-    }
-  }
-
   // Trust Level state
-  let trustLevel = '';
+  let trustLevel: string | null = null;
+  let trustError = '';
   let trustOptions: string[] = [];
-  let trustLoading = false;
+  let trustLoading = true;
   let trustSaving = false;
 
   // Persona Summary state
-  let includePersonaSummary = true;
-  let personaSummaryLoading = false;
+  let includePersonaSummary: boolean | null = null;
+  let personaSummaryError = '';
+  let personaSummaryLoading = true;
   let personaSummarySaving = false;
 
   // Trust Coupling state
-  let trustCoupled = true;
-  let couplingLoading = false;
+  let trustCoupled: boolean | null = null;
+  let couplingMappings: Record<string, string> = {};
+  let couplingDescriptions: Record<string, string> = {};
+  let couplingError = '';
+  let couplingLoading = true;
   let couplingSaving = false;
 
   async function loadTrustLevel() {
     trustLoading = true;
+    trustError = '';
     try {
       const response = await apiFetch('/api/trust');
       const data = await response.json();
-      if (response.ok) {
-        trustLevel = data.level || 'observe';
-        trustOptions = data.available || [];
-      }
+      if (!response.ok) throw new Error(data.error || 'Failed to load trust level');
+      trustLevel = data.level;
+      trustOptions = data.available;
     } catch (err) {
-      console.error('Failed to load trust level:', err);
+      trustError = (err as Error).message;
     } finally {
       trustLoading = false;
     }
@@ -373,21 +306,20 @@
 
       const data = await response.json();
 
-      if (data.ok) {
-        trustLevel = newLevel;
+      if (response.ok && data.ok) {
+        trustLevel = data.level;
         success = `Trust level changed to: ${newLevel}`;
         // Trigger status refresh
         statusRefreshTrigger.update(n => n + 1);
       } else {
         error = data.error || 'Failed to change trust level';
         // Revert the select
-        target.value = trustLevel;
+        target.value = trustLevel!;
       }
     } catch (err) {
-      error = 'Network error. Please try again.';
-      console.error(err);
+      error = (err as Error).message;
       // Revert the select
-      target.value = trustLevel;
+      target.value = trustLevel!;
     } finally {
       trustSaving = false;
     }
@@ -395,20 +327,21 @@
 
   async function loadAgentConfig() {
     personaSummaryLoading = true;
+    personaSummaryError = '';
     try {
       const response = await apiFetch('/api/agent-config');
       const data = await response.json();
-      if (response.ok && data.config) {
-        includePersonaSummary = data.config.includePersonaSummary ?? true;
-      }
+      if (!response.ok || !data.success) throw new Error(data.error || 'Failed to load persona summary setting');
+      includePersonaSummary = data.config.includePersonaSummary;
     } catch (err) {
-      console.error('Failed to load agent config:', err);
+      personaSummaryError = (err as Error).message;
     } finally {
       personaSummaryLoading = false;
     }
   }
 
-  async function handlePersonaSummaryToggle() {
+  async function handlePersonaSummaryToggle(event: Event) {
+    const target = event.target as HTMLInputElement;
     personaSummarySaving = true;
     error = '';
     success = '';
@@ -417,20 +350,22 @@
       const response = await apiFetch('/api/agent-config', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ includePersonaSummary: !includePersonaSummary }),
+        body: JSON.stringify({ includePersonaSummary: target.checked }),
       });
 
       const data = await response.json();
 
-      if (data.success) {
-        includePersonaSummary = !includePersonaSummary;
+      if (response.ok && data.success) {
+        includePersonaSummary = data.config.includePersonaSummary;
+        statusRefreshTrigger.update(n => n + 1);
         success = `Persona summary ${includePersonaSummary ? 'enabled' : 'disabled'}`;
       } else {
         error = data.error || 'Failed to update persona summary setting';
+        target.checked = includePersonaSummary === true;
       }
     } catch (err) {
-      error = 'Network error. Please try again.';
-      console.error(err);
+      error = (err as Error).message;
+      target.checked = includePersonaSummary === true;
     } finally {
       personaSummarySaving = false;
     }
@@ -438,20 +373,23 @@
 
   async function loadTrustCoupling() {
     couplingLoading = true;
+    couplingError = '';
     try {
       const response = await apiFetch('/api/trust-coupling');
       const data = await response.json();
-      if (response.ok && data.success) {
-        trustCoupled = data.coupled ?? true;
-      }
+      if (!response.ok || !data.success) throw new Error(data.error || 'Failed to load trust coupling');
+      trustCoupled = data.coupled;
+      couplingMappings = data.mappings;
+      couplingDescriptions = data.descriptions;
     } catch (err) {
-      console.error('Failed to load trust coupling:', err);
+      couplingError = (err as Error).message;
     } finally {
       couplingLoading = false;
     }
   }
 
-  async function handleCouplingToggle() {
+  async function handleCouplingToggle(event: Event) {
+    const target = event.target as HTMLInputElement;
     couplingSaving = true;
     error = '';
     success = '';
@@ -460,22 +398,24 @@
       const response = await apiFetch('/api/trust-coupling', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ coupled: !trustCoupled }),
+        body: JSON.stringify({ coupled: target.checked }),
       });
 
       const data = await response.json();
 
-      if (data.success) {
-        trustCoupled = !trustCoupled;
+      if (response.ok && data.success) {
+        trustCoupled = data.coupled;
+        couplingMappings = data.mappings;
         success = `Trust level ${trustCoupled ? 'coupled to' : 'decoupled from'} cognitive mode`;
         // Trigger status refresh
         statusRefreshTrigger.update(n => n + 1);
       } else {
         error = data.error || 'Failed to toggle coupling';
+        target.checked = trustCoupled === true;
       }
     } catch (err) {
-      error = 'Network error. Please try again.';
-      console.error(err);
+      error = (err as Error).message;
+      target.checked = trustCoupled === true;
     } finally {
       couplingSaving = false;
     }
@@ -484,14 +424,14 @@
   // Recovery codes functions
   async function loadRecoveryCodes() {
     recoveryCodesLoading = true;
+    recoveryError = '';
     try {
       const response = await apiFetch('/api/recovery-codes');
       const data = await response.json();
-      if (response.ok && data.success) {
-        recoveryCodes = data.codes || [];
-      }
+      if (!response.ok || !data.success) throw new Error(data.error || 'Failed to load recovery codes');
+      recoveryCodes = data.codes;
     } catch (err) {
-      console.error('Failed to load recovery codes:', err);
+      recoveryError = (err as Error).message;
     } finally {
       recoveryCodesLoading = false;
     }
@@ -510,8 +450,9 @@
 
       const data = await response.json();
 
-      if (data.success) {
+      if (response.ok && data.success) {
         recoveryCodes = data.codes;
+        recoveryError = '';
         showRecoveryCodes = true;
         showRegenerateConfirm = false;
         success = 'Recovery codes regenerated successfully! Save them in a secure place.';
@@ -519,22 +460,21 @@
         error = data.error || 'Failed to regenerate recovery codes';
       }
     } catch (err) {
-      error = 'Network error. Please try again.';
-      console.error(err);
+      error = (err as Error).message;
     } finally {
       regeneratingCodes = false;
     }
   }
 
-  function copyAllCodesToClipboard() {
-    const codesText = recoveryCodes.join('\n');
-    navigator.clipboard.writeText(codesText).then(() => {
+  async function copyAllCodesToClipboard(codes: string[]) {
+    error = '';
+    success = '';
+    try {
+      await navigator.clipboard.writeText(codes.join('\n'));
       success = 'Recovery codes copied to clipboard!';
-      setTimeout(() => success = '', 3000);
-    }).catch((err) => {
-      error = 'Failed to copy to clipboard';
-      console.error(err);
-    });
+    } catch (err) {
+      error = err instanceof Error ? err.message : 'Failed to copy to clipboard';
+    }
   }
 
   async function resetFactorySettings() {
@@ -566,23 +506,8 @@
     <p class="text-gray-500 dark:text-gray-400 m-0">Manage your authentication and profile information</p>
   </div>
 
-  {#if loading}
-    <div class="flex flex-col items-center justify-center py-16 px-8">
-      <div class="w-10 h-10 border-3 border-violet-500/20 border-t-violet-500 rounded-full animate-spin"></div>
-      <p class="mt-4 text-gray-500 dark:text-gray-400">Loading account information...</p>
-    </div>
-  {:else if !currentUser}
-    <div class="flex flex-col items-center justify-center py-16 px-8 text-center">
-      <svg class="w-16 h-16 text-gray-400 dark:text-gray-600 mb-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-        <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 15v2m-6 4h12a2 2 0 002-2v-6a2 2 0 00-2-2H6a2 2 0 00-2 2v6a2 2 0 002 2zm10-10V7a4 4 0 00-8 0v4h8z"/>
-      </svg>
-      <h2 class="text-2xl font-semibold text-gray-900 dark:text-gray-100 m-0 mb-2">Authentication Required</h2>
-      <p class="text-gray-500 dark:text-gray-400 m-0 mb-6">Please login to access security settings</p>
-      <a href="/" class="inline-block px-6 py-3 bg-gradient-to-r from-violet-500 to-pink-600 text-white no-underline rounded-lg font-semibold transition-transform hover:-translate-y-0.5">Go to Login</a>
-    </div>
-  {:else}
     {#if error}
-      <div class="flex items-center gap-3 p-4 rounded-lg mb-4 bg-red-50 dark:bg-red-900/30 border border-red-200 dark:border-red-800 text-red-800 dark:text-red-200">
+      <div role="alert" class="flex items-center gap-3 p-4 rounded-lg mb-4 bg-red-50 dark:bg-red-900/30 border border-red-200 dark:border-red-800 text-red-800 dark:text-red-200">
         <svg class="w-5 h-5 flex-shrink-0" fill="none" stroke="currentColor" viewBox="0 0 24 24">
           <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 8v4m0 4h.01M21 12a9 9 0 11-18 0 9 9 0 0118 0z"/>
         </svg>
@@ -592,7 +517,7 @@
     {/if}
 
     {#if success}
-      <div class="flex items-center gap-3 p-4 rounded-lg mb-4 bg-green-50 dark:bg-green-900/30 border border-green-200 dark:border-green-800 text-green-800 dark:text-green-200">
+      <div role="status" class="flex items-center gap-3 p-4 rounded-lg mb-4 bg-green-50 dark:bg-green-900/30 border border-green-200 dark:border-green-800 text-green-800 dark:text-green-200">
         <svg class="w-5 h-5 flex-shrink-0" fill="none" stroke="currentColor" viewBox="0 0 24 24">
           <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 12l2 2 4-4m6 2a9 9 0 11-18 0 9 9 0 0118 0z"/>
         </svg>
@@ -601,6 +526,16 @@
       </div>
     {/if}
 
+  {#if !currentUser}
+    <div class="flex flex-col items-center justify-center py-16 px-8 text-center">
+      <svg class="w-16 h-16 text-gray-400 dark:text-gray-600 mb-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+        <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 15v2m-6 4h12a2 2 0 002-2v-6a2 2 0 00-2-2H6a2 2 0 00-2 2v6a2 2 0 002 2zm10-10V7a4 4 0 00-8 0v4h8z"/>
+      </svg>
+      <h2 class="text-2xl font-semibold text-gray-900 dark:text-gray-100 m-0 mb-2">Authentication Required</h2>
+      <p class="text-gray-500 dark:text-gray-400 m-0 mb-6">Please login to access security settings</p>
+      <a href="/" class="inline-block px-6 py-3 bg-gradient-to-r from-violet-500 to-pink-600 text-white no-underline rounded-lg font-semibold transition-transform hover:-translate-y-0.5">Go to Login</a>
+    </div>
+  {:else}
     <!-- Current User Info -->
     <div class="panel mb-6">
       <h2 class="text-xl font-semibold text-gray-900 dark:text-gray-100 m-0 mb-4">Account Information</h2>
@@ -623,12 +558,6 @@
           <div class="flex justify-between items-center py-2 border-b border-gray-100 dark:border-gray-800 last:border-b-0">
             <span class="font-medium text-gray-500 dark:text-gray-400">Email:</span>
             <span class="font-medium text-gray-900 dark:text-gray-100">{currentUser.metadata.email}</span>
-          </div>
-        {/if}
-        {#if currentUser.createdAt}
-          <div class="flex justify-between items-center py-2 border-b border-gray-100 dark:border-gray-800 last:border-b-0">
-            <span class="font-medium text-gray-500 dark:text-gray-400">Created:</span>
-            <span class="font-medium text-gray-900 dark:text-gray-100">{new Date(currentUser.createdAt).toLocaleString()}</span>
           </div>
         {/if}
       </div>
@@ -656,6 +585,11 @@
               class="input-field"
             />
             <small class="block mt-1 text-sm text-gray-500 dark:text-gray-400">Username must be 3-50 characters, alphanumeric with underscore/hyphen</small>
+          </div>
+          <div class="mb-4">
+            <label for="usernamePassword" class="block font-medium text-gray-700 dark:text-gray-300 mb-2">Current Password</label>
+            <input id="usernamePassword" type="password" bind:value={usernamePassword} autocomplete="current-password"
+              disabled={usernameChanging} required class="input-field" />
           </div>
           <div class="flex gap-3">
             <button type="submit" class="btn-primary" disabled={usernameChanging}>
@@ -734,6 +668,9 @@
 
       {#if recoveryCodesLoading}
         <p class="text-gray-500 dark:text-gray-400 italic">Loading recovery codes...</p>
+      {:else if recoveryCodes === null}
+        <p role="alert">{recoveryError}</p>
+        <button class="btn-secondary" on:click={loadRecoveryCodes}>Retry loading recovery codes</button>
       {:else}
         <div class="mb-6">
           <div class="mb-4">
@@ -764,8 +701,11 @@
           {/if}
         </div>
 
+      {/if}
+
+      {#if !recoveryCodesLoading}
         <div class="flex flex-wrap gap-3 mb-4">
-          {#if recoveryCodes.length > 0 && !showRecoveryCodes}
+          {#if recoveryCodes && recoveryCodes.length > 0 && !showRecoveryCodes}
             <button class="btn-secondary" on:click={() => showRecoveryCodes = true}>
               View Remaining Codes
             </button>
@@ -803,11 +743,11 @@
           {/if}
         </div>
 
-        {#if showRecoveryCodes && recoveryCodes.length > 0}
+        {#if showRecoveryCodes && recoveryCodes && recoveryCodes.length > 0}
           <div class="mt-6 p-6 bg-gray-50 dark:bg-gray-800 border border-gray-200 dark:border-gray-700 rounded-lg">
             <div class="flex justify-between items-center mb-4 pb-3 border-b border-gray-200 dark:border-gray-700">
               <h3 class="text-base font-semibold text-gray-900 dark:text-gray-100 m-0">Your Recovery Codes</h3>
-              <button class="btn-sm" on:click={copyAllCodesToClipboard}>
+              <button class="btn-sm" on:click={() => copyAllCodesToClipboard(recoveryCodes!)}>
                 📋 Copy All
               </button>
             </div>
@@ -832,7 +772,7 @@
       <h2 class="text-xl font-semibold text-gray-900 dark:text-gray-100 m-0 mb-4">Profile Information</h2>
       {#if !showChangeProfile}
         <p class="text-gray-500 dark:text-gray-400 m-0 mb-4">Update your display name and email</p>
-        <button class="btn-primary" on:click={() => showChangeProfile = true}>
+        <button class="btn-primary" on:click={openProfileForm}>
           Update Profile
         </button>
       {:else}
@@ -871,69 +811,12 @@
       {/if}
     </div>
 
-    <!-- Remote Access Controls -->
-    <div class="panel mb-6">
-      <h2 class="text-xl font-semibold text-gray-900 dark:text-gray-100 m-0 mb-4">🌐 Remote Access</h2>
-      <p class="text-gray-500 dark:text-gray-400 m-0 mb-4">Enable the Cloudflare tunnel to allow secure remote connections back to your MetaHuman node.</p>
-
-      {#if tunnelStatusLoading && !tunnelStatus}
-        <p class="text-gray-500 dark:text-gray-400 italic">Checking tunnel status...</p>
-      {:else if tunnelStatus}
-        <div class="grid grid-cols-[repeat(auto-fit,minmax(180px,1fr))] gap-3 mb-4">
-          <div class="flex flex-col gap-1">
-            <span class="font-medium text-gray-500 dark:text-gray-400">cloudflared</span>
-            <span class="inline-flex items-center justify-center rounded-full px-3 py-1.5 text-sm font-semibold {tunnelStatus.installed ? 'bg-green-100 dark:bg-green-900/40 text-green-800 dark:text-green-300' : 'bg-red-100 dark:bg-red-900/40 text-red-800 dark:text-red-300'}">
-              {tunnelStatus.installed ? 'Installed' : 'Missing'}
-            </span>
-          </div>
-          <div class="flex flex-col gap-1">
-            <span class="font-medium text-gray-500 dark:text-gray-400">Remote access</span>
-            <span class="inline-flex items-center justify-center rounded-full px-3 py-1.5 text-sm font-semibold {tunnelStatus.enabled ? 'bg-green-100 dark:bg-green-900/40 text-green-800 dark:text-green-300' : 'bg-red-100 dark:bg-red-900/40 text-red-800 dark:text-red-300'}">
-              {tunnelStatus.enabled ? 'Enabled' : 'Disabled'}
-            </span>
-          </div>
-          <div class="flex flex-col gap-1">
-            <span class="font-medium text-gray-500 dark:text-gray-400">Runtime</span>
-            <span class="inline-flex items-center justify-center rounded-full px-3 py-1.5 text-sm font-semibold {tunnelStatus.running ? 'bg-green-100 dark:bg-green-900/40 text-green-800 dark:text-green-300' : 'bg-red-100 dark:bg-red-900/40 text-red-800 dark:text-red-300'}">
-              {tunnelStatus.running ? 'Running' : 'Stopped'}
-            </span>
-          </div>
-        </div>
-      {:else}
-        <p class="text-gray-500 dark:text-gray-400 text-sm">Tunnel status is currently unavailable. Try refreshing.</p>
-      {/if}
-
-      <div class="flex flex-wrap gap-3 items-center mt-2">
-        <button
-          type="button"
-          class="btn-primary"
-          on:click={() => setTunnelEnabled(true)}
-          disabled={tunnelActionPending || tunnelStatusLoading || !tunnelStatus || tunnelStatus.enabled || !tunnelStatus.installed}
-        >
-          {tunnelActionPending ? 'Working...' : 'Enable Tunnel'}
-        </button>
-        <button
-          type="button"
-          class="btn-secondary"
-          on:click={() => setTunnelEnabled(false)}
-          disabled={tunnelActionPending || tunnelStatusLoading || !tunnelStatus || !tunnelStatus.enabled}
-        >
-          {tunnelActionPending ? 'Working...' : 'Disable Tunnel'}
-        </button>
-        <button
-          type="button"
-          class="px-6 py-3 rounded-lg font-semibold text-sm bg-transparent border border-dashed border-gray-300 dark:border-gray-600 text-gray-500 dark:text-gray-300 cursor-pointer transition-all hover:border-solid hover:text-gray-900 dark:hover:text-gray-100 disabled:opacity-50 disabled:cursor-not-allowed"
-          on:click={loadTunnelStatus}
-          disabled={tunnelStatusLoading || tunnelActionPending}
-        >
-          Refresh Status
-        </button>
+    {#if currentUser.role === 'owner'}
+      <div class="panel mb-6">
+        <h2 class="text-xl font-semibold text-gray-900 dark:text-gray-100 m-0 mb-4">Remote Access</h2>
+        <button class="btn-secondary" on:click={() => systemSection.set('network')}>Open Network settings</button>
       </div>
-
-      <p class="text-gray-500 dark:text-gray-400 text-sm mt-4">
-        Need to start or stop the process? Use the Network tab for full Cloudflare controls.
-      </p>
-    </div>
+    {/if}
 
     <!-- Trust Coupling (Owner Only) -->
     {#if currentUser.role === 'owner'}
@@ -942,6 +825,9 @@
         <p class="text-gray-500 dark:text-gray-400 m-0 mb-4">Link trust level to cognitive mode for automatic permission adjustment</p>
         {#if couplingLoading}
           <p class="text-gray-500 dark:text-gray-400 italic">Loading coupling state...</p>
+        {:else if trustCoupled === null}
+          <p role="alert">{couplingError}</p>
+          <button class="btn-secondary" on:click={loadTrustCoupling}>Retry loading trust coupling</button>
         {:else}
           <div class="flex flex-col gap-3">
             <label class="flex items-center gap-3 cursor-pointer">
@@ -964,10 +850,10 @@
           <div class="mt-2 p-3 bg-gray-100 dark:bg-gray-800 rounded-lg border-l-3 border-violet-500">
             {#if trustCoupled}
               <small class="block text-gray-600 dark:text-gray-400 leading-relaxed">
-                ✓ Trust level adjusts automatically when switching cognitive modes:<br>
-                • <strong>Dual Consciousness</strong> → supervised_auto (full autonomy with logging)<br>
-                • <strong>Agent Mode</strong> → suggest (approval required)<br>
-                • <strong>Emulation</strong> → observe (read-only, no actions)
+                Trust levels configured for cognitive modes:
+                {#each Object.entries(couplingMappings) as [mode, level]}
+                  <br><strong>{mode}</strong> → {level} — {couplingDescriptions[mode]}
+                {/each}
               </small>
             {:else}
               <small class="block text-gray-600 dark:text-gray-400 leading-relaxed">
@@ -984,13 +870,16 @@
         <p class="text-gray-500 dark:text-gray-400 m-0 mb-4">Controls what skills the operator can access and whether actions require approval</p>
         {#if trustLoading}
           <p class="text-gray-500 dark:text-gray-400 italic">Loading trust level...</p>
+        {:else if trustLevel === null}
+          <p role="alert">{trustError}</p>
+          <button class="btn-secondary" on:click={loadTrustLevel}>Retry loading trust level</button>
         {:else}
           <div class="flex flex-col gap-4">
             <div class="mb-4">
               <label for="trustLevel" class="block font-medium text-gray-700 dark:text-gray-300 mb-2">Current Trust Level</label>
               <select
                 id="trustLevel"
-                bind:value={trustLevel}
+                value={trustLevel}
                 on:change={handleTrustLevelChange}
                 disabled={trustSaving}
                 class="select-field"
@@ -999,22 +888,10 @@
                   <option value={option}>{option}</option>
                 {/each}
               </select>
-              <small class="block mt-1 text-sm text-gray-500 dark:text-gray-400">
-                {#if trustLevel === 'observe'}
-                  Monitor only, no actions, learn patterns
-                {:else if trustLevel === 'suggest'}
-                  Propose actions, require explicit approval for each
-                {:else if trustLevel === 'supervised_auto'}
-                  Execute within approved categories, log all actions
-                {:else if trustLevel === 'bounded_auto'}
-                  Full autonomy within defined trust boundaries
-                {:else if trustLevel === 'adaptive_auto'}
-                  Self-expand boundaries based on successful outcomes
-                {/if}
-              </small>
+              <small class="block mt-1 text-sm text-gray-500 dark:text-gray-400">Core applies the configured trust and risk policy to actions.</small>
             </div>
             <div class="p-3 bg-gray-100 dark:bg-gray-800 border-l-3 border-violet-500 rounded text-sm text-gray-700 dark:text-gray-300">
-              <strong>Trust Progression:</strong> observe → suggest → supervised_auto → bounded_auto → adaptive_auto
+              <strong>Configured levels:</strong> {trustOptions.join(' → ')}
             </div>
           </div>
         {/if}
@@ -1026,6 +903,9 @@
         <p class="text-gray-500 dark:text-gray-400 m-0 mb-4">Include your persona identity, values, and goals in chat context</p>
         {#if personaSummaryLoading}
           <p class="text-gray-500 dark:text-gray-400 italic">Loading persona summary setting...</p>
+        {:else if includePersonaSummary === null}
+          <p role="alert">{personaSummaryError}</p>
+          <button class="btn-secondary" on:click={loadAgentConfig}>Retry loading persona summary</button>
         {:else}
           <div class="flex flex-col gap-3">
             <label class="flex items-center gap-3 cursor-pointer">
@@ -1070,15 +950,22 @@
         <p class="text-sm text-red-700 dark:text-red-300 m-0 mb-4">Control who can view your profile as a guest user</p>
 
         <div class="mb-4">
+          {#if visibilityLoading}
+            <p role="status">Loading visibility...</p>
+          {:else if profileVisibility === null}
+            <p role="alert">{visibilityError}</p>
+            <button class="btn-secondary" on:click={fetchVisibility}>Retry loading visibility</button>
+          {:else}
           <select
-            bind:value={profileVisibility}
+            value={profileVisibility}
             on:change={saveVisibility}
             disabled={savingVisibility}
             class="select-field"
           >
-            <option value="private">🔒 Private - Owner only</option>
-            <option value="public">🌍 Public - Anyone (including anonymous)</option>
+            <option value="private">🔒 Private - Authorized account only</option>
+            <option value="public">🌍 Public - Available in guest profile selection</option>
           </select>
+          {/if}
         </div>
 
         {#if profileVisibility === 'public'}
@@ -1105,10 +992,8 @@
 
       <!-- Profile Deletion / Account Removal -->
       <div class="py-6 border-b border-red-500/30 first:pt-0 last:border-b-0 last:pb-0">
-        {#if currentUser.role === 'owner'}
-          <ProfileDangerZone bind:this={profileDangerZone} />
-        {:else if currentUser.role === 'standard'}
-          <ProfileDangerZone />
+        {#if currentUser.role === 'owner' || currentUser.role === 'standard'}
+          <ProfileDangerZone {currentUser} />
         {/if}
       </div>
 
@@ -1153,12 +1038,12 @@
       <h2 class="text-xl font-semibold text-gray-900 dark:text-gray-100 m-0 mb-4">Security Information</h2>
       <ul class="m-0 pl-6">
         <li class="text-gray-500 dark:text-gray-400 mb-2">Your password is hashed and never stored in plain text</li>
-        <li class="text-gray-500 dark:text-gray-400 mb-2">Session cookies are HTTPOnly and secure</li>
-        <li class="text-gray-500 dark:text-gray-400 mb-2">Owner sessions last 24 hours, guest sessions last 1 hour</li>
-        <li class="text-gray-500 dark:text-gray-400 mb-2">Clear your browser cookies to log out from all devices</li>
+        <li class="text-gray-500 dark:text-gray-400 mb-2">Session cookies are HTTPOnly</li>
+        <li class="text-gray-500 dark:text-gray-400 mb-2">Owner and standard sessions last 24 hours; guest sessions last 1 hour</li>
+        <li class="text-gray-500 dark:text-gray-400 mb-2">Clearing this browser’s cookies signs out this browser</li>
         {#if currentUser.role === 'owner'}
           <li class="text-gray-500 dark:text-gray-400 mb-2">Trust level changes are audited and logged for security</li>
-          <li class="text-gray-500 dark:text-gray-400 mb-2">All skill executions respect the current trust level</li>
+          <li class="text-gray-500 dark:text-gray-400 mb-2">Core applies the configured trust and risk policy to actions</li>
         {/if}
       </ul>
     </div>
@@ -1166,18 +1051,6 @@
 </div>
 
 <style>
-  @keyframes spin {
-    to { transform: rotate(360deg); }
-  }
-
-  .animate-spin {
-    animation: spin 0.8s linear infinite;
-  }
-
-  .border-3 {
-    border-width: 3px;
-  }
-
   .border-l-3 {
     border-left-width: 3px;
   }

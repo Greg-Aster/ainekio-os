@@ -246,8 +246,3 @@ export async function transcribeAudioUtterance(
     },
   };
 }
-
-export const audioTransportLimits = {
-  maxMessageBytes: MAX_AUDIO_UTTERANCE_BYTES,
-  maxMetadataBytes: MAX_AUDIO_METADATA_BYTES,
-} as const;

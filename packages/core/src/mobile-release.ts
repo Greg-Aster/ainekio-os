@@ -15,7 +15,7 @@ const RELEASE_FIELDS = new Set([
   'checksum',
 ])
 
-export interface MobileReleaseMetadata {
+interface MobileReleaseMetadata {
   version: string
   versionCode: number
   releaseDate: string

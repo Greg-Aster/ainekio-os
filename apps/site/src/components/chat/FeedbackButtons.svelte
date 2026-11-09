@@ -6,12 +6,8 @@
    * Default value is 0 (no feedback). + sets to 1, - sets to -1.
    * Clicking either button opens an optional comment input.
    */
-  import { createEventDispatcher } from 'svelte';
+  import { onDestroy } from 'svelte';
   import { apiFetch } from '../../lib/client/api-config';
-
-  const dispatch = createEventDispatcher<{
-    feedbackSubmitted: { rating: number; comment?: string };
-  }>();
 
   // State
   let currentRating: number = 0; // -1, 0, or 1
@@ -19,63 +15,52 @@
   let comment = '';
   let submitting = false;
   let showSuccess = false;
+  let error = '';
+  let destroyed = false;
   let successTimeout: ReturnType<typeof setTimeout> | null = null;
 
-  // Props for context (what we're rating)
-  export let targetType: 'conversation' | 'task' | 'memory' = 'conversation';
-  export let targetId: string | undefined = undefined; // Optional - for specific items
-
-  function handlePlusClick() {
-    if (currentRating === 1) {
-      // Already positive, toggle input visibility
-      showInput = !showInput;
-    } else {
-      currentRating = 1;
-      showInput = true;
-    }
-  }
-
-  function handleMinusClick() {
-    if (currentRating === -1) {
-      // Already negative, toggle input visibility
-      showInput = !showInput;
-    } else {
-      currentRating = -1;
-      showInput = true;
-    }
+  function handleRatingClick(rating: number) {
+    error = '';
+    showInput = currentRating === rating ? !showInput : true;
+    currentRating = rating;
   }
 
   async function submitFeedback() {
     if (currentRating === 0) return;
 
+    const submittedRating = currentRating;
+    const submittedComment = comment;
     submitting = true;
+    error = '';
     try {
       const res = await apiFetch('/api/feedback', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
-          rating: currentRating,
-          comment: comment.trim() || undefined,
-          targetType,
-          targetId,
+          rating: submittedRating,
+          comment: submittedComment.trim() || undefined,
+          targetType: 'conversation',
         }),
       });
 
-      if (res.ok) {
-        dispatch('feedbackSubmitted', { rating: currentRating, comment: comment.trim() || undefined });
-        // Show brief success indicator
-        showSuccess = true;
-        if (successTimeout) clearTimeout(successTimeout);
-        successTimeout = setTimeout(() => {
-          showSuccess = false;
-          // Reset state after success
+      if (!res.ok) {
+        const data = await res.json();
+        throw new Error(data.error || `Could not submit feedback (${res.status})`);
+      }
+      if (destroyed) return;
+      showSuccess = true;
+      if (successTimeout) clearTimeout(successTimeout);
+      successTimeout = setTimeout(() => {
+        successTimeout = null;
+        showSuccess = false;
+        if (currentRating === submittedRating && comment === submittedComment) {
           showInput = false;
           comment = '';
           currentRating = 0;
-        }, 1500);
-      }
+        }
+      }, 1500);
     } catch (err) {
-      console.error('[FeedbackButtons] Error submitting feedback:', err);
+      error = err instanceof Error ? err.message : 'Could not submit feedback';
     } finally {
       submitting = false;
     }
@@ -87,16 +72,23 @@
       submitFeedback();
     }
     if (e.key === 'Escape') {
+      error = '';
       showInput = false;
       comment = '';
     }
   }
 
   function cancel() {
+    error = '';
     showInput = false;
     comment = '';
     currentRating = 0;
   }
+
+  onDestroy(() => {
+    destroyed = true;
+    if (successTimeout) clearTimeout(successTimeout);
+  });
 </script>
 
 <div class="feedback-container" class:expanded={showInput}>
@@ -109,14 +101,14 @@
       <button
         class="fb-btn minus"
         class:active={currentRating === -1}
-        on:click={handleMinusClick}
+        on:click={() => handleRatingClick(-1)}
         disabled={submitting}
         title="Negative feedback"
       >−</button>
       <button
         class="fb-btn plus"
         class:active={currentRating === 1}
-        on:click={handlePlusClick}
+        on:click={() => handleRatingClick(1)}
         disabled={submitting}
         title="Positive feedback"
       >+</button>
@@ -149,10 +141,26 @@
       </div>
     {/if}
   {/if}
+  {#if error}
+    <p class="feedback-error" role="alert">{error}</p>
+  {/if}
 </div>
 
 <style>
+  .feedback-error {
+    flex-basis: 100%;
+    overflow-wrap: anywhere;
+    margin: 0;
+    color: #dc2626;
+    font-size: 0.75rem;
+  }
+
+  :global(.dark) .feedback-error {
+    color: #fca5a5;
+  }
+
   .feedback-container {
+    max-width: 100%;
     display: flex;
     align-items: center;
     gap: 0.25rem;
@@ -227,7 +235,7 @@
   }
 
   .feedback-input:focus {
-    border-color: var(--accent-color, #3b82f6);
+    border-color: var(--accent-color);
   }
 
   :global(.dark) .feedback-input {
@@ -248,7 +256,7 @@
   }
 
   .submit-btn {
-    background: var(--accent-color, #3b82f6);
+    background: var(--accent-color);
     color: white;
   }
 

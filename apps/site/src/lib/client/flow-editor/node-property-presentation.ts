@@ -4,7 +4,7 @@ import type {
   PropertySchema,
 } from '@metahuman/core/nodes/types'
 
-export type NodePropertyEntry = [key: string, schema: PropertySchema]
+type NodePropertyEntry = [key: string, schema: PropertySchema]
 
 export interface CanvasPropertyGroups {
   primary: NodePropertyEntry[]

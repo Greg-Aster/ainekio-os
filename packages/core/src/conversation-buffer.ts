@@ -86,16 +86,18 @@ export async function admitBufferEntry(username: string, mode: CanonicalBufferMo
 }
 
 /** Called only after the canonical execution has been retired. */
-export async function retireBufferAdmissions(username: string, executionId: string): Promise<void> {
+export async function retireBufferAdmissions(username: string, executionId: string | readonly string[]): Promise<void> {
+  const retiredIds = new Set(typeof executionId === 'string' ? [executionId] : executionId);
+  if (!retiredIds.size) return;
   for (const mode of ['conversation', 'inner', 'robot', 'system', 'terminal'] as const) {
     await withBufferLock(username, mode, 'retire_execution', async () => {
       const file = getBufferPathForUser(username, mode);
       if (!fs.existsSync(file)) return;
       const buffer = JSON.parse(fs.readFileSync(file, 'utf8')) as ConversationBuffer;
       const admissions = normalizeExecutionAdmissions(buffer.executionAdmissions) ?? {};
-      if (!Object.values(admissions).some(receipt => receipt.executionIds.includes(executionId))) return;
+      if (!Object.values(admissions).some(receipt => receipt.executionIds.some(id => retiredIds.has(id)))) return;
       buffer.executionAdmissions = Object.fromEntries(Object.entries(admissions).flatMap(([key, receipt]) => {
-        const executionIds = receipt.executionIds.filter(id => id !== executionId);
+        const executionIds = receipt.executionIds.filter(id => !retiredIds.has(id));
         return executionIds.length ? [[key, { ...receipt, executionIds }]] : [];
       }));
       const temporary = `${file}.${process.pid}.tmp`;

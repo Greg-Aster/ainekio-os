@@ -1,6 +1,5 @@
 import type { TaskType } from './types.js';
 import {
-  AGENT_CATALOG_DEFINITIONS,
   getAgentCatalogDefinition,
   type AgentCatalogLifecycle,
 } from '../agent-catalog-definitions.js';
@@ -22,8 +21,4 @@ export function defaultAgentLifecycle(agentId: string): AgentLifecycleClass {
 
 export function isPersistentService(agentId: string, lifecycle?: AgentLifecycleClass): boolean {
   return lifecycle === 'service' || getAgentCatalogDefinition(agentId)?.lifecycle === 'service';
-}
-
-export function knownAgentIds(): string[] {
-  return Object.keys(AGENT_CATALOG_DEFINITIONS).sort();
 }

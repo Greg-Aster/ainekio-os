@@ -39,7 +39,7 @@ interface Category {
 const categoryConfig: Record<string, { name: string; order: number }> = {
   root: { name: 'Main Guide', order: 0 },
   'getting-started': { name: 'Getting Started', order: 1 },
-  'using-metahuman': { name: 'Using MetaHuman', order: 2 },
+  'using-metahuman': { name: 'Using Ainekio OS', order: 2 },
   'training-personalization': { name: 'Training & Personalization', order: 3 },
   'advanced-features': { name: 'Advanced Features', order: 4 },
   'configuration-admin': { name: 'Configuration & Admin', order: 5 },

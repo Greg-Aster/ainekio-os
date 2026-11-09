@@ -112,13 +112,13 @@ environment before starting that gateway. Without this setting, its adapter
 selects a body only when exactly one robot is connected. With both connected,
 set the desired robot ID and restart the gateway to change the bridge target.
 The Body Control dashboard dropdown selects dashboard commands; it does not
-change this adapter setting. MetaHuman's Observation Session selects a bridge
+change this adapter setting. Ainekio OS's Observation Session selects a bridge
 session, not a robot within a gateway. Local/Remote Bridge selection changes the
 connection route independently of the robot model.
 
 The intended Q6A deployment puts continuous behavior execution and local
-reactions beside Body Control, while MetaHuman supplies higher-level intentions
-and tasks. P4 retains gait timing and servo execution. Currently, MetaHuman's
+reactions beside Body Control, while Ainekio OS supplies higher-level intentions
+and tasks. P4 retains gait timing and servo execution. Currently, Ainekio OS's
 active-task executor still advances program phases and sends perception-driven
 steering updates over the Bridge. Running Body Control on Q6A alone does not
 relocate that executor or establish a fully local behavior loop.
@@ -135,7 +135,7 @@ Generated joint trajectories still use Ainekio's eight-joint `motion_plan_v1`
 contract. The current V2 firmware does not advertise this feature, so its
 selector offers the advertised V2 semantic motions rather than a V1 joint
 trajectory. Twelve-joint freestyle generation requires a corresponding Ainekio
-adapter/firmware contract; changing MetaHuman's servo count cannot provide it.
+adapter/firmware contract; changing Ainekio OS's servo count cannot provide it.
 
 ### Verify Matched Sent Action
 

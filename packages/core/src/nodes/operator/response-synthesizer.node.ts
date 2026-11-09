@@ -157,25 +157,6 @@ const execute: NodeExecutor = async (inputs, context, properties = {}) => {
     }
   }
 
-  // Check if scratchpad input has the SkillExecutor output
-  if (scratchpadInput) {
-    if (scratchpadInput.finalResponse) {
-      console.log(`[ResponseSynthesizer] ✅ Found finalResponse in scratchpad (SkillExecutor output)`);
-      return {
-        response: scratchpadInput.finalResponse,
-        skillExecutorOutput: true,
-      };
-    }
-
-    if (scratchpadInput.outputs && scratchpadInput.outputs.response) {
-      console.log(`[ResponseSynthesizer] ✅ Found response in scratchpad.outputs (SkillExecutor output)`);
-      return {
-        response: scratchpadInput.outputs.response,
-        skillExecutorOutput: true,
-      };
-    }
-  }
-
   // Extract loop result or scratchpad
   let loopResult = goalInput || inputs.loopResult || {};
 
@@ -850,7 +831,7 @@ export const ResponseSynthesizerNode: NodeDefinition = defineNode({
   name: 'Response Synthesizer',
   category: 'operator',
   inputs: [
-    { name: 'goal', type: 'string', optional: true },
+    { name: 'goal', type: 'any', optional: true },
     { name: 'scratchpad', type: 'array', optional: true },
     { name: 'context', type: 'context', optional: true },
     { name: 'persona', type: 'object', optional: true, description: 'Raw persona object (values, personality, identity)' },

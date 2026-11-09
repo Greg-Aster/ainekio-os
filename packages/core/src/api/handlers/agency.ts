@@ -7,46 +7,7 @@
 
 import type { UnifiedRequest, UnifiedResponse } from '../types.js';
 import { successResponse } from '../types.js';
-import {
-  listDesiresByStatus,
-  listAllDesires,
-  loadDesire,
-  saveDesire,
-  deleteDesire,
-  moveDesire,
-  saveDesireManifest,
-  addScratchpadEntryToFolder,
-  loadExecutionAttempts,
-  loadExecutionAttempt,
-  generateDesireId,
-  initializeDesireMetrics,
-  initializeScratchpadSummary,
-  initializeStageIterations,
-  loadConfig,
-  statusToStage,
-  allowedOwnerAdvanceTargets,
-  canOwnerAdvanceDesire,
-  allowedOwnerResetTargets,
-  canOwnerResetDesireTo,
-  validateDesireForUserApproval,
-  statusesForDesireGroup,
-  isDesireStatus,
-  isActiveDesire,
-  isOpenDesire,
-  approveDesireForExecution,
-  archiveCurrentDesireCycle,
-  applyDesireOutcomeReview,
-  generateOutcomeReviewId,
-  type Desire,
-  type DesireExecution,
-  type DesireOutcomeReview,
-  type DesireStatus,
-  type DesireGoalType,
-  type DesireStage,
-  type ClarifyingAnswer,
-  type DesireStatusGroup,
-} from '../../agency/index.js';
-import { proposalEvents } from '../../active-operator/index.js';
+import { listDesiresByStatus, listAllDesires, loadDesire, saveDesire, deleteDesire, moveDesire, saveDesireManifest, addScratchpadEntryToFolder, loadExecutionAttempts, loadExecutionAttempt, generateDesireId, initializeDesireMetrics, initializeScratchpadSummary, initializeStageIterations, loadConfig, statusToStage, allowedOwnerAdvanceTargets, canOwnerAdvanceDesire, allowedOwnerResetTargets, canOwnerResetDesireTo, validateDesireForUserApproval, statusesForDesireGroup, isDesireStatus, isActiveDesire, isOpenDesire, approveDesireForExecution, archiveCurrentDesireCycle, applyDesireOutcomeReview, generateOutcomeReviewId, type Desire, type DesireOutcomeReview, type DesireStatus, type DesireGoalType, type DesireStage, type ClarifyingAnswer, type DesireStatusGroup } from '../../agency/index.js';
 import { audit } from '../../audit.js';
 import {
   submitInnerDialogue,
@@ -627,13 +588,6 @@ export async function handleApproveDesire(req: UnifiedRequest): Promise<UnifiedR
       },
     });
 
-    proposalEvents.emit('proposal-resolved', {
-      username: user.username,
-      proposalId: id,
-      response: 'approved',
-      taskType: 'desire_execute',
-    });
-
     let executionTaskId: string | undefined;
     if (desire.plan?.steps?.length) {
       const task = await submitDesireAgent({
@@ -958,151 +912,6 @@ export async function handleGetDesireExecutions(req: UnifiedRequest): Promise<Un
 }
 
 /**
- * POST /api/agency/desires/:id/retry - Retry a failed desire
- *
- * This triggers the iterative refinement flow:
- * 1. Moves desire to 'planning' status
- * 2. Preserves failure context (outcomeReview, lessons learned)
- * 3. Planner will see the failure context and create an improved plan
- */
-export async function handleRetryDesire(req: UnifiedRequest): Promise<UnifiedResponse> {
-  const { user, params } = req;
-
-  if (!user.isAuthenticated) {
-    return {
-      status: 401,
-      error: 'Authentication required to retry desires.',
-    };
-  }
-
-  if (user.role !== 'owner') {
-    return {
-      status: 403,
-      error: 'Owner role required to retry desires.',
-    };
-  }
-
-  const id = params?.id;
-  if (!id) {
-    return {
-      status: 400,
-      error: 'Desire ID is required',
-    };
-  }
-
-  try {
-    const desire = await loadDesire(id, user.username);
-    if (!desire) {
-      return {
-        status: 404,
-        error: 'Desire not found',
-      };
-    }
-
-    const now = new Date().toISOString();
-    const oldStatus = desire.status;
-
-    const retryableStatuses: DesireStatus[] = [
-      'awaiting_review', 'needs_attention', 'failed', 'completed', 'rejected', 'abandoned',
-    ];
-    if (!retryableStatuses.includes(oldStatus)) {
-      return {
-        status: 400,
-        error: `Cannot retry desire in '${oldStatus}' status. Retryable statuses: ${retryableStatuses.join(', ')}`,
-      };
-    }
-
-    let critique = desire.userCritique || '';
-    const review = desire.outcomeReview;
-    if (review) {
-      const critiqueParts = [
-        '=== RETRY REQUESTED BY USER ===',
-        '',
-        `Previous Outcome (${review.reviewedAt || 'unknown date'}):`,
-        `- Verdict: ${review.verdict}`,
-        `- Success Score: ${((review.successScore || 0) * 100).toFixed(0)}%`,
-        `- Failure Category: ${review.failureCategory || 'unknown'}`,
-      ];
-
-      if (review.errorType) {
-        critiqueParts.push(`- Error Type: ${review.errorType}`);
-      }
-      if (review.reasoning) {
-        critiqueParts.push('', `Reasoning: ${review.reasoning}`);
-      }
-      if (review.lessonsLearned?.length) {
-        critiqueParts.push('', 'Lessons Learned:');
-        review.lessonsLearned.forEach(lesson => critiqueParts.push(`  - ${lesson}`));
-      }
-      if (review.nextAttemptSuggestions?.length) {
-        critiqueParts.push('', 'Suggestions for Next Attempt:');
-        review.nextAttemptSuggestions.forEach(suggestion => critiqueParts.push(`  - ${suggestion}`));
-      }
-      if (review.isFixableBug && review.suggestedFix) {
-        critiqueParts.push('', `SYSTEM BUG DETECTED: ${review.suggestedFix}`);
-      }
-
-      critique = critiqueParts.join('\n');
-    }
-
-    const failCount = desire.metrics?.executionFailCount || 0;
-    const updatedDesire: Desire = {
-      ...archiveCurrentDesireCycle(desire),
-      status: 'planning',
-      userCritique: critique,
-      updatedAt: now,
-      currentStage: 'planning',
-      metrics: {
-        ...desire.metrics,
-        userCritiqueCount: (desire.metrics?.userCritiqueCount || 0) + 1,
-        lastActivityAt: now,
-      },
-    };
-
-    await moveDesire(updatedDesire, oldStatus, 'planning', user.username);
-    const planningTask = await submitDesireAgent({
-      operation: 'plan',
-      username: user.username,
-      desireId: id,
-      source: 'user',
-      idempotencyKey: `desire-plan:${id}:owner-retry:${now}`,
-      metadata: { producer: 'desire-owner-retry' },
-    });
-
-    audit({
-      category: 'agent',
-      level: 'info',
-      event: 'desire_retry',
-      actor: user.username,
-      details: {
-        desireId: id,
-        title: desire.title,
-        oldStatus,
-        newStatus: 'planning',
-        attemptNumber: failCount + 1,
-        failureCategory: review?.failureCategory,
-        wasFixableBug: review?.isFixableBug,
-        reason: 'user_retry',
-      },
-    });
-
-    return successResponse({
-      success: true,
-      desire: updatedDesire,
-      message: `Retrying "${desire.title}" (attempt #${failCount + 1}). Moved to planning with failure context.`,
-      attemptNumber: failCount + 1,
-      failureCategory: review?.failureCategory,
-      taskId: planningTask.id,
-    });
-  } catch (error) {
-    return {
-      status: 500,
-      error: (error as Error).message,
-    };
-  }
-}
-
-/**
  * POST /api/agency/desires/:id/advance - Advance a desire to a requested status.
  */
 export async function handleAdvanceDesire(req: UnifiedRequest): Promise<UnifiedResponse> {
@@ -1327,13 +1136,6 @@ export async function handleAnswerDesireQuestions(req: UnifiedRequest): Promise<
         answerCount: formattedAnswers.length,
         questionsCount: desire.clarifyingQuestions.questions.length,
       },
-    });
-
-    proposalEvents.emit('proposal-resolved', {
-      username: user.username,
-      proposalId: id,
-      response: 'questions_answered',
-      taskType: 'desire_plan',
     });
 
     return successResponse({
@@ -1745,15 +1547,6 @@ export async function handleDesireFeedback(req: UnifiedRequest): Promise<Unified
         })
       : undefined;
 
-    if (shouldTriggerPipeline) {
-      proposalEvents.emit('proposal-resolved', {
-        username: user.username,
-        proposalId: id,
-        response: 'feedback_provided',
-        taskType: 'desire_plan',
-      });
-    }
-
     return successResponse({
       success: true,
       desire: updatedDesire,
@@ -1846,13 +1639,6 @@ export async function handleReadyToPlanDesire(req: UnifiedRequest): Promise<Unif
         title: desire.title,
         hadQuestions: !!desire.clarifyingQuestions?.questions?.length,
       },
-    });
-
-    proposalEvents.emit('proposal-resolved', {
-      username: user.username,
-      proposalId: id,
-      response: 'ready_to_plan',
-      taskType: 'desire_plan',
     });
 
     return successResponse({

@@ -22,7 +22,7 @@ export interface SecurityPolicy {
   sessionId?: string;
 }
 
-export interface SecurityPolicyResponse {
+interface SecurityPolicyResponse {
   success: boolean;
   policy: SecurityPolicy & {
     isReadOnly: boolean;
@@ -34,23 +34,7 @@ export interface SecurityPolicyResponse {
 // Core policy store
 export const policyStore = writable<SecurityPolicy | null>(null);
 
-// Loading state
-export const policyLoading = writable<boolean>(true);
-
-// Error state
-export const policyError = writable<string | null>(null);
-
 // Derived stores for common checks
-export const isReadOnly = derived(
-  policyStore,
-  ($policy) => $policy ? !$policy.canWriteMemory : false
-);
-
-export const canUseOperator = derived(
-  policyStore,
-  ($policy) => $policy?.canUseOperator ?? true
-);
-
 export const canWriteMemory = derived(
   policyStore,
   ($policy) => $policy?.canWriteMemory ?? true
@@ -68,17 +52,12 @@ export const currentMode = derived(
 
 export function clearSecurityPolicy(): void {
   policyStore.set(null);
-  policyError.set(null);
-  policyLoading.set(false);
 }
 
 /**
  * Fetch the current security policy from the API
  */
 export async function fetchSecurityPolicy(): Promise<void> {
-  policyLoading.set(true);
-  policyError.set(null);
-
   try {
     const res = await apiFetch('/api/security/policy', {
       cache: 'no-store',
@@ -97,9 +76,6 @@ export async function fetchSecurityPolicy(): Promise<void> {
     }
   } catch (error) {
     console.error('[security-policy] Failed to fetch policy:', error);
-    policyError.set((error as Error).message);
     policyStore.set(null);
-  } finally {
-    policyLoading.set(false);
   }
 }

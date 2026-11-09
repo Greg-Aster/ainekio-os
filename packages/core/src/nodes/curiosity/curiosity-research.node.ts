@@ -16,7 +16,7 @@ interface PriorResearchInput {
   completedAt: string
 }
 
-export interface CuriosityResearchNodeDependencies {
+interface CuriosityResearchNodeDependencies {
   callModel: typeof callLLM
   search: typeof queryIndexWithReconciliation
 }
@@ -123,7 +123,7 @@ const inputExecute = async (_inputs: Record<string, unknown>, context: NodeExecu
   }
 }
 
-export async function executeCuriosityResearch(
+async function executeCuriosityResearch(
   inputs: Record<string, unknown>,
   context: NodeExecutionContext,
   properties: Record<string, unknown> = {},

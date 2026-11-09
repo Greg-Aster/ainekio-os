@@ -12,7 +12,6 @@ import { successResponse } from '../types.js';
 type AudioFormat = 'webm' | 'wav' | 'mp3';
 
 let transcribeAudio: ((buf: Buffer, format: AudioFormat) => Promise<string>) | null = null;
-let saveVoiceSample: ((buf: Buffer, transcript: string, duration: number, quality: number, format: string) => void) | null = null;
 
 async function ensureImports(): Promise<boolean> {
   if (transcribeAudio !== null) return true;
@@ -20,7 +19,6 @@ async function ensureImports(): Promise<boolean> {
   try {
     const sttModule = await import('../../stt.js');
     transcribeAudio = sttModule.transcribeAudio;
-    saveVoiceSample = null;
     return true;
   } catch {
     return false;
@@ -40,8 +38,6 @@ export async function handleStt(req: UnifiedRequest): Promise<UnifiedResponse> {
     }
 
     const format = (req.query?.format as AudioFormat) || 'webm';
-    const collect = req.query?.collect === '1';
-    const durMsParam = req.query?.dur;
 
     // Body should be raw binary buffer
     const buf = req.rawBody;
@@ -51,18 +47,6 @@ export async function handleStt(req: UnifiedRequest): Promise<UnifiedResponse> {
     }
 
     const transcript = await transcribeAudio!(buf, format);
-
-    if (collect && !transcript.startsWith('[Mock Transcription]')) {
-      try {
-        const durationSec = durMsParam
-          ? Math.max(0.1, parseFloat(durMsParam) / 1000)
-          : Math.max(0.1, (buf.length * 8) / (24 * 1024));
-        const quality = Math.min(1.0, (buf.length / 50000) * 0.5 + 0.5);
-        saveVoiceSample?.(Buffer.from(buf), transcript, durationSec, quality, format);
-      } catch {
-        // Ignore sample collection errors
-      }
-    }
 
     return successResponse({ transcript });
   } catch (error) {

@@ -69,7 +69,6 @@ globalThis.fetch = async (input, init) => {
     requested?.();
     return new Response(body);
   }
-  if (String(input).endsWith('/api/pause-state')) return Response.json({});
   throw new Error(`Unexpected preview request: ${input}`);
 };
 

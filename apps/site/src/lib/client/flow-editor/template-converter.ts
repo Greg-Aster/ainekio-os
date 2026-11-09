@@ -50,7 +50,7 @@ export interface SvelteFlowGraph {
 export { DEFAULT_GRAPH_SCHEDULER };
 
 const schemaCache: Map<string, NodeSchema> = new Map();
-let schemaLoadPromise: Promise<void> | null = null;
+let schemaLoadPromise: Promise<NodeSchema[]> | null = null;
 
 function cacheSchemas(schemas: NodeSchema[]): void {
   schemaCache.clear();
@@ -107,17 +107,16 @@ export function materializeSchemaProperties(
 /**
  * Load node schemas from the API-backed core schema owner.
  */
-export async function loadSchemas(): Promise<void> {
-  if (schemaCache.size > 0) return;
+export async function loadSchemas(): Promise<NodeSchema[]> {
+  if (schemaCache.size > 0) return [...new Set(schemaCache.values())];
   if (schemaLoadPromise) return schemaLoadPromise;
 
   schemaLoadPromise = (async () => {
     const response = await apiFetch('/api/node-schemas');
-    if (!response.ok) {
-      throw new Error(`Failed to load node schemas: ${response.statusText}`);
-    }
-
     const data = await response.json();
+    if (!response.ok) {
+      throw new Error(data.error || `Failed to load node schemas: ${response.status} ${response.statusText}`);
+    }
     const schemas = Array.isArray(data) ? data : data.schemas;
     if (!Array.isArray(schemas)) {
       throw new Error('Invalid node schema response');
@@ -125,6 +124,7 @@ export async function loadSchemas(): Promise<void> {
 
     cacheSchemas(schemas as NodeSchema[]);
     console.log(`[template-converter] Loaded ${schemas.length} schemas`);
+    return schemas as NodeSchema[];
   })().finally(() => {
     schemaLoadPromise = null;
   });
@@ -294,6 +294,3 @@ export function serializeGraphForPersistence(sfGraph: SvelteFlowGraph): SvelteFl
     viewport: sfGraph.viewport,
   };
 }
-
-// Legacy export alias for compatibility
-export const convertLiteGraphToSvelteFlow = enrichGraphWithSchemas;

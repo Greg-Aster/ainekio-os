@@ -56,14 +56,14 @@ export type PendingCuriosityQuestion = Pick<
   status: 'pending'
 }
 
-export interface CuriosityResearchFinding {
+interface CuriosityResearchFinding {
   topics: string[]
   sourceMemoryIds: string[]
   sourceResearchIds: string[]
   summary: string
 }
 
-export interface PreparedCuriosityResearch extends CuriosityResearchFinding {
+interface PreparedCuriosityResearch extends CuriosityResearchFinding {
   schemaVersion: typeof RESEARCH_SCHEMA_VERSION
   kind: 'curiosity-research'
   id: string
@@ -74,7 +74,7 @@ export interface PreparedCuriosityResearch extends CuriosityResearchFinding {
   preparedAt: string
 }
 
-export interface CompletedCuriosityResearch extends Omit<PreparedCuriosityResearch, 'status'> {
+interface CompletedCuriosityResearch extends Omit<PreparedCuriosityResearch, 'status'> {
   status: 'completed'
   completedAt: string
   memoryEventId?: string
@@ -153,7 +153,7 @@ function parseFinding(record: Record<string, unknown>): CuriosityResearchFinding
   }
 }
 
-export function parseCuriosityResearchRecord(value: unknown): CuriosityResearchRecord {
+function parseCuriosityResearchRecord(value: unknown): CuriosityResearchRecord {
   const record = requireObject(value, 'Curiosity research record')
   if (record.schemaVersion !== RESEARCH_SCHEMA_VERSION) {
     throw new Error(`Unsupported curiosity research schema version: ${String(record.schemaVersion)}`)

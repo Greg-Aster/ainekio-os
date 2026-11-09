@@ -32,8 +32,7 @@ on-demand agents and terminal sessions. Use `--app-only` below when another
 lifecycle owns the services. Full `./stop.sh` first asks the launcher to stop only
 its application and unfinished startup commands, then dispatches service stops
 once. The internal `USR2` signal selects that existing application-only cleanup.
-The full command also removes the optional PM2 registration. Each service releases
-its own processes and state; the scripts do not
+Each service releases its own processes and state; the scripts do not
 rewrite agent registries or scan for service names to kill. Failed owners are
 reported, remaining shutdown steps run, and full shutdown returns a failure code.
 
@@ -78,17 +77,7 @@ pnpm --dir apps/site dev
 The development command runs only the Site dev server. Start optional background
 services separately with `./bin/start-services --background` when needed.
 
-## Background operation
-
-Install PM2 explicitly, then run:
-
-```bash
-./bin/start-pm2
-./bin/stop-pm2
-```
-
-PM2 supervises the same canonical `start.sh` path as one forked instance. It
-does not maintain a second service launcher or cluster multiple web runtimes.
+## Mobile
 
 The maintained mobile shell is `apps/react-native`; its build and release
 commands are documented in that package.

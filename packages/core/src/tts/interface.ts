@@ -3,6 +3,8 @@
  * Common interface for all text-to-speech providers
  */
 
+import type { SpeechChunkPolicy } from './speech-chunks.js';
+
 export interface TTSSynthesizeOptions {
   /** AbortSignal for cancellation */
   signal?: globalThis.AbortSignal;
@@ -14,8 +16,10 @@ export interface TTSSynthesizeOptions {
   langCode?: string;
   /** Correlation id retained across synthesis and playback telemetry */
   requestId?: string;
-  /** Pitch shift in semitones (RVC only, -12 to +12) */
+  /** Pitch shift in semitones (-12 to +12) */
   pitchShift?: number;
+  /** Optional phrase chunking policy for streaming synthesis */
+  chunkPolicy?: SpeechChunkPolicy;
   /** Additional provider-specific options */
   [key: string]: any;
 }
@@ -65,22 +69,6 @@ export interface PiperConfig {
   outputFormat: 'wav';
 }
 
-export interface RVCConfig {
-  referenceAudioDir: string;
-  modelsDir: string;
-  speakerId: string;
-  pitchShift: number;
-  speed: number;
-  outputFormat: 'wav';
-  autoFallbackToPiper: boolean;
-  // Inference parameters for voice quality tuning
-  indexRate?: number;        // Voice retrieval strength (0.0-1.0, default: 1.0)
-  volumeEnvelope?: number;    // RMS mix rate (0.0-1.0, default: 0.0)
-  protect?: number;           // Protect voiceless consonants (0.0-0.5, default: 0.15)
-  f0Method?: string;          // Pitch detection method (default: "rmvpe")
-  device?: 'cuda' | 'cpu';    // Device for inference (default: "cuda")
-}
-
 export interface KokoroConfig {
   langCode: string;           // Language code (e.g., 'a' for auto, 'en', 'ja', 'zh')
   voice: string;              // Built-in voice name (e.g., 'af_heart', 'af_bella')
@@ -93,9 +81,8 @@ export interface KokoroConfig {
 }
 
 export interface TTSConfig {
-  provider: 'piper' | 'rvc' | 'kokoro';
+  provider: 'piper' | 'kokoro';
   piper: PiperConfig;
-  rvc?: RVCConfig;
   kokoro?: KokoroConfig;
 }
 

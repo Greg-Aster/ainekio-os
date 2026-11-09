@@ -455,7 +455,16 @@ export function projectRobotStatusContext(value: unknown, includeAgencyPurpose =
           updatedAt: task.updatedAt,
         }
       : null,
-    parkedGoals: value.parkedGoals ?? [],
+    parkedGoals: Array.isArray(value.parkedGoals)
+      ? includeAgencyPurpose
+        ? value.parkedGoals
+        : value.parkedGoals.filter(isRecord).map(goal => ({
+            executionId: goal.executionId,
+            ...(goal.objectiveId !== undefined ? { objectiveId: goal.objectiveId } : {}),
+            objective: goal.objective,
+            updatedAt: goal.updatedAt,
+          }))
+      : [],
     // Goals are projected from durable execution at read time. The prose was
     // authored against the saved snapshot, not the live evidence beside it.
     situation: situation ? { currentGoal: situation.currentGoal, currentIntent: situation.currentIntent } : null,
@@ -508,7 +517,9 @@ export function loadRobotStatus(username: string): RobotStatusSnapshot | null {
 
 function currentGoal(task: RobotStatusTask | null): string {
   const active = task && (task.executionStatus === undefined || ['running', 'waiting'].includes(task.executionStatus))
-    && !task.decision.objectiveComplete && !['abandon', 'cancel', 'complete', 'failed'].includes(task.decision.outcome)
+    && !task.decision.objectiveComplete
+    && !(task.decision.outcome === 'report' && task.decision.continuationPolicy === 'none')
+    && !['abandon', 'cancel', 'complete', 'failed'].includes(task.decision.outcome)
   return active ? task.objective : ''
 }
 

@@ -492,5 +492,3 @@ export const ResponseLLMNode: NodeDefinition = defineNode({
     return { ...result, usedBigBrother: false };
   },
 });
-
-export default ResponseLLMNode;

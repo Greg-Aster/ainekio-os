@@ -60,7 +60,6 @@ export function withUserContext<T>(
   fn: () => T | Promise<T>
 ): Promise<T> {
 
-
   // Safety check: ensure username is defined (all users must be authenticated)
   if (!user.username) {
     const error = new Error(`Invalid user context: username is undefined for user ${user.userId} with role ${user.role}`);
@@ -80,7 +79,6 @@ export function withUserContext<T>(
   const profileUser =
     user.activeProfile && user.role !== 'owner' ? user.activeProfile : user.username;
 
-  
   const profilePaths = getProfilePaths(profileUser);
 
   const context: UserContext = {
@@ -92,20 +90,6 @@ export function withUserContext<T>(
     activeProfile: user.activeProfile,
   };
 
-  // Log context creation for audit trail
-  audit({
-    category: 'system',
-    level: 'info',
-    event: 'user_context_created',
-    details: { 
-      userId: user.userId, 
-      username: user.username, 
-      role: user.role,
-      activeProfile: user.activeProfile,
-      profilePath: profilePaths.root
-    },
-    actor: user.username
-  });
 
   return contextStorage.run(context, async () => {
     try {

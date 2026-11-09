@@ -67,16 +67,6 @@ export async function resolveCuriosityResponse(
   if (!resolution.changed) throw new Error(`Curiosity question is already resolved: ${questionId}`);
 }
 
-async function emitProposalResolved(event: {
-  username: string;
-  proposalId: string;
-  response: string;
-  taskType: string;
-}): Promise<void> {
-  const { proposalEvents } = await import('../../active-operator/operator-proposals.js');
-  proposalEvents.emit('proposal-resolved', event);
-}
-
 export const ResponseActionRouterNode: NodeDefinition = defineNode({
   id: 'response_action_router',
   name: 'Response Action Router',
@@ -278,14 +268,6 @@ async function handleDesireRejection(
       metadata: { producer: 'response-pipeline' },
     });
 
-    // Notify observers after the coordinator accepts re-planning.
-    await emitProposalResolved({
-      username: userId,
-      proposalId: desire.id,
-      response: 'feedback_provided',
-      taskType: 'desire_plan',
-    });
-
     return {
       actionTaken: 'Saved feedback and triggered re-planning',
       pipelineTriggered,
@@ -419,12 +401,6 @@ async function handleClarifyingQuestion(
       idempotencyKey: `desire-plan:${desire.id}:${desire.updatedAt}`,
       metadata: { producer: 'response-pipeline' },
     });
-    await emitProposalResolved({
-      username: userId,
-      proposalId: desire.id,
-      response: 'questions_answered',
-      taskType: 'desire_plan',
-    });
   }
 
   return {
@@ -484,12 +460,6 @@ async function handleDesirePlan(
       nextStatus = 'approved';
       pipelineTriggered = true;
       actionTaken = 'Plan approved and execution queued';
-      await emitProposalResolved({
-        username: userId,
-        proposalId: desire.id,
-        response: 'approved',
-        taskType: 'desire_execute',
-      });
       break;
 
     case 'revise_plan':
@@ -534,13 +504,6 @@ async function handleDesirePlan(
         idempotencyKey: `desire-plan:${desire.id}:${desire.updatedAt}`,
         metadata: { producer: 'response-pipeline' },
       });
-
-      await emitProposalResolved({
-        username: userId,
-        proposalId: desire.id,
-        response: 'revise_requested',
-        taskType: 'desire_plan',
-      });
       break;
 
     case 'abandon_plan':
@@ -581,5 +544,3 @@ async function handleDesirePlan(
     responseBuffer,
   };
 }
-
-export default ResponseActionRouterNode;

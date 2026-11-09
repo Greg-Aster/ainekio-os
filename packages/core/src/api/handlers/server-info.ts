@@ -78,7 +78,7 @@ export async function handleGetServerInfo(): Promise<UnifiedResponse> {
           title: 'Connect from Mobile Device',
           steps: [
             'Make sure your mobile device is on the same WiFi network',
-            'Open the MetaHuman app and go to Settings > Server',
+            'Open the Ainekio OS app and go to Settings > Server',
             `Enter the server URL: http://${primaryIP || 'YOUR_IP'}:${port}`,
             'Tap "Test Connection" to verify',
             'Save the server configuration',

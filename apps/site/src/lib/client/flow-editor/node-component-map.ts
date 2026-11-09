@@ -43,21 +43,3 @@ const categoryToComponent: Record<NodeCategory, string> = {
 export function getNodeComponentType(category: NodeCategory, _nodeType?: string): string {
   return categoryToComponent[category] || 'genericNode';
 }
-
-/**
- * Get component type from full node type string (e.g., "cognitive/user_input")
- */
-export function getComponentTypeFromNodeType(nodeType: string, category?: NodeCategory): string {
-  if (category) {
-    return getNodeComponentType(category);
-  }
-  // Fallback: try to infer from type prefix
-  const prefix = nodeType.split('/')[0];
-  if (prefix && prefix in categoryToComponent) {
-    return categoryToComponent[prefix as NodeCategory];
-  }
-  return 'genericNode';
-}
-
-// Preserve this export for callers while sharing Core's browser-safe palette.
-export { categoryColors } from '@metahuman/core/nodes/types';

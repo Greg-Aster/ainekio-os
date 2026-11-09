@@ -525,10 +525,10 @@ export async function ensureBackendRunning(
 }
 
 /** Prepare the shared host service for selected local deployments; never own its shutdown. */
-export async function startAssignedModelServices(username: string, roles?: ModelRole[]): Promise<void> {
+export async function startAssignedModelServices(username: string, roles?: ModelRole[], cognitiveMode?: string): Promise<void> {
   const { resolveAssignedModels } = await import('./model-resolver.js');
   const { readRecordedCognitiveMode } = await import('./cognitive-mode.js');
-  const selected = resolveAssignedModels(username, readRecordedCognitiveMode(username), roles);
+  const selected = resolveAssignedModels(username, cognitiveMode ?? readRecordedCognitiveMode(username), roles);
   const config = loadBackendConfig();
   const llamaModels = selected.filter(model => model.provider === 'llama-cpp').map(model => ({
     endpoint: model.options.endpoint ?? config.llamaCpp.endpoint, model: model.model,

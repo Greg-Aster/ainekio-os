@@ -251,19 +251,9 @@ owns this method; no separate per-repair registry is needed.
 
 ## Open boundaries and historical evidence
 
-The pre-consolidation qualification (retained locally)
-and troubleshooting diary (retained locally)
-retain earlier findings and owner decisions. They are not a fresh fault list or
-today's work order. The October 25 autonomy (local evidence)
-and queue (local evidence) records give more specific
-repair evidence with their own limits. Complete companion qualification remains
-unestablished by this documentation edit.
-
-The [Reactive-mode decision](COMPANION_BEHAVIOR.md#robot-autonomy-modes--owner-defined-behavior)
-retains physical-event reactions and excludes self-directed activity. Its routing
-checks are the existing body-event/wake suites above; source documentation alone
-does not establish the live response.
-
-[Ainekio's authority map and amendments](../../../Ainekio/docs/README.md)
-distinguish retained specification clauses, approved replacements and V2 hardware.
-Source changes do not prove installed wiring, calibration or electrical performance.
+Earlier qualification and troubleshooting diaries (retained locally in `history/`)
+record dated findings and owner decisions; they are not today's fault list or a
+standing work order. The [Reactive-mode contract](COMPANION_BEHAVIOR.md#robot-autonomy-modes--owner-defined-behavior)
+is covered in software by the body-event and wake suites above.
+[Ainekio's authority map](../../../Ainekio/docs/README.md) owns V2 hardware and
+protocol specifications.

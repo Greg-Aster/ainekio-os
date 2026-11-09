@@ -48,7 +48,12 @@ export function updateOnboardingState(
 
     // Merge updates with existing state
     const currentState = user.metadata?.onboardingState || { ...DEFAULT_ONBOARDING_STATE };
-    const newState: OnboardingState = { ...currentState, ...updates };
+    const newState: OnboardingState = {
+      ...currentState,
+      ...updates,
+      stepsCompleted: { ...currentState.stepsCompleted, ...updates.stepsCompleted },
+      dataCollected: { ...currentState.dataCollected, ...updates.dataCollected },
+    };
 
     // Persist onboarding state in user metadata
     updateUserMetadata(userId, {
@@ -78,48 +83,6 @@ export function updateOnboardingState(
       details: { userId, error: (error as Error).message },
       actor,
     });
-    return false;
-  }
-}
-
-/**
- * Mark a specific step as completed
- */
-export function completeStep(
-  userId: string,
-  step: keyof OnboardingState['stepsCompleted'],
-  actor: string = 'system'
-): boolean {
-  try {
-    const state = getOnboardingState(userId);
-    if (!state) {
-      return false;
-    }
-
-    const updates: Partial<OnboardingState> = {
-      stepsCompleted: {
-        ...state.stepsCompleted,
-        [step]: true,
-      },
-    };
-
-    // Auto-advance to next step
-    const stepOrder: (keyof OnboardingState['stepsCompleted'])[] = [
-      'welcome',
-      'identity',
-      'personality',
-      'context',
-      'goals',
-      'review',
-    ];
-    const currentIndex = stepOrder.indexOf(step);
-    if (currentIndex !== -1 && currentIndex < stepOrder.length - 1) {
-      updates.currentStep = currentIndex + 2; // +2 because steps are 1-indexed
-    }
-
-    return updateOnboardingState(userId, updates, actor);
-  } catch (error) {
-    console.error('[onboarding] Failed to complete step:', error);
     return false;
   }
 }

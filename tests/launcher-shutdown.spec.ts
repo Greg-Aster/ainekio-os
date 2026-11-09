@@ -199,7 +199,6 @@ test('full shutdown stops the launcher without dispatching service shutdown twic
   for (const name of ['mh', 'llama-cpp-services', 'stop-voice-server', 'stop-event-bus', 'node']) {
     fs.writeFileSync(path.join(fixture, 'bin', name), `#!/bin/sh\necho '${name}' "$@" >> "$FIXTURE_ROOT/calls"\n`, { mode: 0o755 })
   }
-  fs.writeFileSync(path.join(fixture, 'bin/pm2'), '#!/bin/sh\nexit 1\n', { mode: 0o755 })
   const traps = source.split('\n').filter(line => /^trap .* (EXIT|INT|TERM HUP|USR2)$/.test(line)).join('\n')
   fs.writeFileSync(path.join(fixture, 'start.sh'), `#!/bin/bash
 set -eu

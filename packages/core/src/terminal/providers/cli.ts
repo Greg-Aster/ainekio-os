@@ -40,6 +40,7 @@ export interface BigBrotherCLIInvocation {
   stdin: string
   resultFile?: string
   tempDir: string
+  cwd?: string
   timeout: number
   appServer?: { model?: string; reasoning: string; cwd?: string; ephemeral?: boolean }
 }
@@ -130,6 +131,60 @@ export function parseBigBrotherTerminalEvent(
     return { displayLines: [`[Claude] ${event.type || 'event'}`], reasoningSteps: [] }
   }
 
+  if (provider === 'gemini') {
+    if (event.event === 'init') {
+      const modelName = event.init?.model || 'gemini'
+      return {
+        displayLines: [`[Gemini] Session ${event.conversation_id || 'initialized'} (${modelName})`],
+        threadId: typeof event.conversation_id === 'string' ? event.conversation_id : undefined,
+        reasoningSteps: [],
+      }
+    }
+
+    if (event.event === 'step_update' && event.step_update && typeof event.step_update === 'object') {
+      const update = event.step_update as Record<string, any>
+      const displayLines: string[] = []
+      const reasoningSteps: ReasoningStep[] = []
+      if (typeof update.thinking_delta === 'string' && update.thinking_delta.trim()) {
+        displayLines.push(`💭 ${update.thinking_delta}`)
+        reasoningSteps.push(reasoningStep('thought', update.thinking_delta))
+      }
+      if (typeof update.text_delta === 'string' && update.text_delta) {
+        displayLines.push(update.text_delta)
+      }
+      if (Array.isArray(update.tool_calls)) {
+        for (const tool of update.tool_calls) {
+          const toolName = String(tool?.name || 'tool')
+          const input = typeof tool?.args === 'string' ? tool.args : JSON.stringify(tool?.args || {}, null, 2)
+          displayLines.push(`🔧 ${toolName}\n${input}`)
+          reasoningSteps.push(reasoningStep('tool_use', input.slice(0, 1000), toolName))
+        }
+      }
+      return { displayLines, reasoningSteps }
+    }
+
+    if (event.event === 'result') {
+      const res = event.result && typeof event.result === 'object' ? event.result : {}
+      const finalText = typeof res.response === 'string' ? res.response.trim() : ''
+      const error = typeof res.error === 'string'
+        ? res.error
+        : (res.status && res.status !== 'SUCCESS' ? String(res.status) : '')
+      return {
+        displayLines: error
+          ? [`❌ ${error}`]
+          : [finalText || '[Gemini] Completed'],
+        finalText: finalText || undefined,
+        threadId: typeof res.conversation_id === 'string' ? res.conversation_id : undefined,
+        reasoningSteps: [],
+      }
+    }
+
+    if (event.type === 'error' || event.event === 'error') {
+      return { displayLines: [`❌ ${event.message || event.error || 'Gemini error'}`], reasoningSteps: [] }
+    }
+    return { displayLines: [`[Gemini] ${event.event || event.type || 'event'}`], reasoningSteps: [] }
+  }
+
   // Codex has shipped both msg-based and item-based JSONL schemas. Schema
   // drift stays here instead of creating another backend execution path.
   const legacyMessage = event.msg
@@ -202,13 +257,18 @@ export function parseBigBrotherTerminalEvent(
 }
 
 export function providerLabel(provider: TerminalBigBrotherProvider): string {
-  return provider === 'claude-code' ? 'Claude Code' : 'Codex'
+  if (provider === 'claude-code') return 'Claude Code'
+  if (provider === 'gemini') return 'Gemini'
+  return 'Codex'
 }
 
 function providerCommand(provider: TerminalBigBrotherProvider, username?: string): string {
   const config = loadToolExecutorConfig(username)
-  const backend = config.backends[provider] as CLIBackendConfig
-  return backend.command || (provider === 'claude-code' ? 'claude' : 'codex')
+  const backend = config.backends[provider] as CLIBackendConfig | undefined
+  if (backend?.command) return backend.command
+  if (provider === 'claude-code') return 'claude'
+  if (provider === 'gemini') return 'agy'
+  return 'codex'
 }
 
 export function isTerminalBigBrotherProviderInstalled(provider: TerminalBigBrotherProvider, username?: string): boolean {
@@ -285,13 +345,72 @@ export function buildBigBrotherCLIInvocation(
   const bigBrother = options.username
     ? loadFreshOperatorConfig(options.username).bigBrotherMode
     : undefined
-  const model = options.diagnostic?.model || (bigBrother?.provider === provider ? bigBrother.model : undefined)
+  const model = options.diagnostic?.model
+    || options.model
+    || (bigBrother?.provider === provider ? bigBrother.model : undefined)
 
   const tempDir = fs.mkdtempSync(path.join(jobRoot, 'metahuman-big-brother-cli-'))
   const args = [...(backend.args || [])]
-  const reasoning = options.enableThinking === true || options.diagnostic?.reasoning ? 'high'
+  const configuredEffort = options.reasoningEffort
+    || (bigBrother?.provider === provider ? bigBrother.reasoningEffort : undefined)
+    || backend.reasoningEffort
+  const rawReasoning = options.enableThinking === true || options.diagnostic?.reasoning ? 'high'
     : !options.diagnostic && options.enableThinking === false ? 'none'
-    : (bigBrother?.provider === provider ? bigBrother.reasoningEffort : undefined) || backend.reasoningEffort
+    : configuredEffort
+  const reasoning = provider === 'codex' && model === 'gpt-6.1-sol' && rawReasoning === 'none'
+    ? (configuredEffort && configuredEffort !== 'none' ? configuredEffort : 'low')
+    : rawReasoning
+
+  if (provider === 'gemini') {
+    for (let index = args.length - 1; index >= 0; index--) {
+      const arg = args[index]
+      if (arg === '--print' || arg === '-p' || arg.startsWith('--print=') || arg.startsWith('-p=')) {
+        args.splice(index, 1)
+      } else if (arg === '--effort' || arg === '-e') {
+        args.splice(index, 2)
+      } else if (arg.startsWith('--effort=') || arg.startsWith('-e=')) {
+        args.splice(index, 1)
+      }
+    }
+    ensureArg(args, '--input-format', 'stream-json')
+    ensureArg(args, '--output-format', 'stream-json')
+    ensureArg(args, '--disable-slash-commands')
+    setModelArg(args, model || 'gemini-3.8-flash-low')
+    const geminiEffort = !reasoning || reasoning === 'none' ? 'low' : reasoning
+    args.push('--effort', geminiEffort)
+    const threadId = options.session?.threadId || options.diagnostic?.threadId
+    if (threadId) ensureArg(args, '--resume', threadId)
+
+    if (options.toolAccess === 'read-only' || options.diagnostic?.access === 'read-only') {
+      const skipIndex = args.indexOf('--dangerously-skip-permissions')
+      if (skipIndex >= 0) args.splice(skipIndex, 1)
+      ensureArg(args, '--mode', 'plan')
+      ensureArg(args, '--sandbox')
+    } else if (options.diagnostic || backend.dangerouslySkipPermissions) {
+      ensureArg(args, '--dangerously-skip-permissions')
+    }
+    args.push('--print=')
+
+    let geminiPrompt = prompt
+    try {
+      const imagePaths = materializeCodexImages(tempDir, options)
+      if (imagePaths.length > 0) {
+        geminiPrompt = `${prompt}\n\n[Attached image file(s) on disk — inspect with read_file before answering: ${imagePaths.join(', ')}]`
+      }
+    } catch (error) {
+      fs.rmSync(tempDir, { recursive: true, force: true })
+      throw error
+    }
+
+    return {
+      command: backend.command || 'agy',
+      args,
+      stdin: `${JSON.stringify({ event: 'user', message: { content: geminiPrompt } })}\n`,
+      tempDir,
+      cwd: options.workingDirectory || (options.diagnostic ? undefined : tempDir),
+      timeout: options.diagnostic || options.session ? 0 : options.timeout || backend.timeout || 120000,
+    }
+  }
 
   if (provider === 'codex' && options.modelRequest && !options.diagnostic) {
     const appArgs = ['app-server', '--listen', 'stdio://']

@@ -52,21 +52,13 @@ export async function updateSyncSettings(updates: Partial<SyncSettings>): Promis
   return updated;
 }
 
-/**
- * Reset sync settings to defaults
- */
-export async function resetSyncSettings(): Promise<SyncSettings> {
-  await setSetting(SETTINGS_KEY, DEFAULT_SYNC_SETTINGS);
-  return DEFAULT_SYNC_SETTINGS;
-}
-
-export type NetworkType = 'wifi' | 'cellular' | 'none' | 'unknown';
+type NetworkType = 'wifi' | 'cellular' | 'none' | 'unknown';
 
 /**
  * Get current network connection type
  * Uses navigator.connection API where available
  */
-export async function getNetworkType(): Promise<NetworkType> {
+async function getNetworkType(): Promise<NetworkType> {
   if (typeof navigator === 'undefined') {
     return 'unknown';
   }
@@ -96,7 +88,7 @@ export async function getNetworkType(): Promise<NetworkType> {
 /**
  * Check if sync is currently allowed based on settings and network
  */
-export async function isSyncAllowed(): Promise<{
+async function isSyncAllowed(): Promise<{
   allowed: boolean;
   reason?: string;
 }> {
@@ -137,27 +129,4 @@ export async function canSyncOnLogin(): Promise<boolean> {
 
   const { allowed } = await isSyncAllowed();
   return allowed;
-}
-
-/**
- * Listen for network changes
- * Returns unsubscribe function
- */
-export async function onNetworkChange(
-  callback: (type: NetworkType) => void
-): Promise<() => void> {
-  if (typeof window === 'undefined') {
-    return () => {};
-  }
-
-  const handleOnline = () => getNetworkType().then(callback);
-  const handleOffline = () => callback('none');
-
-  window.addEventListener('online', handleOnline);
-  window.addEventListener('offline', handleOffline);
-
-  return () => {
-    window.removeEventListener('online', handleOnline);
-    window.removeEventListener('offline', handleOffline);
-  };
 }

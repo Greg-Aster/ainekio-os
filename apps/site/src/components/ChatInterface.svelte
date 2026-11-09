@@ -1,22 +1,19 @@
 <script lang="ts">
   import { onMount, beforeUpdate, afterUpdate, onDestroy } from 'svelte';
   import { get } from 'svelte/store';
-  import Thinking from './Thinking.svelte';
+  import type { ResponseEntryReference } from '@metahuman/core/cognitive-graph-contract';
   import TerminalChat from './terminal/TerminalChat.svelte';
   import { reportChatError } from '../lib/client/system-errors';
   import InputArea from './chat/InputArea.svelte';
   import MessageList from './chat/MessageList.svelte';
   import ApprovalPrompt from './ApprovalPrompt.svelte';
-  // Operator proposals are rendered inline by OperatorProposalCard.
-  import { canUseOperator, currentMode, isOwner } from '../stores/security-policy';
-  import { yoloModeStore, statusRefreshTrigger } from '../stores/navigation';
-  import { calculateVoiceVolume } from '../lib/client/utils/audio-utils.js';
+  import { currentMode, isOwner } from '../stores/security-policy';
+  import { yoloModeStore } from '../stores/navigation';
   import { nextSpeechOutputState, speechOutputState, speechOutputSettings, type SpeechOutputState } from '../lib/client/assistant-speech-preference';
   import { useTTS } from '../lib/client/composables/useTTS';
   import { useMicrophone } from '../lib/client/composables/useMicrophone';
   import { useThinkingTrace } from '../lib/client/composables/useThinkingTrace';
   import { useMessages, useActivityTracking, type ChatMessage, type ReasoningStage } from '../lib/client/composables/useMessages';
-  import { forceHealthCheck } from '../lib/client/server-health';
   import { apiEventSource, apiFetch } from '../lib/client/api-config';
   import {
     buildConversationParams,
@@ -25,7 +22,6 @@
     readLlmOptions,
     responsePipelineCardTypeForReply,
   } from '../lib/client/conversation-transport';
-  import { connectProposalsStream, disconnectProposalsStream } from '../stores/proposals';
   import { autonomyModeDefinition, nextAutonomyMode, type AutonomyMode } from '../lib/client/active-operator-modes';
   import { setActiveOperatorMode, triggerManagerSnapshot, useTriggerManager } from '../lib/stores/trigger-manager';
   import { projectBufferFeed, receiveLiveConversation, replaceBufferSlice, type BufferView } from '../lib/client/buffer-feed';
@@ -37,20 +33,15 @@
   // Component state
   let input = '';
   let loading = false;
-  let responsePipelineAbortController: AbortController | null = null; // For cancel button
-  let responsePipelineTaskId: string | null = null;
   let reasoningStages: ReasoningStage[] = [];
   let reasoningDepth: number = 0;
   const reasoningLabels = ['Off', 'Quick', 'Focused', 'Deep'];
   const clampReasoningDepth = (value: number) => Math.max(0, Math.min(reasoningLabels.length - 1, Math.round(value)));
-  let chatResponseStream: EventSource | null = null;
   let activeChatTaskId: string | null = null;
-  let reconcilingChatTaskId: string | null = null;
   let queuedChatStreams = new Map<string, EventSource>();
   let bufferStream: EventSource | null = null;
   // Live workflow replies are local view state, never a conversation buffer or cache.
   let liveConversationMessages: ChatMessage[] = [];
-  let isTabVisible = true;
   // One selection owns all persistent feeds, including Terminal.
   let selectedViews = new Set<BufferView>(['conversation']);
   $: if (terminalSelected) toggleView('terminal', true);
@@ -81,7 +72,6 @@
   let speechPreferenceLoading = true;
   let speechPreferenceError = '';
   $: speechOutputLabel = speechOutput === 'off' ? 'Off' : speechOutput === 'browser' ? 'Browser' : 'Body Control';
-  let yoloMode = false;
   // Active Operator three-state control
   let autonomyMode: AutonomyMode = 'reactive';
   let activeOperatorLoading = false;
@@ -93,16 +83,12 @@
 
   // Initialize TTS composable
   const ttsApi = useTTS();
-  const { isPlaying: ttsIsPlaying, isLoading: ttsIsLoading } = ttsApi;
+  const { isPlaying: ttsIsPlaying } = ttsApi;
 
   // Initialize Messages composable
   // History clearing follows the selected input destination; inference keeps its existing conversation mode.
   const messagesApi = useMessages({
     getMode: () => composeTarget ?? 'conversation',
-    onMessagesChange: (msgs) => {
-      // This handles any side effects when messages change
-      // (currently none needed, but useful for future extensions)
-    },
     onTransientSystemMessage: showTransientSystemMessage,
   });
   const {
@@ -112,7 +98,7 @@
     conversationSessionId
   } = messagesApi;
 
-  $: displayMessages = projectBufferFeed([...$messages, ...liveConversationMessages], selectedViews);
+  $: displayMessages = projectBufferFeed($messages, selectedViews, liveConversationMessages);
 
   function showTransientSystemMessage(message: string) {
     transientStatus = message;
@@ -143,16 +129,20 @@
 
   function pushGeneratedResponse(
     content: string,
-    target: 'conversation' | 'inner' = mode,
+    target: 'conversation' | 'inner',
+    taskId: string,
+    responseEntry?: ResponseEntryReference,
     meta: Record<string, any> = {},
   ) {
     if (typeof content !== 'string' || !content.trim()) return;
-    messagesApi.pushMessage(
-      target === 'inner' ? 'reflection' : 'assistant',
+    liveConversationMessages = receiveLiveConversation(liveConversationMessages, {
+      role: target === 'inner' ? 'reflection' : 'assistant',
       content,
-      undefined,
-      { ...meta, bufferSource: target },
-    );
+      timestamp: Date.now(),
+      taskId,
+      responseEntry,
+      meta: { ...meta, bufferSource: responseEntry?.mode ?? target },
+    });
   }
 
   // Initialize Activity Tracking
@@ -193,7 +183,6 @@
     isRecording: micIsRecording,
     isContinuousMode: micIsContinuousMode,
     interimTranscript: micInterimTranscript,
-    isNativeMode: micIsNativeMode,
     isConversationMode: micIsConversationMode,
   } = mic;
   let lastTTSPlayingForMic = false;
@@ -214,18 +203,10 @@
     getReasoningStagesCount: () => reasoningStages.length,
   });
   const {
-    trace: thinkingTrace,
     statusLabel: thinkingStatusLabel,
-    active: thinkingActive,
     steps: thinkingSteps,
     showIndicator: showThinkingIndicator
   } = thinkingTraceApi;
-
-  // Subscribe to shared YOLO mode store
-  const unsubscribeYolo = yoloModeStore.subscribe(value => {
-    yoloMode = value;
-  });
-
 
   // Component lifecycle flag for cleanup
   let isComponentMounted = true;
@@ -328,25 +309,6 @@
     }
   }
 
-  function updateReasoningDepth(value: number, persist = false) {
-    const clamped = clampReasoningDepth(value);
-    if (clamped !== reasoningDepth) {
-      reasoningDepth = clamped;
-      if (clamped === 0) reasoningStages = [];
-    }
-    if (persist) saveChatPrefs();
-  }
-
-  function handleReasoningInput(event: Event) {
-    const target = event.target as HTMLInputElement;
-    updateReasoningDepth(Number(target.value), false);
-  }
-
-  function handleReasoningChange(event: Event) {
-    const target = event.target as HTMLInputElement;
-    updateReasoningDepth(Number(target.value), true);
-  }
-
   // Server-first conversation buffer management
 
   onMount(() => {
@@ -355,8 +317,6 @@
     releaseTriggerManager = useTriggerManager();
     mic.loadVADSettings(); // Load VAD settings from voice config
 
-    // Connect to proposals SSE stream for real-time updates (no polling)
-    connectProposalsStream();
 
     // Enable hardware button capture only if user opted in via Voice Settings
     // This creates a background audio session for earbud/headphone button support
@@ -390,11 +350,9 @@
     connectMultipleBufferStreams();
     console.log(`[ChatInterface] Connected to buffer streams for:`, Array.from(selectedViews));
 
-    isTabVisible = !document.hidden;
     // Reconnect buffer streams when tab becomes visible (in case connection dropped)
     const handleVisibilityChange = () => {
-      isTabVisible = !document.hidden;
-      if (!isTabVisible) {
+      if (document.hidden) {
         disconnectAllBufferStreams();
         return;
       }
@@ -417,7 +375,7 @@
     };
 
     // Curiosity questions and agent notifications now come through normal conversation flow
-    // They're saved as conversation events by agents and loaded via /api/chat/history
+    // They're saved as conversation events by agents and loaded via /api/conversation-buffer
 
     // Listen for voice settings changes (triggered when user updates VAD settings in UI)
     window.addEventListener('voice-settings-updated', handleVoiceSettingsUpdate);
@@ -426,11 +384,9 @@
     // This ensures EventSource connections are closed even if Svelte cleanup doesn't run
     const aggressiveCleanup = () => {
       console.log('[chat] Page unload - force closing ALL connections');
-      chatResponseStream?.close();
       queuedChatStreams.forEach(stream => stream.close());
       queuedChatStreams.clear();
       disconnectAllBufferStreams();
-      disconnectProposalsStream();
     };
     window.addEventListener('beforeunload', aggressiveCleanup);
     window.addEventListener('pagehide', aggressiveCleanup);
@@ -468,14 +424,11 @@
 
     // Clean up event listeners and streams
     visibilityCleanup?.();
-    chatResponseStream?.close();
     queuedChatStreams.forEach(stream => stream.close());
     queuedChatStreams.clear();
     disconnectAllBufferStreams();
-    disconnectProposalsStream(); // Clean up proposals SSE stream
     activityApi.clearActivity();
     thinkingTraceApi.stop();
-    unsubscribeYolo();
     releaseTriggerManager?.();
     if (transientStatusTimer) clearTimeout(transientStatusTimer);
 
@@ -520,526 +473,109 @@
     return data.task as { id: string };
   }
 
-  async function getQueuedTaskStatus(taskId: string): Promise<{
-    status: 'queued' | 'running' | 'completed' | 'failed';
-    error?: string;
-  }> {
-    const res = await apiFetch(`/api/unified-queue/tasks/${encodeURIComponent(taskId)}`);
-    const data = await res.json().catch(() => ({}));
-    if (!res.ok || !data.success || !data.task?.status) {
-      throw new Error(data.error || `Could not read queued task status (${res.status})`);
-    }
-    return data.task;
-  }
-
-  async function reconcileQueuedChatTask(taskId: string): Promise<void> {
-    if (reconcilingChatTaskId === taskId) return;
-    reconcilingChatTaskId = taskId;
-    let statusFailures = 0;
-
-    try {
-      while (activeChatTaskId === taskId && loading) {
-        try {
-          const task = await getQueuedTaskStatus(taskId);
-          statusFailures = 0;
-
-          if (task.status === 'completed') {
-            activeChatTaskId = null;
-            thinkingTraceApi.stop();
-            reasoningStages = [];
-            loading = false;
-
-            return;
-          }
-
-          if (task.status === 'failed') {
-            activeChatTaskId = null;
-            thinkingTraceApi.stop();
-            reasoningStages = [];
-            loading = false;
-            showChatError(task.error || 'Queued message failed', `work-failure:${taskId}`, false);
-
-            return;
-          }
-
-          thinkingTraceApi.setActive(true);
-          thinkingTraceApi.setStatusLabel(task.status === 'running'
-            ? '⚙️ Server is processing your message...'
-            : '⏳ Message is queued...');
-        } catch (error) {
-          statusFailures++;
-          console.warn('[chat] Could not reconcile queued task:', error);
-          thinkingTraceApi.setActive(true);
-          thinkingTraceApi.setStatusLabel('🔄 Reconnecting to message status...');
-
-          if (statusFailures === 3) {
-            thinkingTraceApi.appendTrace('The server accepted the message, but live status is temporarily unavailable.', 15);
-          }
-        }
-
-        await new Promise(resolve => setTimeout(resolve, 1000));
-      }
-    } finally {
-      if (reconcilingChatTaskId === taskId) {
-        reconcilingChatTaskId = null;
-      }
-    }
-  }
-
-  function openQueuedBackgroundStream(taskId: string, userMessage: string, queuedMode: 'conversation' | 'inner') {
+  // All accepted chat work uses the same replayable task stream. EventSource
+  // reconnects the reader; execution and cancellation stay with Work Coordinator.
+  function openChatTaskStream(
+    taskId: string,
+    target: 'conversation' | 'inner',
+    card?: { type: string; data: Record<string, any> },
+  ) {
+    if (!isComponentMounted) return;
     const stream = apiEventSource(`/api/unified-queue/tasks/${encodeURIComponent(taskId)}/stream`);
     queuedChatStreams.set(taskId, stream);
+    activeChatTaskId = taskId;
+    loading = true;
 
     const close = () => {
       stream.close();
       queuedChatStreams.delete(taskId);
+      loading = queuedChatStreams.size > 0;
+      if (activeChatTaskId === taskId) {
+        activeChatTaskId = [...queuedChatStreams.keys()].at(-1) ?? null;
+        reasoningStages = [];
+        thinkingTraceApi.stop();
+      }
     };
 
+    stream.onopen = () => {
+      if (activeChatTaskId === taskId) {
+        reasoningStages = [];
+        thinkingTraceApi.setActive(true);
+        thinkingTraceApi.setStatusLabel('Connected to accepted message');
+        thinkingTraceApi.setTrace([`Following task ${taskId}`]);
+      }
+    };
     stream.onmessage = (event) => {
       try {
         const { type, data } = parseConversationStreamEvent(event.data);
         if (type === 'queued_task_started') {
-          pushComposedInput(userMessage, queuedMode);
-          loading = true;
+          activeChatTaskId = taskId;
+          reasoningStages = [];
           thinkingTraceApi.setActive(true);
-          thinkingTraceApi.setStatusLabel('Queued message started');
-          thinkingTraceApi.setTrace([`Queued task ${taskId} started`]);
-        } else if (type === 'queued') {
-          thinkingTraceApi.setActive(true);
+          thinkingTraceApi.setStatusLabel(card ? `Processing ${card.type} response…` : 'Processing message…');
+          thinkingTraceApi.setTrace([`Task ${taskId} started`]);
+        } else if (type === 'queued' && activeChatTaskId === taskId) {
           thinkingTraceApi.setStatusLabel(`Queued behind ${Math.max(0, Number(data.position || 1) - 1)} task(s)`);
-        } else if (type === 'progress' && data?.message) {
+        } else if (type === 'progress' && data?.message && activeChatTaskId === taskId) {
           thinkingTraceApi.setActive(true);
+          thinkingTraceApi.setStatusLabel(String(data.message));
           thinkingTraceApi.appendTrace(String(data.message), 15);
-        } else if (type === 'reasoning') {
-          thinkingTraceApi.appendTrace(typeof data === 'string' ? data : String(data?.content || ''), 15);
+        } else if (type === 'reasoning' && activeChatTaskId === taskId) {
+          thinkingTraceApi.stop();
+          const stage: ReasoningStage = {
+            round: typeof data === 'object' && Number(data.round) > 0 ? Number(data.round) : 1,
+            stage: typeof data === 'object' ? String(data.stage || 'plan') : 'plan',
+            content: typeof data === 'string' ? data : String(data?.content || ''),
+            timestamp: Date.now(),
+          };
+          reasoningStages = [...reasoningStages, stage];
         } else if (type === 'answer') {
-          thinkingTraceApi.stop();
-          pushGeneratedResponse(data.response, queuedMode, { facet: data.facet });
-          loading = false;
+          pushGeneratedResponse(data.response, target, taskId, data.responseEntry, card ? {
+            source: 'response_pipeline',
+            cardType: card.type,
+            desireId: card.data.desireId,
+            responseBufferId: data.responseBufferId,
+            actionTaken: data.actionTaken,
+            pipelineTriggered: data.pipelineTriggered,
+            dialogueSource: 'response-pipeline',
+          } : { facet: data.facet });
+          if (activeChatTaskId === taskId) {
+            reasoningStages = [];
+            thinkingTraceApi.stop();
+          }
+          // An answer is available; only the task's terminal event ends tracking.
+        } else if (type === 'system_message' && data.content) {
+          messagesApi.pushMessage('system', data.content);
+        } else if (type === 'cancelled') {
+          messagesApi.pushMessage('system', data.message || 'Request cancelled');
           close();
-
         } else if (type === 'error') {
-          thinkingTraceApi.stop();
-          showChatError(data?.message || 'Queued message failed', `work-failure:${taskId}`, false);
-          loading = false;
+          const message = data?.message || 'Queued message failed';
+          const details = [message, data?.failedNode ? `Failed at node: ${data.failedNode}` : '', data?.suggestion].filter(Boolean);
+          showChatError(details.join('\n\n'), `work-failure:${taskId}`, false);
           close();
-
         } else if (type === 'queued_task_completed') {
-          thinkingTraceApi.stop();
-          loading = false;
           close();
-
         }
-      } catch (err) {
-        showChatError(err);
-        loading = false;
+      } catch (error) {
+        showChatError(error);
         close();
-
       }
     };
-
     stream.onerror = () => {
-      showChatError('Queued message stream disconnected.');
-      loading = false;
-      close();
-
+      if (stream.readyState === EventSource.CLOSED) {
+        showChatError(`The live reader for accepted task ${taskId} closed. The server task has not been cancelled.`);
+        close();
+      } else if (activeChatTaskId === taskId) {
+        thinkingTraceApi.setActive(true);
+        thinkingTraceApi.setStatusLabel('Reconnecting to accepted message…');
+      }
     };
-  }
-
-  /**
-   * Send a stateful Agency or Curiosity card reply through its focused graph.
-   * Ordinary selected-message replies stay on the active conversation graph.
-   */
-  async function sendResponsePipeline(
-    message: string,
-    cardType: string,
-    cardData: Record<string, any>,
-    responseBufferId?: string | null
-  ) {
-    if (!message.trim()) return;
-
-    const timestamp = () => new Date().toLocaleTimeString('en-US', { hour12: false, hour: '2-digit', minute: '2-digit', second: '2-digit' });
-    const startTime = Date.now();
-
-    // Preserve original message for restoration on failure
-    const originalMessage = message;
-
-    // Add user message to UI
-    pushComposedInput(message, 'conversation');
-
-    loading = true;
-    thinkingTraceApi.start();
-    thinkingTraceApi.setStatusLabel(`🔍 Validating...`);
-    thinkingTraceApi.setTrace([
-      `[${timestamp()}] 📤 RESPONSE PIPELINE INITIATED`,
-      `[${timestamp()}] Card type: ${cardType}`,
-      `[${timestamp()}] Desire: ${cardData.desireTitle || cardData.desireId || 'N/A'}`,
-      `[${timestamp()}] Multi-turn buffer: ${responseBufferId || 'creating new'}`,
-      `[${timestamp()}] `,
-      `[${timestamp()}] 🔍 PRE-FLIGHT CHECKS`,
-    ]);
-
-    // Heartbeat interval for long-running requests
-    let heartbeatInterval: ReturnType<typeof setInterval> | null = null;
-    let connectionEstablished = false;
-
-    // AbortController for cancellation
-    let abortController = new AbortController();
-    responsePipelineAbortController = abortController; // Store for cancel button
-
-    // Helper to restore input and cleanup on failure
-    const restoreInputAndCleanup = () => {
-      input = originalMessage; // Restore the message to input field
-      thinkingTraceApi.stop();
-      loading = false;
-    };
-
-    try {
-      // Step 0: Pre-flight validation
-      console.log('[response-pipeline] Step 0: Pre-flight checks');
-
-      chatResponseStream?.close();
-      chatResponseStream = null;
-
-      // Check 1: Session validity (NO TIMEOUT - but with progress notifications)
-      try {
-        console.log('[response-pipeline] Starting auth check at', new Date().toISOString());
-        thinkingTraceApi.appendTrace(`[${timestamp()}] Checking session...`, 5);
-
-        // Progress indicator to show we're waiting (NO TIMEOUT, just visibility)
-        let notificationShown = false;
-        const progressInterval = setInterval(() => {
-          const elapsed = Math.floor((Date.now() - startTime) / 1000);
-          console.log(`[response-pipeline] ⏳ Still waiting for auth check... (${elapsed}s)`);
-          thinkingTraceApi.appendTrace(`[${timestamp()}] ⏳ Still checking session... (${elapsed}s)`, 3);
-
-          // Show user notification after 10 seconds
-          if (elapsed >= 10 && !notificationShown) {
-            notificationShown = true;
-            console.warn('[response-pipeline] ⚠️  AUTH CHECK TAKING LONGER THAN EXPECTED (>10s)');
-            console.warn('[response-pipeline] This usually indicates:');
-            console.warn('[response-pipeline]   1. Server is overloaded');
-            console.warn('[response-pipeline]   2. Network connection is very slow');
-            messagesApi.pushMessage('system', '⏳ **Session Check Taking Longer Than Expected**\n\nChecking your session is taking over 10 seconds. This is unusual and may indicate server load or network issues.\n\n**Status**: Still trying (no timeout)...\n**Your reply is preserved** and will be restored if this fails.');
-          }
-
-          // Escalate notification after 30 seconds
-          if (elapsed >= 30) {
-            console.error('[response-pipeline] ⚠️  AUTH CHECK EXTREMELY SLOW (>30s)');
-            console.error('[response-pipeline] Consider:');
-            console.error('[response-pipeline]   - Checking server logs for errors');
-            console.error('[response-pipeline]   - Verifying network connection');
-            console.error('[response-pipeline]   - Using browser DevTools Network tab to see what\'s stuck');
-          }
-        }, 5000);
-
-        let authCheck: Response;
-        try {
-          console.log('[response-pipeline] Calling apiFetch(/api/auth/me)...');
-          const authStartTime = Date.now();
-          authCheck = await apiFetch('/api/auth/me');
-          const authDuration = Date.now() - authStartTime;
-          console.log(`[response-pipeline] Auth check completed in ${authDuration}ms:`, authCheck.status, authCheck.ok);
-
-          if (authDuration > 5000) {
-            console.warn(`[response-pipeline] ⚠️  AUTH CHECK WAS SLOW (${authDuration}ms)`);
-          }
-        } finally {
-          clearInterval(progressInterval);
-        }
-
-        if (!authCheck.ok) {
-          thinkingTraceApi.appendTrace(`[${timestamp()}] ❌ SESSION EXPIRED`, 5);
-          messagesApi.pushMessage('system', '⚠️ **Session Expired - Your Reply Was Not Sent**\n\nYour session has expired. Your message has been restored to the input field.\n\n💡 Please refresh the page, log in again, and resubmit your message.');
-          restoreInputAndCleanup();
-          return;
-        }
-        thinkingTraceApi.appendTrace(`[${timestamp()}] ✅ Session valid`, 5);
-      } catch (authError: any) {
-        console.error('[response-pipeline] Auth check error:', authError);
-
-        let errorTitle = '⚠️ Connection Error - Your Reply Was Not Sent';
-        let errorMessage = 'Unable to connect to the server.';
-        let suggestion = 'Your message has been restored to the input field. Please check your network connection and try again.';
-
-        // Differentiate error types (NO timeout handling - just real errors)
-        if (authError?.message?.includes('fetch failed') || authError?.message?.includes('ECONNREFUSED')) {
-          errorTitle = '🔌 Server Unreachable - Your Reply Was Not Sent';
-          errorMessage = 'Cannot connect to the MetaHuman server.';
-          suggestion = 'Your message has been restored. Check that the dev server is running with `pnpm dev` in apps/site/.';
-        } else if (authError?.status === 404) {
-          errorTitle = '🔍 Endpoint Not Found - Your Reply Was Not Sent';
-          errorMessage = `API endpoint returned 404: ${authError?.url || '/api/auth/me'}`;
-          suggestion = 'Your message has been restored. This may be a build issue. Try rebuilding with `pnpm build` in apps/site/.';
-        } else if (authError?.status >= 500) {
-          errorTitle = '💥 Server Error - Your Reply Was Not Sent';
-          errorMessage = `Server returned error ${authError?.status || 'unknown'}`;
-          suggestion = 'Your message has been restored. Check the server logs for details.';
-        } else if (authError?.status === 401 || authError?.status === 403) {
-          errorTitle = '🔐 Auth Check Failed - Your Reply Was Not Sent';
-          errorMessage = 'Unable to verify your session.';
-          suggestion = 'Your message has been restored. Your session may have expired. Please refresh and log in again.';
-        } else {
-          // Unknown error - show actual message
-          errorMessage = authError?.message || 'An unexpected error occurred during authentication.';
-          suggestion = 'Your message has been restored to the input field. Please try again.';
-        }
-
-        // Add context about what was being replied to
-        const contextInfo = cardData.desireTitle
-          ? `\n\n**You were replying to**: ${cardData.desireTitle}`
-          : cardData.questionId
-            ? '\n\n**You were replying to a question**'
-            : '';
-
-        thinkingTraceApi.appendTrace(`[${timestamp()}] ❌ ${errorTitle}`, 5);
-        messagesApi.pushMessage('system', `${errorTitle}\n\n${errorMessage}${contextInfo}\n\n💡 ${suggestion}`);
-        void reportChatError(authError).catch(failure => console.error('[chat] Error evidence was not recorded:', failure));
-        restoreInputAndCleanup();
-        return;
-      }
-
-      // Check 3: Connection health
-      thinkingTraceApi.appendTrace(`[${timestamp()}] Checking server connection...`, 5);
-      const healthResult = await forceHealthCheck();
-      if (!healthResult.connected) {
-        thinkingTraceApi.appendTrace(`[${timestamp()}] ❌ Server offline`, 5);
-        messagesApi.pushMessage('system', '⚠️ **Server Offline - Your Reply Was Not Sent**\n\nThe server is not responding. Your message has been restored to the input field.\n\n💡 Please check if the server is running and try again.');
-        restoreInputAndCleanup();
-        return;
-      }
-      thinkingTraceApi.appendTrace(`[${timestamp()}] ✅ Server connected`, 5);
-      thinkingTraceApi.appendTrace(`[${timestamp()}] ✅ Pre-flight checks passed`, 5);
-
-      // Step 1: Prepare request
-      console.log('[response-pipeline] Step 1: Preparing request', {
-        cardType,
-        desireId: cardData.desireId,
-        hasBuffer: !!responseBufferId,
-        messageLength: message.length,
-      });
-      thinkingTraceApi.setStatusLabel(`📝 Processing ${cardType} response...`);
-      thinkingTraceApi.appendTrace(`[${timestamp()}] `, 5);
-      thinkingTraceApi.appendTrace(`[${timestamp()}] Step 1: Preparing request...`, 10);
-
-      const requestBody = buildResponsePipelineRequestBody(
-        message,
-        cardType,
-        cardData,
-        $conversationSessionId,
-        responseBufferId,
-      );
-
-      // Step 2: Enqueue request (no automatic timeout - user has cancel button)
-      console.log('[response-pipeline] Step 2: Queueing response pipeline task');
-      thinkingTraceApi.appendTrace(`[${timestamp()}] Step 2: Queueing response...`, 10);
-      thinkingTraceApi.appendTrace(`[${timestamp()}] ⏳ Waiting for queued response...`, 10);
-
-      // Start heartbeat to show the system is alive
-      heartbeatInterval = setInterval(() => {
-        if (!connectionEstablished) return; // Don't show heartbeat until connection is established
-
-        const elapsed = Math.floor((Date.now() - startTime) / 1000);
-        thinkingTraceApi.appendTrace(`[${timestamp()}] ⏱️  Still processing... (${elapsed}s elapsed)`, 5);
-      }, 10000); // Every 10 seconds
-
-      const task = await enqueueUserMessageTask({
-        kind: 'response-pipeline',
-        responsePipeline: requestBody,
-      });
-      responsePipelineTaskId = task.id;
-
-      const result: any = await new Promise((resolve, reject) => {
-        const stream = apiEventSource(`/api/unified-queue/tasks/${encodeURIComponent(task.id)}/stream`);
-        queuedChatStreams.set(task.id, stream);
-
-        const cleanup = () => {
-          stream.close();
-          queuedChatStreams.delete(task.id);
-          abortController.signal.removeEventListener('abort', onAbort);
-        };
-
-        const onAbort = () => {
-          cleanup();
-          const error = new Error('Request cancelled by user');
-          error.name = 'AbortError';
-          reject(error);
-        };
-
-        abortController.signal.addEventListener('abort', onAbort, { once: true });
-
-        stream.onopen = () => {
-          connectionEstablished = true;
-          thinkingTraceApi.appendTrace(`[${timestamp()}] ✅ Queue stream connected`, 10);
-        };
-
-        stream.onmessage = (event) => {
-          try {
-            const { type, data } = parseConversationStreamEvent(event.data);
-
-            if (type === 'queued_task_started') {
-              connectionEstablished = true;
-              thinkingTraceApi.setStatusLabel(`📝 Processing ${cardType} response...`);
-              thinkingTraceApi.appendTrace(`[${timestamp()}] Queued task started`, 10);
-            } else if (type === 'queued') {
-              const ahead = Math.max(0, Number(data.position || 1) - 1);
-              thinkingTraceApi.setStatusLabel(`Queued behind ${ahead} task(s)`);
-              thinkingTraceApi.appendTrace(`[${timestamp()}] Waiting in queue: position ${data.position || '?'}`, 5);
-            } else if (type === 'progress') {
-              connectionEstablished = true;
-              if (data?.message) {
-                thinkingTraceApi.appendTrace(`[${timestamp()}] ${data.message}`, 5);
-              }
-            } else if (type === 'answer') {
-              cleanup();
-              resolve({
-                success: true,
-                response: data.response,
-                responseBufferId: data.responseBufferId,
-                actionTaken: data.actionTaken,
-                pipelineTriggered: data.pipelineTriggered,
-                nextStatus: data.nextStatus,
-                executionTimeMs: data.executionTime,
-              });
-            } else if (type === 'error') {
-              cleanup();
-              reject(new Error(data?.message || 'Response pipeline failed'));
-            }
-          } catch (streamError) {
-            cleanup();
-            reject(streamError);
-          }
-        };
-
-        stream.onerror = () => {
-          cleanup();
-          reject(new Error('Queued response pipeline stream disconnected'));
-        };
-      });
-
-      console.log('[response-pipeline] Step 3: Queued response received', {
-        elapsed: Date.now() - startTime,
-      });
-      thinkingTraceApi.appendTrace(`[${timestamp()}] Step 3: Queued response received`, 10);
-
-      const elapsed = Date.now() - startTime;
-      console.log('[response-pipeline] Step 5: Processing result', {
-        success: result.success,
-        actionTaken: result.actionTaken,
-        pipelineTriggered: result.pipelineTriggered,
-        newBufferId: result.responseBufferId,
-        executionTimeMs: result.executionTimeMs,
-        totalElapsed: elapsed,
-      });
-      thinkingTraceApi.appendTrace(`[${timestamp()}] Step 5: Result received (${elapsed}ms total)`, 10);
-
-      if (!result.success) {
-        console.error('[response-pipeline] Pipeline returned error:', result.error);
-        console.error('[response-pipeline] Error details:', {
-          error: result.error,
-          errorDetails: result.errorDetails,
-          failedNode: result.failedNode,
-          suggestion: result.suggestion,
-        });
-
-        // Build detailed error message
-        let errorMessage = `⚠️ **Pipeline Error**\n\n${result.error}`;
-
-        if (result.errorDetails) {
-          errorMessage += `\n\n**Details**: ${result.errorDetails}`;
-        }
-
-        if (result.failedNode) {
-          errorMessage += `\n\n**Failed at node**: ${result.failedNode}`;
-        }
-
-        if (result.suggestion) {
-          errorMessage += `\n\n💡 **Suggestion**:\n${result.suggestion}`;
-        }
-
-        // Show in thinking trace
-        thinkingTraceApi.appendTrace(`[${timestamp()}] ❌ ${result.error}`, 10);
-        if (result.failedNode) {
-          thinkingTraceApi.appendTrace(`[${timestamp()}] 🔍 Failed at: ${result.failedNode}`, 10);
-        }
-
-        // Show to user
-        messagesApi.pushMessage('system', errorMessage);
-
-        throw new Error(result.error || 'Pipeline execution failed');
-      }
-
-      // Add assistant response to UI with response pipeline metadata
-      if (result.response) {
-        pushGeneratedResponse(result.response, 'conversation', {
-          source: 'response_pipeline',
-          cardType,
-          desireId: cardData.desireId,
-          responseBufferId: result.responseBufferId,
-          actionTaken: result.actionTaken,
-          pipelineTriggered: result.pipelineTriggered,
-          dialogueSource: 'response-pipeline',
-        });
-      } else {
-        console.warn('[response-pipeline] No response text in result');
-        thinkingTraceApi.appendTrace(`[${timestamp()}] ⚠️ No response text returned`, 10);
-      }
-
-      // Update thinking trace with result
-      thinkingTraceApi.appendTrace(`[${timestamp()}] ✅ Action: ${result.actionTaken || 'completed'}`, 10);
-      if (result.pipelineTriggered) {
-        thinkingTraceApi.appendTrace(`[${timestamp()}] 🔄 Downstream Desire work queued`, 10);
-      }
-      if (result.nextStatus) {
-        thinkingTraceApi.appendTrace(`[${timestamp()}] 📊 Status → ${result.nextStatus}`, 10);
-      }
-      thinkingTraceApi.appendTrace(`[${timestamp()}] ✅ RESPONSE PIPELINE COMPLETE (${elapsed}ms)`, 10);
-
-      thinkingTraceApi.stop();
-    } catch (err) {
-      const elapsed = Date.now() - startTime;
-
-      if (err instanceof Error && err.name === 'AbortError') {
-        thinkingTraceApi.appendTrace(`[${timestamp()}] ⏸️  Request cancelled by user`, 10);
-        messagesApi.pushMessage('system', '⏸️ **Request Cancelled**\n\nYou cancelled the response pipeline request.');
-        thinkingTraceApi.stop();
-        return;
-      }
-
-      console.error('[response-pipeline] FATAL ERROR:', err);
-      console.error('[response-pipeline] Error details:', {
-        name: err instanceof Error ? err.name : 'unknown',
-        message: err instanceof Error ? err.message : String(err),
-        elapsed,
-      });
-      const errorMsg = err instanceof Error ? err.message : 'Response pipeline failed';
-      thinkingTraceApi.appendTrace(`[${timestamp()}] ❌ ERROR: ${errorMsg}`, 10);
-      thinkingTraceApi.appendTrace(`[${timestamp()}] ❌ PIPELINE FAILED after ${elapsed}ms`, 10);
-      showChatError(err);
-      thinkingTraceApi.stop();
-    } finally {
-      // Clear heartbeat interval
-      if (heartbeatInterval) {
-        clearInterval(heartbeatInterval);
-        heartbeatInterval = null;
-      }
-
-      // Clear abort controller
-      responsePipelineAbortController = null;
-      responsePipelineTaskId = null;
-
-      loading = false;
-
-    }
   }
 
   async function sendMessage() {
-    // No input - nothing to do
     if (!input.trim()) return;
-
     if (!composeTarget) { showTransientSystemMessage('The selected view is read-only.'); return; }
-
-    // Already processing a send - ignore
     if (sendInProgress) return;
 
     if (composeTarget === 'terminal') {
@@ -1054,612 +590,87 @@
       return;
     }
 
-    sendInProgress = true;
-    await interruptAssistantSpeech('user-input');
-
-    const healthResult = await forceHealthCheck();
-    const connected = healthResult.connected;
-
-    // Chat execution is server-owned. Keep the draft intact when disconnected.
-    if (!connected) {
-      sendInProgress = false;
-
-      messagesApi.pushMessage('system', '⚠️ MetaHuman server is unavailable. Reconnect before sending this message.');
-      return;
-    }
-
-    await ttsApi.ensureAudioUnlocked();
-    if (ttsEnabled) {
-      ttsApi.prefetchVoiceResources();
-    }
-
-    // Signal activity when sending a message
-    activityApi.signalActivity();
-
-    const userMessage = input.trim();
-    const requestComposeTarget = mode;
-    input = '';
-
-    // Capture replyTo metadata if any message is selected
-    const replyToMetadata = messagesApi.getReplyToMetadata();
-    const replyToQuestionId = replyToMetadata.questionId;
-    const replyToContent = replyToMetadata.content;
-    const replyToDesireId = replyToMetadata.desireId;
-    const replyToDesireTitle = replyToMetadata.desireTitle;
-    const replyToCardType = replyToMetadata.cardType;
-    const replyToDialogueSource = replyToMetadata.dialogueSource;
-    const isAgencyCardReply = replyToMetadata.isAgencyMessage;
-    const existingResponseBufferId = replyToMetadata.responseBufferId;
-
-    // Clear selection after capturing metadata
-    const wasReplying = $selectedMessage !== null;
-    messagesApi.clearSelection();
-
-    const responsePipelineCardType = responsePipelineCardTypeForReply({
+    const submittedInput = input;
+    const message = submittedInput.trim();
+    const target = mode;
+    const sessionId = $conversationSessionId;
+    const submittedReply = $selectedMessage;
+    const replyTo = messagesApi.getReplyToMetadata();
+    const cardType = responsePipelineCardTypeForReply({
       cognitiveMode: $currentMode,
-      cardType: replyToCardType,
-      questionId: replyToQuestionId,
-      desireId: replyToDesireId,
-      dialogueSource: replyToDialogueSource,
-      isAgencyMessage: isAgencyCardReply,
+      cardType: replyTo.cardType,
+      questionId: replyTo.questionId,
+      desireId: replyTo.desireId,
+      dialogueSource: replyTo.dialogueSource,
+      isAgencyMessage: replyTo.isAgencyMessage,
     });
-
-    // Dedicated interactive cards keep their focused workflow. An ordinary
-    // selected-message reply in Environment mode stays on the Environment graph,
-    // which already receives replyToContent and owns semantic action decisions.
-    if (
-      wasReplying
-      && replyToContent
-      && requestComposeTarget === 'conversation'
-      && responsePipelineCardType
-    ) {
-      sendInProgress = false; // Reset guard before delegating
-
-      console.log(`[sendMessage] Routing to response pipeline: type=${responsePipelineCardType}, hasDesire=${!!replyToDesireId}`);
-
-      await sendResponsePipeline(userMessage, responsePipelineCardType, {
-        desireId: replyToDesireId,
-        desireTitle: replyToDesireTitle,
-        content: replyToContent,
-        dialogueSource: replyToDialogueSource,
-        questionId: replyToQuestionId,
-        ...replyToMetadata.meta,
-      }, existingResponseBufferId);
-      return;
-    }
-
-    if (loading) {
-      try {
-        const llm_opts = readLlmOptions();
-        const params = buildConversationParams({
-          message: userMessage,
-          mode: requestComposeTarget,
-          sessionId: $conversationSessionId,
-          reasoningDepth,
-          yoloMode,
-          llmOptions: llm_opts,
-          replyTo: {
-            questionId: replyToQuestionId || undefined,
-            content: replyToContent || undefined,
-            desireId: replyToDesireId || undefined,
-            desireTitle: replyToDesireTitle || undefined,
-          },
-        });
-        const task = await enqueueUserMessageTask({
-          kind: 'persona-chat',
-          personaChat: Object.fromEntries(params.entries()),
-        });
-        openQueuedBackgroundStream(task.id, userMessage, requestComposeTarget);
-      } catch (err) {
-        input = userMessage;
-        showChatError(err);
-      } finally {
-        sendInProgress = false;
-      }
-      return;
-    }
-
-    pushComposedInput(userMessage, requestComposeTarget);
-
-    loading = true;
-    sendInProgress = false; // loading now takes over as the guard
-    reasoningStages = [];
-
-    // Timestamp helper for detailed trace
-    const timestamp = () => new Date().toLocaleTimeString('en-US', { hour12: false, hour: '2-digit', minute: '2-digit', second: '2-digit' });
-    const msgStartTime = Date.now();
-
-    // Show detailed timestamped information IMMEDIATELY
-    thinkingTraceApi.setStatusLabel('📤 Sending message...');
-    thinkingTraceApi.setTrace([
-      `[${timestamp()}] 📤 MESSAGE SENT`,
-      `[${timestamp()}] Content: "${userMessage.substring(0, 60)}${userMessage.length > 60 ? '...' : ''}"`,
-    ]);
-    thinkingTraceApi.setActive(true);
-    console.log('[sendMessage] Step 1: Set loading state');
-
-    try {
-      console.log('[sendMessage] Step 2: Entered try block');
-      thinkingTraceApi.appendTrace(`[${timestamp()}] ⏳ Preparing request...`, 15);
-
-      const llm_opts = readLlmOptions();
-      console.log('[sendMessage] Step 3: Got llm_opts');
-
-      const params = buildConversationParams({
-        message: userMessage,
-        mode: requestComposeTarget,
-        sessionId: $conversationSessionId,
+    const card = submittedReply && replyTo.content && target === 'conversation' && cardType
+      ? { type: cardType, data: {
+        desireId: replyTo.desireId,
+        desireTitle: replyTo.desireTitle,
+        content: replyTo.content,
+        dialogueSource: replyTo.dialogueSource,
+        questionId: replyTo.questionId,
+        ...replyTo.meta,
+      } } : undefined;
+    const taskInput = card ? {
+      kind: 'response-pipeline',
+      responsePipeline: buildResponsePipelineRequestBody(message, card.type, card.data, sessionId, replyTo.responseBufferId),
+    } : {
+      kind: 'persona-chat',
+      personaChat: Object.fromEntries(buildConversationParams({
+        message,
+        mode: target,
+        sessionId,
         reasoningDepth,
-        yoloMode,
-        llmOptions: llm_opts,
+        yoloMode: $yoloModeStore,
+        llmOptions: readLlmOptions(),
         replyTo: {
-          questionId: replyToQuestionId || undefined,
-          content: replyToContent || undefined,
-          desireId: replyToDesireId || undefined,
-          desireTitle: replyToDesireTitle || undefined,
+          questionId: replyTo.questionId || undefined,
+          content: replyTo.content || undefined,
+          desireId: replyTo.desireId || undefined,
+          desireTitle: replyTo.desireTitle || undefined,
         },
-      });
-      console.log('[sendMessage] Step 4: Created URLSearchParams');
-      thinkingTraceApi.appendTrace(`[${timestamp()}] ✅ Request params built`, 15);
-      // audience removed - focus selector obsolete with ReAct operator
+      }).entries()),
+    };
 
-      // Add replyTo metadata if replying to any message (curiosity, desire, or regular)
-      if (replyToQuestionId) {
-        console.log('[reply-to] Replying to curiosity question:', replyToQuestionId);
-      }
-      if (replyToDesireId) {
-        console.log('[reply-to] Replying to desire/goal:', replyToDesireId, replyToDesireTitle);
-      }
-      if (replyToContent) {
-        console.log('[reply-to] Replying to message:', replyToContent.substring(0, 100));
-      }
-
-      console.log('[sendMessage] Step 5: Queueing chat request');
-      thinkingTraceApi.appendTrace(`[${timestamp()}] 🌐 Queueing message`, 15);
-
-
-
-      // PRE-FLIGHT AUTH CHECK: Verify session is valid before opening EventSource
-      // This prevents silent hangs when session cookie is stale/mismatched
-      // NO TIMEOUT - User has cancel button, let the server take as long as it needs
-      try {
-        console.log('[sendMessage] Starting auth check...');
-        thinkingTraceApi.appendTrace(`[${timestamp()}] 🔐 Verifying session...`, 15);
-
-        // Progress notifications (same as response pipeline)
-        let notificationShown = false;
-        const authProgressInterval = setInterval(() => {
-          const elapsed = Math.floor((Date.now() - msgStartTime) / 1000);
-          console.log(`[sendMessage] ⏳ Still waiting for auth check... (${elapsed}s)`);
-          thinkingTraceApi.appendTrace(`[${timestamp()}] ⏳ Still checking session... (${elapsed}s)`, 10);
-
-          if (elapsed >= 10 && !notificationShown) {
-            notificationShown = true;
-            console.warn('[sendMessage] ⚠️  AUTH CHECK TAKING LONGER THAN EXPECTED (>10s)');
-            messagesApi.pushMessage(
-              'system',
-              '⏳ **Session Check Slow**\n\nVerifying your session is taking longer than expected (>10s). Still trying...',
-            );
-          }
-
-          if (elapsed >= 30) {
-            console.error('[sendMessage] ⚠️  AUTH CHECK EXTREMELY SLOW (>30s)');
-          }
-        }, 5000);
-
-        let authCheck: Response;
-        try {
-          const authStartTime = Date.now();
-          authCheck = await apiFetch('/api/auth/me');
-          const authDuration = Date.now() - authStartTime;
-          console.log(`[sendMessage] Auth check completed in ${authDuration}ms:`, authCheck.status);
-
-          if (authDuration > 5000) {
-            console.warn(`[sendMessage] ⚠️  AUTH CHECK WAS SLOW (${authDuration}ms)`);
-          }
-        } finally {
-          clearInterval(authProgressInterval);
-        }
-
-        if (!authCheck.ok) {
-          const errorData = await authCheck.json().catch(() => ({}));
-          console.error('[sendMessage] Auth check failed:', authCheck.status, errorData);
-          thinkingTraceApi.appendTrace(`[${timestamp()}] ❌ SESSION EXPIRED - Please refresh and log in again`, 15);
-          thinkingTraceApi.setStatusLabel('🔒 Session Expired');
-          loading = false;
-          // Show error to user
-          messagesApi.pushMessage(
-            'system',
-            '⚠️ **Session Expired**\n\nYour session has expired or is invalid. Please refresh the page and log in again.',
-          );
-          return;
-        }
-        console.log('[sendMessage] Auth check passed');
-        thinkingTraceApi.appendTrace(`[${timestamp()}] ✅ Session verified`, 15);
-      } catch (authError: any) {
-        // Differentiate error types for better logging and debugging
-        let errorType = 'Unknown Error';
-        let shouldContinue = false;
-
-        if (authError?.message?.includes('fetch failed') || authError?.message?.includes('ECONNREFUSED')) {
-          errorType = 'Server Unreachable';
-          shouldContinue = false;
-          console.error('[sendMessage] Server unreachable:', authError);
-          thinkingTraceApi.appendTrace(`[${timestamp()}] 🔌 Server unreachable (will likely fail)`, 15);
-        } else if (authError?.status === 404) {
-          errorType = 'Endpoint Not Found (404)';
-          shouldContinue = false;
-          console.error('[sendMessage] Auth endpoint not found:', authError);
-          thinkingTraceApi.appendTrace(`[${timestamp()}] 🔍 Auth endpoint not found (build issue?)`, 15);
-        } else if (authError?.status >= 500) {
-          errorType = `Server Error (${authError?.status})`;
-          shouldContinue = false;
-          console.error('[sendMessage] Server error during auth check:', authError);
-          thinkingTraceApi.appendTrace(`[${timestamp()}] 💥 Server error ${authError?.status}`, 15);
-        } else if (authError?.status === 401 || authError?.status === 403) {
-          errorType = 'Session Invalid';
-          shouldContinue = false;
-          console.error('[sendMessage] Session invalid:', authError);
-          thinkingTraceApi.appendTrace(`[${timestamp()}] 🔐 Session invalid (please refresh)`, 15);
-        } else {
-          errorType = authError?.message || 'Unexpected error';
-          shouldContinue = true; // Try anyway for unknown errors
-          console.error('[sendMessage] Auth check error:', authError);
-          thinkingTraceApi.appendTrace(`[${timestamp()}] ⚠️ Could not verify session (${errorType})`, 15);
-        }
-
-        // Continue anyway - might work, might not
-        // (EventSource will fail with better error if server is truly down)
-      }
-
-      // Use EventSource for SSE streaming (works for both web and React Native WebView)
-      // CRITICAL: Close any existing EventSource before creating a new one
-      if (chatResponseStream) {
-        console.log('[sendMessage] Closing existing EventSource...');
-        chatResponseStream.close();
-        chatResponseStream = null;
-      }
-
-      const task = await enqueueUserMessageTask({
-        kind: 'persona-chat',
-        personaChat: Object.fromEntries(params.entries()),
-      });
-      activeChatTaskId = task.id;
-      chatResponseStream = apiEventSource(`/api/unified-queue/tasks/${encodeURIComponent(task.id)}/stream`);
-      console.log('[sendMessage] Step 6: EventSource created!');
-      thinkingTraceApi.appendTrace(`[${timestamp()}] 🔌 EventSource created, waiting for server...`, 15);
-      thinkingTraceApi.setStatusLabel('🔌 Connecting...');
-
-      // Track connection time for user visibility
-      const connectStart = Date.now();
-      let connectionTimer: ReturnType<typeof setInterval> | null = null;
-      let connectionFallbackTimer: ReturnType<typeof setTimeout> | null = null;
-      let connectionEstablished = false;
-
-      const clearConnectionTracking = () => {
-        if (connectionTimer) {
-          clearInterval(connectionTimer);
-          connectionTimer = null;
-        }
-        if (connectionFallbackTimer) {
-          clearTimeout(connectionFallbackTimer);
-          connectionFallbackTimer = null;
-        }
-      };
-
-      // If the browser cannot acquire an SSE connection promptly, stop waiting
-      // on that transport and follow the server-owned task by status instead.
-      // The task continues independently, so this cannot duplicate the message.
-      connectionFallbackTimer = setTimeout(() => {
-        if (!connectionEstablished && activeChatTaskId === task.id) {
-          console.warn('[EventSource] Live stream delayed; switching to task reconciliation');
-          chatResponseStream?.close();
-          chatResponseStream = null;
-          clearConnectionTracking();
-          thinkingTraceApi.appendTrace(`[${timestamp()}] Live response delayed; following accepted task ${task.id}`, 15);
-          thinkingTraceApi.setStatusLabel('🔄 Following accepted message...');
-          void reconcileQueuedChatTask(task.id);
-        }
-      }, 8000);
-
-      // Start timer to show elapsed time WITH timestamps
-      connectionTimer = setInterval(() => {
-        const elapsed = Math.floor((Date.now() - connectStart) / 1000);
-        const totalElapsed = Math.floor((Date.now() - msgStartTime) / 1000);
-        thinkingTraceApi.appendTrace(`[${timestamp()}] ⏱️ Waiting for server response... (${elapsed}s)`, 15);
-      }, 2000);
-
-      chatResponseStream.onopen = () => {
-        connectionEstablished = true;
-        if (connectionFallbackTimer) {
-          clearTimeout(connectionFallbackTimer);
-          connectionFallbackTimer = null;
-        }
-        console.log('[EventSource] Connection opened!');
-        if (connectionTimer) clearInterval(connectionTimer);
-        const elapsed = Math.floor((Date.now() - connectStart) / 1000);
-        thinkingTraceApi.appendTrace(`[${timestamp()}] ✅ CONNECTION OPENED (${elapsed}s)`, 15);
-        thinkingTraceApi.setStatusLabel('⚡ Connected - Executing graph...');
-      };
-
-      chatResponseStream.onmessage = (event) => {
-        connectionEstablished = true;
-        if (connectionFallbackTimer) {
-          clearTimeout(connectionFallbackTimer);
-          connectionFallbackTimer = null;
-        }
-        if (connectionTimer) clearInterval(connectionTimer);
-        console.log('[EventSource] onmessage fired, raw event.data:', event.data.substring(0, 200));
-        thinkingTraceApi.appendTrace(`[${timestamp()}] 📥 Received server event`, 15);
-        try {
-          const { type, data } = parseConversationStreamEvent(event.data);
-          console.log('[EventSource] Parsed type:', type, 'data keys:', Object.keys(data));
-
-          if (type === 'progress') {
-            // Real-time progress updates from graph execution
-            if (data && data.message) {
-              thinkingTraceApi.setActive(true);
-
-              // Update the thinking trace with progress messages - ALL WITH TIMESTAMPS
-              const progressMsg = data.message;
-              console.log('[Progress Event] step:', data.step, 'message:', progressMsg.substring(0, 100));
-
-              if (data.step === 'loading_graph') {
-                thinkingTraceApi.setStatusLabel('📋 Loading workflow...');
-                thinkingTraceApi.appendTrace(`[${timestamp()}] 📋 ${progressMsg}`, 15);
-              } else if (data.step === 'graph_loaded') {
-                thinkingTraceApi.setStatusLabel('📊 Graph loaded');
-                thinkingTraceApi.appendTrace(`[${timestamp()}] 📊 ${progressMsg}`, 15);
-              } else if (data.step === 'graph_starting') {
-                thinkingTraceApi.setStatusLabel('⚡ Executing graph...');
-                thinkingTraceApi.appendTrace(`[${timestamp()}] ⚡ ${progressMsg}`, 15);
-              } else if (data.step === 'node_executing') {
-                thinkingTraceApi.setStatusLabel('🔄 Processing...');
-                thinkingTraceApi.appendTrace(`[${timestamp()}] ▸ ${progressMsg}`, 15);
-              } else if (data.step === 'thinking') {
-                // Show actual AI thoughts from scratchpad
-                console.log('[Thinking Event] Appending to trace:', progressMsg.substring(0, 150));
-                thinkingTraceApi.setStatusLabel('🧠 Thinking...');
-                thinkingTraceApi.appendTrace(`[${timestamp()}] 💭 ${progressMsg}`, 15);
-              } else if (data.step === 'node_error') {
-                thinkingTraceApi.setStatusLabel('⚠️ Error detected...');
-                thinkingTraceApi.appendTrace(`[${timestamp()}] ❌ ERROR: ${progressMsg}`, 15);
-              } else if (data.step === 'graph_complete') {
-                // Graph execution completed, waiting for final answer
-                thinkingTraceApi.setStatusLabel('✓ Completed, finalizing...');
-                thinkingTraceApi.appendTrace(`[${timestamp()}] ✓ ${progressMsg}`, 15);
-              } else if (data.step?.startsWith('big_brother_')) {
-                // Big Brother status updates - show prominent status WITH TIMESTAMPS
-                if (data.step === 'big_brother_init') {
-                  thinkingTraceApi.setStatusLabel('🤖 Big Brother initializing...');
-                  thinkingTraceApi.appendTrace(`[${timestamp()}] 🤖 Big Brother: Initializing...`, 15);
-                } else if (data.step === 'big_brother_ready') {
-                  thinkingTraceApi.setStatusLabel('🤖 Big Brother ready');
-                  thinkingTraceApi.appendTrace(`[${timestamp()}] 🤖 Big Brother: Ready`, 15);
-                } else if (data.step === 'big_brother_sending') {
-                  thinkingTraceApi.setStatusLabel('📤 Sending to Big Brother...');
-                  thinkingTraceApi.appendTrace(`[${timestamp()}] 📤 Big Brother: Sending prompt...`, 15);
-                } else if (data.step === 'big_brother_executing') {
-                  thinkingTraceApi.setStatusLabel('⚙️ Big Brother working...');
-                  thinkingTraceApi.appendTrace(`[${timestamp()}] ⚙️ Big Brother: Executing...`, 15);
-                } else if (data.step === 'big_brother_complete') {
-                  thinkingTraceApi.setStatusLabel('✅ Big Brother complete');
-                  thinkingTraceApi.appendTrace(`[${timestamp()}] ✅ Big Brother: Complete`, 15);
-                } else if (data.step === 'big_brother_error') {
-                  thinkingTraceApi.setStatusLabel('❌ Big Brother error');
-                  thinkingTraceApi.appendTrace(`[${timestamp()}] ❌ Big Brother: ERROR`, 15);
-                }
-                thinkingTraceApi.appendTrace(`[${timestamp()}] ${progressMsg}`, 15);
-              } else {
-                // Generic progress update
-                thinkingTraceApi.appendTrace(`[${timestamp()}] ${progressMsg}`, 15);
-              }
-            }
-          } else if (type === 'cancelled') {
-            // Request was cancelled by user
-            clearConnectionTracking();
-            activeChatTaskId = null;
-            thinkingTraceApi.stop();
-            messagesApi.pushMessage('system', data.message || '⏸️ Request cancelled');
-            loading = false;
-            reasoningStages = [];
-            chatResponseStream?.close();
-            chatResponseStream = null;
-
-          } else if (type === 'reasoning') {
-            thinkingTraceApi.stop();
-            if (typeof data === 'string') {
-              reasoningStages = [
-                {
-                  round: 1,
-                  stage: 'plan',
-                  content: data,
-                  timestamp: Date.now(),
-                },
-              ];
-            } else if (data && typeof data === 'object') {
-              const stageObj: ReasoningStage = {
-                round: Number(data.round) > 0 ? Number(data.round) : 1,
-                stage: String(data.stage || 'plan'),
-                content: String(data.content || ''),
-                timestamp: Date.now(),
-              };
-              reasoningStages = [...reasoningStages, stageObj];
-            }
-          } else if (type === 'answer') {
-            clearConnectionTracking();
-            activeChatTaskId = null;
-            thinkingTraceApi.stop();
-            if (reasoningStages.length > 0) {
-              // Only persist reasoning to messages in inner dialogue mode
-              // Persisted reasoning arrives only from the Inner Dialogue Buffer stream.
-              reasoningStages = [];
-            }
-            pushGeneratedResponse(data.response, requestComposeTarget, { facet: data.facet });
-
-            loading = false;
-            chatResponseStream?.close();
-            chatResponseStream = null;
-
-          } else if (type === 'queued_task_completed') {
-            clearConnectionTracking();
-            activeChatTaskId = null;
-            thinkingTraceApi.stop();
-            loading = false;
-            reasoningStages = [];
-            chatResponseStream?.close();
-            chatResponseStream = null;
-
-          } else if (type === 'system_message') {
-            // System status message (e.g., summarization progress)
-            if (data.content) {
-              messagesApi.pushMessage('system', data.content);
-            }
-          } else if (type === 'error') {
-            clearConnectionTracking();
-            activeChatTaskId = null;
-            // Display the actual error message from the server
-            const errorMessage = data.message || 'Unknown error occurred';
-            const suggestion = data.suggestion || '';
-            const isGPUError = data.isGPUError || errorMessage.includes('GPU') || errorMessage.includes('memory');
-
-            console.error('[chat] Server error:', errorMessage);
-
-            // Format user-friendly error message
-            let displayMessage = `⚠️ ${errorMessage}`;
-            if (suggestion) {
-              displayMessage += `\n\n💡 ${suggestion}`;
-            } else if (isGPUError) {
-              displayMessage += '\n\n💡 Try refreshing the page or wait a moment for GPU memory to clear.';
-            }
-
-            messagesApi.pushMessage('system', displayMessage);
-            thinkingTraceApi.stop();
-            loading = false;
-            reasoningStages = [];
-            chatResponseStream?.close();
-            chatResponseStream = null;
-
-            return; // Don't throw, we handled it
-          }
-          // Note: Big Brother output is streamed to System Terminal's Big Brother tab via WebSocket
-        } catch (err) {
-          console.error('Chat stream error:', err);
-          clearConnectionTracking();
-          activeChatTaskId = null;
-          showChatError(err);
-          thinkingTraceApi.stop();
-          loading = false;
-          reasoningStages = [];
-          chatResponseStream?.close();
-          chatResponseStream = null;
-
-        }
-      };
-
-      chatResponseStream.onerror = async (err) => {
-        if (activeChatTaskId !== task.id) return;
-        console.error('[EventSource] onerror fired! Error:', err);
-        console.error('[EventSource] ReadyState:', chatResponseStream?.readyState);
-        clearConnectionTracking();
-        chatResponseStream?.close();
-        chatResponseStream = null;
-
-        // Force a health check to get accurate connection status
-        const healthResult = await forceHealthCheck();
-
-        // Once the server has accepted the queued message, never resubmit it
-        // through another tier: that can create a duplicate answer. Reconcile
-        // the accepted task when possible and let buffers resync after restart.
-        if (!healthResult.connected) {
-          console.log('[EventSource] Server went offline after accepting queued message');
-          activeChatTaskId = null;
-          thinkingTraceApi.stop();
-          loading = false;
-          reasoningStages = [];
-          messagesApi.pushMessage('system', 'The server accepted your message, but the live connection was lost. Its saved result will appear when the server reconnects.');
-
-          return;
-        }
-
+    sendInProgress = true;
+    try {
+      await interruptAssistantSpeech('user-input');
+      await ttsApi.ensureAudioUnlocked();
+      if (ttsEnabled) ttsApi.prefetchVoiceResources();
+      activityApi.signalActivity();
+      if (!loading) {
+        reasoningStages = [];
         thinkingTraceApi.setActive(true);
-        thinkingTraceApi.setStatusLabel('🔄 Reconnecting to accepted message...');
-        thinkingTraceApi.appendTrace('Live response stream disconnected; the server task is still running.', 15);
-        void reconcileQueuedChatTask(task.id);
-      };
-
-    } catch (err) {
-      console.error('Chat setup error:', err);
-      if (activeChatTaskId) {
-        thinkingTraceApi.setActive(true);
-        thinkingTraceApi.setStatusLabel('🔄 Following accepted message...');
-        thinkingTraceApi.appendTrace('The live response could not open; checking the accepted server task.', 15);
-        void reconcileQueuedChatTask(activeChatTaskId);
-        sendInProgress = false;
-        return;
+        thinkingTraceApi.setStatusLabel('Sending message…');
+        thinkingTraceApi.setTrace(['Submitting message to Work Coordinator']);
       }
-      showChatError(err);
-      thinkingTraceApi.stop();
-      loading = false;
-      sendInProgress = false; // Safety net: ensure guard is reset on error
-      reasoningStages = [];
-
+      const task = await enqueueUserMessageTask(taskInput);
+      if (input === submittedInput) input = '';
+      if ($selectedMessage === submittedReply) messagesApi.clearSelection();
+      if (!isComponentMounted) return;
+      pushComposedInput(message, target);
+      openChatTaskStream(task.id, target, card);
+    } catch (error) {
+      if (isComponentMounted) showChatError(error);
+      if (!queuedChatStreams.size) thinkingTraceApi.stop();
+    } finally {
+      sendInProgress = false;
     }
   }
 
-  /**
-   * Stop/cancel the current request
-   * Aborts both client-side fetch and notifies server
-   */
   async function stopRequest() {
-    if (!loading) return;
-
-    console.log('[stop-request] Stopping request...');
-    const queuedResponseTaskId = responsePipelineTaskId;
-
-    // 1. Abort client-side fetch immediately
-    if (responsePipelineAbortController) {
-      console.log('[stop-request] Aborting client-side fetch');
-      responsePipelineAbortController.abort();
-      responsePipelineAbortController = null;
-    }
-
-    // 2. Cancel the canonical Work Coordinator item so its AbortSignal reaches
-    // the graph executor even if the browser stream has already closed.
-    if (queuedResponseTaskId) {
-      try {
-        const response = await apiFetch(`/api/unified-queue/tasks/${encodeURIComponent(queuedResponseTaskId)}`, {
-          method: 'DELETE',
-        });
-        if (!response.ok && response.status !== 409) {
-          console.error('[stop-request] Failed to cancel queued response task:', await response.text());
-        }
-      } catch (error) {
-        console.error('[stop-request] Error cancelling queued response task:', error);
+    const taskId = activeChatTaskId;
+    if (!taskId) return;
+    try {
+      const response = await apiFetch(`/api/unified-queue/tasks/${encodeURIComponent(taskId)}`, { method: 'DELETE' });
+      if (!response.ok && response.status !== 409) {
+        const data = await response.json();
+        throw new Error(data.error || `Could not cancel task (${response.status})`);
       }
-    }
-
-    // 3. Cancel any visible terminal-provider session correlated to this turn.
-    if ($conversationSessionId) {
-      try {
-        console.log('[stop-request] Requesting server-side cancellation for session:', $conversationSessionId);
-        const response = await apiFetch('/api/cancel-chat', {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({
-            sessionId: $conversationSessionId,
-            reason: 'User clicked stop button'
-          })
-        });
-
-        if (!response.ok) {
-          console.error('[stop-request] Failed to cancel:', await response.text());
-        } else {
-          console.log('[stop-request] Server-side cancellation requested successfully');
-        }
-      } catch (error) {
-        console.error('[stop-request] Error requesting server-side cancellation:', error);
-      }
+    } catch (error) {
+      showChatError(error);
     }
   }
 
@@ -1766,21 +777,22 @@
     const target = composeTarget;
     if (!target) return;
 
-    // Terminal history has its own session identity, owned by the terminal service.
-    if (target !== 'terminal') {
-      try {
-        const newId = messagesApi.generateSessionId();
-        localStorage.setItem('mh_conversation_session_id', newId);
-      } catch {
-        messagesApi.generateSessionId();
-      }
-    }
-
     // Clear only the explicit compose target. Read-tab selection never decides
     // which canonical buffer is mutated.
     const serverCleared = await messagesApi.clearServerBuffer();
     if (serverCleared) {
-      if (target === 'conversation') liveConversationMessages = [];
+      liveConversationMessages = liveConversationMessages.filter(message =>
+        (message.responseEntry?.mode ?? message.meta?.bufferSource ?? (message.meta?.liveConversation ? 'conversation' : undefined)) !== target);
+      // Terminal history has its own session identity, owned by the terminal service.
+      if (target !== 'terminal') {
+        try {
+          const newId = messagesApi.generateSessionId();
+          localStorage.setItem('mh_conversation_session_id', newId);
+        } catch {
+          messagesApi.generateSessionId();
+        }
+      }
+
       messages.update(current => replaceBufferSlice(current, target, []));
       console.log(`[ChatInterface] ${target} buffer cleared successfully`);
     } else {
@@ -1888,14 +900,14 @@
         {#if displayMessages.length === 0 && !selectedViews.has('terminal')}
           <div class="welcome-screen">
             <div class="welcome-icon">🧠 => 💻</div>
-            <h2 class="welcome-title">MetaHuman OS</h2>
+            <h2 class="welcome-title">Ainekio OS</h2>
             <p class="welcome-subtitle">
               {#if selectedViews.has('conversation') && selectedViews.has('inner')}
                 View combined conversation and inner dialogue
               {:else if selectedViews.has('conversation')}
                 Start a conversation with your digital personality extension
               {:else}
-                Explore your MetaHuman's inner dialogue
+                Explore your Ainekio OS's inner dialogue
               {/if}
             </p>
             <div class="welcome-suggestions">
@@ -1916,7 +928,6 @@
             mode="combined"
             showSystemMessages={true}
             selectedMessageIndex={$selectedMessageIndex}
-            {loading}
             {reasoningStages}
             showThinkingIndicator={$showThinkingIndicator}
             thinkingSteps={$thinkingSteps}
@@ -1940,13 +951,9 @@
         {/if}
       </div>
 
-  <!-- Approval Prompt - appears above input when desires need approval -->
-  <!-- Shows in BOTH conversation AND inner dialogue modes - users need to see approval requests regardless of view -->
-  <ApprovalPrompt onApprovalChange={() => {
-    console.log('[chat] Approval change detected');
-  }} />
+  <!-- Pending Desire approvals remain available across the selected chat views. -->
+  <ApprovalPrompt />
 
-  <!-- Operator proposals are displayed inline by OperatorProposalCard. -->
 
   <!-- Input Area -->
   <div class="input-container">
@@ -2040,7 +1047,264 @@
 </div>
 
 <style>
-  .read-only-notice { padding: .5rem .75rem 0; color: var(--text-muted, #9ca3af); font-size: .8rem; }
+  .chat-interface {
+    @apply flex flex-col h-full w-full overflow-hidden;
+  }
+
+  .mode-toggle-container {
+    @apply flex flex-wrap items-center justify-between gap-3 p-4 border-b border-black/10 flex-shrink-0;
+  }
+
+  :global(.dark) .mode-toggle-container {
+    @apply border-white/10;
+  }
+
+  .mode-toggle {
+    @apply flex flex-wrap items-center gap-2 p-1 bg-black/5 rounded-lg;
+  }
+
+  :global(.dark) .mode-toggle {
+    @apply bg-white/5;
+  }
+
+  .mode-btn {
+    @apply inline-flex items-center gap-2 px-3 py-2 border-0 bg-transparent rounded-md text-sm font-medium
+           text-gray-500 cursor-pointer transition-all;
+  }
+
+  :global(.dark) .mode-btn {
+    @apply text-gray-400;
+  }
+
+  .mode-btn:hover {
+    @apply bg-black/5;
+  }
+
+  :global(.dark) .mode-btn:hover {
+    @apply bg-white/5;
+  }
+
+  .mode-btn.active {
+    @apply bg-white text-gray-900 shadow-sm;
+  }
+
+  :global(.dark) .mode-btn.active {
+    @apply bg-gray-900 text-gray-100;
+  }
+
+  .messages-container {
+    @apply flex-1 overflow-y-auto overflow-x-hidden;
+  }
+
+  .chat-main-area, .messages-panel {
+    @apply flex flex-col flex-1 overflow-hidden;
+  }
+
+  .input-container {
+    @apply p-4 border-t border-black/10 bg-white/80 backdrop-blur-xl flex-shrink-0;
+    padding-bottom: calc(1rem + env(safe-area-inset-bottom, 0px));
+  }
+
+  :global(.dark) .input-container {
+    @apply border-white/10 bg-gray-950/80;
+  }
+
+  .welcome-screen {
+    @apply flex flex-col items-center justify-center h-full p-8 text-center;
+  }
+
+  .welcome-icon {
+    @apply text-6xl mb-4;
+  }
+
+  .welcome-title {
+    @apply text-3xl font-bold text-gray-900 m-0 mb-2;
+  }
+
+  :global(.dark) .welcome-title {
+    @apply text-gray-100;
+  }
+
+  .welcome-subtitle {
+    @apply text-base text-gray-500 m-0 mb-8;
+  }
+
+  :global(.dark) .welcome-subtitle {
+    @apply text-gray-400;
+  }
+
+  .suggestion {
+    @apply p-4 border border-black/10 bg-white rounded-xl text-sm text-gray-900 cursor-pointer transition-all
+           text-left;
+  }
+
+  :global(.dark) .suggestion {
+    @apply border-white/10 bg-gray-900 text-gray-100;
+  }
+
+  .suggestion:hover {
+    @apply border-violet-600 shadow-lg shadow-violet-600/15;
+  }
+
+  :global(.dark) .suggestion:hover {
+    @apply border-violet-400 shadow-violet-400/15;
+  }
+
+  .mode-label {
+    @apply text-sm font-semibold px-3 py-1.5 rounded-full bg-white/55 transition-all;
+  }
+
+  :global(.dark) .mode-label {
+    @apply bg-gray-900/55;
+  }
+
+  .mode-icon {
+    @apply text-base leading-none;
+  }
+
+  .quick-audio {
+    @apply flex items-center gap-2 flex-wrap;
+  }
+
+  .active-operator-toggle {
+    @apply inline-flex items-center gap-1 px-2 py-1.5 border border-black/15 bg-white text-gray-900 rounded-md
+           cursor-pointer transition-all;
+  }
+
+  :global(.dark) .active-operator-toggle {
+    @apply border-white/20 bg-gray-900 text-gray-100;
+  }
+
+  .active-operator-toggle:hover {
+    @apply bg-gray-50;
+  }
+
+  :global(.dark) .active-operator-toggle:hover {
+    @apply bg-gray-800;
+  }
+
+  .active-operator-toggle.semi {
+    @apply bg-amber-500 text-white border-amber-500;
+  }
+
+  :global(.dark) .active-operator-toggle.semi {
+    @apply bg-amber-400 text-gray-900 border-amber-400;
+  }
+
+  .active-operator-toggle.full {
+    @apply bg-violet-700 text-white border-violet-700;
+    box-shadow: 0 0 0 2px rgb(124 58 237 / 0.2);
+  }
+
+  :global(.dark) .active-operator-toggle.full {
+    @apply bg-violet-500 text-white border-violet-400;
+  }
+
+  .active-operator-toggle.loading {
+    @apply opacity-60 cursor-wait;
+  }
+
+  .active-operator-icon {
+    @apply text-base;
+  }
+
+  .active-operator-badge {
+    @apply text-xs bg-black/15 text-current rounded px-1 font-bold;
+  }
+
+  :global(.dark) .active-operator-badge {
+    @apply bg-white/20;
+  }
+
+  .icon-btn {
+    @apply inline-flex items-center gap-1 px-2 py-1.5 border border-black/15 bg-white text-gray-900 rounded-md
+           cursor-pointer;
+  }
+
+  :global(.dark) .icon-btn {
+    @apply border-white/20 bg-gray-900 text-gray-100;
+  }
+
+  .icon-btn.tts-active {
+    @apply bg-green-600 text-white border-green-600;
+    box-shadow: 0 0 8px 2px rgba(34, 197, 94, 0.5);
+  }
+
+  :global(.dark) .icon-btn.tts-active {
+    @apply bg-green-500 border-green-500;
+  }
+
+  .welcome-suggestions {
+    @apply flex flex-col gap-3 max-w-md w-full;
+  }
+
+  .clear-btn .clear-icon {
+    display: none;
+  }
+
+  .clear-btn .clear-text {
+    display: inline;
+  }
+
+  @media (max-width: 640px) {
+    .mode-toggle-container {
+      flex-wrap: nowrap;
+      gap: 0.5rem;
+      padding: 0.75rem 0.5rem;
+      overflow-x: auto;
+      scrollbar-width: none;
+    }
+
+    .mode-toggle-container::-webkit-scrollbar {
+      display: none;
+    }
+
+    .mode-toggle {
+      flex: 0 0 auto;
+      gap: 0.35rem;
+    }
+
+    .mode-btn {
+      flex: 0 0 auto;
+      padding: 0.45rem 0.5rem;
+      font-size: 1rem;
+      min-width: unset;
+    }
+
+    .mode-label,
+    .control-text {
+      display: none;
+    }
+
+    .mode-icon {
+      font-size: 1.1rem;
+    }
+
+    .icon-btn {
+      padding: 0.35rem 0.45rem;
+      min-width: unset;
+    }
+
+    .clear-btn {
+      padding: 0.35rem 0.5rem;
+      min-width: unset;
+      font-size: 1.1rem;
+    }
+
+    .clear-btn .clear-text {
+      display: none;
+    }
+
+    .clear-btn .clear-icon {
+      display: inline;
+    }
+  }
+
+  .read-only-notice {
+    padding: .5rem .75rem 0;
+    color: var(--text-muted, #9ca3af);
+    font-size: .8rem;
+  }
 
   .compose-target {
     display: flex;
@@ -2083,5 +1347,4 @@
     font-size: 0.78rem;
     white-space: pre-wrap;
   }
-
 </style>

@@ -189,5 +189,3 @@ export const CardContextLoaderNode: NodeDefinition = defineNode({
     };
   },
 });
-
-export default CardContextLoaderNode;

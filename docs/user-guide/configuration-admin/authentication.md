@@ -1,6 +1,6 @@
 # Authentication
 
-MetaHuman OS uses server-owned sessions and profile-scoped authorization. Login establishes an account identity, role, and resolved profile; it is not only a client-side preference.
+Ainekio OS uses server-owned sessions and profile-scoped authorization. Login establishes an account identity, role, and resolved profile; it is not only a client-side preference.
 
 ## Create the First Account
 
@@ -10,7 +10,7 @@ On a new installation, choose **Create Account**. The first account becomes the 
 - password: at least 6 characters;
 - display name and email: optional.
 
-After creation, the interface displays 10 recovery codes. Save them outside the MetaHuman repository in a password manager or another secure location. Each code is single-use.
+After creation, the interface displays 10 recovery codes. Save them outside the Ainekio OS repository in a password manager or another secure location. Each code is single-use.
 
 Complete the onboarding flow before relying on the profile for normal work.
 
@@ -50,7 +50,7 @@ These local owner operations are privileged. Do not expose them through an untru
 
 ## Multi-Device Profile Sync
 
-The login screen can bootstrap a profile from a configured MetaHuman server. **Sync from Server** requires the remote URL, username, and password. The flow verifies remote credentials, imports priority profile data, creates or updates the local account through the sync owner, imports profile files, and saves sync configuration.
+The login screen can bootstrap a profile from a configured Ainekio OS server. **Sync from Server** requires the remote URL, username, and password. The flow verifies remote credentials, imports priority profile data, creates or updates the local account through the sync owner, imports profile files, and saves sync configuration.
 
 A successful login is not proof that sync completed. Confirm the explicit sync result and imported profile state. If profile import succeeds but saving sync configuration fails, address the reported partial state before assuming future synchronization is configured.
 

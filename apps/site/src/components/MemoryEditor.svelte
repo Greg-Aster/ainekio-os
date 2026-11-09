@@ -1,5 +1,5 @@
 <script lang="ts">
-  import { createEventDispatcher } from 'svelte';
+  import { createEventDispatcher, onDestroy } from 'svelte';
   import { apiFetch } from '../lib/client/api-config';
 
   export let isOpen = false;
@@ -9,55 +9,73 @@
   const dispatch = createEventDispatcher();
 
   let content: string = '';
-  let originalContent: string = '';
+  let loaded: { relPath: string; content: string } | null = null;
+  let read: AbortController | undefined;
   let loading = false;
   let saving = false;
   let error: string = '';
-  let format: 'json' | 'text' = 'json';
   let isDirty = false;
 
   $: if (isOpen && relPath) {
-    loadContent();
+    void loadContent(relPath);
+  } else {
+    resetContent();
   }
 
-  $: isDirty = content !== originalContent;
+  $: isDirty = loaded !== null && content !== loaded.content;
 
-  async function loadContent() {
+  onDestroy(resetContent);
+
+  function resetContent() {
+    read?.abort();
+    content = '';
+    loaded = null;
+    error = '';
+  }
+
+  async function loadContent(path = relPath) {
+    read?.abort();
+    const current = new AbortController();
+    read = current;
+    content = '';
+    loaded = null;
     loading = true;
     error = '';
     try {
-      const res = await apiFetch(`/api/memory-content?relPath=${encodeURIComponent(relPath)}`);
+      const res = await apiFetch(`/api/memory-content?relPath=${encodeURIComponent(path)}`, { signal: current.signal });
       const data = await res.json();
+      if (current.signal.aborted) return;
       if (!res.ok || !data.success) {
         throw new Error(data?.error || 'Failed to load memory');
       }
-      content = data.content || '';
-      originalContent = content;
-      format = data.format || 'text';
+      content = data.content;
+      loaded = { relPath: path, content };
     } catch (e) {
-      error = (e as Error).message;
+      if (!current.signal.aborted) error = (e as Error).message;
     } finally {
-      loading = false;
+      if (read === current) { read = undefined; loading = false; }
     }
   }
 
   async function saveContent() {
+    const document = loaded!;
+    const submitted = content;
     saving = true;
     error = '';
     try {
       const res = await apiFetch('/api/memory-content', {
         method: 'PUT',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ relPath, content }),
+        body: JSON.stringify({ relPath: document.relPath, content: submitted }),
       });
       const data = await res.json();
       if (!res.ok || !data.success) {
         throw new Error(data?.error || 'Failed to save memory');
       }
-      originalContent = content;
-      dispatch('saved', { relPath });
+      if (loaded === document) loaded = { ...document, content: submitted };
+      dispatch('saved', { relPath: document.relPath });
     } catch (e) {
-      error = (e as Error).message;
+      if (loaded === document) error = (e as Error).message;
     } finally {
       saving = false;
     }
@@ -70,9 +88,7 @@
       }
     }
     isOpen = false;
-    content = '';
-    originalContent = '';
-    error = '';
+    resetContent();
     dispatch('close');
   }
 
@@ -128,19 +144,27 @@
             <div class="spinner"></div>
             Loading memory...
           </div>
-        {:else}
+        {:else if loaded}
           <textarea
             class="editor-textarea"
             bind:value={content}
             placeholder="Memory content..."
             spellcheck="false"
           ></textarea>
+        {:else}
+          <div class="flex h-full items-center justify-center">
+            <button class="btn-secondary" on:click={() => loadContent()}>Retry loading memory</button>
+          </div>
         {/if}
       </div>
 
       <div class="flex items-center justify-between p-4 border-t border-gray-200 dark:border-gray-700">
         <div class="flex items-center gap-4 text-xs">
-          {#if isDirty}
+          {#if loading}
+            <span class="text-gray-500">Loading memory…</span>
+          {:else if !loaded}
+            <span class="text-gray-500">Memory not loaded</span>
+          {:else if isDirty}
             <span class="text-yellow-500 font-medium">Unsaved changes</span>
           {:else}
             <span class="text-green-500 font-medium">All changes saved</span>

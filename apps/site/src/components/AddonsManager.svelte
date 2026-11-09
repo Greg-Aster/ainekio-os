@@ -1,23 +1,15 @@
 <script lang="ts">
-  import { onMount } from 'svelte';
+  import { onMount, onDestroy } from 'svelte';
   import { apiFetch } from '../lib/client/api-config';
+  import { readServerEvents } from '../lib/client/sse';
 
   interface Addon {
-    id: string;
     name: string;
     description: string;
     category: string;
     installed: boolean;
     size: string;
     requirements: Record<string, string>;
-    dependencies: {
-      pip?: string[];
-      system?: string[];
-    };
-    installation?: {
-      script?: string;
-      commands?: string[];
-    };
     note?: string;
   }
 
@@ -26,167 +18,142 @@
     description: string;
   }
 
+  interface InstallLog {
+    level: string;
+    message: string;
+    timestamp: Date;
+  }
+
+  interface AddonOperation {
+    controller: AbortController | null;
+    logs: InstallLog[];
+  }
+
   let addons: Record<string, Addon> = {};
   let categories: Record<string, AddonCategory> = {};
   let loading = true;
   let error: string | null = null;
-  let installing: Record<string, boolean> = {};
-
-  // Installation progress modal
-  let showInstallModal = false;
-  let installLogs: Array<{ level: string; message: string; timestamp: Date }> = [];
+  let operations: Record<string, AddonOperation> = {};
   let currentInstallAddon: string | null = null;
+  const catalogController = new AbortController();
+  $: installation = currentInstallAddon ? operations[currentInstallAddon] : undefined;
 
-  onMount(async () => {
-    await loadAddons();
+  onMount(() => { void loadAddons(); });
+  onDestroy(() => {
+    catalogController.abort();
+    closeInstallModal();
   });
 
   async function loadAddons() {
     try {
-      loading = true;
-      const response = await apiFetch('/api/addons');
-      if (!response.ok) throw new Error('Failed to load addons');
-
+      const response = await apiFetch('/api/addons', { signal: catalogController.signal });
       const data = await response.json();
-      addons = { ...data.addons };
-      categories = { ...data.categories };
+      if (!response.ok) throw new Error(data.error);
+      addons = data.addons;
+      categories = data.categories;
       error = null;
-    } catch (e) {
-      error = String(e);
-      console.error('[AddonsManager] Error loading addons:', e);
+    } catch (cause) {
+      if (!catalogController.signal.aborted) error = String(cause);
     } finally {
       loading = false;
     }
   }
 
+  function appendLog(addonId: string, level: string, message: string) {
+    operations[addonId].logs = [...operations[addonId].logs, { level, message, timestamp: new Date() }];
+  }
+
   async function installAddon(addonId: string) {
-    if (!confirm(`Install ${addons[addonId].name}?\n\nThis will download and configure the addon. Installation may take several minutes.`)) {
-      return;
-    }
+    if (!confirm(`Install ${addons[addonId].name}?\n\nThis will download and configure the addon. Installation may take several minutes.`)) return;
 
+    closeInstallModal();
+    const controller = new AbortController();
+    operations[addonId] = { controller, logs: [] };
+    currentInstallAddon = addonId;
+    error = null;
     try {
-      currentInstallAddon = addonId;
-      installLogs = [];
-      showInstallModal = true;
-      installing = { ...installing, [addonId]: true };
-
       const response = await apiFetch('/api/addons/install-stream', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ addonId }),
+        signal: controller.signal,
       });
-
-      if (!response.ok || !response.body) {
-        const details = await response.json().catch(() => ({}));
-        throw new Error(details.error || 'Failed to start installation stream');
+      if (!response.ok) {
+        const data = await response.json();
+        throw new Error(data.error);
       }
 
-      const reader = response.body.getReader();
-      const decoder = new TextDecoder();
-      let buffer = '';
-
-      while (true) {
-        const { done, value } = await reader.read();
-        if (done) break;
-
-        buffer += decoder.decode(value, { stream: true });
-        const lines = buffer.split('\n\n');
-        buffer = lines.pop() || '';
-
-        for (const line of lines) {
-          if (!line.trim()) continue;
-
-          const [eventLine, dataLine] = line.split('\n');
-          if (!eventLine || !dataLine) continue;
-
-          const event = eventLine.replace('event: ', '').trim();
-          const dataStr = dataLine.replace('data: ', '').trim();
-
-          try {
-            const data = JSON.parse(dataStr);
-
-            if (event === 'start') {
-              installLogs = [...installLogs, { level: 'info', message: data.message, timestamp: new Date() }];
-            } else if (event === 'log') {
-              installLogs = [...installLogs, { level: data.level, message: data.message, timestamp: new Date() }];
-
-              setTimeout(() => {
-                const logContainer = document.querySelector('.install-logs');
-                if (logContainer) {
-                  logContainer.scrollTop = logContainer.scrollHeight;
-                }
-              }, 10);
-            } else if (event === 'complete') {
-              installLogs = [...installLogs, {
-                level: data.success ? 'info' : 'error',
-                message: data.success ? data.message : data.error,
-                timestamp: new Date()
-              }];
-              installing = { ...installing, [addonId]: false };
-
-              if (data.success) {
-                await loadAddons();
-              }
-              break;
-            } else if (event === 'error') {
-              installLogs = [...installLogs, { level: 'error', message: data.message, timestamp: new Date() }];
-              installing = { ...installing, [addonId]: false };
-              break;
-            }
-          } catch (parseError) {
-            console.error('[AddonsManager] Failed to parse SSE data:', parseError);
-          }
+      let completed = false;
+      for await (const frame of readServerEvents(response, controller.signal)) {
+        if (frame.event === 'start' || frame.event === 'log') {
+          const data = JSON.parse(frame.data) as { level: string; message: string };
+          appendLog(addonId, frame.event === 'start' ? 'info' : data.level, data.message);
+        } else if (frame.event === 'complete') {
+          const data = JSON.parse(frame.data) as { success: true; message: string } | { success: false; error: string };
+          if (!data.success) throw new Error(data.error);
+          appendLog(addonId, 'info', data.message);
+          addons[addonId].installed = true;
+          completed = true;
+          break;
+        } else if (frame.event === 'error') {
+          const data = JSON.parse(frame.data) as { message: string };
+          throw new Error(data.message);
         }
       }
-
-    } catch (e) {
-      error = `Installation failed: ${String(e)}`;
-      console.error('[AddonsManager] Install error:', e);
-      installing = { ...installing, [addonId]: false };
-      showInstallModal = false;
+      if (!completed) throw new Error('Installation stream ended without a completion result.');
+    } catch (cause) {
+      if (!controller.signal.aborted) {
+        error = `Installation failed: ${String(cause)}`;
+        appendLog(addonId, 'error', error);
+      }
+    } finally {
+      operations[addonId].controller = null;
+      if (currentInstallAddon !== addonId) delete operations[addonId];
     }
   }
 
   function closeInstallModal() {
-    showInstallModal = false;
+    const addonId = currentInstallAddon;
     currentInstallAddon = null;
-    installLogs = [];
+    if (addonId && !operations[addonId].controller) delete operations[addonId];
   }
 
   async function uninstallAddon(addonId: string) {
-    if (!confirm(`Uninstall ${addons[addonId].name}?\n\nThis will remove the addon and its data.`)) {
-      return;
-    }
+    if (!confirm(`Uninstall ${addons[addonId].name}?\n\nThis will remove the addon and its data.`)) return;
 
+    const controller = new AbortController();
+    operations[addonId] = { controller, logs: [] };
+    error = null;
     try {
-      installing = { ...installing, [addonId]: true };
-
       const response = await apiFetch('/api/addons/uninstall', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ addonId }),
+        signal: controller.signal,
       });
-
-      if (!response.ok) {
-        const errorData = await response.json();
-        throw new Error(errorData.error || 'Uninstallation failed');
-      }
-
-      await loadAddons();
-    } catch (e) {
-      error = `Uninstallation failed: ${String(e)}`;
-      console.error('[AddonsManager] Uninstall error:', e);
+      const data = await response.json();
+      if (!response.ok) throw new Error(data.error);
+      addons[addonId].installed = false;
+    } catch (cause) {
+      if (!controller.signal.aborted) error = `Uninstallation failed: ${String(cause)}`;
     } finally {
-      installing = { ...installing, [addonId]: false };
+      operations[addonId].controller = null;
+      if (currentInstallAddon !== addonId) delete operations[addonId];
     }
   }
 
+  function scrollLogs(node: HTMLDivElement, _count: number) {
+    function update() { node.scrollTop = node.scrollHeight; }
+    update();
+    return { update };
+  }
 </script>
+
 
 <div class="p-6 max-w-[1200px] mx-auto">
   <div class="mb-8">
     <h2 class="m-0 mb-2 text-[1.75rem] text-gray-800 dark:text-gray-100">Addons</h2>
-    <p class="m-0 text-gray-500 dark:text-gray-400 text-[0.95rem]">Extend MetaHuman with optional features. Install only what you need to keep the system lightweight.</p>
+    <p class="m-0 text-gray-500 dark:text-gray-400 text-[0.95rem]">Extend Ainekio OS with optional features. Install only what you need to keep the system lightweight.</p>
   </div>
 
   {#if error}
@@ -244,33 +211,22 @@
             {/if}
           </div>
 
-          {#if addon.dependencies?.pip && addon.dependencies.pip.length > 0}
-            <div class="mb-4 text-sm">
-              <strong class="block mb-2 text-gray-600 dark:text-gray-300">Python packages:</strong>
-              <div class="flex flex-wrap gap-1.5">
-                {#each addon.dependencies.pip as dep}
-                  <code class="px-2 py-1 bg-indigo-100 dark:bg-indigo-900 text-indigo-700 dark:text-indigo-200 rounded text-xs font-mono">{dep}</code>
-                {/each}
-              </div>
-            </div>
-          {/if}
-
           <div class="flex gap-3">
             {#if addon.installed}
               <button
                 class="flex-1 py-2.5 px-4 border-none rounded-md font-semibold cursor-pointer transition-all bg-gray-200 dark:bg-gray-700 text-gray-600 dark:text-gray-300 hover:bg-gray-300 dark:hover:bg-gray-600 disabled:opacity-50 disabled:cursor-not-allowed"
                 on:click={() => uninstallAddon(addonId)}
-                disabled={installing[addonId]}
+                disabled={Boolean(operations[addonId]?.controller)}
               >
-                {installing[addonId] ? 'Uninstalling...' : 'Uninstall'}
+                {operations[addonId]?.controller ? 'Uninstalling...' : 'Uninstall'}
               </button>
             {:else}
               <button
                 class="flex-1 py-2.5 px-4 border-none rounded-md font-semibold cursor-pointer transition-all bg-violet-600 text-white hover:bg-violet-700 disabled:opacity-50 disabled:cursor-not-allowed"
                 on:click={() => installAddon(addonId)}
-                disabled={installing[addonId]}
+                disabled={Boolean(operations[addonId]?.controller)}
               >
-                {installing[addonId] ? 'Installing...' : 'Install'}
+                {operations[addonId]?.controller ? 'Installing...' : 'Install'}
               </button>
             {/if}
           </div>
@@ -278,36 +234,36 @@
       {/each}
     </div>
 
-    {#if Object.keys(addons).length === 0}
+    {#if !error && Object.keys(addons).length === 0}
       <div class="text-center py-12 text-gray-500 dark:text-gray-400">
-        <p>No addons found in this category.</p>
+        <p>No addons are available.</p>
       </div>
     {/if}
   {/if}
 
   <!-- Installation Progress Modal -->
-  {#if showInstallModal && currentInstallAddon}
+  {#if currentInstallAddon && installation}
     <div class="fixed inset-0 bg-black/70 flex items-center justify-center z-[1000]">
       <div class="bg-white dark:bg-gray-800 rounded-xl w-[90%] max-w-[800px] max-h-[80vh] flex flex-col shadow-2xl" role="dialog" aria-modal="true" tabindex="-1">
         <div class="p-6 border-b-2 border-gray-200 dark:border-gray-700 flex justify-between items-center">
-          <h3 class="m-0 text-xl text-gray-800 dark:text-gray-100">Installing {addons[currentInstallAddon]?.name || currentInstallAddon}</h3>
+          <h3 class="m-0 text-xl text-gray-800 dark:text-gray-100">Installation: {addons[currentInstallAddon].name}</h3>
           <button class="bg-transparent border-none text-3xl leading-none text-gray-500 cursor-pointer w-8 h-8 flex items-center justify-center hover:text-gray-800 dark:hover:text-gray-100" on:click={closeInstallModal}>×</button>
         </div>
 
-        <div class="install-logs flex-1 overflow-y-auto p-4 bg-gray-50 dark:bg-gray-900 font-mono text-sm max-h-[500px]">
-          {#each installLogs as log}
+        <div use:scrollLogs={installation.logs.length} class="install-logs flex-1 overflow-y-auto p-4 bg-gray-50 dark:bg-gray-900 font-mono text-sm max-h-[500px]">
+          {#each installation.logs as log}
             <div class="p-2 mb-1 rounded flex gap-3 {log.level === 'error' ? 'bg-red-100 dark:bg-red-900 text-red-800 dark:text-red-200' : 'bg-blue-50 dark:bg-blue-900 text-blue-800 dark:text-blue-200'}">
               <span class="shrink-0 opacity-70 font-semibold">{log.timestamp.toLocaleTimeString()}</span>
               <span class="flex-1 break-words">{log.message}</span>
             </div>
           {/each}
-          {#if installLogs.length === 0}
+          {#if installation.logs.length === 0}
             <div class="text-center py-12 text-gray-500 dark:text-gray-400 italic">Waiting for installation to start...</div>
           {/if}
         </div>
 
         <div class="p-6 border-t-2 border-gray-200 dark:border-gray-700 flex justify-center">
-          {#if installing[currentInstallAddon]}
+          {#if installation.controller}
             <div class="text-violet-600 font-semibold flex items-center gap-2">
               <span class="animate-spin">⏳</span> Installation in progress...
             </div>
@@ -319,13 +275,3 @@
     </div>
   {/if}
 </div>
-
-<style>
-  @keyframes spin {
-    from { transform: rotate(0deg); }
-    to { transform: rotate(360deg); }
-  }
-  .animate-spin {
-    animation: spin 2s linear infinite;
-  }
-</style>

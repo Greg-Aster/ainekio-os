@@ -16,7 +16,7 @@ import {
   stopVoiceService,
 } from '../../voice-service-manager.js';
 
-export interface WhisperServerConfig {
+interface WhisperServerConfig {
   useServer: boolean;
   url: string;
   autoStart: boolean;
@@ -311,7 +311,6 @@ print(json.dumps(result))
     serverAvailable?: boolean;
     error?: string;
   }> {
-    const whisperDir = path.join(ROOT, 'external', 'whisper');
     const pythonBin = path.join(ROOT, 'venv', 'bin', 'python3');
     const installed = fs.existsSync(pythonBin);
 

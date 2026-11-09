@@ -1,3 +1,4 @@
+import type { ResponseEntryReference } from '../../cognitive-graph-contract.js';
 /**
  * Response Pipeline API Handler
  *
@@ -28,6 +29,7 @@ import {
   listFailedNodes,
   loadGraphFile,
   requireGraphNodeOutput,
+  findResponseEntryReference,
   runGraph,
   sseData,
   type CachedGraphEntry,
@@ -223,7 +225,8 @@ function failedNodeType(graphState: GraphExecutionState, nodeId: string | null):
 
 export function extractResponsePipelineResult(
   graphState: GraphExecutionState,
-): Omit<ResponsePipelineResult, 'success' | 'executionTimeMs'> {
+  graph: SvelteFlowGraph,
+): Omit<ResponsePipelineResult, 'success' | 'executionTimeMs'> & { responseEntry?: ResponseEntryReference } {
   if (graphState.status !== 'completed' || graphState.error) {
     const failed = listFailedNodes(graphState);
     const detail = failed.map(node => `${node.nodeId}: ${node.error}`).join('; ');
@@ -260,8 +263,10 @@ export function extractResponsePipelineResult(
     throw new Error('Response Action Router produced an invalid next status');
   }
 
+  const responseEntry = findResponseEntryReference(graph, graphState, action, 'response');
   return {
     response,
+    ...(responseEntry ? { responseEntry } : {}),
     responseBufferId,
     actionTaken,
     pipelineTriggered: action.pipelineTriggered,
@@ -383,7 +388,7 @@ export async function handleResponsePipeline(
 
     // Step 6: Extract output
     logStep(6, 'Extracting output from graph state');
-    const output = extractResponsePipelineResult(graphState);
+    const output = extractResponsePipelineResult(graphState, graph);
 
     logStep(6, 'Output extracted', { outputKeys: Object.keys(output) });
 
@@ -529,13 +534,14 @@ export function streamResponsePipeline(
           return;
         }
 
-        const output = extractResponsePipelineResult(graphState);
+        const output = extractResponsePipelineResult(graphState, graph);
 
         // Send result
         push('progress', { step: 'complete', message: `Completed in ${duration}ms` });
 
         push('answer', {
           response: output.response || '',
+          ...(output.responseEntry ? { responseEntry: output.responseEntry } : {}),
           responseBufferId: output.responseBufferId,
           actionTaken: output.actionTaken || '',
           pipelineTriggered: output.pipelineTriggered === true,

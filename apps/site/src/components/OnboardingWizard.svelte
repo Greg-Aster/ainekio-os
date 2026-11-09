@@ -1,5 +1,6 @@
 <script lang="ts">
   import { onMount } from 'svelte';
+  import type { OnboardingState } from '@metahuman/core/onboarding/types';
   import { apiFetch } from '../lib/client/api-config';
   import Step1Welcome from './onboarding/Step1_Welcome.svelte';
   import Step2PersonalityChoice from './onboarding/Step3_PersonalityChoice.svelte';
@@ -9,150 +10,86 @@
 
   export let onComplete: () => void;
 
-  let currentStep = 1;
-  let loading = false;
+  let loading = true;
   let error = '';
   let showSkipModal = false;
-
-  interface OnboardingState {
-    completed: boolean;
-    currentStep: number;
-    stepsCompleted: {
-      welcome: boolean;
-      personality: boolean;
-      context: boolean;
-      goals: boolean;
-      review: boolean;
-    };
-    dataCollected: {
-      personalityQuestions: number;
-      filesIngested: number;
-      tasksCreated: number;
-      memoriesCreated: number;
-    };
-  }
-
   let state: OnboardingState | null = null;
 
-  // Load onboarding state
   async function loadState() {
+    loading = true;
+    error = '';
     try {
-      loading = true;
-      const res = await apiFetch('/api/onboarding/state');
-      if (res.ok) {
-        const data = await res.json();
-        state = data.state;
-        if (state) {
-          currentStep = state.currentStep || 1;
-        }
-      }
-    } catch (err) {
-      console.error('Failed to load onboarding state:', err);
-      error = 'Failed to load progress';
+      const response = await apiFetch('/api/onboarding/state');
+      const data = await response.json();
+      if (!response.ok || !data.state) throw new Error(data.error || 'Failed to load progress');
+      state = data.state;
+    } catch (cause) {
+      error = cause instanceof Error ? cause.message : 'Failed to load progress';
     } finally {
       loading = false;
     }
   }
 
-  // Update state on backend
-  async function updateState(updates: Partial<OnboardingState>) {
+  async function updateState(updates: { currentStep: number; stepsCompleted?: Partial<OnboardingState['stepsCompleted']> }) {
+    loading = true;
+    error = '';
     try {
-      const res = await apiFetch('/api/onboarding/state', {
+      const response = await apiFetch('/api/onboarding/state', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ updates }),
       });
-      if (res.ok) {
-        const data = await res.json();
-        state = data.state;
-      }
-    } catch (err) {
-      console.error('Failed to update state:', err);
-    }
-  }
-
-  // Navigate to next step
-  async function nextStep() {
-    if (currentStep < 5) {
-      currentStep++;
-      await updateState({ currentStep });
-    }
-  }
-
-  // Navigate to previous step
-  function prevStep() {
-    if (currentStep > 1) {
-      currentStep--;
-    }
-  }
-
-  // Handle step completion
-  async function handleStepComplete(step: keyof OnboardingState['stepsCompleted']) {
-    if (!state) return;
-
-    const updates: Partial<OnboardingState> = {
-      stepsCompleted: {
-        ...state.stepsCompleted,
-        [step]: true,
-      },
-    };
-
-    await updateState(updates);
-    await nextStep();
-  }
-
-  // Complete onboarding
-  async function completeOnboarding() {
-    try {
-      loading = true;
-      const res = await apiFetch('/api/onboarding/complete', {
-        method: 'POST',
-      });
-      if (res.ok) {
-        onComplete();
-      } else {
-        error = 'Failed to complete onboarding';
-      }
-    } catch (err) {
-      console.error('Failed to complete onboarding:', err);
-      error = 'Failed to complete onboarding';
+      const data = await response.json();
+      if (!response.ok || !data.state) throw new Error(data.error || 'Failed to save progress');
+      state = data.state;
+    } catch (cause) {
+      error = cause instanceof Error ? cause.message : 'Failed to save progress';
     } finally {
       loading = false;
     }
   }
 
-  // Skip onboarding
-  async function skipOnboarding(reason?: string) {
+  function prevStep() {
+    if (currentStep > 1) return updateState({ currentStep: currentStep - 1 });
+  }
+
+  async function handleStepComplete(step: keyof OnboardingState['stepsCompleted']) {
+    if (!state) return;
+    await updateState({
+      currentStep: Math.min(currentStep + 1, 5),
+      stepsCompleted: { [step]: true },
+    });
+  }
+
+  async function finishOnboarding(action: 'complete' | 'skip', reason?: string) {
+    loading = true;
+    error = '';
     try {
-      loading = true;
-      const res = await apiFetch('/api/onboarding/skip', {
+      const response = await apiFetch(`/api/onboarding/${action}`, {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ reason }),
+        ...(action === 'skip' ? { headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ reason }) } : {}),
       });
-      if (res.ok) {
-        onComplete();
-      } else {
-        error = 'Failed to skip onboarding';
-      }
-    } catch (err) {
-      console.error('Failed to skip onboarding:', err);
-      error = 'Failed to skip onboarding';
+      const data = await response.json();
+      if (!response.ok || !data.success) throw new Error(data.error || `Failed to ${action} onboarding`);
+      state = data.state;
+      onComplete();
+    } catch (cause) {
+      error = cause instanceof Error ? cause.message : `Failed to ${action} onboarding`;
     } finally {
       loading = false;
       showSkipModal = false;
     }
   }
 
-  onMount(() => {
-    loadState();
-  });
+  onMount(() => { void loadState(); });
 
+  $: currentStep = state?.currentStep ?? 1;
   $: progressPercent = ((currentStep - 1) / 4) * 100;
 </script>
 
 <div class="onboarding-backdrop">
   <div class="onboarding-container">
+    {#if state}
     <!-- Progress Bar -->
     <div class="progress-bar-track w-full h-2 mb-2">
       <div class="progress-bar-fill" style="width: {progressPercent}%"></div>
@@ -179,20 +116,29 @@
         />
       {:else if currentStep === 4}
         <Step4Goals
+          recordedTasksCreated={state.dataCollected.tasksCreated ?? 0}
           onNext={() => handleStepComplete('goals')}
           onBack={prevStep}
           onSkip={() => showSkipModal = true}
         />
       {:else if currentStep === 5}
         <Step5Complete
-          onComplete={completeOnboarding}
+          {state}
+          completing={loading}
+          onComplete={() => finishOnboarding('complete')}
           onBack={prevStep}
         />
       {/if}
     </div>
 
+    {:else if loading}
+      <p role="status">Loading your progress...</p>
+    {:else}
+      <button class="btn-secondary" on:click={loadState}>Retry loading progress</button>
+    {/if}
+
     {#if error}
-      <div class="banner banner-error mt-4">{error}</div>
+      <div role="alert" class="banner banner-error mt-4">{error}</div>
     {/if}
   </div>
 
@@ -203,7 +149,7 @@
         <h2 class="text-2xl font-bold mb-4 text-white dark:text-white">Skip Onboarding?</h2>
 
         <p class="text-white/80 dark:text-white/80 mb-6 leading-relaxed">
-          MetaHuman OS works best with your personal data to create an accurate dual consciousness emulation.
+          You can add memories, personality details and goals after setup through the tools below.
         </p>
 
         <div>
@@ -227,9 +173,9 @@
               <div class="flex-1">
                 <strong class="block text-white/90 dark:text-white/90 mb-2">File Ingestion</strong>
                 <ul class="list-none p-0 m-0">
-                  <li class="text-sm text-white/70 dark:text-white/70 mb-1">Memory view → Upload tab</li>
+                  <li class="text-sm text-white/70 dark:text-white/70 mb-1">Memory view → Inbox Imports</li>
                   <li class="text-sm text-white/70 dark:text-white/70 mb-1">CLI: <code class="px-1.5 py-0.5 rounded text-sm text-blue-400 bg-white/10">./bin/mh ingest &lt;file&gt;</code></li>
-                  <li class="text-sm text-white/70 dark:text-white/70 mb-1">Drop files in: <code class="px-1.5 py-0.5 rounded text-sm text-blue-400 bg-white/10">memory/inbox/</code></li>
+                  <li class="text-sm text-white/70 dark:text-white/70 mb-1">Files go to the selected profile's inbox.</li>
                 </ul>
               </div>
             </div>
@@ -239,8 +185,8 @@
               <div class="flex-1">
                 <strong class="block text-white/90 dark:text-white/90 mb-2">Manual Persona Editing</strong>
                 <ul class="list-none p-0 m-0">
-                  <li class="text-sm text-white/70 dark:text-white/70 mb-1">System settings → Persona Editor</li>
-                  <li class="text-sm text-white/70 dark:text-white/70 mb-1">Direct JSON: <code class="px-1.5 py-0.5 rounded text-sm text-blue-400 bg-white/10">profiles/&#123;username&#125;/persona/core.json</code></li>
+                  <li class="text-sm text-white/70 dark:text-white/70 mb-1">Persona → Editor</li>
+                  <li class="text-sm text-white/70 dark:text-white/70 mb-1">The editor saves changes through your profile's storage system.</li>
                 </ul>
               </div>
             </div>
@@ -255,7 +201,7 @@
           <button class="onboarding-btn-primary" on:click={() => showSkipModal = false}>
             Continue Onboarding
           </button>
-          <button class="btn-ghost" on:click={() => skipOnboarding('user_declined')}>
+          <button class="btn-ghost" on:click={() => finishOnboarding('skip', 'user_declined')}>
             Skip to App
           </button>
         </div>

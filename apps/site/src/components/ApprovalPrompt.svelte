@@ -1,252 +1,180 @@
 <script lang="ts">
-  /**
-   * ApprovalPrompt - Compact approval bar with expandable desire details
-   *
-   * Shows a slim notification bar when desires need user approval.
-   * Click on items to expand and see full desire information.
-   */
-  import { onMount, onDestroy } from 'svelte';
+  import { onMount } from 'svelte';
+  import { derived, get } from 'svelte/store';
   import { apiFetch } from '../lib/client/api-config';
   import { isOwner } from '../stores/security-policy';
+  import { currentUserStore } from '../stores/navigation';
+  import { coordinatorSnapshot, coordinatorConnection, coordinatorError, useWorkCoordinator } from '../lib/stores/work-coordinator';
 
-  // Props
-  export let onApprovalChange: (() => void) | undefined = undefined;
+  interface PendingDesire {
+    id: string;
+    title: string;
+    description: string;
+    reason?: string;
+    source: string;
+    status: string;
+    risk?: string;
+    strength: number;
+    createdAt: string;
+    reinforcements?: number;
+    metrics?: { cycleCount?: number };
+    plan?: { estimatedRisk?: string; steps: { action: string; risk?: string }[] };
+  }
+  type Decision = 'approve' | 'reject';
 
-  // State
-  let pendingDesires: any[] = [];
+  let pendingDesires: PendingDesire[] = [];
   let processingId: string | null = null;
-  let error = '';
-  let pollInterval: ReturnType<typeof setInterval> | null = null;
+  let loadError = '';
+  let actionError = '';
   let expanded = false;
   let expandedDesireId: string | null = null;
-  let showTrustPanel = false;
-  let currentTrustLevel = 'supervised_auto';
-
-  const TRUST_LEVELS = [
-    { value: 'observe', label: 'Observe' },
-    { value: 'suggest', label: 'Suggest' },
-    { value: 'supervised_auto', label: 'Supervised' },
-    { value: 'bounded_auto', label: 'Bounded' },
-    { value: 'adaptive_auto', label: 'Adaptive' },
-  ];
+  let observation = new AbortController();
+  let listRead: AbortController | null = null;
+  $: error = actionError || loadError || $coordinatorError
+    || ($coordinatorConnection === 'reconnecting' ? 'Desire approval updates disconnected. Reconnecting…' : '');
 
   const SOURCE_LABELS: Record<string, string> = {
-    persona_goal: '🎯 Persona Goal',
-    urgent_task: '🔥 Urgent Task',
-    task: '📋 Task',
-    memory_pattern: '🧠 Memory Pattern',
-    curiosity: '❓ Curiosity',
-    reflection: '💭 Reflection',
-    dream: '🌙 Dream',
-    tool_suggestion: '🔧 Tool Suggestion',
+    persona_goal: '🎯 Persona Goal', urgent_task: '🔥 Urgent Task', task: '📋 Task',
+    memory_pattern: '🧠 Memory Pattern', curiosity: '❓ Curiosity', reflection: '💭 Reflection',
+    dream: '🌙 Dream', tool_suggestion: '🔧 Tool Suggestion',
   };
 
-  function getRiskColor(risk: string) {
-    switch (risk) {
-      case 'none':
-      case 'low': return 'risk-low';
-      case 'medium': return 'risk-medium';
-      case 'high':
-      case 'critical': return 'risk-high';
-      default: return 'risk-medium';
-    }
+  function getRiskColor(risk?: string): string {
+    if (risk === 'none' || risk === 'low') return 'bg-green-500/20 text-green-400';
+    if (risk === 'medium') return 'bg-yellow-500/20 text-yellow-300';
+    if (risk === 'high' || risk === 'critical') return 'bg-red-500/20 text-red-400';
+    return 'bg-white/10 text-slate-400';
   }
 
   function formatStrength(strength: number): string {
     return `${Math.round(strength * 100)}%`;
   }
 
-  // Calculate trust degradation based on desire maturity
-  // Mirrors the logic from packages/core/src/agency/config.ts
-  function calculateTrustDegradation(desire: any): { reduction: number; effectiveLevel: string; reason: string } {
-    const TRUST_ORDER: Record<string, number> = {
-      observe: 0,
-      suggest: 1,
-      supervised_auto: 2,
-      bounded_auto: 3,
-      adaptive_auto: 4,
-    };
-    const TRUST_NAMES: Record<number, string> = {
-      0: 'observe',
-      1: 'suggest',
-      2: 'supervised_auto',
-      3: 'bounded_auto',
-      4: 'adaptive_auto',
-    };
-
-    const baseLevel = desire.requiredTrustLevel || 'supervised_auto';
-    const baseLevelOrder = TRUST_ORDER[baseLevel] ?? 2;
-    const minLevelOrder = 1; // suggest is the floor
-
-    const metrics = desire.metrics || {};
-    const reinforcements = metrics.reinforcementCount || desire.reinforcements || 0;
-    const cycles = metrics.cycleCount || 0;
-    const approvals = metrics.userApprovalCount || 0;
-    const successRate = metrics.executionSuccessCount > 0
-      ? metrics.executionSuccessCount / (metrics.executionAttemptCount || 1)
-      : 0;
-
-    let reduction = 0;
-    const reasons: string[] = [];
-
-    // First level reduction
-    if (reinforcements >= 3) {
-      reduction = Math.max(reduction, 1);
-      reasons.push(`${reinforcements} reinforcements`);
-    }
-    if (cycles >= 2 && successRate >= 0.5) {
-      reduction = Math.max(reduction, 1);
-      reasons.push(`${cycles} cycles`);
-    }
-    if (approvals >= 2) {
-      reduction = Math.max(reduction, 1);
-      reasons.push(`${approvals} approvals`);
-    }
-
-    // Second level reduction
-    const combinedScore = reinforcements + cycles + approvals;
-    if (reinforcements >= 8) {
-      reduction = Math.max(reduction, 2);
-    }
-    if (combinedScore >= 10 && successRate >= 0.7) {
-      reduction = Math.max(reduction, 2);
-    }
-
-    const effectiveLevelOrder = Math.max(minLevelOrder, baseLevelOrder - reduction);
-    const effectiveLevel = TRUST_NAMES[effectiveLevelOrder] || baseLevel;
-
-    const reason = reduction > 0 ? reasons.join(', ') : '';
-    return { reduction, effectiveLevel, reason };
-  }
-
   function formatDate(iso: string): string {
     const date = new Date(iso);
-    const now = new Date();
-    const diffMs = now.getTime() - date.getTime();
-    const diffMins = Math.floor(diffMs / 60000);
+    const diffMins = Math.floor((Date.now() - date.getTime()) / 60000);
     if (diffMins < 1) return 'just now';
     if (diffMins < 60) return `${diffMins}m ago`;
     const diffHours = Math.floor(diffMins / 60);
-    if (diffHours < 24) return `${diffHours}h ago`;
-    return date.toLocaleDateString();
+    return diffHours < 24 ? `${diffHours}h ago` : date.toLocaleDateString();
   }
 
   function toggleDesireExpand(id: string) {
     expandedDesireId = expandedDesireId === id ? null : id;
   }
 
-  async function loadPendingDesires() {
-    if (!$isOwner) return;
-
+  async function loadPendingDesires(signal: AbortSignal) {
+    if (signal.aborted) return;
+    listRead?.abort();
+    const read = new AbortController();
+    listRead = read;
+    const abort = () => read.abort();
+    signal.addEventListener('abort', abort, { once: true });
     try {
-      const res = await apiFetch('/api/agency/desires?status=awaiting_approval');
-      if (res.ok) {
-        const data = await res.json();
-        pendingDesires = (data.desires || []).filter((d: any) => d.status === 'awaiting_approval');
-      }
-    } catch (err) {
-      console.error('[ApprovalPrompt] Failed to load desires:', err);
-    }
-  }
-
-  async function loadTrustLevel() {
-    if (!$isOwner) return;
-    try {
-      const res = await apiFetch('/api/trust');
-      if (res.ok) {
-        const data = await res.json();
-        currentTrustLevel = data.level || 'supervised_auto';
-      }
-    } catch (err) {
-      console.error('[ApprovalPrompt] Failed to load trust level:', err);
-    }
-  }
-
-  async function handleApprove(id: string, e?: Event) {
-    e?.stopPropagation();
-    if (processingId) return;
-    processingId = id;
-    error = '';
-
-    try {
-      const res = await apiFetch(`/api/agency/desires/${id}/approve`, { method: 'POST' });
-      if (!res.ok) {
-        const data = await res.json();
-        throw new Error(data.error || 'Failed to approve');
-      }
-      pendingDesires = pendingDesires.filter(d => d.id !== id);
-      if (expandedDesireId === id) expandedDesireId = null;
-      onApprovalChange?.();
-    } catch (err) {
-      error = (err as Error).message;
-      setTimeout(() => { error = ''; }, 3000);
+      const response = await apiFetch('/api/agency/desires?status=awaiting_approval', { signal: read.signal });
+      const data = await response.json();
+      if (read.signal.aborted) return;
+      if (!response.ok || !Array.isArray(data.desires)) throw new Error(data.error || `Unable to load Desire approvals (${response.status})`);
+      pendingDesires = data.desires.filter((desire: PendingDesire) => desire.status === 'awaiting_approval');
+      if (!pendingDesires.some(desire => desire.id === expandedDesireId)) expandedDesireId = null;
+      loadError = '';
+    } catch (error) {
+      if (!read.signal.aborted) loadError = (error as Error).message;
     } finally {
-      processingId = null;
+      signal.removeEventListener('abort', abort);
+      if (listRead === read) listRead = null;
     }
   }
 
-  async function handleReject(id: string, e?: Event) {
-    e?.stopPropagation();
-    if (processingId) return;
-    processingId = id;
-    error = '';
+  async function decideDesire(id: string, decision: Decision) {
+    const response = await apiFetch(`/api/agency/desires/${encodeURIComponent(id)}/${decision}`, {
+      method: 'POST',
+      ...(decision === 'reject' ? { headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ reason: 'User rejected' }) } : {}),
+    });
+    const data = await response.json();
+    if (!response.ok || data.success === false) throw new Error(data.error || `Failed to ${decision} desire`);
+  }
 
+  async function handleDecision(id: string, decision: Decision, event?: Event) {
+    event?.stopPropagation();
+    if (!$isOwner || processingId || observation.signal.aborted) return;
+    const signal = observation.signal;
+    processingId = id;
+    actionError = '';
     try {
-      const res = await apiFetch(`/api/agency/desires/${id}/reject`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ reason: 'User rejected' }),
-      });
-      if (!res.ok) {
-        const data = await res.json();
-        throw new Error(data.error || 'Failed to reject');
-      }
-      pendingDesires = pendingDesires.filter(d => d.id !== id);
-      if (expandedDesireId === id) expandedDesireId = null;
-      onApprovalChange?.();
-    } catch (err) {
-      error = (err as Error).message;
-      setTimeout(() => { error = ''; }, 3000);
+      await decideDesire(id, decision);
+    } catch (error) {
+      if (!signal.aborted) actionError = (error as Error).message;
     } finally {
-      processingId = null;
+      if (!signal.aborted) processingId = null;
     }
   }
 
   async function handleApproveAll() {
-    for (const desire of [...pendingDesires]) {
-      await handleApprove(desire.id);
-    }
-  }
-
-  async function updateTrustLevel(newLevel: string) {
-    if (!$isOwner) return;
+    if (!$isOwner || processingId || observation.signal.aborted) return;
+    const signal = observation.signal;
+    const username = get(currentUserStore)?.username;
+    processingId = 'all';
+    actionError = '';
+    const failures: string[] = [];
     try {
-      const res = await apiFetch('/api/trust', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ level: newLevel }),
-      });
-      if (res.ok) {
-        currentTrustLevel = newLevel;
-        showTrustPanel = false;
-        await loadPendingDesires();
-        onApprovalChange?.();
+      for (const desire of [...pendingDesires]) {
+        if (get(currentUserStore)?.username !== username || !get(isOwner)) return;
+        try { await decideDesire(desire.id, 'approve'); }
+        catch (error) { if (!signal.aborted) failures.push(`${desire.title}: ${(error as Error).message}`); }
       }
-    } catch (err) {
-      console.error('[ApprovalPrompt] Failed to update trust level:', err);
+      if (!signal.aborted) actionError = failures.join('\n');
+    } finally {
+      if (!signal.aborted) processingId = null;
     }
   }
 
   onMount(() => {
-    loadPendingDesires();
-    loadTrustLevel();
-    pollInterval = setInterval(loadPendingDesires, 10000);
-  });
-
-  onDestroy(() => {
-    if (pollInterval) clearInterval(pollInterval);
+    let release: (() => void) | undefined;
+    const unsubscribeProfile = derived([isOwner, currentUserStore], ([$owner, $user]) =>
+      $owner ? $user?.username ?? null : null).subscribe(username => {
+      release?.();
+      release = undefined;
+      observation.abort();
+      listRead?.abort();
+      observation = new AbortController();
+      pendingDesires = [];
+      processingId = null;
+      loadError = '';
+      actionError = '';
+      expanded = false;
+      expandedDesireId = null;
+      if (!username) { observation.abort(); return; }
+      const signal = observation.signal;
+      let revision = get(coordinatorSnapshot)?.agencyChange?.revision;
+      let reconnecting = false;
+      const unsubscribeSnapshot = coordinatorSnapshot.subscribe(snapshot => {
+        const change = snapshot?.agencyChange;
+        if (change && change.revision !== revision) {
+          revision = change.revision;
+          void loadPendingDesires(signal);
+        }
+      });
+      const unsubscribeConnection = coordinatorConnection.subscribe(state => {
+        if (state === 'reconnecting') reconnecting = true;
+        else if (state === 'live' && reconnecting) { reconnecting = false; void loadPendingDesires(signal); }
+      });
+      const releaseCoordinator = useWorkCoordinator();
+      release = () => { unsubscribeSnapshot(); unsubscribeConnection(); releaseCoordinator(); };
+      void loadPendingDesires(signal);
+    });
+    return () => {
+      unsubscribeProfile();
+      release?.();
+      observation.abort();
+      listRead?.abort();
+    };
   });
 </script>
+
+{#if $isOwner && error}
+  <div role="alert" class="mx-3 my-2 rounded border border-red-500/30 bg-red-500/20 px-3 py-2 text-xs text-red-300 whitespace-pre-line">{error}</div>
+{/if}
 
 {#if $isOwner && pendingDesires.length > 0}
   <div class="bg-gradient-to-r from-blue-500/15 to-blue-500/5 border border-blue-500/30 rounded-lg mx-3 my-2 overflow-hidden">
@@ -259,6 +187,7 @@
       <div class="flex gap-1">
         <button
           class="px-2 py-1 rounded text-xs cursor-pointer transition-all bg-green-500 text-white hover:bg-green-600"
+          disabled={processingId !== null}
           on:click={handleApproveAll}
           title="Approve all"
         >
@@ -266,13 +195,8 @@
         </button>
         <button
           class="px-2 py-1 rounded text-xs cursor-pointer transition-all bg-white/10 text-slate-400 hover:bg-white/20"
-          on:click={() => showTrustPanel = !showTrustPanel}
-          title="Change trust level"
-        >
-          🔐
-        </button>
-        <button
-          class="px-2 py-1 rounded text-xs cursor-pointer transition-all bg-white/10 text-slate-400 hover:bg-white/20"
+          aria-label="Review pending Desire approvals"
+          aria-expanded={expanded}
           on:click={() => expanded = !expanded}
         >
           {expanded ? '▼' : '▲'}
@@ -280,24 +204,11 @@
       </div>
     </div>
 
-    <!-- Trust Level Selector -->
-    {#if showTrustPanel}
-      <div class="flex gap-1 px-3 py-1.5 border-t border-white/10 bg-black/10">
-        {#each TRUST_LEVELS as level}
-          <button
-            class="flex-1 px-2 py-1 rounded border text-[11px] cursor-pointer transition-all {currentTrustLevel === level.value ? 'bg-blue-500/30 border-blue-500 text-blue-400' : 'border-blue-500/20 bg-transparent text-slate-400 hover:bg-blue-500/10'}"
-            on:click={() => updateTrustLevel(level.value)}
-          >
-            {level.label}
-          </button>
-        {/each}
-      </div>
-    {/if}
-
     <!-- Expanded List -->
     {#if expanded}
       <div class="border-t border-white/10 max-h-[350px] overflow-y-auto">
-        {#each pendingDesires as desire}
+        {#each pendingDesires as desire (desire.id)}
+          {@const risk = desire.plan?.estimatedRisk ?? desire.risk}
           <div class="border-b border-white/5 last:border-b-0">
             <!-- Collapsed Row -->
             <div
@@ -306,22 +217,25 @@
               on:keydown={(e) => e.key === 'Enter' && toggleDesireExpand(desire.id)}
               role="button"
               tabindex="0"
+              aria-expanded={expandedDesireId === desire.id}
             >
               <span class="text-[10px] text-slate-500 w-3">{expandedDesireId === desire.id ? '▼' : '▶'}</span>
               <span class="flex-1 text-xs text-slate-200 whitespace-nowrap overflow-hidden text-ellipsis">{desire.title}</span>
               <span class="text-[10px] text-slate-500 whitespace-nowrap">{SOURCE_LABELS[desire.source] || desire.source}</span>
-              <span class="text-[10px] px-1.5 py-0.5 rounded font-medium {(desire.plan?.estimatedRisk || desire.risk || 'medium') === 'low' || (desire.plan?.estimatedRisk || desire.risk || 'medium') === 'none' ? 'bg-green-500/20 text-green-400' : (desire.plan?.estimatedRisk || desire.risk || 'medium') === 'medium' ? 'bg-yellow-500/20 text-yellow-300' : 'bg-red-500/20 text-red-400'}">
-                {desire.plan?.estimatedRisk || desire.risk || 'medium'}
+              <span class="text-[10px] px-1.5 py-0.5 rounded font-medium {getRiskColor(risk)}">
+                {risk ?? 'Unknown'}
               </span>
               <button
                 class="w-6 h-6 rounded border-none cursor-pointer text-xs transition-all bg-green-500/20 text-green-400 hover:bg-green-500 hover:text-white disabled:opacity-50 disabled:cursor-not-allowed"
-                disabled={processingId === desire.id}
-                on:click={(e) => handleApprove(desire.id, e)}
+                disabled={processingId !== null}
+                aria-label={`Approve ${desire.title}`}
+                on:click={(e) => handleDecision(desire.id, 'approve', e)}
               >✓</button>
               <button
                 class="w-6 h-6 rounded border-none cursor-pointer text-xs transition-all bg-red-500/20 text-red-400 hover:bg-red-500 hover:text-white disabled:opacity-50 disabled:cursor-not-allowed"
-                disabled={processingId === desire.id}
-                on:click={(e) => handleReject(desire.id, e)}
+                disabled={processingId !== null}
+                aria-label={`Reject ${desire.title}`}
+                on:click={(e) => handleDecision(desire.id, 'reject', e)}
               >✗</button>
             </div>
 
@@ -356,7 +270,7 @@
                     <span class="text-[10px] text-slate-500">Reinforced</span>
                     <span class="text-[13px] font-semibold text-slate-200">{desire.reinforcements || 0}x</span>
                   </div>
-                  {#if desire.metrics?.cycleCount > 0}
+                  {#if desire.metrics?.cycleCount && desire.metrics.cycleCount > 0}
                     <div class="flex flex-col gap-0.5">
                       <span class="text-[10px] text-slate-500">Cycles</span>
                       <span class="text-[13px] font-semibold text-slate-200">{desire.metrics.cycleCount}</span>
@@ -365,42 +279,21 @@
                 </div>
 
                 <!-- Plan Steps -->
-                {#if desire.plan?.steps?.length > 0}
+                {#if desire.plan && desire.plan.steps.length > 0}
                   <div class="mb-3">
                     <div class="text-[10px] font-semibold text-slate-500 uppercase tracking-wide mb-1">Plan ({desire.plan.steps.length} steps)</div>
                     <div class="flex flex-col gap-1">
-                      {#each desire.plan.steps.slice(0, 5) as step, i}
+                      {#each desire.plan.steps as step, i}
                         <div class="flex items-center gap-2 px-2 py-1 bg-white/[0.03] rounded text-xs">
                           <span class="w-[18px] h-[18px] flex items-center justify-center bg-blue-500/20 text-blue-400 rounded-full text-[10px] font-semibold">{i + 1}</span>
                           <span class="flex-1 text-slate-300">{step.action}</span>
                           {#if step.risk && step.risk !== 'none'}
-                            <span class="text-[9px] px-1 py-0.5 rounded {step.risk === 'low' ? 'bg-green-500/20 text-green-400' : step.risk === 'medium' ? 'bg-yellow-500/20 text-yellow-300' : 'bg-red-500/20 text-red-400'}">{step.risk}</span>
+                            <span class="text-[9px] px-1 py-0.5 rounded {getRiskColor(step.risk)}">{step.risk}</span>
                           {/if}
                         </div>
                       {/each}
-                      {#if desire.plan.steps.length > 5}
-                        <div class="text-[11px] text-slate-500 px-2 py-1">+{desire.plan.steps.length - 5} more steps...</div>
-                      {/if}
-                    </div>
-                  </div>
-                {/if}
 
-                <!-- Trust Requirement (with maturity-based degradation) -->
-                {#if true}
-                  {@const degradation = calculateTrustDegradation(desire)}
-                  <div class="flex items-center gap-1.5 text-[11px] p-2 bg-white/[0.03] rounded mb-3">
-                    <span class="text-slate-500">Requires:</span>
-                    {#if degradation.reduction > 0}
-                      <span class="text-green-500 font-medium">{degradation.effectiveLevel}</span>
-                      <span class="text-[10px] text-green-500 bg-green-500/15 px-1.5 py-0.5 rounded cursor-help" title={degradation.reason}>
-                        ↓{degradation.reduction} from {desire.requiredTrustLevel || 'supervised_auto'}
-                      </span>
-                    {:else}
-                      <span class="text-amber-500 font-medium">{desire.requiredTrustLevel || 'supervised_auto'}</span>
-                    {/if}
-                    <span class="text-slate-500">
-                      (You: {currentTrustLevel})
-                    </span>
+                    </div>
                   </div>
                 {/if}
 
@@ -408,17 +301,17 @@
                 <div class="flex gap-2">
                   <button
                     class="flex-1 px-4 py-2.5 rounded-md border-none text-[13px] font-medium cursor-pointer transition-all bg-green-500 text-white hover:bg-green-600 disabled:opacity-50 disabled:cursor-not-allowed"
-                    disabled={processingId === desire.id}
-                    on:click={(e) => handleApprove(desire.id, e)}
+                    disabled={processingId !== null}
+                    on:click={(e) => handleDecision(desire.id, 'approve', e)}
                   >
-                    {processingId === desire.id ? 'Approving...' : '✓ Approve & Execute'}
+                    {processingId === desire.id ? 'Processing…' : '✓ Approve & Execute'}
                   </button>
                   <button
                     class="flex-1 px-4 py-2.5 rounded-md text-[13px] font-medium cursor-pointer transition-all bg-red-500/20 text-red-400 border border-red-500/30 hover:bg-red-500/30 disabled:opacity-50 disabled:cursor-not-allowed"
-                    disabled={processingId === desire.id}
-                    on:click={(e) => handleReject(desire.id, e)}
+                    disabled={processingId !== null}
+                    on:click={(e) => handleDecision(desire.id, 'reject', e)}
                   >
-                    {processingId === desire.id ? 'Rejecting...' : '✗ Reject'}
+                    {processingId === desire.id ? 'Processing…' : '✗ Reject'}
                   </button>
                 </div>
               </div>
@@ -428,8 +321,5 @@
       </div>
     {/if}
 
-    {#if error}
-      <div class="px-3 py-1 bg-red-500/20 text-red-300 text-[11px]">{error}</div>
-    {/if}
   </div>
 {/if}

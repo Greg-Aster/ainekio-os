@@ -117,10 +117,15 @@ export async function handleSetBigBrotherConfig(req: UnifiedRequest): Promise<Un
 
     // Update Big Brother mode settings (preserve model if not provided)
     const existingModel = config.bigBrotherMode?.model;
+    const defaultModelForProvider = nextProvider === 'claude-code'
+      ? 'sonnet'
+      : nextProvider === 'gemini'
+        ? 'gemini-3.8-flash-low'
+        : 'gpt-6.1-sol';
     config.bigBrotherMode = {
       enabled: enabled ?? config.bigBrotherMode?.enabled ?? false,
       provider: nextProvider,
-      model: model ?? (nextProvider === previousProvider ? existingModel : undefined) ?? (nextProvider === 'claude-code' ? 'sonnet' : ''),
+      model: model ?? (nextProvider === previousProvider ? existingModel : undefined) ?? defaultModelForProvider,
       reasoningEffort: reasoningEffort ?? config.bigBrotherMode?.reasoningEffort,
       delegateAll: delegateAll ?? config.bigBrotherMode?.delegateAll ?? false,
       escalateOnStuck: escalateOnStuck ?? config.bigBrotherMode?.escalateOnStuck ?? true,

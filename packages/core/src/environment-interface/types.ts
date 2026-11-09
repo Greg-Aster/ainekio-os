@@ -296,7 +296,7 @@ export interface EnvironmentLocomotionMeasurement {
   camera?: EnvironmentLocomotionEvidence & { frameId?: string };
   position?: EnvironmentLocomotionEvidence & { xMetres: number; yMetres: number; headingDegrees: number; uncertaintyMetres: number | null };
   yaw?: EnvironmentLocomotionEvidence & { degrees: number; uncertaintyDegrees: number | null };
-  target?: EnvironmentLocomotionEvidence & { frameId: string; trackId?: string; queryId?: string; groundContact?: { x: number; y: number }; rangeMetres?: number; boxHeight?: number; horizontalOffset?: number; uncertaintyMetres: number | null };
+  target?: EnvironmentLocomotionEvidence & { frameId: string; referenceFrameId?: string; trackId?: string; queryId?: string; groundContact?: { x: number; y: number }; referencePoint?: { x: number; y: number }; rangeMetres?: number; boxHeight?: number; horizontalOffset?: number; uncertaintyMetres: number | null };
 }
 export interface EnvironmentLocomotionTarget {
   frameId: string;

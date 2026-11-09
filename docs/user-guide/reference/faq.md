@@ -8,7 +8,7 @@ Follow [Installation](/user-guide#02-installation), then [Setup and Login](/user
 
 Persona, profile, memory, voice, logs, and generated outputs are user/runtime data resolved through the storage system. They are not maintained source and should not be committed. See [Multi-User Profiles](/user-guide#multi-user-profiles).
 
-## Does MetaHuman require the cloud?
+## Does Ainekio OS require the cloud?
 
 No. llama.cpp, Ollama, Whisper, Piper, Kokoro, and supported training workflows can run locally. Remote model and sync features require a configured server and network access.
 
@@ -19,7 +19,7 @@ No. llama.cpp, Ollama, Whisper, Piper, Kokoro, and supported training workflows 
 ./bin/audit check
 ```
 
-For a specific subsystem, use its status command, such as `./bin/mh ollama status`, `./bin/mh rvc status`, or `./bin/mh kokoro status`.
+For a specific subsystem, use its status command, such as `./bin/mh ollama status`, or `./bin/mh kokoro status`.
 
 ## Which LLM backend should I use?
 
@@ -37,7 +37,7 @@ Yes. Profiles isolate user-owned configuration and content. Administrative actio
 
 Memory is profile-owned and accessed through the core memory/storage owners. The UI and agents should use public core exports rather than reading profile directories directly. See [Memory System](/user-guide#memory-system).
 
-## Can MetaHuman act autonomously?
+## Can Ainekio OS act autonomously?
 
 Agents operate within explicit trust, security, and lifecycle boundaries. Enabling an agent does not bypass action authorization. See [Autonomous Agents](/user-guide#autonomous-agents) and [Security and Trust](/user-guide#security-trust).
 
@@ -47,7 +47,7 @@ Yes. The maintained training workflow creates profile-owned artifacts through th
 
 ## Can I train a voice?
 
-RVC model training is maintained. Piper and Kokoro synthesis are supported, but this repository does not expose verified custom trainers for them. See [Voice Training](/user-guide#voice-training).
+Piper and Kokoro speech synthesis are supported. This repository does not include custom voice model trainers. See [Voice Features](/user-guide#voice-features).
 
 ## Why did voice output fall back to Piper?
 

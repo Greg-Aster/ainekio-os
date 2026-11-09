@@ -71,10 +71,6 @@ stop_application() {
     done
     if process_running "$launcher_pid"; then stop_application_pid "$launcher_pid" || status=1; fi
   fi
-  # Let the application-only signal finish before PM2 sends its own stop signal.
-  if command -v pm2 >/dev/null 2>&1 && pm2 describe metahuman-os >/dev/null 2>&1; then
-    pm2 delete metahuman-os || status=1
-  fi
   # The application owner also handles directly launched Astro dev servers and
   # production children whose launcher exited. Service processes are excluded.
   code=0

@@ -6,9 +6,11 @@
   let error = ''
   let running = false
 
-  $: current = $sleepStatus?.currentSession ?? null
-  $: stages = current?.stages ?? ($sleepStatus?.configuredStages ?? []).map(stage => ({ ...stage, state: 'pending' as const }))
-  $: latest = $sleepStatus?.recentSessions?.[0] ?? null
+  $: status = $sleepStatus.data
+  $: current = status?.currentSession ?? null
+  let stages: Array<Pick<SleepStageStatus, 'id' | 'displayName' | 'handler'> & Partial<SleepStageStatus>> = []
+  $: stages = current?.stages ?? status?.configuredStages ?? []
+  $: latest = status?.recentSessions?.[0] ?? null
 
   function formatTime(value?: string): string {
     return value ? new Date(value).toLocaleString() : '—'
@@ -20,7 +22,7 @@
     return minutes < 1 ? '<1 minute' : `${minutes} minute${minutes === 1 ? '' : 's'}`
   }
 
-  function stageDetail(stage: SleepStageStatus): string {
+  function stageDetail(stage: Pick<SleepStageStatus, 'handler'> & Partial<SleepStageStatus>): string {
     if (stage.error) return stage.error
     if (stage.state === 'running' && stage.maxAttempts) return `Attempt ${(stage.attempt ?? 0) + 1} of ${stage.maxAttempts}`
     return stage.handler
@@ -55,31 +57,37 @@
     </div>
     <button
       class="rounded bg-indigo-600 px-3 py-2 font-medium text-white hover:bg-indigo-700 disabled:cursor-not-allowed disabled:opacity-50"
-      disabled={running || Boolean(current) || !$sleepStatus?.config.enabled}
+      disabled={running || Boolean(current) || !status?.config.enabled}
       on:click={runNow}
     >
       {running ? 'Queuing…' : current ? 'Sleep in progress' : 'Run sleep now'}
     </button>
   </div>
 
-  {#if error}<div class="mb-4 rounded border border-red-500/30 bg-red-500/10 p-3 text-red-600 dark:text-red-300">{error}</div>{/if}
-  {#if notice}<div class="mb-4 rounded border border-emerald-500/30 bg-emerald-500/10 p-3 text-emerald-700 dark:text-emerald-300">{notice}</div>{/if}
+  {#if error}<div role="alert" class="mb-4 rounded border border-red-500/30 bg-red-500/10 p-3 text-red-600 dark:text-red-300">{error}</div>{/if}
+  {#if notice}<div role="status" class="mb-4 rounded border border-emerald-500/30 bg-emerald-500/10 p-3 text-emerald-700 dark:text-emerald-300">{notice}</div>{/if}
 
-  {#if !$sleepStatus}
+  {#if $sleepStatus.error}
+    <div role="alert" class="mb-4 rounded border border-red-500/30 bg-red-500/10 p-3 text-red-600 dark:text-red-300">{$sleepStatus.error}</div>
+    {#if status}<p class="mb-4 text-xs text-gray-500 dark:text-gray-400">Showing the last received sleep status, reported at {formatTime(status.lastChecked)}.</p>{/if}
+  {/if}
+
+  {#if !status && !$sleepStatus.error}
     <div class="py-12 text-center text-gray-500 dark:text-gray-400">Loading sleep status…</div>
-  {:else}
+  {:else if status}
     <div class="mb-4 grid gap-3 sm:grid-cols-2 lg:grid-cols-4">
       <div class="rounded border border-gray-200 p-3 dark:border-gray-800">
-        <div class="text-xs text-gray-500 dark:text-gray-400">System phase</div>
-        <div class="mt-1 font-semibold uppercase text-gray-900 dark:text-gray-100">{$sleepStatus.status}</div>
+        <div class="text-xs text-gray-500 dark:text-gray-400">Reported state</div>
+        <div class="mt-1 font-semibold uppercase text-gray-900 dark:text-gray-100">{status.status}</div>
+        <div class="mt-1 text-xs text-gray-500 dark:text-gray-400">Runtime phase: {status.phase}</div>
       </div>
       <div class="rounded border border-gray-200 p-3 dark:border-gray-800">
         <div class="text-xs text-gray-500 dark:text-gray-400">Schedule</div>
-        <div class="mt-1 font-semibold text-gray-900 dark:text-gray-100">{$sleepStatus.config.window.start}–{$sleepStatus.config.window.end}</div>
+        <div class="mt-1 font-semibold text-gray-900 dark:text-gray-100">{status.config.window.start}–{status.config.window.end}</div>
       </div>
       <div class="rounded border border-gray-200 p-3 dark:border-gray-800">
         <div class="text-xs text-gray-500 dark:text-gray-400">Idle before sleep</div>
-        <div class="mt-1 font-semibold text-gray-900 dark:text-gray-100">{$sleepStatus.config.minIdleMins} minutes</div>
+        <div class="mt-1 font-semibold text-gray-900 dark:text-gray-100">{status.config.minIdleMins} minutes</div>
       </div>
       <div class="rounded border border-gray-200 p-3 dark:border-gray-800">
         <div class="text-xs text-gray-500 dark:text-gray-400">Pipeline</div>
@@ -99,9 +107,9 @@
             <div class="min-w-0 flex-1">
               <div class="flex flex-wrap justify-between gap-2">
                 <span class="font-medium text-gray-900 dark:text-gray-100">{stage.displayName}</span>
-                <span class="text-xs uppercase text-gray-500 dark:text-gray-400">{stage.state}</span>
+                <span class="text-xs uppercase text-gray-500 dark:text-gray-400">{stage.state ?? 'configured'}</span>
               </div>
-              <div class="mt-1 truncate text-xs text-gray-500 dark:text-gray-400">{stageDetail(stage)}</div>
+              <div class="mt-1 break-words text-xs text-gray-500 dark:text-gray-400">{stageDetail(stage)}</div>
             </div>
           </div>
         {/each}

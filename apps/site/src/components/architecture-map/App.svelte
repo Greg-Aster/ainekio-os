@@ -111,7 +111,7 @@
   })
 </script>
 
-<svelte:head><title>System architecture · MetaHuman OS</title></svelte:head>
+<svelte:head><title>System architecture · Ainekio OS</title></svelte:head>
 
 <main aria-label="System architecture canvas" style:--label-scale={1/viewport.zoom}>
   {#if ready}

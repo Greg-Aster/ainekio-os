@@ -20,11 +20,6 @@
     "logDirectory": "logs/run/agents",
     "verboseErrors": true
   },
-  "performance": {
-    "cacheCatalog": true,
-    "catalogTTL": 60000,
-    "parallelSkillExecution": false
-  },
   "bigBrotherMode": {
     "enabled": true,
     "provider": "codex",

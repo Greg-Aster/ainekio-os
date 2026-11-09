@@ -1,6 +1,6 @@
-# MetaHuman OS
+# Ainekio OS
 
-MetaHuman OS is a local-first operating system for a persistent personal AI identity. It combines a web interface, CLI, memory store, cognitive graphs, autonomous agents, voice tools, model routing, and training pipelines so an AI can keep context, learn from use, and act under explicit trust boundaries.
+Ainekio OS is a local-first operating system for a persistent personal AI identity. It combines a web interface, CLI, memory store, cognitive graphs, autonomous agents, voice tools, model routing, and training pipelines so an AI can keep context, learn from use, and act under explicit trust boundaries.
 
 It is not a single chatbot wrapper. It is a development system for building a digital counterpart: one that can talk with you, maintain an inner dialogue, remember what matters, generate goals, run background work, train adapters from your history, and connect to external environments.
 
@@ -10,11 +10,11 @@ for the complete data flow in a single Mermaid diagram. The shared
 capability contracts. Follow the contract and qualification scenario relevant
 to the task; [AGENTS.md](AGENTS.md) governs repository work.
 
-![MetaHuman OS interface](docs/images/metahuman-os-ui-2026-02-27.png)
+![Ainekio OS interface](docs/images/metahuman-os-ui-2026-02-27.png)
 
 ## What It Is For
 
-MetaHuman OS is built for long-running personal AI operation:
+Ainekio OS is built for long-running personal AI operation:
 
 - **Conversation**: a chat surface backed by mode-specific cognitive graphs, streaming reasoning events, conversation buffers, memory grounding, and persona voice.
 - **Inner life**: separate inner-dialogue streams for reflections, dreams, curiosity, recursive thought, and autonomous memory associations.
@@ -22,7 +22,7 @@ MetaHuman OS is built for long-running personal AI operation:
 - **Learning**: curation, dataset building, LoRA/fine-tune workflows, and backend-owned model activation from the user's own memories and persona data.
 - **Agency**: supervised autonomous desire generation, planning, review, execution, outcome review, and goal proposal.
 - **Tools**: trust-aware skills for files, tasks, calendar, memory search, shell-safe commands, agents, code changes, and remote/operator escalation.
-- **Voice**: local STT/TTS, voice chat, transcript ingestion, Kokoro voices, RVC, and voice-training workflows.
+- **Voice**: local STT/TTS, voice chat, transcript ingestion, Piper voices, and Kokoro voices.
 - **Embodiment**: an in-development environment mode that reads observations from games, simulators, robots, or other surfaces and queues bounded semantic actions.
 
 The design assumption is local ownership. Runtime identity, profiles, memories, logs, generated adapters, browser state, and local agent data are user data, not maintained source.
@@ -36,11 +36,11 @@ Modes are not themes. They change how the system reasons, writes memory, uses ag
 | **Dual Consciousness** | Full personal mirror mode. Best for normal long-term use when you want the system to learn, remember, and evolve. | Deep memory grounding, proactive agents, full memory writes, training-triggered learning, richer cognitive processing. |
 | **Agent Mode** | Command and task mode. Best when you want direct assistance without full autonomous personality drift. | Explicit instruction following, command-oriented memory capture, lighter context, less background autonomy. |
 | **Emulation Mode** | Read-only persona mode. Best for demos, safe conversations, or frozen personality snapshots. | No memory writes, no persona mutation, conversational use of existing memory/persona state. |
-| **Environment Mode** | Embodied interface mode. Best for experiments where MetaHuman observes and acts in another environment. | Reads bridge observations, builds environment prompts, parses model output into semantic actions, queues adapter-controlled movement/text/interaction. |
+| **Environment Mode** | Embodied interface mode. Best for experiments where Ainekio OS observes and acts in another environment. | Reads bridge observations, builds environment prompts, parses model output into semantic actions, queues adapter-controlled movement/text/interaction. |
 
 ## Learning And Training
 
-MetaHuman OS is designed to improve from accumulated local experience rather than only prompt engineering.
+Ainekio OS is designed to improve from accumulated local experience rather than only prompt engineering.
 
 The learning path is:
 
@@ -59,13 +59,13 @@ The goal is a rolling personalization loop: the system captures experience as me
 
 ## Model And Backend System
 
-MetaHuman OS routes LLM calls through a role-aware model router instead of binding the whole system to one model.
+Ainekio OS routes LLM calls through a role-aware model router instead of binding the whole system to one model.
 
 Supported backend paths include:
 
 - **Ollama** for simple local model serving.
 - **Shared native llama.cpp service** for text, vision, motion and CPU embedding presets.
-- **remote/server providers** for connected MetaHuman servers or cloud-backed inference.
+- **remote/server providers** for connected Ainekio OS servers or cloud-backed inference.
 - **Big Brother/operator backends** such as Claude Code, Codex, Aider, Qwen Code, or Gemini CLI for escalated reasoning and coding workflows.
 
 The router can select models by role: persona, orchestrator, curator, coder, embeddings, training support, and other graph/node responsibilities. This lets one installation use different models for conversation, memory curation, code execution, summarization, and background agents.
@@ -80,7 +80,7 @@ Examples include:
 - reflector, dreamer, daydreamer, train-of-thought, curiosity service, and inner curiosity;
 - desire generator, desire planner, desire executor, and outcome reviewer;
 - curator, training orchestrators, adapter builders, and model utilities;
-- audio organizer, voice-training helpers, and maintenance services.
+- audio organizer and maintenance services.
 
 Full vector-index reconciliation is core engine work admitted through the Work Coordinator, including the final Sleep Workflow stage; it is not a separate agent or scheduler.
 
@@ -134,7 +134,7 @@ For startup details, see [STARTUP.md](STARTUP.md). For installation, setup, usag
 
 ## Development Status
 
-MetaHuman OS is an active research and development repo. The current work is consolidating architecture, hardening API ownership, improving autonomous workflows, expanding learning/training, and prototyping environment-mode embodiment.
+Ainekio OS is an active research and development repo. The current work is consolidating architecture, hardening API ownership, improving autonomous workflows, expanding learning/training, and prototyping environment-mode embodiment.
 
 Useful checks:
 

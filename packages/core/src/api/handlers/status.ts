@@ -13,7 +13,6 @@ import { getActiveAdapter } from '../../adapters.js';
 import { resolveModelForCognitiveMode, loadModelRegistry } from '../../model-resolver.js';
 import { loadCognitiveMode } from '../../cognitive-mode.js';
 import { getIndexStatus } from '../../vector-index.js';
-import { listAvailableAgents } from '../../agent-monitor.js';
 import { getBackendStatus, detectAvailableBackends } from '../../llm-backend.js';
 import { getRuntimeMode } from '../../runtime-mode.js';
 import { getProfilePaths, systemPaths } from '../../index.js';
@@ -230,6 +229,7 @@ export async function handleGetStatus(req: UnifiedRequest): Promise<UnifiedRespo
     availableProviders.add('openai');
     availableProviders.add('openrouter');
     availableProviders.add('huggingface');
+    availableProviders.add('big-brother');
     availableProviders.add('claude-code');
     availableProviders.add('anthropic');
     availableProviders.add('remote-server');
@@ -331,24 +331,12 @@ export async function handleGetStatus(req: UnifiedRequest): Promise<UnifiedRespo
       }
     }
 
-    // Agent activity
-    let agentActivity: any = { available: [] };
-    try {
-      const agentNames = listAvailableAgents();
-      agentActivity.available = agentNames.map((name: string) => ({
-        name,
-        lastRun: null,
-        runCount: 0,
-      }));
-    } catch {}
-
     // System health - use intelligent backend detection
     let systemHealth: any = {
       activeBackend: 'unknown',
       resolvedBackend: 'offline',
       llmBackend: 'unknown',
       auditLogSize: 0,
-      storageUsed: 0,
     };
 
     try {
@@ -542,7 +530,6 @@ export async function handleGetStatus(req: UnifiedRequest): Promise<UnifiedRespo
       cognitiveMode,
       isAuthenticated,
       memoryStats,
-      agentActivity,
       systemHealth,
       recentActivity,
       runtime: {

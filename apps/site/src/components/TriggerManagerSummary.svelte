@@ -1,5 +1,5 @@
 <script lang="ts">
-  import { onDestroy, onMount } from 'svelte';
+  import { onMount } from 'svelte';
   import { openTriggerManagerDashboard } from '../stores/navigation';
   import {
     setTriggerAdmissionPaused,
@@ -13,8 +13,6 @@
   let now = Date.now();
   let offsetMs = 0;
   let anchoredServerTime = '';
-  let release: (() => void) | undefined;
-  let clock: ReturnType<typeof setInterval> | undefined;
   let busy = false;
 
   $: if ($triggerManagerSnapshot?.serverTime && $triggerManagerSnapshot.serverTime !== anchoredServerTime) {
@@ -25,7 +23,7 @@
     .filter(trigger => trigger.enabled && trigger.nextRun)
     .slice(0, 3);
   $: latest = $triggerManagerSnapshot?.recentAdmissions?.[0];
-  $: mode = autonomyModeDefinition($triggerManagerSnapshot?.autonomyMode || 'reactive');
+  $: mode = $triggerManagerSnapshot && autonomyModeDefinition($triggerManagerSnapshot.autonomyMode);
 
   function until(timestamp?: string): string {
     if (!timestamp) return 'not scheduled';
@@ -49,12 +47,12 @@
   }
 
   onMount(() => {
-    release = useTriggerManager();
-    clock = setInterval(() => now = Date.now(), 1_000);
-  });
-  onDestroy(() => {
-    release?.();
-    if (clock) clearInterval(clock);
+    const release = useTriggerManager();
+    const clock = setInterval(() => now = Date.now(), 1_000);
+    return () => {
+      release();
+      clearInterval(clock);
+    };
   });
 </script>
 
@@ -63,7 +61,12 @@
     <button class="min-w-0 text-left" on:click={openTriggerManagerDashboard} title="Open the full Trigger Manager dashboard">
       <div class="font-semibold text-gray-900 dark:text-gray-100">Trigger Manager</div>
       <div class="mt-0.5 text-[0.7rem] text-gray-500 dark:text-gray-400">
-        {$triggerManagerSnapshot?.lifecycle || 'starting'} · {mode.label} · {$triggerManagerConnection}
+        {#if $triggerManagerSnapshot}
+          {$triggerManagerSnapshot.lifecycle} · {mode?.label}
+        {:else}
+          {$triggerManagerConnection === 'live' ? 'Trigger Manager snapshot unavailable' : 'Waiting for Trigger Manager snapshot'}
+        {/if}
+        · {$triggerManagerConnection}
       </div>
     </button>
     <button
@@ -75,7 +78,8 @@
 
   {#if $triggerManagerError}
     <div class="mt-2 text-red-600 dark:text-red-300">{$triggerManagerError}</div>
-  {:else if $triggerManagerSnapshot}
+  {/if}
+  {#if $triggerManagerSnapshot}
     <div class="mt-2 rounded bg-white/70 p-2 dark:bg-black/20">
       <div class="font-medium text-gray-900 dark:text-gray-100">
         {$triggerManagerSnapshot.admissionPaused

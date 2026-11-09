@@ -34,6 +34,33 @@ test('owns one server lifecycle and persists startup and shutdown events', async
   assert.deepEqual(events.map(event => event.event), ['core.started', 'core.shutdown']);
 });
 
+test('delivers audit events live without persisting a second audit copy', async t => {
+  const logsDir = mkdtempSync(path.join(tmpdir(), 'ainekio-audit-delivery-'));
+  t.after(() => rmSync(logsDir, { recursive: true, force: true }));
+  const reservation = createServer().listen(0, '127.0.0.1');
+  await once(reservation, 'listening');
+  const port = (reservation.address() as import('node:net').AddressInfo).port;
+  await new Promise<void>(resolve => reservation.close(() => resolve()));
+  const server = new EventBusServer({ port, logsDir });
+  await server.start();
+  const socket = new WebSocket(`ws://127.0.0.1:${port}`);
+  try {
+    await once(socket, 'open');
+    for (const event of [
+      { source: 'audit', event: 'audit.security', data: { event: 'fixture-login' } },
+      { source: 'core', event: 'fixture-non-audit', data: {} },
+    ]) {
+      const received = once(socket, 'message');
+      socket.send(JSON.stringify(event));
+      assert.deepEqual(JSON.parse(String((await received)[0])), event);
+    }
+  } finally { socket.terminate(); await server.stop(); }
+  const filename = path.join(logsDir, `${new Date().toISOString().slice(0, 10)}.ndjson`);
+  const stored = readFileSync(filename, 'utf8').trim().split('\n').map(line => JSON.parse(line));
+  assert.equal(stored.some(event => event.source === 'audit'), false);
+  assert.equal(stored.some(event => event.event === 'fixture-non-audit'), true);
+});
+
 test('process ownership survives caller changes and preserves event delivery through restart', async () => {
   const core = path.join(root, 'packages/core/src');
   const folder = path.join(core, 'infrastructure/event-bus');

@@ -202,5 +202,3 @@ export const DesireVerdictNode: NodeDefinition = defineNode({
   properties: {},
   execute,
 });
-
-export default DesireVerdictNode;

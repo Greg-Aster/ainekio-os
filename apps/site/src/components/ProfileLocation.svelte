@@ -1,6 +1,7 @@
 <script lang="ts">
   import { onMount } from 'svelte';
   import { apiFetch } from '../lib/client/api-config';
+  import { readServerEvents } from '../lib/client/sse';
 
   interface StorageDevice {
     id: string;
@@ -22,7 +23,7 @@
     currentPath: string;
     defaultPath: string;
     storageType: string;
-    isCustom: boolean;
+    usingCustomPath: boolean;
     usingFallback: boolean;
     fallbackReason?: string;
     isEncrypted?: boolean;
@@ -38,9 +39,7 @@
       type: string;
       label: string;
       freeSpace: number;
-      freeSpaceFormatted: string;
       totalSpace: number;
-      totalSpaceFormatted: string;
       writable: boolean;
     };
   }
@@ -88,6 +87,9 @@
   let devicesLoading = false;
   let error = '';
   let success = '';
+  let configError = '';
+  let devicesError = '';
+  let veraCryptError = '';
 
   let showCustomPath = false;
   let customPath = '';
@@ -123,6 +125,7 @@
   let decryptingInPlace = false;
   let encryptInPlaceType: 'aes256' = 'aes256';
   let encryptInPlaceProgress: MigrationProgress[] = [];
+  let decryptInPlaceProgress: MigrationProgress[] = [];
   let editingDeviceId: string | null = null;
   let useLoginPassword = false;
 
@@ -145,62 +148,65 @@
     ? encryptInPlacePasswordValid
     : (encryptInPlacePasswordValid && encryptInPlacePasswordsMatch);
 
-  onMount(async () => {
-    await Promise.all([loadProfileConfig(), loadDevices(), checkVeraCryptStatus()]);
+  let disposed = false;
+  const reads = { config: 0, devices: 0, veraCrypt: 0, validation: 0 };
+  function publishRead(key: keyof typeof reads, request: number, commit: () => void) {
+    if (!disposed && request === reads[key]) commit();
+  }
+
+  onMount(() => {
+    void Promise.all([loadProfileConfig(), loadDevices(), checkVeraCryptStatus()]);
+    return () => { disposed = true; };
   });
 
   async function checkVeraCryptStatus() {
+    const request = ++reads.veraCrypt;
     checkingVeraCrypt = true;
     try {
       const response = await apiFetch('/api/veracrypt/status');
-      if (response.ok) {
-        veracryptStatus = await response.json();
-      } else {
-        veracryptStatus = { installed: false, platform: 'unknown' };
-      }
-    } catch {
-      veracryptStatus = { installed: false, platform: 'unknown' };
+      const data = await response.json();
+      if (!response.ok || data.error) throw new Error(data.error || 'Failed to read VeraCrypt status');
+      publishRead('veraCrypt', request, () => { veracryptStatus = data; veraCryptError = ''; });
+    } catch (err) {
+      publishRead('veraCrypt', request, () => { veraCryptError = (err as Error).message; });
     } finally {
-      checkingVeraCrypt = false;
+      publishRead('veraCrypt', request, () => { checkingVeraCrypt = false; });
     }
   }
 
   async function loadProfileConfig() {
+    const request = ++reads.config;
     loading = true;
-    error = '';
     try {
       const response = await apiFetch('/api/profile-path');
-      if (response.ok) {
-        profileConfig = await response.json();
-      } else {
-        const data = await response.json();
-        error = data.error || 'Failed to load profile configuration';
-      }
+      const data = await response.json();
+      if (!response.ok) throw new Error(data.error || 'Failed to load profile configuration');
+      publishRead('config', request, () => { profileConfig = data; configError = ''; });
     } catch (err) {
-      error = err instanceof Error ? err.message : 'Failed to load profile configuration';
-      console.error(err);
+      publishRead('config', request, () => { configError = (err as Error).message; });
     } finally {
-      loading = false;
+      publishRead('config', request, () => { loading = false; });
     }
   }
 
   async function loadDevices() {
+    const request = ++reads.devices;
     devicesLoading = true;
     try {
       const response = await apiFetch('/api/profile-path/devices');
-      if (response.ok) {
-        const data = await response.json();
-        devices = data.devices || [];
+      const data = await response.json();
+      if (!response.ok) throw new Error(data.error || 'Failed to load storage devices');
+      publishRead('devices', request, () => {
+        devices = data.devices;
+        devicesError = '';
         for (const device of devices) {
-          if (!devicePaths[device.id]) {
-            devicePaths[device.id] = device.suggestedPath;
-          }
+          if (!devicePaths[device.id]) devicePaths[device.id] = device.suggestedPath;
         }
-      }
+      });
     } catch (err) {
-      console.error('Failed to load storage devices:', err);
+      publishRead('devices', request, () => { devicesError = (err as Error).message; });
     } finally {
-      devicesLoading = false;
+      publishRead('devices', request, () => { devicesLoading = false; });
     }
   }
 
@@ -251,12 +257,23 @@
     }
   }
 
+  function clearValidation() {
+    reads.validation++;
+    validation = null;
+    validating = false;
+  }
+
   async function handleValidateCustomPath() {
-    if (!customPath.trim()) return;
+    const path = customPath.trim();
+    if (!path) return;
+    const request = ++reads.validation;
     validating = true;
     validation = null;
-    validation = await validatePath(customPath.trim());
-    validating = false;
+    const result = await validatePath(path);
+    publishRead('validation', request, () => {
+      if (customPath.trim() === path) validation = result;
+      validating = false;
+    });
   }
 
   function initiateMove(targetPath: string) {
@@ -269,9 +286,33 @@
     await startMigration(pendingPath);
   }
 
+  interface OperationData {
+    progress?: MigrationProgress;
+    result?: { success: boolean; filesProcessed: number; error?: string };
+    error?: string;
+  }
+
+  async function readOperation(response: Response, receive: (data: OperationData) => Promise<void> | void) {
+    if (!response.ok) {
+      const data = await response.json();
+      throw new Error(data.error || `Request failed (${response.status})`);
+    }
+    for await (const event of readServerEvents(response)) {
+      let data: OperationData;
+      try {
+        data = JSON.parse(event.data);
+      } catch (err) {
+        error = `Unable to read operation update: ${(err as Error).message}`;
+        continue;
+      }
+      await receive(data);
+    }
+  }
+
   async function startMigration(targetPath: string) {
     migrationTarget = targetPath;
     migrationProgress = [];
+    migrationSuccess = false;
     showMigrationModal = true;
     migrating = true;
     error = '';
@@ -296,84 +337,24 @@
         }),
       });
 
-      if (!response.ok && !response.headers.get('content-type')?.includes('text/event-stream')) {
-        const data = await response.json().catch(() => ({ error: `HTTP ${response.status}` }));
-        error = data.error || data.details?.join(', ') || `Migration failed (${response.status})`;
-        migrationProgress = [{
-          step: 'error',
-          status: 'failed',
-          message: 'Request failed',
-          error: error,
-        }];
-        return;
-      }
-
-      if (response.headers.get('content-type')?.includes('text/event-stream')) {
-        const reader = response.body?.getReader();
-        const decoder = new TextDecoder();
-
-        if (reader) {
-          let buffer = '';
-          while (true) {
-            const { done, value } = await reader.read();
-            if (done) break;
-
-            buffer += decoder.decode(value, { stream: true });
-            const lines = buffer.split('\n');
-            buffer = lines.pop() || '';
-
-            for (const line of lines) {
-              if (line.startsWith('data: ')) {
-                try {
-                  const data = JSON.parse(line.slice(6));
-                  if (data.progress) {
-                    migrationProgress = [...migrationProgress, data.progress];
-                    if (data.progress.status === 'completed' && data.progress.step === 'complete') {
-                      success = 'Profile migration completed successfully!';
-                      migrationSuccess = true;
-                      await loadProfileConfig();
-                    } else if (data.progress.status === 'failed') {
-                      error = data.progress.error || 'Migration failed';
-                      migrationSuccess = false;
-                    }
-                  }
-                  if (data.result) {
-                    if (data.result.success) {
-                      success = `Profile migrated successfully! ${data.result.filesProcessed} files (${formatBytes(data.result.bytesProcessed)}) moved in ${(data.result.duration / 1000).toFixed(1)}s`;
-                      migrationSuccess = true;
-                    } else {
-                      error = data.result.error || 'Migration failed';
-                      migrationSuccess = false;
-                    }
-                  }
-                  if (data.error) {
-                    error = data.error;
-                  }
-                } catch {
-                  // Skip malformed JSON
-                }
-              }
-            }
-          }
-        }
-      } else {
-        const data = await response.json();
-        if (data.error) {
-          error = data.error;
-          migrationSuccess = false;
-        } else if (data.result) {
-          if (data.result.success) {
-            success = 'Profile migrated successfully!';
+      await readOperation(response, async data => {
+        if (data.progress) {
+          migrationProgress = [...migrationProgress, data.progress];
+          if (data.progress.status === 'completed' && data.progress.step === 'complete') {
+            success = 'Profile migration completed. Storage configuration updated.';
             migrationSuccess = true;
             await loadProfileConfig();
-          } else {
-            error = data.result.error || 'Migration failed';
+          } else if (data.progress.status === 'failed') {
+            success = '';
             migrationSuccess = false;
+            error = data.progress.error || data.progress.message;
           }
         }
-      }
+        if (data.error) { success = ''; migrationSuccess = false; error = data.error; }
+      });
     } catch (err) {
       error = err instanceof Error ? err.message : 'Migration failed';
+      success = '';
       migrationSuccess = false;
       console.error(err);
     } finally {
@@ -424,61 +405,25 @@
         }),
       });
 
-      if (response.headers.get('content-type')?.includes('text/event-stream')) {
-        const reader = response.body?.getReader();
-        const decoder = new TextDecoder();
-
-        if (reader) {
-          let buffer = '';
-          while (true) {
-            const { done, value } = await reader.read();
-            if (done) break;
-
-            buffer += decoder.decode(value, { stream: true });
-            const lines = buffer.split('\n');
-            buffer = lines.pop() || '';
-
-            for (const line of lines) {
-              if (line.startsWith('data: ')) {
-                try {
-                  const data = JSON.parse(line.slice(6));
-                  if (data.progress) {
-                    encryptInPlaceProgress = [...encryptInPlaceProgress, data.progress];
-                    if (data.progress.status === 'completed' && data.progress.step === 'complete') {
-                      success = 'Profile encrypted successfully!';
-                      await loadProfileConfig();
-                    } else if (data.progress.status === 'failed') {
-                      error = data.progress.error || 'Encryption failed';
-                    }
-                  }
-                  if (data.result) {
-                    if (data.result.success) {
-                      success = `Profile encrypted! ${data.result.filesProcessed} files (${formatBytes(data.result.bytesProcessed)}) encrypted.`;
-                    } else {
-                      error = data.result.error || 'Encryption failed';
-                    }
-                  }
-                  if (data.error) {
-                    error = data.error;
-                  }
-                } catch {
-                  // Skip malformed JSON
-                }
-              }
-            }
+      await readOperation(response, async data => {
+        if (data.progress) {
+          encryptInPlaceProgress = [...encryptInPlaceProgress, data.progress];
+          if (data.progress.status === 'failed') error = data.progress.error || data.progress.message;
+        }
+        if (data.result) {
+          if (data.result.success) {
+            success = `Profile encrypted! ${data.result.filesProcessed} files.`;
+            await loadProfileConfig();
+          } else {
+            success = '';
+            error = data.result.error || 'Encryption failed';
           }
         }
-      } else {
-        const data = await response.json();
-        if (data.error) {
-          error = data.error;
-        } else if (data.success) {
-          success = 'Profile encrypted successfully!';
-          await loadProfileConfig();
-        }
-      }
+        if (data.error) { success = ''; error = data.error; }
+      });
     } catch (err) {
       error = err instanceof Error ? err.message : 'Encryption failed';
+      success = '';
       console.error(err);
     } finally {
       encryptingInPlace = false;
@@ -491,7 +436,7 @@
   async function decryptProfileInPlace() {
     if (!decryptPassword) return;
     decryptingInPlace = true;
-    encryptInPlaceProgress = [];
+    decryptInPlaceProgress = [];
     error = '';
     success = '';
 
@@ -502,61 +447,25 @@
         body: JSON.stringify({ password: decryptPassword }),
       });
 
-      if (response.headers.get('content-type')?.includes('text/event-stream')) {
-        const reader = response.body?.getReader();
-        const decoder = new TextDecoder();
-
-        if (reader) {
-          let buffer = '';
-          while (true) {
-            const { done, value } = await reader.read();
-            if (done) break;
-
-            buffer += decoder.decode(value, { stream: true });
-            const lines = buffer.split('\n');
-            buffer = lines.pop() || '';
-
-            for (const line of lines) {
-              if (line.startsWith('data: ')) {
-                try {
-                  const data = JSON.parse(line.slice(6));
-                  if (data.progress) {
-                    encryptInPlaceProgress = [...encryptInPlaceProgress, data.progress];
-                    if (data.progress.status === 'completed' && data.progress.step === 'complete') {
-                      success = 'Profile decrypted successfully!';
-                      await loadProfileConfig();
-                    } else if (data.progress.status === 'failed') {
-                      error = data.progress.error || 'Decryption failed';
-                    }
-                  }
-                  if (data.result) {
-                    if (data.result.success) {
-                      success = `Profile decrypted! ${data.result.filesProcessed} files restored.`;
-                    } else {
-                      error = data.result.error || 'Decryption failed';
-                    }
-                  }
-                  if (data.error) {
-                    error = data.error;
-                  }
-                } catch {
-                  // Skip malformed JSON
-                }
-              }
-            }
+      await readOperation(response, async data => {
+        if (data.progress) {
+          decryptInPlaceProgress = [...decryptInPlaceProgress, data.progress];
+          if (data.progress.status === 'failed') error = data.progress.error || data.progress.message;
+        }
+        if (data.result) {
+          if (data.result.success) {
+            success = `Profile decrypted! ${data.result.filesProcessed} files.`;
+            await loadProfileConfig();
+          } else {
+            success = '';
+            error = data.result.error || 'Decryption failed';
           }
         }
-      } else {
-        const data = await response.json();
-        if (data.error) {
-          error = data.error;
-        } else if (data.success) {
-          success = 'Profile decrypted successfully!';
-          await loadProfileConfig();
-        }
-      }
+        if (data.error) { success = ''; error = data.error; }
+      });
     } catch (err) {
       error = err instanceof Error ? err.message : 'Decryption failed';
+      success = '';
       console.error(err);
     } finally {
       decryptingInPlace = false;
@@ -650,6 +559,11 @@
       </div>
     {/if}
 
+    {#if configError}
+      <p role="alert" class="mb-4 text-red-500">{configError}</p>
+      <button class="btn-secondary mb-4" on:click={loadProfileConfig}>Retry profile configuration</button>
+    {/if}
+
     <!-- Current Configuration -->
     {#if profileConfig}
       <div class="panel mb-6">
@@ -671,7 +585,7 @@
           </div>
           <div class="flex items-center gap-4">
             <span class="font-medium text-gray-500 dark:text-gray-400 min-w-[120px]">Custom Location:</span>
-            <span class="text-gray-900 dark:text-gray-100">{profileConfig.isCustom ? 'Yes' : 'No (Default)'}</span>
+            <span class="text-gray-900 dark:text-gray-100">{profileConfig.usingCustomPath ? 'Yes' : 'No (Default)'}</span>
           </div>
 
           {#if profileConfig.usingFallback}
@@ -706,11 +620,11 @@
                 </div>
                 <div class="flex flex-col">
                   <span class="text-xs text-gray-500 dark:text-gray-400">Free Space</span>
-                  <span class="text-sm font-medium text-gray-900 dark:text-gray-100">{profileConfig.storageInfo.freeSpaceFormatted}</span>
+                  <span class="text-sm font-medium text-gray-900 dark:text-gray-100">{formatBytes(profileConfig.storageInfo.freeSpace)}</span>
                 </div>
                 <div class="flex flex-col">
                   <span class="text-xs text-gray-500 dark:text-gray-400">Total Space</span>
-                  <span class="text-sm font-medium text-gray-900 dark:text-gray-100">{profileConfig.storageInfo.totalSpaceFormatted}</span>
+                  <span class="text-sm font-medium text-gray-900 dark:text-gray-100">{formatBytes(profileConfig.storageInfo.totalSpace)}</span>
                 </div>
                 <div class="flex flex-col">
                   <span class="text-xs text-gray-500 dark:text-gray-400">Writable</span>
@@ -740,7 +654,7 @@
                   {/if}
                 </p>
                 {#if profileConfig.encryptionType === 'aes256'}
-                  <button class="btn-secondary btn-sm w-fit" on:click={() => showDecryptModal = true} disabled={decryptingInPlace}>
+                  <button class="btn-secondary btn-sm w-fit" on:click={() => { decryptInPlaceProgress = []; showDecryptModal = true; }} disabled={decryptingInPlace}>
                     🔓 Decrypt Profile
                   </button>
                 {/if}
@@ -752,7 +666,7 @@
                 <p class="text-sm text-gray-600 dark:text-gray-400">
                   Your profile data is stored as plain files. Consider encrypting for better security, especially if using external storage.
                 </p>
-                <button class="btn-primary btn-sm w-fit" on:click={() => showEncryptModal = true} disabled={encryptingInPlace}>
+                <button class="btn-primary btn-sm w-fit" on:click={() => { encryptInPlaceProgress = []; showEncryptModal = true; }} disabled={encryptingInPlace}>
                   🔒 Encrypt Profile
                 </button>
               {/if}
@@ -763,7 +677,7 @@
             <button class="btn-secondary" on:click={() => { showChangeLocationModal = true; changeLocationPath = ''; }}>
               📂 Change Location
             </button>
-            {#if profileConfig.isCustom}
+            {#if profileConfig.usingCustomPath}
               <button class="btn-secondary" on:click={resetToDefault}>
                 Reset to Default Location
               </button>
@@ -785,9 +699,12 @@
         💡 Plugged in a new drive? Click <strong>Refresh</strong> to detect it.
       </p>
 
+      {#if devicesError}
+        <p role="alert" class="mb-3 text-red-500">{devicesError}</p>
+      {/if}
       {#if devicesLoading}
         <p class="text-gray-500 dark:text-gray-400 italic">Scanning for storage devices...</p>
-      {:else if devices.length === 0}
+      {:else if devices.length === 0 && !devicesError}
         <div class="text-center py-8 text-gray-500 dark:text-gray-400">
           <p>No external storage devices detected.</p>
           <small class="block mt-2 text-sm">Connect a USB drive or network storage and click Refresh to see it here.</small>
@@ -866,6 +783,7 @@
               class="input-field font-mono"
               bind:value={customPath}
               placeholder="/path/to/your/profile"
+              on:input={clearValidation}
               on:blur={handleValidateCustomPath}
               disabled={validating || migrating}
             />
@@ -1000,7 +918,10 @@
                 </div>
               {/if}
 
-              {#if encryptionType === 'veracrypt' && !veracryptStatus?.installed}
+              {#if encryptionType === 'veracrypt' && veraCryptError}
+                <p role="alert" class="text-red-500">{veraCryptError}</p>
+                <button class="btn-secondary" on:click={checkVeraCryptStatus} disabled={checkingVeraCrypt}>Retry VeraCrypt status</button>
+              {:else if encryptionType === 'veracrypt' && veracryptStatus?.installed === false}
                 <div class="p-2 bg-amber-100 dark:bg-amber-900/30 rounded text-xs text-amber-700 dark:text-amber-300">
                   ⚠️ VeraCrypt not installed. <a href="https://www.veracrypt.fr/en/Downloads.html" target="_blank" class="text-blue-500 underline">Download</a>
                 </div>
@@ -1093,15 +1014,8 @@
         <div class="modal-footer">
           {#if migrationSuccess}
             <div class="w-full text-center">
-              <p class="text-green-500 font-medium mb-4">✅ Migration completed! Would you like to switch to the new location?</p>
-              <div class="flex gap-3 justify-center flex-wrap">
-                <button class="btn-primary" on:click={() => switchToLocation(migrationTarget)} disabled={switchingLocation}>
-                  {switchingLocation ? 'Switching...' : '🔄 Switch to New Location'}
-                </button>
-                <button class="btn-secondary" on:click={() => { showMigrationModal = false; migrationSuccess = false; }}>
-                  Keep Current Location
-                </button>
-              </div>
+              <p class="text-green-500 font-medium mb-4">Migration completed. Profile storage configuration has been updated.</p>
+              <button class="btn-primary" on:click={() => { showMigrationModal = false; migrationSuccess = false; }}>Close</button>
             </div>
           {:else}
             <button class="btn-primary" on:click={() => showMigrationModal = false}>Close</button>
@@ -1220,7 +1134,7 @@
     <div class="modal-content max-w-[450px]" role="dialog" aria-modal="true" tabindex="-1">
       <h3 class="text-xl font-semibold text-gray-900 dark:text-gray-100 mb-4">🔓 Decrypt Profile Data</h3>
 
-      {#if !decryptingInPlace && encryptInPlaceProgress.length === 0}
+      {#if !decryptingInPlace && decryptInPlaceProgress.length === 0}
         <div class="space-y-4">
           <p class="text-sm text-gray-600 dark:text-gray-400">
             Decrypt all encrypted profile data back to plain JSON files. You will need your encryption password to proceed.
@@ -1256,7 +1170,7 @@
         </div>
       {:else}
         <div class="flex flex-col gap-2 max-h-[400px] overflow-y-auto mb-4">
-          {#each encryptInPlaceProgress as step}
+          {#each decryptInPlaceProgress as step}
             <div class="progress-step {step.status}">
               <span class="font-bold w-5 text-center {step.status === 'completed' ? 'text-green-500' : step.status === 'failed' ? 'text-red-500' : step.status === 'running' ? 'text-blue-500' : ''}">{getStatusIcon(step.status)}</span>
               <div class="flex-1">
@@ -1276,7 +1190,7 @@
 
         {#if !decryptingInPlace}
           <div class="modal-footer">
-            <button class="btn-primary" on:click={() => { showDecryptModal = false; encryptInPlaceProgress = []; }}>Close</button>
+            <button class="btn-primary" on:click={() => { showDecryptModal = false; decryptInPlaceProgress = []; }}>Close</button>
           </div>
         {:else}
           <div class="flex items-center justify-center gap-3 py-4 text-gray-500 dark:text-gray-400">
@@ -1342,3 +1256,49 @@
     </div>
   </div>
 {/if}
+
+<style>
+  .modal-footer {
+    @apply px-6 py-4 border-t border-gray-200 flex justify-end gap-3;
+  }
+
+  :global(.dark) .modal-footer {
+    @apply border-gray-700;
+  }
+
+  .progress-step {
+    @apply flex gap-3 p-3 rounded-lg bg-gray-100;
+  }
+
+  :global(.dark) .progress-step {
+    @apply bg-gray-800;
+  }
+
+  .progress-step.running {
+    @apply bg-blue-100 border-l-[3px] border-l-blue-500;
+  }
+
+  :global(.dark) .progress-step.running {
+    @apply bg-blue-900/30;
+  }
+
+  .progress-step.completed {
+    @apply bg-green-50 border-l-[3px] border-l-green-500;
+  }
+
+  :global(.dark) .progress-step.completed {
+    @apply bg-green-900/30;
+  }
+
+  .progress-step.failed {
+    @apply bg-red-50 border-l-[3px] border-l-red-500;
+  }
+
+  :global(.dark) .progress-step.failed {
+    @apply bg-red-900/30;
+  }
+
+  .progress-step.skipped {
+    @apply opacity-60;
+  }
+</style>

@@ -157,15 +157,15 @@
       <div class="grid grid-cols-3 gap-2 text-xs">
         <div class="rounded bg-white p-2 dark:bg-gray-950">
           <div class="text-[0.62rem] uppercase text-gray-500">Body support</div>
-          <div class="mt-0.5 font-mono font-semibold">{session.freestyleMovement?.supported ? 'supported' : 'unsupported'}</div>
+          <div class="mt-0.5 font-mono font-semibold">{session.freestyleMovement ? (session.freestyleMovement.supported ? 'supported' : 'unsupported') : 'unknown'}</div>
         </div>
         <div class="rounded bg-white p-2 dark:bg-gray-950">
           <div class="text-[0.62rem] uppercase text-gray-500">Owner policy</div>
-          <div class="mt-0.5 font-mono font-semibold">{session.freestyleMovement?.enabled ? 'enabled' : 'disabled'}</div>
+          <div class="mt-0.5 font-mono font-semibold">{session.freestyleMovement ? (session.freestyleMovement.enabled ? 'enabled' : 'disabled') : 'unknown'}</div>
         </div>
         <div class="rounded bg-white p-2 dark:bg-gray-950">
           <div class="text-[0.62rem] uppercase text-gray-500">Route</div>
-          <div class="mt-0.5 font-mono font-semibold">{session.freestyleMovement?.available ? 'available' : 'closed'}</div>
+          <div class="mt-0.5 font-mono font-semibold">{session.freestyleMovement ? (session.freestyleMovement.available ? 'available' : 'closed') : 'unknown'}</div>
         </div>
       </div>
       {#if session.movementPlan}

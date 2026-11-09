@@ -1,5 +1,5 @@
 <script lang="ts">
-  import { onMount } from 'svelte'
+  import { onDestroy, onMount } from 'svelte'
   import { apiFetch } from '../lib/client/api-config'
 
   type Bank = 'decision'
@@ -19,26 +19,41 @@
   let decision: Decision = 'accept'
   let reason = ''
   let correctedOutput = ''
+  let active = true
+  let listRead: AbortController | null = null
+  let detailRead: AbortController | null = null
 
   async function load() {
+    if (!active) return
+    listRead?.abort()
+    const read = new AbortController()
+    listRead = read
     loading = true
     error = ''
     try {
-      const response = await apiFetch('/api/environment-training')
-      if (!response.ok) throw new Error((await response.json()).error || `HTTP ${response.status}`)
-      items = (await response.json()).items ?? []
-    } catch (cause) { error = cause instanceof Error ? cause.message : String(cause) }
-    finally { loading = false }
+      const response = await apiFetch('/api/environment-training', { signal: read.signal })
+      const data = await response.json()
+      if (read.signal.aborted) return
+      if (!response.ok) throw new Error(data.error || `HTTP ${response.status}`)
+      items = data.items ?? []
+    } catch (cause) {
+      if (!read.signal.aborted) error = cause instanceof Error ? cause.message : String(cause)
+    } finally { if (!read.signal.aborted) loading = false }
   }
 
   async function select(item: Item) {
+    detailRead?.abort()
+    const read = new AbortController()
+    detailRead = read
     selected = item
     detail = null
     error = ''
     try {
-      const response = await apiFetch(`/api/environment-training?bank=${item.bank}&id=${encodeURIComponent(item.id)}`)
-      if (!response.ok) throw new Error((await response.json()).error || `HTTP ${response.status}`)
-      detail = await response.json()
+      const response = await apiFetch(`/api/environment-training?bank=${item.bank}&id=${encodeURIComponent(item.id)}`, { signal: read.signal })
+      const data = await response.json()
+      if (read.signal.aborted) return
+      if (!response.ok) throw new Error(data.error || `HTTP ${response.status}`)
+      detail = data
       decision = (detail?.review?.decision as Decision) || 'accept'
       reason = detail?.review?.reason || ''
       correctedOutput = detail?.review?.correctedOutput || ''
@@ -48,7 +63,9 @@
         reason = detail.proposal.reason || ''
         correctedOutput = detail.proposal.correctedOutput || ''
       }
-    } catch (cause) { error = cause instanceof Error ? cause.message : String(cause) }
+    } catch (cause) {
+      if (!read.signal.aborted) error = cause instanceof Error ? cause.message : String(cause)
+    }
   }
 
   async function submitReview() {
@@ -62,14 +79,17 @@
           ...(decision === 'correct' ? { correctedOutput } : {}) }),
       })
       if (!response.ok) throw new Error((await response.json()).error || `HTTP ${response.status}`)
-      const current = selected
       await load()
-      await select(current)
     } catch (cause) { error = cause instanceof Error ? cause.message : String(cause) }
     finally { saving = false }
   }
 
   onMount(() => { void load() })
+  onDestroy(() => {
+    active = false
+    listRead?.abort()
+    detailRead?.abort()
+  })
 </script>
 
 <div class="space-y-3">
@@ -82,7 +102,7 @@
   </div>
   {#if error}<p class="text-sm text-red-600" role="alert">{error}</p>{/if}
   {#if loading}<p class="text-sm text-gray-500">Loading decisions…</p>{/if}
-  {#if !loading && items.length === 0}<p class="text-sm text-gray-500">No saved model decisions yet.</p>{/if}
+  {#if !loading && !error && items.length === 0}<p class="text-sm text-gray-500">No saved model decisions yet.</p>{/if}
   <div class="grid grid-cols-1 lg:grid-cols-[minmax(260px,1fr)_minmax(320px,2fr)] gap-3">
     <div class="max-h-[60vh] overflow-auto space-y-1">
       {#each items as item (item.id)}

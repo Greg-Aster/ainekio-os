@@ -1,3 +1,4 @@
+import type { ResponseEntryReference } from '../../cognitive-graph-contract.js';
 /**
  * Persona conversation implementation for Work Coordinator chat jobs.
  *
@@ -21,13 +22,14 @@ import {
 import {
   AsyncEventQueue,
   extractGraphOutput,
+  findResponseEntryReference,
   extractQueuedTTSOutput,
   runGraph,
   sseData,
 } from '../../graph-runtime.js';
 import { loadCognitiveMode, canWriteMemory as modeAllowsMemoryWrites } from '../../cognitive-mode.js';
 import { recordSystemActivity } from '../../system-activity.js';
-import { submitInnerDialogue } from '../../buffer-admission.js';
+import { submitInnerDialogue, submitInnerReflectionWithResult } from '../../buffer-admission.js';
 import { beginTTSUserTurn } from '../../tts/delivery-queue.js';
 import { getNodeExecutor } from '../../nodes/index.js';
 import { addScratchpadEntryToFolder, loadDesire, saveDesireManifest } from '../../agency/storage.js';
@@ -223,13 +225,6 @@ async function* streamGraphExecution(params: GraphPipelineParams): AsyncGenerato
   // Create real-time event queue for streaming
   const eventQueue = new AsyncEventQueue();
 
-  // Track LLM streaming state for pause manager (so Active Operator waits for response to complete)
-  const username = userContext?.username;
-  if (username) {
-    const { setLLMStreaming } = await import('../../active-operator/pause-manager.js');
-    setLLMStreaming(username, true);
-  }
-
   try {
     // Load graph - pass username so Big Brother config can be checked properly
     const loadStartTime = Date.now();
@@ -344,11 +339,7 @@ async function* streamGraphExecution(params: GraphPipelineParams): AsyncGenerato
           const nodeType = node?.type || '';
 
           let friendlyMessage = nodeName;
-          if (nodeType.includes('react_planner')) {
-            friendlyMessage = '🧠 Planning next action...';
-          } else if (nodeType.includes('skill_executor')) {
-            friendlyMessage = '⚙️ Executing skill...';
-          } else if (nodeType.includes('semantic_search')) {
+          if (nodeType.includes('semantic_search')) {
             friendlyMessage = '🔍 Searching memories...';
           } else if (nodeType.includes('response_synthesizer')) {
             friendlyMessage = '✍️ Synthesizing response...';
@@ -368,28 +359,7 @@ async function* streamGraphExecution(params: GraphPipelineParams): AsyncGenerato
             message: `Error in node ${event.nodeId}`,
             error: event.data?.error,
           }));
-        } else if (event.type === 'node_complete') {
-          const node = loaded.graph.nodes.find((n: any) => n.id === event.nodeId);
-          const nodeType = node?.type || '';
 
-          // Extract thoughts from react_planner
-          if (nodeType.includes('react_planner') && event.data?.outputs) {
-            const outputs = event.data.outputs;
-            const planText = typeof outputs === 'object' ? outputs.plan : outputs;
-
-            if (planText && typeof planText === 'string') {
-              const thoughtMatch = planText.match(/Thought:\s*(.+?)(?=\nAction:|$)/is);
-              if (thoughtMatch) {
-                const thought = thoughtMatch[1].trim();
-                eventQueue.push(push('progress', {
-                  step: 'thinking',
-                  message: `💭 ${thought}`,
-                  nodeId: event.nodeId,
-                  nodeType,
-                }));
-              }
-            }
-          }
         }
       }
     };
@@ -455,6 +425,9 @@ async function* streamGraphExecution(params: GraphPipelineParams): AsyncGenerato
     const duration = Date.now() - startedAt;
     const output = extractGraphOutput(graphState);
     const responseText = output?.output || output?.response;
+    let responseEntry: ResponseEntryReference | undefined = mode === 'conversation'
+      ? findResponseEntryReference(loaded.graph, graphState, output, output?.output ? 'output' : 'response')
+      : undefined;
     const outputError = output?.error;
     const ttsOutput = extractQueuedTTSOutput(graphState);
     const bridgeOutput = cognitiveMode === 'environment'
@@ -496,26 +469,20 @@ async function* streamGraphExecution(params: GraphPipelineParams): AsyncGenerato
     }
 
     if (mode === 'inner' && userContext?.username) {
-      const innerSaved = await submitInnerDialogue(
+      const innerSaved = await submitInnerReflectionWithResult(
         userContext.username,
+        responseText,
         {
-          role: 'reflection',
-          content: responseText,
-          meta: {
-            type: 'inner_response',
-            source: 'persona-chat',
-            dialogueSource: 'user-thought',
-            sessionId,
-          },
-        },
-        {
-          idempotencyKey: memoryIdempotencyKey,
-          memoryTimestamp,
+          type: 'inner_response',
+          source: 'persona-chat',
+          dialogueSource: 'user-thought',
           sessionId,
         },
+        { idempotencyKey: memoryIdempotencyKey, memoryTimestamp, sessionId },
       );
-      if (!innerSaved) {
-        throw new Error('Inner Dialogue Buffer node did not admit the generated response');
+      const entry = innerSaved.entries[0];
+      if (innerSaved.entries.length === 1 && typeof entry.meta?.idempotencyKey === 'string') {
+        responseEntry = { mode: 'inner', id: entry.meta.idempotencyKey };
       }
     }
 
@@ -545,6 +512,7 @@ async function* streamGraphExecution(params: GraphPipelineParams): AsyncGenerato
     const facet = getActiveFacet();
     yield push('answer', {
       response: responseText || '',
+      ...(responseEntry ? { responseEntry } : {}),
       executionId: graphState.executionId,
       status: graphState.status,
       facet,
@@ -563,12 +531,6 @@ async function* streamGraphExecution(params: GraphPipelineParams): AsyncGenerato
     }
   } finally {
     clearCancellation(sessionId);
-
-    // Clear LLM streaming state for pause manager
-    if (username) {
-      const { setLLMStreaming } = await import('../../active-operator/pause-manager.js');
-      setLLMStreaming(username, false);
-    }
   }
 }
 
@@ -618,14 +580,9 @@ export async function handlePersonaChat(req: UnifiedRequest): Promise<UnifiedRes
 
   console.log(`[persona-chat] mode=${mode}, cognitiveMode=${cognitiveMode}, user=${user.username}`);
 
-  // Record user activity for proactive-admission and pause policies.
+  // Record user activity for proactive-admission policies.
   if (isAuthenticated && user.username) {
     recordSystemActivity(Date.now(), user.username);
-
-    // Record user message for pause manager (conversation detection)
-    // This tells the Active Operator to pause when user is actively conversing
-    const { recordUserMessage } = await import('../../active-operator/pause-manager.js');
-    recordUserMessage(user.username);
   }
 
   // Initialize chat if needed
@@ -733,20 +690,6 @@ export async function handlePersonaChat(req: UnifiedRequest): Promise<UnifiedRes
               console.log(`[persona-chat] ✅ Added scratchpad entry for user answer`);
             } catch (scratchErr) {
               console.warn(`[persona-chat] ⚠️ Failed to add scratchpad entry:`, scratchErr);
-            }
-
-            // Emit event to notify the planning system
-            try {
-              const { proposalEvents } = await import('../../index.js');
-              proposalEvents.emit('proposal-resolved', {
-                username: user.username,
-                proposalId: replyToDesireId,
-                response: 'questions_answered',
-                taskType: 'desire_plan',
-              });
-              console.log(`[persona-chat] 📢 Emitted proposal-resolved event`);
-            } catch (eventErr) {
-              console.warn(`[persona-chat] ⚠️ Failed to emit event:`, eventErr);
             }
           }
         }
@@ -876,24 +819,6 @@ export async function handleClearPersonaChat(req: UnifiedRequest): Promise<Unifi
   histories.delete(key);
 
   return { status: 200, data: { cleared: true } };
-}
-
-/**
- * POST /api/persona_chat/cancel - Cancel ongoing request
- */
-export async function handleCancelPersonaChat(req: UnifiedRequest): Promise<UnifiedResponse> {
-  const { body } = req;
-  const sessionId = body?.sessionId;
-
-  if (!sessionId) {
-    return badRequestResponse('sessionId is required');
-  }
-
-  // Import cancellation function
-  const { requestCancellation } = await import('../../graph-streaming.js');
-  requestCancellation(sessionId, 'User requested cancellation');
-
-  return { status: 200, data: { cancelled: true } };
 }
 
 /**

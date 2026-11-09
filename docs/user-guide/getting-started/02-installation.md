@@ -1,6 +1,6 @@
 # Installation
 
-This chapter installs the maintained Linux-first MetaHuman OS server. If you are
+This chapter installs the maintained Linux-first Ainekio OS server. If you are
 using an installation managed by someone else, continue to
 [Setup and First Login](/user-guide#03-setup-and-login).
 
@@ -23,13 +23,12 @@ Optional:
 - Python environments required by particular training or voice providers
 - An NVIDIA GPU for supported local training or larger local inference
 - `cloudflared` for the maintained tunnel workflow
-- PM2 for background supervision of the canonical production launcher
 
 ## 1. Clone the repository
 
 ```bash
-git clone https://github.com/Greg-Aster/metahuman-os.git
-cd metahuman-os
+git clone https://github.com/Greg-Aster/ainekio-os.git
+cd ainekio-os
 ```
 
 If the repository already exists, use that installation instead of cloning a
@@ -111,24 +110,6 @@ under test requires them:
 ```
 
 Do not run development and production web servers on the same configured port.
-
-## Optional background supervision
-
-PM2 is optional. Once installed, it supervises the same `start.sh` path as one
-forked process:
-
-```bash
-./bin/start-pm2
-```
-
-Stop that supervised process with:
-
-```bash
-./bin/stop-pm2
-```
-
-Do not combine PM2 with another independently started MetaHuman production
-launcher.
 
 ## Verify the installation
 

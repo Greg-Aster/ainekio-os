@@ -9,6 +9,7 @@
   let robotId = '';
   $: robotIds = [...new Set(connections.filter(item => item.connected && item.robotId).map(item => item.robotId!))];
   export let busy = false;
+  export let reveal = false;
   export let onConnect: (agent: string, settings: Record<string, string | number | boolean>) => Promise<void>;
 
   let route = 'local';
@@ -42,10 +43,20 @@
     await onConnect('environment-bridge', { adapterUrl: localUrl, remoteAdapterUrl: remoteUrl,
       robotId, followRobot, transport: route, sshTarget, sshGatewayPort, cloudflareHostname, accessEnvFile });
   }
+
+  function revealSection(node: HTMLFormElement, requested: boolean) {
+    function update(visible: boolean) {
+      if (!visible) return;
+      node.scrollIntoView({ block: 'nearest' });
+      node.querySelector('select')?.focus({ preventScroll: true });
+    }
+    update(requested);
+    return { update };
+  }
 </script>
 
 {#if initialized}
-  <form id="body-connection" class="mt-3 space-y-2 rounded border border-gray-300 p-2 dark:border-gray-700" on:submit|preventDefault={connect}>
+  <form id="body-connection" use:revealSection={reveal} class="mt-3 space-y-2 rounded border border-gray-300 p-2 dark:border-gray-700" on:submit|preventDefault={connect}>
     <fieldset disabled={busy} class="space-y-2 disabled:opacity-50">
       <legend class="text-xs font-semibold">Body connection</legend>
       <label class="flex items-center gap-2 text-xs"><input type="checkbox" bind:checked={followRobot} /> Follow the same robot across saved hosts</label>
@@ -80,16 +91,16 @@
           <label class="block text-xs">Gateway port on remote machine
             <input required type="number" min="1" max="65535" bind:value={sshGatewayPort} class="mt-1 w-full rounded border bg-transparent p-2" />
           </label>
-          <p class="text-xs text-gray-500 dark:text-gray-400">Set up trusted, noninteractive SSH access from the MetaHuman machine first. SSH host aliases can specify a user, key and SSH port. This forwards the gateway, not the dashboard.</p>
+          <p class="text-xs text-gray-500 dark:text-gray-400">Set up trusted, noninteractive SSH access from the Ainekio OS machine first. SSH host aliases can specify a user, key and SSH port. This forwards the gateway, not the dashboard.</p>
         {:else}
           <label class="block text-xs">Cloudflare hostname
             <input bind:value={cloudflareHostname} placeholder="Your configured Access TCP hostname" class="mt-1 w-full rounded border bg-transparent p-2" />
           </label>
-          <label class="block text-xs">Service token file on MetaHuman machine
+          <label class="block text-xs">Service token file on Ainekio OS machine
             <input bind:value={accessEnvFile} placeholder="Empty uses existing browser login" class="mt-1 w-full rounded border bg-transparent p-2" />
           </label>
         {/if}
-        <label class="block text-xs">Forwarded adapter URL on MetaHuman machine
+        <label class="block text-xs">Forwarded adapter URL on Ainekio OS machine
           <input type="url" bind:value={remoteUrl} class="mt-1 w-full rounded border bg-transparent p-2" />
         </label>
       {/if}

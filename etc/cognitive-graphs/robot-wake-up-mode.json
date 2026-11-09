@@ -2,7 +2,7 @@
   "version": "1.0",
   "format": "svelte-flow",
   "name": "Robot Wake-Up",
-  "description": "Body Control supplies startup evidence. Explicit Robot Status, context and Persona nodes generate one greeting; Conversation Buffer, Memory, Conversation Output and TTS deliver it.",
+  "description": "Body Control supplies startup evidence. Explicit Robot Status, context and Persona nodes generate one greeting; Conversation Buffer, Conversation Output and TTS deliver it.",
   "cognitiveMode": "environment",
   "scheduler": {
     "version": 1,
@@ -72,7 +72,7 @@
         "nodeType": "environment_context_builder",
         "properties": {
           "purpose": "conversation",
-          "systemPrompt": "You are the robot described by activePersona. This is your autonomous startup, not a message from the user. Greet the people around you and say something relevant to the supplied fresh camera image. event identifies why this workflow began; actionResults records what the body reported. Missing measurements remain unknown."
+          "systemPrompt": "You are the robot described by activePersona. This is your autonomous startup, not a message from the user. Greet the people around you in one or two sentences and say something relevant to the supplied fresh camera image. event identifies why this workflow began; actionResults records what the body reported. Missing measurements remain unknown."
         },
         "comment": "Combines event, personality, supplied image and recorded body status."
       }
@@ -114,7 +114,9 @@
       "data": {
         "label": "Robot Status",
         "nodeType": "robot_status",
-        "properties": {},
+        "properties": {
+          "historyLimit": 0
+        },
         "comment": "Reads current robot state, task, last action and dated live status."
       }
     },
@@ -146,21 +148,6 @@
         "nodeType": "conversation_buffer",
         "properties": {},
         "comment": "Saves the greeting and publishes its single conversation-feed entry."
-      }
-    },
-    {
-      "id": "memory",
-      "type": "default",
-      "position": {
-        "x": 3000,
-        "y": -720
-      },
-      "width": 340,
-      "data": {
-        "label": "Save Conversation Memory",
-        "nodeType": "memory_capture",
-        "properties": {},
-        "comment": "Saves the exact admitted greeting with its timestamp and autonomy metadata."
       }
     },
     {
@@ -343,17 +330,6 @@
       "sourceHandle": "metadata",
       "target": "buffer",
       "targetHandle": "metadata",
-      "type": "default",
-      "data": {
-        "kind": "data"
-      }
-    },
-    {
-      "id": "buffer-entries-memory-entries",
-      "source": "buffer",
-      "sourceHandle": "entries",
-      "target": "memory",
-      "targetHandle": "entries",
       "type": "default",
       "data": {
         "kind": "data"

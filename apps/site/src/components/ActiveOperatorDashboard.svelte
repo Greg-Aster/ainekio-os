@@ -1,73 +1,12 @@
 <script lang="ts">
-  import { onDestroy, onMount } from 'svelte';
+  import { onMount } from 'svelte';
   import ActiveOperatorSettings from './ActiveOperatorSettings.svelte';
-  import { apiFetch } from '../lib/client/api-config';
+  import { coordinatorSnapshot, coordinatorConnection, coordinatorError, useWorkCoordinator } from '../lib/stores/work-coordinator';
 
-  interface WorkSummary {
-    id: string;
-    type: string;
-    handler: string;
-    state: string;
-    priority: string;
-    source: string;
-    createdAt: string;
-  }
+  $: status = $coordinatorSnapshot?.activeOperator;
+  $: error = $coordinatorSnapshot?.activeOperatorError || $coordinatorError;
 
-  type RobotOperatorChildId = 'robot-autonomy-controller' | 'robot-status' | 'robot-goal-review' | 'boredom-observer' | 'boredom-movement' | 'boredom-reflection';
-
-  interface RobotOperatorChildRuntime {
-    id: RobotOperatorChildId;
-    enabled: boolean;
-    handler: string;
-    graph: string;
-    lastAdmittedAt?: string;
-    lastTaskId?: string;
-    lastOutcome?: string;
-  }
-
-  interface AutonomyEpisode {
-    id: string;
-    child: RobotOperatorChildId;
-    handler: string;
-    state: string;
-    source: string;
-    createdAt: string;
-    completedAt?: string;
-    downstreamCount: number;
-    outcome: string;
-  }
-
-  interface Operation {
-    id: string; name: string; description: string; activation: number;
-    lastAssessment: { assessedAt: string; reason: string; instruction: string; mode?: string } | null;
-    recordedActivity: { id: string; state: string; createdAt: string; completedAt?: string; result?: { executions?: { executionId: string; status: string }[] } }[];
-  }
-  interface Assessment { assessedAt: string; mode: string; assessmentReason?: string; levels: Record<string, { activation: number }> }
-  interface OperatorStatus {
-    operations: Operation[];
-    assessments: Assessment[];
-    mode: 'reactive' | 'semi' | 'full';
-    health: string;
-    healthMessage?: string;
-    isExecuting: boolean;
-    queue: { length: number; tasks: WorkSummary[] };
-    robotOperator: {
-      runtime: {
-        updatedAt: string;
-        mode: 'reactive' | 'semi' | 'full';
-        lifecycle: string;
-        reason: string;
-        children: Record<RobotOperatorChildId, RobotOperatorChildRuntime>;
-      } | null;
-      episodes: AutonomyEpisode[];
-    };
-  }
-
-  let status: OperatorStatus | null = null;
-  let error = '';
-  let timer: ReturnType<typeof setInterval> | undefined;
-
-  const childLabels: Record<RobotOperatorChildId, string> = {
+  const childLabels: Record<string, string> = {
     'robot-autonomy-controller': 'Autonomy Controller',
     'robot-status': 'Robot Status',
     'robot-goal-review': 'Robot Goal Review',
@@ -87,23 +26,7 @@
     return samples.map((sample, index) => `${samples.length > 1 ? index * 240 / (samples.length - 1) : 0},${60 - (sample.levels[id]?.activation ?? 0) * 0.6}`).join(' ');
   }
 
-  async function refresh() {
-    try {
-      const response = await apiFetch('/api/active-operator/status');
-      const data = await response.json();
-      if (!response.ok) throw new Error(data.error || 'Failed to load Active Operator status');
-      status = data;
-      error = '';
-    } catch (caught) {
-      error = (caught as Error).message;
-    }
-  }
-
-  onMount(() => {
-    void refresh();
-    timer = setInterval(refresh, 5_000);
-  });
-  onDestroy(() => timer && clearInterval(timer));
+  onMount(useWorkCoordinator);
 </script>
 
 <div class="h-full overflow-y-auto p-4 text-sm">
@@ -114,12 +37,16 @@
 
   <ActiveOperatorSettings />
 
+  {#if $coordinatorConnection === 'reconnecting'}
+    <p class="mb-4 text-amber-600 dark:text-amber-300">Connection lost. Reconnecting; displayed status may be out of date.</p>
+  {/if}
+
   {#if error}
     <div class="mb-4 rounded border border-red-500/30 bg-red-500/10 p-3 text-red-600 dark:text-red-300">{error}</div>
   {/if}
 
   {#if !status}
-    <div class="py-12 text-center text-gray-500 dark:text-gray-400">Loading status…</div>
+    <div class="py-12 text-center text-gray-500 dark:text-gray-400">{error ? 'Active Operator status is unavailable.' : 'Connecting to Active Operator…'}</div>
   {:else}
     <div class="mb-4 grid gap-3 sm:grid-cols-2 lg:grid-cols-4">
       <div class="rounded border border-gray-200 p-3 dark:border-gray-800">
@@ -186,11 +113,13 @@
               </svg>
             {/if}
             <p class="mt-2 text-xs">{operation.lastAssessment?.reason || 'Not yet assessed'}</p>
-            {#if operation.lastAssessment}
+            {#if operation.lastAssessment || operation.recordedActivity.length}
               <details class="mt-2 text-xs text-gray-500 dark:text-gray-400">
                 <summary>Assessment and activity</summary>
-                <p class="mt-2">{localTime(operation.lastAssessment.assessedAt)} · {operation.lastAssessment.mode ?? 'Mode not recorded'}</p>
-                <p class="mt-1 whitespace-pre-wrap">{operation.lastAssessment.instruction}</p>
+                {#if operation.lastAssessment}
+                  <p class="mt-2">{localTime(operation.lastAssessment.assessedAt)} · {operation.lastAssessment.mode ?? 'Mode not recorded'}</p>
+                  <p class="mt-1 whitespace-pre-wrap">{operation.lastAssessment.instruction}</p>
+                {/if}
                 {#each operation.recordedActivity as activity}
                   <p class="mt-1">Admission: {activity.state} · {localTime(activity.completedAt || activity.createdAt)}</p>
                   {#each activity.result?.executions ?? [] as execution}

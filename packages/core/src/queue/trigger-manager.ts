@@ -66,7 +66,7 @@ export interface TriggerState {
   eventSubjects: Map<string, TriggerEventSubjectState>;
 }
 
-export interface TriggerEventSubjectState {
+interface TriggerEventSubjectState {
   username?: string;
   lastEventAt: Date;
   lastIdleResetEventAt?: string;

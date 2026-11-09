@@ -5,11 +5,11 @@ import { fileURLToPath } from 'node:url'
 
 export const ACTION_SELECTOR_DIRECTORY = dirname(fileURLToPath(import.meta.url))
 export const REPOSITORY_ROOT = resolve(ACTION_SELECTOR_DIRECTORY, '../../..')
-export const PRIOR_HELD_OUT_LOCK_PATH = resolve(
+const PRIOR_HELD_OUT_LOCK_PATH = resolve(
   REPOSITORY_ROOT,
   'brain/training/environment-action-selector/prior-context-router-held-out.lock.json',
 )
-export const PRIOR_ONE_SHOT_RECEIPT_PATH = resolve(
+const PRIOR_ONE_SHOT_RECEIPT_PATH = resolve(
   REPOSITORY_ROOT,
   'out/environment-classifier/training/qwen3.5-0.8b-final-001/final/locked-evaluation-receipt.json',
 )

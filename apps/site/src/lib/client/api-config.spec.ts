@@ -86,3 +86,44 @@ test('hosted transport selects a machine for requests, streams and media without
     }
   }
 });
+
+test('addon installation progress owns completion notices while transport preserves authentication failures', async () => {
+  const keys = ['window', 'fetch', '__METAHUMAN_STATIC_UI__'] as const;
+  const original = new Map(keys.map(key => [key, Object.getOwnPropertyDescriptor(globalThis, key)]));
+  const windowFixture = new EventTarget();
+  const notices: string[] = [];
+  const authFailures: string[] = [];
+  windowFixture.addEventListener('mh:api-action', event => notices.push((event as CustomEvent).detail.state));
+  windowFixture.addEventListener('mh:api-auth-failure', event => authFailures.push((event as CustomEvent).detail.path));
+  let denied = false;
+  let receivedSignal: AbortSignal | null | undefined;
+  try {
+    Object.assign(globalThis, { window: windowFixture, __METAHUMAN_STATIC_UI__: false,
+      fetch: async (_url: string, init?: RequestInit) => {
+        receivedSignal = init?.signal;
+        return denied ? new Response('{"error":"Session expired"}', { status: 401 })
+          : new Response(new ReadableStream(), { headers: { 'Content-Type': 'text/event-stream' } });
+      },
+    });
+    const controller = new AbortController();
+    const response = await apiFetch('/api/addons/install-stream', { method: 'POST', signal: controller.signal });
+    await response.body!.cancel();
+    assert.equal(receivedSignal, controller.signal);
+    assert.deepEqual(notices, [], 'stream headers must not announce installation completion');
+
+    const uninstall = await apiFetch('/api/addons/uninstall', { method: 'POST' });
+    await uninstall.body!.cancel();
+    assert.deepEqual(notices, ['pending', 'success'], 'ordinary request reporting remains intact');
+    denied = true;
+    const expired = await apiFetch('/api/addons/install-stream', { method: 'POST' });
+    await expired.text();
+    await new Promise(resolve => setImmediate(resolve));
+    assert.deepEqual(authFailures, ['/api/addons/install-stream']);
+  } finally {
+    for (const key of keys) {
+      const descriptor = original.get(key);
+      if (descriptor) Object.defineProperty(globalThis, key, descriptor);
+      else Reflect.deleteProperty(globalThis, key);
+    }
+  }
+});

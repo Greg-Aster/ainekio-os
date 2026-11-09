@@ -9,8 +9,8 @@ import type { UnifiedRequest, UnifiedResponse } from '../types.js';
 import { successResponse } from '../types.js';
 import {
   isAuditEnabled,
-  setAuditEnabled,
-  setAuditRetention,
+  configureAudit,
+  getAuditSettings,
   purgeOldAuditLogs,
 } from '../../audit.js';
 
@@ -30,6 +30,7 @@ export async function handleGetAuditControl(req: UnifiedRequest): Promise<Unifie
 
   try {
     return successResponse({
+      ...getAuditSettings(),
       enabled: isAuditEnabled(),
     });
   } catch (error) {
@@ -54,14 +55,16 @@ export async function handleSetAuditControl(req: UnifiedRequest): Promise<Unifie
 
   try {
     const { enabled, retentionDays, purgeOld } = body || {};
+    const settings: Parameters<typeof configureAudit>[0] = {};
 
     if (typeof enabled === 'boolean') {
-      setAuditEnabled(enabled);
+      settings.enabled = enabled;
     }
 
     if (typeof retentionDays === 'number' && retentionDays > 0) {
-      setAuditRetention(retentionDays);
+      settings.retentionDays = retentionDays;
     }
+    if (Object.keys(settings).length) configureAudit(settings);
 
     if (purgeOld === true) {
       purgeOldAuditLogs();
@@ -69,6 +72,7 @@ export async function handleSetAuditControl(req: UnifiedRequest): Promise<Unifie
 
     return successResponse({
       success: true,
+      ...getAuditSettings(),
       enabled: isAuditEnabled(),
     });
   } catch (error) {

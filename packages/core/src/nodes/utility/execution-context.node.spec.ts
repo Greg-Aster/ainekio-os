@@ -202,4 +202,9 @@ test('Intent alone selects review eligibility; replies and actions do not select
   task = null
   const absent = await executionContextNode.execute({ routingAnalysis: { needsGoalReview: true } }, { graphExecution } as any, {})
   assert.equal(absent.needsGoalReview, false, 'Selecting review does not invent a goal')
+
+  task = { objective: 'Answer a question', decision: { outcome: 'report', continuationPolicy: 'none', requiredCompletionBasis: 'user_input', objectiveComplete: false } }
+  const reportOnly = await executionContextNode.execute({ routingAnalysis: { needsResponse: true, needsGoalReview: false } }, { graphExecution } as any, {})
+  assert.equal(reportOnly.hasActiveTask, false, 'A completed one-off report does not remain an active goal')
+  assert.equal(reportOnly.awaitContext, false, 'A completed one-off report does not park waiting for user input')
 })

@@ -36,6 +36,7 @@ import { loadFreshOperatorConfig } from '../config.js';
 // Track if we've already logged the active backend
 let backendLoggedOnce = false;
 import {
+  type ProviderImageContentPart,
   type ProviderMessage,
   type ProviderOptions,
   type ProviderResponse,
@@ -44,6 +45,7 @@ import {
   type ProviderType,
   ProviderInputError,
   inspectProviderMessages,
+  parseProviderImageDataUrl,
   providerImagePolicyFromOptions,
   isCloudProvider,
   isRemoteServerProvider,
@@ -147,15 +149,15 @@ export async function callProvider(
       getBackend,
     } = await import('../escalation-backend.js');
 
-    // Get configured backend from operator.json
-    const preferredBackend = operatorConfig?.bigBrotherMode?.provider;
+    // Get configured backend from operator.json or explicit role metadata
+    const preferredBackend = options.cliProvider || operatorConfig?.bigBrotherMode?.provider;
     await ensureBackendsInitialized();
     const backend = preferredBackend
       ? getBackend(preferredBackend)
       : getActiveBackend(username);
     const backendName = preferredBackend || backend?.name || 'Big Brother';
     const resolvedBackendId = backend?.id || preferredBackend
-    const preservesImages = resolvedBackendId === 'codex'
+    const preservesImages = resolvedBackendId === 'codex' || resolvedBackendId === 'gemini'
     if (!preservesImages) {
       assertAdapterPreservesImageInput(backendName, contentInspection.imageCount)
     }
@@ -178,7 +180,19 @@ export async function callProvider(
       }
     }
     const nativeMessages = resolvedBackendId === 'codex';
-    if (options.toolAccess === 'read-only' && !nativeMessages) throw new Error('This model backend does not provide the requested read-only terminal tool access');
+    if (options.toolAccess === 'read-only' && !nativeMessages && resolvedBackendId !== 'gemini') {
+      throw new Error('This model backend does not provide the requested read-only terminal tool access');
+    }
+    const extractedImages = !nativeMessages && hasImages
+      ? messages.flatMap(m => Array.isArray(m.content)
+        ? m.content
+          .filter((part): part is ProviderImageContentPart => part.type === 'image_url')
+          .map(part => {
+            const parsed = parseProviderImageDataUrl(part.image_url.url, imagePolicy);
+            return { mimeType: parsed.mimeType, base64: parsed.base64 };
+          })
+        : [])
+      : undefined;
     const prompt = nativeMessages ? '' : messages.map(m =>
       `[${m.role === 'system' ? 'System' : m.role === 'user' ? 'User' : 'Assistant'}]: ${messageText(m)}`
     ).join('\n\n') + (responseInstructions ? `\n\n[System]: ${responseInstructions}` : '');
@@ -192,7 +206,9 @@ export async function callProvider(
       toolAccess: options.toolAccess,
       username,
       preferredBackend,
-      timeout: 300000,
+      ...(options.cliProvider && options.model ? { model: options.model } : {}),
+      ...(options.reasoningEffort ? { reasoningEffort: options.reasoningEffort } : {}),
+      ...(extractedImages?.length ? { images: extractedImages } : {}),
       ...(nativeMessages ? { modelRequest: { messages, ...(responseInstructions ? { responseInstructions } : {}),
         ...(options.contextWindow !== undefined ? { contextWindow: options.contextWindow } : {}) } } : {}),
     });
@@ -208,7 +224,7 @@ export async function callProvider(
 
     return {
       content: result.output,
-      model: operatorConfig?.bigBrotherMode?.model || preferredBackend || 'big-brother',
+      model: (options.cliProvider && options.model) || operatorConfig?.bigBrotherMode?.model || preferredBackend || 'big-brother',
       provider: 'big-brother',
     };
   }
@@ -338,7 +354,7 @@ async function callRemoteServerProvider(
     const llmUrl = `${serverUrl}/api/llm/chat`;
 
     const response = await fetch(llmUrl, {
-      signal: options.signal ? AbortSignal.any([options.signal, AbortSignal.timeout(120_000)]) : AbortSignal.timeout(120_000),
+      signal: options.signal,
       method: 'POST',
       headers,
       body: JSON.stringify({

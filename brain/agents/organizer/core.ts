@@ -43,7 +43,7 @@ export interface ParsedOrganizerOptions {
   maxBatches?: number;
 }
 
-export type OrganizerMemoryStatus = 'updated' | 'skipped' | 'failed'
+type OrganizerMemoryStatus = 'updated' | 'skipped' | 'failed'
 
 export interface OrganizerMemoryOutcome {
   relativePath: string;

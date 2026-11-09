@@ -87,8 +87,11 @@ async function initializeFromTemplate(profileRoot: string, username: string): Pr
   await fs.copy(TEMPLATE_DIR, profileRoot, {
     overwrite: false, // Don't overwrite existing files
     filter: (src) => {
-      // Skip the TEMPLATE.md documentation file
-      return !src.endsWith('TEMPLATE.md');
+      // Documentation, machine logging policy and retired settings are not profile defaults.
+      const relativePath = path.relative(TEMPLATE_DIR, src);
+      return !src.endsWith('TEMPLATE.md')
+        && relativePath !== path.join('etc', 'logging.json')
+        && relativePath !== path.join('etc', 'boredom.json');
     },
   });
 
@@ -598,14 +601,6 @@ async function createDefaultConfigs(profileRoot: string, _username: string): Pro
   // The training owner supplies one seed for all new profiles.
   await writeJsonIfMissing(path.join(etcDir, 'training.json'), readTrainingConfigSeed());
 
-  // boredom.json - Reflection trigger configuration
-  const boredom = {
-    intervalMinutes: 30,
-    enabled: true,
-  };
-
-  await writeJsonIfMissing(path.join(etcDir, 'boredom.json'), boredom);
-
   // sleep.json - Sleep schedule configuration
   const sleep = createDefaultSleepConfig();
 
@@ -645,20 +640,6 @@ async function createDefaultConfigs(profileRoot: string, _username: string): Pro
         customVoicepackPath: path.join(profileRoot, 'out', 'voices', 'kokoro-voicepacks', 'default.pt'),
         normalizeCustomVoicepacks: true,
       },
-      rvc: {
-        referenceAudioDir: path.join(profileRoot, 'out', 'voices', 'rvc-samples'),
-        modelsDir: path.join(profileRoot, 'out', 'voices', 'rvc-models'),
-        speakerId: 'default',
-        pitchShift: 0,
-        speed: 1,
-        outputFormat: 'wav',
-        autoFallbackToPiper: true,
-        indexRate: 1,
-        volumeEnvelope: 0,
-        protect: 0.15,
-        f0Method: 'rmvpe',
-        device: 'cuda',
-      },
     },
     stt: {
       provider: 'whisper',
@@ -684,13 +665,6 @@ async function createDefaultConfigs(profileRoot: string, _username: string): Pro
       enabled: true,
       directory: path.join(profileRoot, 'out', 'voice-cache'),
       maxSizeMB: 500,
-    },
-    training: {
-      enabled: true,
-      minDuration: 2,
-      maxDuration: 120,
-      minQuality: 0.6,
-      targetHours: 3,
     },
   };
 
@@ -964,11 +938,6 @@ async function createDefaultConfigs(profileRoot: string, _username: string): Pro
     lastChangedBy: 'system',
     changedAt: new Date().toISOString(),
     claimedBy: null,
-    cognitive: {
-      useNodePipeline: true,
-      changedAt: new Date().toISOString(),
-      changedBy: 'system',
-    },
   };
 
   await writeJsonIfMissing(path.join(etcDir, 'runtime.json'), runtime);
@@ -991,11 +960,6 @@ async function createDefaultConfigs(profileRoot: string, _username: string): Pro
       enableScratchpadDump: false,
       logDirectory: 'logs/run/agents',
       verboseErrors: true,
-    },
-    performance: {
-      cacheCatalog: true,
-      catalogTTL: 60000,
-      parallelSkillExecution: false,
     },
     bigBrotherMode: {
       enabled: false,
@@ -1099,7 +1063,6 @@ async function createDefaultConfigs(profileRoot: string, _username: string): Pro
     'psychoanalyzer.json',
     'runpod.json',
     'training.json', // Unified training config (v2.0)
-    'logging.json',
   ];
 
   for (const configFile of systemConfigsToCopy) {
@@ -1169,12 +1132,10 @@ async function ensureProfileDirectories(profileRoot: string): Promise<void> {
     path.join(profileRoot, 'out', 'state'),
     path.join(profileRoot, 'out', 'voice-cache'),
     path.join(profileRoot, 'out', 'voices'),
-    path.join(profileRoot, 'out', 'voice-training'),
     path.join(profileRoot, 'out', 'fine-tuned-models'),
     path.join(profileRoot, 'out', 'remote-training'),
     path.join(profileRoot, 'out', 'summaries'),
     path.join(profileRoot, 'out', 'progress'),
-    path.join(profileRoot, 'out', 'approval-queue'),
     // Log directories
     path.join(profileRoot, 'logs', 'audit'),
     path.join(profileRoot, 'logs', 'decisions'),
@@ -1326,11 +1287,9 @@ export async function initializeGuestProfile(): Promise<void> {
       'training.json',
       'autonomy.json',
       'trust-coupling.json',
-      'boredom.json',
       'sleep.json',
       'voice.json',
       'agents.json',
-      'logging.json', // Optional: per-user logging preferences
     ];
 
     for (const configFile of configFilesToCopy) {
@@ -1630,11 +1589,9 @@ export async function copyPersonaToGuest(sourceUsername: string): Promise<void> 
       'training.json',
       'autonomy.json',
       'trust-coupling.json',
-      'boredom.json',
       'sleep.json',
       'voice.json',
       'agents.json',
-      'logging.json',
     ];
 
     let copiedConfigs = 0;

@@ -6,13 +6,11 @@
   import TriggerManagerSummary from './TriggerManagerSummary.svelte';
 
   let snapshot: QueueSnapshot | null = null;
-  let connected = false;
   let error = '';
   let actionError = '';
   let actionNotice = '';
   let busyAction = '';
   $: snapshot = $coordinatorSnapshot;
-  $: connected = $coordinatorConnection === 'live';
   $: error = $coordinatorError;
 
   function priorityClasses(priority: string): string {
@@ -45,9 +43,8 @@
         ...init,
         headers: { 'Content-Type': 'application/json', ...(init.headers || {}) },
       });
-      const data = await response.json().catch(() => ({}));
+      const data = await response.json();
       if (!response.ok || data.success === false) throw new Error(data.error || `Request failed: ${response.status}`);
-      if (data.snapshot) coordinatorSnapshot.set(data.snapshot);
       if (data.status === 'requested') actionNotice = 'Candidate selection requested. The execution owner must validate it before movement can resume.';
     } catch (caught) {
       actionError = (caught as Error).message;
@@ -103,7 +100,7 @@
       <div>
         <div class="font-semibold text-gray-900 dark:text-gray-100">Work Coordinator</div>
         <div class="text-xs text-gray-500 dark:text-gray-400">
-          {snapshot?.lifecycle || 'starting'} · {connected ? 'live' : 'reconnecting'}
+          {snapshot ? snapshot.lifecycle : 'Coordinator state unavailable'} · {$coordinatorConnection}
         </div>
       </div>
       <button
@@ -112,10 +109,15 @@
         on:click={() => snapshot && setPaused(snapshot.paused)}
       >{snapshot?.paused ? 'Resume' : 'Pause'}</button>
     </div>
-    {#if snapshot?.degraded || error || actionError}
+    {#if snapshot?.degraded}
       <div class="mt-2 rounded border border-red-500/30 bg-red-500/10 p-2 text-xs text-red-600 dark:text-red-300">
-        {actionError || error || snapshot?.error || 'Coordinator is degraded'}
+        {snapshot.error || 'Coordinator is degraded'}
       </div>
+    {/if}
+    {#if error}<p role="alert" class="mt-2 text-xs text-red-600 dark:text-red-300">{error}</p>{/if}
+    {#if actionError}<p role="alert" class="mt-2 text-xs text-red-600 dark:text-red-300">{actionError}</p>{/if}
+    {#if snapshot && $coordinatorConnection !== 'live'}
+      <p class="mt-2 text-xs text-gray-500 dark:text-gray-400">Showing the last received coordinator state.</p>
     {/if}
     {#if actionNotice}<p class="mt-2 text-xs text-gray-500 dark:text-gray-400" role="status">{actionNotice}</p>{/if}
   </header>
@@ -123,7 +125,7 @@
   <div class="min-h-0 flex-1 overflow-y-auto p-3">
     <TriggerManagerSummary />
     {#if !snapshot}
-      <div class="py-8 text-center text-xs text-gray-500 dark:text-gray-400">Waiting for coordinator state…</div>
+      <div class="py-8 text-center text-xs text-gray-500 dark:text-gray-400">{error ? 'Coordinator state is unavailable.' : 'Waiting for coordinator state…'}</div>
     {:else}
       <div class="mb-3 flex items-center justify-between gap-2">
         <span class="text-xs text-gray-500 dark:text-gray-400">{snapshot.tasks.length} active work item(s)</span>

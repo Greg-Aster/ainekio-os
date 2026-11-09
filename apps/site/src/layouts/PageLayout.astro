@@ -1,0 +1,36 @@
+---
+import ThemeToggle from "../components/ThemeToggle.svelte";
+import ThemeInit from "../components/ThemeInit.astro";
+import BackendConnectionStatus from '../components/BackendConnectionStatus.svelte';
+import '../styles/tailwind.css';
+const { title = 'Ainekio OS', description = 'Ainekio OS Dashboard' } = Astro.props;
+---
+<!doctype html>
+<html lang="en" class="scroll-smooth">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <meta name="description" content={description} />
+    <title>{title}</title>
+    <link rel="icon" type="image/svg+xml" href="/favicon.svg" />
+    <ThemeInit />
+  </head>
+  <body class="min-h-screen bg-white text-gray-900 dark:bg-gray-950 dark:text-gray-100 flex flex-col">
+    <BackendConnectionStatus client:only="svelte" />
+    <header class="border-b border-gray-200/60 dark:border-white/10 backdrop-blur sticky top-0">
+      <div class="max-w-6xl mx-auto px-4 flex items-center justify-between py-4">
+        <a href="/" class="font-semibold text-lg">🧠 Ainekio OS</a>
+        <nav class="flex items-center gap-3">
+          <ThemeToggle client:load />
+        </nav>
+      </div>
+    </header>
+    <main class={Astro.props.mainClass || 'max-w-6xl mx-auto px-4 py-8 flex-grow min-h-0'}>
+      <slot />
+    </main>
+    <footer class="max-w-6xl mx-auto px-4 muted py-8 text-center text-sm">
+      <p>Ainekio OS • Autonomous • Local-first • Transparent</p>
+    </footer>
+  </body>
+
+</html>

@@ -1,7 +1,7 @@
-# MetaHuman OS User Guide
+# Ainekio OS User Guide
 
 This guide explains how to install, configure, use, monitor, and troubleshoot the
-current MetaHuman OS application. It follows the maintained web interface and
+current Ainekio OS application. It follows the maintained web interface and
 `./bin/mh` CLI. Features that require an optional provider, external service,
 remote server, or robot say so explicitly.
 
@@ -19,7 +19,7 @@ owner-only setup.
   creation, recovery codes, onboarding, guest access, initial model checks, and
   a first-use walkthrough.
 
-## Using MetaHuman
+## Using Ainekio OS
 
 - [Chat Interface](using-metahuman/chat-interface.md)
 - [Dashboard and Monitoring](using-metahuman/dashboard-monitoring.md)
@@ -33,7 +33,6 @@ owner-only setup.
 - [Cognitive Modes](training-personalization/cognitive-modes.md)
 - [Persona Editor](training-personalization/persona-editor.md)
 - [Persona Generator](training-personalization/persona-generator.md)
-- [Voice Training](training-personalization/voice-training.md)
 
 ## Advanced Features
 
@@ -43,7 +42,7 @@ owner-only setup.
 - [Headless Runtime Mode](advanced-features/headless-mode.md)
 - [Multi-User Profiles](advanced-features/multi-user-profiles.md)
 - [Node Editor](advanced-features/node-editor.md)
-- [Skills System](advanced-features/skills-system.md)
+- [Computer Tasks and Approvals](advanced-features/skills-system.md)
 
 ## Configuration and Administration
 

@@ -146,19 +146,7 @@ export function acquireBufferLock(
   store.locks.push(lock);
   saveLocks(store);
 
-  audit({
-    level: 'info',
-    category: 'system',
-    event: 'buffer_lock_acquired',
-    details: {
-      lockId: lock.lockId,
-      username,
-      mode,
-      operation,
-      windowId,
-    },
-    actor: username,
-  });
+
 
   return lock;
 }
@@ -177,18 +165,7 @@ export function releaseBufferLock(lockId: string): boolean {
   store.locks = store.locks.filter(l => l.lockId !== lockId);
   saveLocks(store);
 
-  audit({
-    level: 'info',
-    category: 'system',
-    event: 'buffer_lock_released',
-    details: {
-      lockId,
-      username: lock.username,
-      mode: lock.mode,
-      operation: lock.operation,
-    },
-    actor: lock.username,
-  });
+
 
   return true;
 }

@@ -55,12 +55,12 @@ const request: UnifiedRequest = {
 
 const list = await handleListUserGuide(request);
 assert.equal(list.status, 200);
-assert.equal(list.data?.totalChapters, 32);
+assert.equal(list.data?.totalChapters, 31);
 
 const chapterIds = list.data?.categories.flatMap((category: { chapters: Array<{ id: string }> }) =>
   category.chapters.map((chapter) => chapter.id),
 ) as string[];
-assert.equal(new Set(chapterIds).size, 32);
+assert.equal(new Set(chapterIds).size, 31);
 assert.equal(chapterIds[0], '01-overview');
 assert.equal(chapterIds.at(-1), '22-ethical-use-policy');
 
@@ -84,12 +84,11 @@ for (const id of chapterIds) {
   }
 }
 
-const voiceTraining = await handleGetUserGuideChapter({
+const personaGenerator = await handleGetUserGuideChapter({
   ...request,
-  params: { id: 'voice-training' },
+  params: { id: 'persona-generator' },
 });
-assert.equal(voiceTraining.data?.prev?.id, 'persona-generator');
-assert.equal(voiceTraining.data?.next?.id, 'agency-system');
+assert.equal(personaGenerator.data?.next?.id, 'agency-system');
 
 const missing = await handleGetUserGuideChapter({
   ...request,

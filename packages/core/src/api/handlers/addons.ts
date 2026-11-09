@@ -13,7 +13,7 @@ import { successResponse, streamResponse } from '../types.js'
 import { systemPaths } from '../../paths.js'
 import { stopVoiceService } from '../../voice-service-manager.js'
 
-type AddonId = 'rvc' | 'kokoro'
+type AddonId = 'kokoro'
 
 interface AddonCatalogEntry {
   name: string
@@ -48,7 +48,7 @@ function loadCatalog(): AddonCatalog {
 }
 
 function isAddonId(value: string): value is AddonId {
-  return value === 'rvc' || value === 'kokoro'
+  return value === 'kokoro'
 }
 
 function isExecutable(filePath: string): boolean {
@@ -60,33 +60,17 @@ function isExecutable(filePath: string): boolean {
   }
 }
 
-function isAddonInstalled(addonId: AddonId): boolean {
-  const externalDir = path.join(systemPaths.root, 'external')
-
-  switch (addonId) {
-    case 'rvc': {
-      const addonDir = path.join(externalDir, 'applio-rvc')
-      return isExecutable(path.join(addonDir, 'venv', 'bin', 'python3'))
-        && fs.existsSync(path.join(addonDir, 'core.py'))
-    }
-    case 'kokoro': {
-      const addonDir = path.join(externalDir, 'kokoro')
-      return isExecutable(path.join(addonDir, 'venv', 'bin', 'python3'))
-        && fs.existsSync(path.join(addonDir, 'kokoro_server.py'))
-        && fs.existsSync(path.join(addonDir, 'server_defaults.py'))
-    }
-  }
+function isAddonInstalled(): boolean {
+  const addonDir = path.join(systemPaths.root, 'external', 'kokoro')
+  return isExecutable(path.join(addonDir, 'venv', 'bin', 'python3'))
+    && fs.existsSync(path.join(addonDir, 'kokoro_server.py'))
+    && fs.existsSync(path.join(addonDir, 'server_defaults.py'))
 }
 
-function getInstaller(addonId: AddonId): Installer {
-  const args = addonId === 'kokoro' ? ['--yes'] : []
-  const scriptName = addonId === 'rvc'
-      ? 'install-rvc.sh'
-      : 'install-kokoro.sh'
-
+function getInstaller(): Installer {
   return {
-    scriptPath: path.join(systemPaths.root, 'bin', scriptName),
-    args,
+    scriptPath: path.join(systemPaths.root, 'bin', 'install-kokoro.sh'),
+    args: ['--yes'],
   }
 }
 
@@ -96,7 +80,7 @@ export async function handleGetAddons(_req: UnifiedRequest): Promise<UnifiedResp
     const addons = Object.fromEntries(
       Object.entries(catalog.addons).map(([id, addon]) => [
         id,
-        { ...addon, id, installed: isAddonInstalled(id as AddonId) },
+        { ...addon, id, installed: isAddonInstalled() },
       ]),
     )
 
@@ -159,7 +143,7 @@ async function* streamInstaller(
   proc.stdout?.on('data', (data: Buffer) => pushLines('info', data))
   proc.stderr?.on('data', (data: Buffer) => pushLines('error', data))
   proc.on('close', (code) => {
-    if (code === 0 && isAddonInstalled(addonId)) {
+    if (code === 0 && isAddonInstalled()) {
       push(event('complete', { success: true, message: 'Installation completed successfully' }))
     } else {
       push(event('complete', {
@@ -193,34 +177,23 @@ export async function handleInstallAddonStream(req: UnifiedRequest): Promise<Uni
     return { status: 400, error: 'A supported addonId is required' }
   }
 
-  const installer = getInstaller(addonId)
+  const installer = getInstaller()
   if (!fs.existsSync(installer.scriptPath)) {
     return { status: 500, error: `Installer not found: ${path.basename(installer.scriptPath)}` }
   }
-  if (isAddonInstalled(addonId)) {
+  if (isAddonInstalled()) {
     return { status: 409, error: `${addonId} is already installed` }
   }
 
   return streamResponse(streamInstaller(req, addonId, installer))
 }
 
-async function uninstallAddon(addonId: AddonId): Promise<string> {
-  switch (addonId) {
-    case 'rvc': {
-      fs.rmSync(path.join(systemPaths.root, 'external', 'applio-rvc'), {
-        recursive: true,
-        force: true,
-      })
-      return 'RVC uninstalled successfully'
-    }
-    case 'kokoro': {
-      await stopVoiceService('kokoro')
-      const kokoroDir = path.join(systemPaths.root, 'external', 'kokoro')
-      fs.rmSync(path.join(kokoroDir, 'venv'), { recursive: true, force: true })
-      fs.rmSync(path.join(kokoroDir, '__pycache__'), { recursive: true, force: true })
-      return 'Kokoro runtime uninstalled successfully; maintained integration source was preserved'
-    }
-  }
+async function uninstallAddon(): Promise<string> {
+  await stopVoiceService('kokoro')
+  const kokoroDir = path.join(systemPaths.root, 'external', 'kokoro')
+  fs.rmSync(path.join(kokoroDir, 'venv'), { recursive: true, force: true })
+  fs.rmSync(path.join(kokoroDir, '__pycache__'), { recursive: true, force: true })
+  return 'Kokoro runtime uninstalled successfully; maintained integration source was preserved'
 }
 
 export async function handleUninstallAddon(req: UnifiedRequest): Promise<UnifiedResponse> {
@@ -230,10 +203,10 @@ export async function handleUninstallAddon(req: UnifiedRequest): Promise<Unified
   }
 
   try {
-    if (!isAddonInstalled(addonId)) {
+    if (!isAddonInstalled()) {
       return successResponse({ success: true, message: `${addonId} is already uninstalled` })
     }
-    const message = await uninstallAddon(addonId)
+    const message = await uninstallAddon()
     return successResponse({ success: true, message })
   } catch (error) {
     console.error('[addons-handler] Uninstall failed:', error)

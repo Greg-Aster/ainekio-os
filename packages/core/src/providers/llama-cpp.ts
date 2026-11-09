@@ -147,6 +147,9 @@ export async function callLlamaCpp(
 ): Promise<ProviderResponse> {
   validateLlamaCppConfig(config)
   options.signal?.throwIfAborted()
+  if (config.model.toLowerCase().includes('embedding')) {
+    throw new ProviderInputError(`llama.cpp embedding model ${config.model} cannot be used for chat completions`)
+  }
   const inspection = inspectProviderMessages(messages, providerImagePolicyFromOptions(options))
   if (inspection.imageCount && !config.capabilities.includes('image')) {
     throw new ProviderInputError(`llama.cpp model ${config.model} is not configured for image input`)

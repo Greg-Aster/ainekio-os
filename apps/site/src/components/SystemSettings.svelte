@@ -5,31 +5,21 @@
   import ModelRegistrySettings from './ModelRegistrySettings.svelte';
   import { apiFetch } from '../lib/client/api-config';
 
-  // Welcome modal toggle
-  let showWelcomeModal = false;
-
   // Model info
   let modelInfo: any = null;
+  let modelInfoError = '';
 
   // Logging config
-  let logLevel = 'info';
-  let slowRequestThresholdMs = 1000;
-  let suppressPatterns = '';
-  let logColorize = true;
-  let logTimestamp = true;
-  let logSlowRequests = true;
+  let logLevel = '';
   let savingLogging = false;
+  let loggingMessage = '';
+
 
   // Audit logging control
-  let auditLoggingEnabled = false;
+  let auditLoggingEnabled: boolean | null = null;
   let auditLoggingLoading = false;
+  let auditError = '';
   let auditLoggingSaving = false;
-
-  // Node pipeline state
-  let nodePipelineEnabled = false;
-  let nodePipelineLocked = false;
-  let nodePipelineLoading = false;
-  let nodePipelineSaving = false;
 
   // Storage status
   let storageStatus: {
@@ -45,11 +35,13 @@
     paths?: Record<string, { path?: string; available: boolean }>;
   } | null = null;
   let storageLoading = false;
+  let storageError = '';
 
   // Reflector content mode
   type ContentMode = 'all' | 'user' | 'agent';
-  let reflectorContentMode: ContentMode = 'user';
+  let reflectorContentMode: ContentMode | '' = '';
   let reflectorContentModeLoading = false;
+  let reflectorError = '';
   let reflectorContentModeSaving = false;
   const contentModeOptions: Record<ContentMode, string> = {
     all: 'User and AI history - generated dreams, reflections, and inner dialogue are excluded',
@@ -58,8 +50,9 @@
   };
 
   // Index content mode (what gets embedded for semantic search)
-  let indexContentMode: ContentMode = 'user';
+  let indexContentMode: ContentMode | '' = '';
   let indexContentModeLoading = false;
+  let indexError = '';
   let indexContentModeSaving = false;
   const indexContentModeOptions: Record<ContentMode, string> = {
     user: 'User only - indexes only user inputs (recommended, prevents LLM hallucinations in search)',
@@ -86,12 +79,10 @@
   let bootManagerSaving = '';
   let bootManagerFeedback: { type: 'success' | 'error'; text: string } | null = null;
 
-  onMount(async () => {
-    loadWelcomeModalSetting();
+  onMount(() => {
     loadModelInfo();
     loadLoggingConfig();
     loadAuditLoggingState();
-    loadNodePipelineState();
     loadStorageStatus();
     loadReflectorContentMode();
     loadIndexContentMode();
@@ -119,6 +110,7 @@
 
   async function loadBootManager() {
     bootManagerLoading = true;
+    bootManagerFeedback = null;
     try {
       const res = await apiFetch('/api/monitor');
       if (!res.ok) {
@@ -126,15 +118,18 @@
       }
       const data = await res.json();
       bootAgents = Array.isArray(data.bootAgents) ? data.bootAgents : [];
+      return true;
     } catch (err) {
       console.error('[SystemSettings] Error loading boot manager:', err);
       bootManagerFeedback = { type: 'error', text: (err as Error).message };
+      return false;
     } finally {
       bootManagerLoading = false;
     }
   }
 
-  async function saveBootAgentVariable(agent: BootAgent, key: 'enabled' | 'startOnSystemBoot' | 'autoRestart' | 'maxRetries', value: boolean | number) {
+  async function saveBootAgentVariable(agent: BootAgent, key: 'enabled' | 'startOnSystemBoot' | 'autoRestart' | 'maxRetries', value: boolean | number, event?: Event) {
+    const target = event?.currentTarget as HTMLInputElement | null;
     const saveKey = bootManagerSaveKey(agent.agentId, key);
     if (bootManagerSaving) return;
     bootManagerSaving = saveKey;
@@ -150,77 +145,40 @@
           value,
         }),
       });
-      const data = await res.json().catch(() => ({}));
+      const data = await res.json();
       if (!res.ok || data.success === false) {
         throw new Error(data.error || 'Failed to save boot setting');
       }
-      await loadBootManager();
-      bootManagerFeedback = { type: 'success', text: `${agent.displayName} boot setting saved` };
+      if (await loadBootManager()) {
+        bootManagerFeedback = { type: 'success', text: `${agent.displayName} boot setting saved` };
+      }
     } catch (err) {
       console.error('[SystemSettings] Error saving boot manager setting:', err);
-      bootManagerFeedback = { type: 'error', text: (err as Error).message };
       await loadBootManager();
+      bootManagerFeedback = { type: 'error', text: (err as Error).message };
     } finally {
+      const current = bootAgents.find(item => item.agentId === agent.agentId) || agent;
+      if (target) {
+        if (key === 'maxRetries') target.value = String(current[key]);
+        else target.checked = current[key];
+      }
       bootManagerSaving = '';
     }
   }
 
-  async function loadNodePipelineState() {
-    nodePipelineLoading = true;
-    try {
-      const res = await apiFetch('/api/node-pipeline');
-      if (res.ok) {
-        const data = await res.json();
-        nodePipelineEnabled = !!data.enabled;
-        nodePipelineLocked = !!data.locked;
-      }
-    } catch (err) {
-      console.error('[SystemSettings] Error loading node pipeline state:', err);
-    } finally {
-      nodePipelineLoading = false;
-    }
-  }
-
-  async function handleNodePipelineToggle(event: Event) {
-    if (nodePipelineLocked || nodePipelineSaving) {
-      event?.preventDefault();
-      return;
-    }
-    const target = event.currentTarget as HTMLInputElement | null;
-    const desired = target?.checked ?? !nodePipelineEnabled;
-    nodePipelineSaving = true;
-    try {
-      const res = await apiFetch('/api/node-pipeline', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ enabled: desired })
-      });
-      if (!res.ok) {
-        const text = await res.text();
-        throw new Error(text || 'Failed to update node pipeline state');
-      }
-      const data = await res.json();
-      nodePipelineEnabled = !!data.enabled;
-      nodePipelineLocked = !!data.locked;
-    } catch (err) {
-      console.error('[SystemSettings] Error updating node pipeline state:', err);
-      nodePipelineEnabled = !desired;
-      alert(`Failed to update node pipeline state: ${(err as Error).message}`);
-    } finally {
-      nodePipelineSaving = false;
-    }
-  }
+  let auditRetentionDays: number | null = null;
 
   async function loadAuditLoggingState() {
     auditLoggingLoading = true;
+    auditError = '';
     try {
       const res = await apiFetch('/api/audit-control');
-      if (res.ok) {
-        const data = await res.json();
-        auditLoggingEnabled = !!data.enabled;
-      }
+      const data = await res.json();
+      if (!res.ok) throw new Error(data.error || 'Failed to load audit logging state');
+      auditLoggingEnabled = !!data.enabled;
+      auditRetentionDays = data.retentionDays;
     } catch (err) {
-      console.error('[SystemSettings] Error loading audit logging state:', err);
+      auditError = (err as Error).message;
     } finally {
       auditLoggingLoading = false;
     }
@@ -247,7 +205,7 @@
       auditLoggingEnabled = !!data.enabled;
     } catch (err) {
       console.error('[SystemSettings] Error updating audit logging state:', err);
-      auditLoggingEnabled = !desired;
+      if (target) target.checked = auditLoggingEnabled === true;
       alert(`Failed to update audit logging: ${(err as Error).message}`);
     } finally {
       auditLoggingSaving = false;
@@ -255,7 +213,9 @@
   }
 
   async function purgeOldAuditLogs() {
-    if (!confirm('Purge audit logs older than 7 days? This cannot be undone.')) {
+    if (!confirm(auditRetentionDays === null
+      ? 'Purge audit logs using the server retention setting? This cannot be undone.'
+      : `Purge audit logs older than ${auditRetentionDays} days? This cannot be undone.`)) {
       return;
     }
     try {
@@ -274,97 +234,67 @@
     }
   }
 
-  function loadWelcomeModalSetting() {
-    const stored = localStorage.getItem('showWelcomeModal');
-    showWelcomeModal = stored === null ? true : stored === 'true';
-  }
-
-  function toggleWelcomeModal() {
-    localStorage.setItem('showWelcomeModal', String(showWelcomeModal));
-  }
-
   async function loadModelInfo() {
+    modelInfoError = '';
     try {
       const res = await apiFetch('/api/model-info');
-      if (res.ok) {
-        modelInfo = await res.json();
-      }
+      const data = await res.json();
+      if (!res.ok) throw new Error(data.error || 'Failed to load model information');
+      modelInfo = data;
     } catch (err) {
-      console.error('[SystemSettings] Error loading model info:', err);
+      modelInfoError = (err as Error).message;
     }
   }
 
-  function loadLoggingConfig() {
-    logLevel = localStorage.getItem('logLevel') || 'info';
-    slowRequestThresholdMs = parseInt(localStorage.getItem('slowRequestThresholdMs') || '1000', 10);
-    suppressPatterns = localStorage.getItem('suppressPatterns') || '';
-    logColorize = localStorage.getItem('logColorize') !== 'false';
-    logTimestamp = localStorage.getItem('logTimestamp') !== 'false';
-    logSlowRequests = localStorage.getItem('logSlowRequests') !== 'false';
+  async function loadLoggingConfig() {
+    loggingMessage = '';
+    try {
+      const response = await apiFetch('/api/logging-config');
+      const config = await response.json();
+      if (!response.ok) throw new Error(config.error || 'Failed to load logging config');
+      logLevel = config.level;
+    } catch (err) { loggingMessage = (err as Error).message; }
   }
 
   async function saveLoggingConfig() {
     if (savingLogging) return;
     savingLogging = true;
+    loggingMessage = '';
     try {
-      localStorage.setItem('logLevel', logLevel);
-      localStorage.setItem('slowRequestThresholdMs', String(slowRequestThresholdMs));
-      localStorage.setItem('suppressPatterns', suppressPatterns);
-      localStorage.setItem('logColorize', String(logColorize));
-      localStorage.setItem('logTimestamp', String(logTimestamp));
-      localStorage.setItem('logSlowRequests', String(logSlowRequests));
-
-      const res = await apiFetch('/api/logging-config', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          level: logLevel,
-          slowRequestThresholdMs,
-          suppressPatterns: suppressPatterns.split(',').map(s => s.trim()).filter(Boolean),
-          colorize: logColorize,
-          timestamp: logTimestamp,
-          logSlowRequests,
-        }),
-      });
-      if (!res.ok) throw new Error('Failed to save logging config');
-    } catch (err) {
-      console.error('[SystemSettings] Error saving logging config:', err);
-    } finally {
-      savingLogging = false;
-    }
+      const response = await apiFetch('/api/logging-config', { method: 'POST',
+        headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ level: logLevel }) });
+      if (!response.ok) throw new Error('Failed to save logging config');
+      loggingMessage = 'Logging configuration saved.';
+    } catch (err) { loggingMessage = (err as Error).message; }
+    finally { savingLogging = false; }
   }
 
   async function loadStorageStatus() {
     storageLoading = true;
+    storageError = '';
     try {
       const res = await apiFetch('/api/storage-status');
-      if (res.ok) {
-        storageStatus = await res.json();
-      }
+      const data = await res.json();
+      if (!res.ok) throw new Error(data.error || 'Failed to load storage status');
+      storageStatus = data;
     } catch (err) {
-      console.error('[SystemSettings] Error loading storage status:', err);
+      storageError = (err as Error).message;
     } finally {
       storageLoading = false;
     }
   }
 
-  function refreshStorageStatus() {
-    loadStorageStatus();
-  }
-
   async function loadReflectorContentMode() {
     reflectorContentModeLoading = true;
+    reflectorError = '';
     try {
       const res = await apiFetch('/api/trigger-manager');
-      if (res.ok) {
-        const data = await res.json();
-        const mode = data.snapshot?.globalSettings?.memoryContentMode;
-        if (mode && ['all', 'user', 'agent'].includes(mode)) {
-          reflectorContentMode = mode as ContentMode;
-        }
-      }
+      const data = await res.json();
+      if (!res.ok) throw new Error(data.error || 'Failed to load memory content mode');
+      const mode = data.snapshot?.globalSettings?.memoryContentMode;
+      if (mode && ['all', 'user', 'agent'].includes(mode)) reflectorContentMode = mode as ContentMode;
     } catch (err) {
-      console.error('[SystemSettings] Error loading memory content mode:', err);
+      reflectorError = (err as Error).message;
     } finally {
       reflectorContentModeLoading = false;
     }
@@ -404,17 +334,15 @@
 
   async function loadIndexContentMode() {
     indexContentModeLoading = true;
+    indexError = '';
     try {
       const res = await apiFetch('/api/embeddings');
-      if (res.ok) {
-        const data = await res.json();
-        const mode = data.indexContentMode;
-        if (mode && ['all', 'user', 'agent'].includes(mode)) {
-          indexContentMode = mode as ContentMode;
-        }
-      }
+      const data = await res.json();
+      if (!res.ok) throw new Error(data.error || 'Failed to load index content mode');
+      const mode = data.indexContentMode;
+      if (mode && ['all', 'user', 'agent'].includes(mode)) indexContentMode = mode as ContentMode;
     } catch (err) {
-      console.error('[SystemSettings] Error loading index content mode:', err);
+      indexError = (err as Error).message;
     } finally {
       indexContentModeLoading = false;
     }
@@ -452,27 +380,6 @@
 </script>
 
 <div class="w-full">
-  <!-- Welcome Modal Toggle -->
-  <div class="setting-group">
-    <div class="flex flex-col gap-2">
-      <div class="flex items-center justify-between">
-        <span class="setting-label">Welcome Screen</span>
-        <label class="toggle-switch" for="welcome-modal-toggle" aria-label="Show welcome modal on startup">
-          <input
-            id="welcome-modal-toggle"
-            type="checkbox"
-            bind:checked={showWelcomeModal}
-            on:change={toggleWelcomeModal}
-          />
-          <span class="toggle-slider"></span>
-        </label>
-      </div>
-      <p class="text-sm text-gray-500 dark:text-gray-400 m-0">
-        {showWelcomeModal ? 'Welcome screen will appear on next startup' : 'Welcome screen disabled'}
-      </p>
-    </div>
-  </div>
-
   <!-- Resources Section -->
   <div class="setting-group">
     <div class="setting-label">Resources</div>
@@ -484,7 +391,7 @@
           <span class="text-xs text-gray-500 dark:text-gray-400">Complete documentation and manual</span>
         </div>
       </a>
-      <a href="https://github.com/gregjacobs/metahuman" target="_blank" rel="noopener noreferrer" class="flex items-center gap-3 p-3.5 rounded-lg bg-violet-500/5 dark:bg-violet-400/10 border border-violet-500/15 dark:border-violet-400/20 no-underline text-inherit transition-all hover:bg-violet-500/10 dark:hover:bg-violet-400/15 hover:border-violet-500/30 dark:hover:border-violet-400/35 hover:translate-x-0.5">
+      <a href="https://github.com/Greg-Aster/ainekio-os" target="_blank" rel="noopener noreferrer" class="flex items-center gap-3 p-3.5 rounded-lg bg-violet-500/5 dark:bg-violet-400/10 border border-violet-500/15 dark:border-violet-400/20 no-underline text-inherit transition-all hover:bg-violet-500/10 dark:hover:bg-violet-400/15 hover:border-violet-500/30 dark:hover:border-violet-400/35 hover:translate-x-0.5">
         <span class="text-2xl shrink-0">🔗</span>
         <div class="flex flex-col gap-0.5 flex-1">
           <span class="text-[0.9375rem] font-semibold text-gray-800 dark:text-gray-100">GitHub Repository</span>
@@ -513,7 +420,7 @@
     </div>
 
     <p class="text-sm text-gray-500 dark:text-gray-400 m-0 mb-3">
-      Controls persistent services and connections started with MetaHuman OS. Finite scheduled and one-shot work is configured in Trigger Manager and runs through the Work Coordinator.
+      Controls persistent services and connections started with Ainekio OS. Finite scheduled and one-shot work is configured in Trigger Manager and runs through the Work Coordinator.
     </p>
 
     {#if bootManagerFeedback}
@@ -528,6 +435,8 @@
 
     {#if bootManagerLoading && bootAgents.length === 0}
       <p class="text-sm text-gray-500 dark:text-gray-400 m-0">Loading boot agents...</p>
+    {:else if bootAgents.length === 0 && bootManagerFeedback?.type === 'error'}
+      <p class="text-sm">Boot agent status is unavailable.</p>
     {:else if bootAgents.length === 0}
       <p class="text-sm text-gray-500 dark:text-gray-400 m-0">No boot-eligible agents are currently registered.</p>
     {:else}
@@ -550,7 +459,7 @@
                   type="checkbox"
                   checked={agent.startOnSystemBoot}
                   disabled={Boolean(bootManagerSaving)}
-                  on:change={(event) => saveBootAgentVariable(agent, 'startOnSystemBoot', event.currentTarget.checked)}
+                  on:change={(event) => saveBootAgentVariable(agent, 'startOnSystemBoot', event.currentTarget.checked, event)}
                 />
                 <span class="toggle-slider"></span>
               </label>
@@ -569,7 +478,7 @@
                   type="checkbox"
                   checked={agent.enabled}
                   disabled={Boolean(bootManagerSaving)}
-                  on:change={(event) => saveBootAgentVariable(agent, 'enabled', event.currentTarget.checked)}
+                  on:change={(event) => saveBootAgentVariable(agent, 'enabled', event.currentTarget.checked, event)}
                   class="cursor-pointer accent-violet-600 disabled:opacity-60"
                 />
               </label>
@@ -579,7 +488,7 @@
                   type="checkbox"
                   checked={agent.autoRestart}
                   disabled={Boolean(bootManagerSaving)}
-                  on:change={(event) => saveBootAgentVariable(agent, 'autoRestart', event.currentTarget.checked)}
+                  on:change={(event) => saveBootAgentVariable(agent, 'autoRestart', event.currentTarget.checked, event)}
                   class="cursor-pointer accent-violet-600 disabled:opacity-60"
                 />
               </label>
@@ -591,7 +500,7 @@
                   max="20"
                   value={agent.maxRetries}
                   disabled={Boolean(bootManagerSaving)}
-                  on:change={(event) => saveBootAgentVariable(agent, 'maxRetries', Number(event.currentTarget.value))}
+                  on:change={(event) => saveBootAgentVariable(agent, 'maxRetries', Number(event.currentTarget.value), event)}
                   class="input-field py-1 px-2 text-sm"
                 />
               </label>
@@ -607,6 +516,7 @@
   </div>
 
   <!-- Reflector Content Mode -->
+  {#if reflectorError}<div class="setting-group text-red-600" role="alert">{reflectorError} <button class="btn-secondary btn-sm" on:click={loadReflectorContentMode}>Retry</button></div>{/if}
   <div class="setting-group">
     <div class="setting-label">Idle Thoughts Content</div>
     <div class="flex flex-col gap-2">
@@ -615,16 +525,17 @@
       </p>
       <select
         class="select-field"
-        bind:value={reflectorContentMode}
+        value={reflectorContentMode}
         on:change={handleReflectorContentModeChange}
         disabled={reflectorContentModeLoading || reflectorContentModeSaving}
       >
+        <option value="" disabled>Content mode unavailable</option>
         {#each Object.entries(contentModeOptions) as [mode, description]}
           <option value={mode}>{mode === 'user' ? '👤' : mode === 'agent' ? '🤖' : '📄'} {mode.charAt(0).toUpperCase() + mode.slice(1)}</option>
         {/each}
       </select>
       <p class="text-[0.8125rem] text-gray-500 dark:text-gray-400 m-0 mt-2 p-2 bg-violet-500/5 dark:bg-violet-400/10 rounded border-l-[3px] border-violet-600 dark:border-violet-400">
-        {contentModeOptions[reflectorContentMode]}
+        {reflectorContentMode ? contentModeOptions[reflectorContentMode] : 'Current content mode is unavailable.'}
       </p>
       {#if reflectorContentModeSaving}
         <p class="text-xs text-violet-600 dark:text-violet-400 m-0 mt-2 italic">Saving...</p>
@@ -633,6 +544,7 @@
   </div>
 
   <!-- Index Content Mode -->
+  {#if indexError}<div class="setting-group text-red-600" role="alert">{indexError} <button class="btn-secondary btn-sm" on:click={loadIndexContentMode}>Retry</button></div>{/if}
   <div class="setting-group">
     <div class="setting-label">Memory Search Index</div>
     <div class="flex flex-col gap-2">
@@ -641,16 +553,17 @@
       </p>
       <select
         class="select-field"
-        bind:value={indexContentMode}
+        value={indexContentMode}
         on:change={handleIndexContentModeChange}
         disabled={indexContentModeLoading || indexContentModeSaving}
       >
+        <option value="" disabled>Index content mode unavailable</option>
         {#each Object.entries(indexContentModeOptions) as [mode, description]}
           <option value={mode}>{mode === 'user' ? '👤' : mode === 'agent' ? '🤖' : '📄'} {mode.charAt(0).toUpperCase() + mode.slice(1)}</option>
         {/each}
       </select>
       <p class="text-[0.8125rem] text-gray-500 dark:text-gray-400 m-0 mt-2 p-2 bg-violet-500/5 dark:bg-violet-400/10 rounded border-l-[3px] border-violet-600 dark:border-violet-400">
-        {indexContentModeOptions[indexContentMode]}
+        {indexContentMode ? indexContentModeOptions[indexContentMode] : 'Current index content mode is unavailable.'}
       </p>
       {#if indexContentModeSaving}
         <p class="text-xs text-violet-600 dark:text-violet-400 m-0 mt-2 italic">Saving...</p>
@@ -666,46 +579,8 @@
 
   <h3 class="text-lg font-semibold text-gray-800 dark:text-gray-100 mt-8 mb-4">Developer Settings</h3>
 
-  <!-- Node Pipeline Toggle -->
-  <div class="setting-group">
-    <div class="setting-label">Node Pipeline</div>
-    <div class="flex flex-col gap-2">
-      <div class="flex items-center justify-between">
-        <span class="setting-label">
-          {#if nodePipelineLocked}
-            Locked by environment
-          {:else}
-            Toggle graph executor
-          {/if}
-        </span>
-        <label
-          class="toggle-switch"
-          for="node-pipeline-toggle"
-          aria-label="Toggle cognitive node pipeline"
-        >
-          <input
-            id="node-pipeline-toggle"
-            type="checkbox"
-            bind:checked={nodePipelineEnabled}
-            disabled={nodePipelineLocked || nodePipelineLoading || nodePipelineSaving}
-            on:change={handleNodePipelineToggle}
-          />
-          <span class="toggle-slider"></span>
-        </label>
-      </div>
-      <p class="text-sm text-gray-500 dark:text-gray-400 m-0">
-        {#if nodePipelineLocked}
-          Node pipeline controlled by server environment. Contact the owner to change it.
-        {:else if nodePipelineEnabled}
-          Node pipeline preference is enabled. Current chat flow uses cognitive graphs.
-        {:else}
-          Node pipeline preference is disabled. Current chat flow still uses cognitive graphs.
-        {/if}
-      </p>
-    </div>
-  </div>
-
   <!-- Audit Logging Control -->
+  {#if auditError}<div class="setting-group text-red-600" role="alert">{auditError} <button class="btn-secondary btn-sm" on:click={loadAuditLoggingState}>Retry</button></div>{/if}
   <div class="setting-group mt-6">
     <div class="setting-label">Audit Logging</div>
     <div class="flex flex-col gap-2">
@@ -719,7 +594,7 @@
           <input
             id="audit-logging-toggle"
             type="checkbox"
-            bind:checked={auditLoggingEnabled}
+            checked={auditLoggingEnabled === true}
             disabled={auditLoggingLoading || auditLoggingSaving}
             on:change={handleAuditLoggingToggle}
           />
@@ -727,10 +602,12 @@
         </label>
       </div>
       <p class="text-sm text-gray-500 dark:text-gray-400 m-0">
-        {#if auditLoggingEnabled}
-          ⚠️ Audit logging is ON. This creates large log files (24MB+/day) and causes 100% CPU when viewing Agent Monitor. Disable for better performance.
+        {#if auditLoggingEnabled === null}
+          Audit recording status is unavailable.
+        {:else if auditLoggingEnabled}
+          Audit logging records security events, actions, training and failures. Settings apply across processes and restarts.
         {:else}
-          ✓ Audit logging is OFF. System runs smoothly. Enable only when debugging issues.
+          Audit logging is off. New structured audit history is not recorded; existing history remains available.
         {/if}
       </p>
       <div class="mt-2">
@@ -739,13 +616,14 @@
           on:click={purgeOldAuditLogs}
           disabled={auditLoggingSaving}
         >
-          🗑️ Purge Logs Older Than 7 Days
+          🗑️ {auditRetentionDays === null ? 'Purge Old Audit Logs' : `Purge Logs Older Than ${auditRetentionDays} Days`}
         </button>
       </div>
     </div>
   </div>
 
   <!-- Active Model Info -->
+  {#if modelInfoError}<div class="setting-group text-red-600" role="alert">{modelInfoError} <button class="btn-secondary btn-sm" on:click={loadModelInfo}>Retry</button></div>{/if}
   {#if modelInfo}
     <div class="setting-group">
       <div class="setting-label">Active Model Info</div>
@@ -788,6 +666,7 @@
       <div class="flex flex-col gap-1">
         <label for="log-level-select" class="text-sm font-medium text-gray-600 dark:text-gray-400">Log Level</label>
         <select id="log-level-select" bind:value={logLevel} class="select-field">
+          <option value="" disabled>Log level unavailable</option>
           <option value="error">Error</option>
           <option value="warn">Warning</option>
           <option value="info">Info</option>
@@ -795,31 +674,8 @@
         </select>
       </div>
 
-      <div class="flex flex-col gap-1">
-        <label for="slow-threshold-input" class="text-sm font-medium text-gray-600 dark:text-gray-400">Slow Request Threshold (ms)</label>
-        <input id="slow-threshold-input" type="number" min="100" max="10000" step="100" bind:value={slowRequestThresholdMs} class="input-field" />
-      </div>
-
-      <div class="flex flex-col gap-1">
-        <label for="suppress-patterns-input" class="text-sm font-medium text-gray-600 dark:text-gray-400">Suppress Patterns (comma-separated)</label>
-        <input id="suppress-patterns-input" type="text" bind:value={suppressPatterns} placeholder="/api/status, /api/monitor" class="input-field" />
-      </div>
-
-      <div class="flex flex-col gap-2">
-        <label class="flex items-center gap-2 text-sm text-gray-700 dark:text-gray-300 cursor-pointer">
-          <input type="checkbox" bind:checked={logColorize} class="cursor-pointer accent-violet-600" />
-          <span>Colorize output</span>
-        </label>
-        <label class="flex items-center gap-2 text-sm text-gray-700 dark:text-gray-300 cursor-pointer">
-          <input type="checkbox" bind:checked={logTimestamp} class="cursor-pointer accent-violet-600" />
-          <span>Show timestamps</span>
-        </label>
-        <label class="flex items-center gap-2 text-sm text-gray-700 dark:text-gray-300 cursor-pointer">
-          <input type="checkbox" bind:checked={logSlowRequests} class="cursor-pointer accent-violet-600" />
-          <span>Log slow requests</span>
-        </label>
-      </div>
-
+      <p class="text-sm text-gray-500 dark:text-gray-400 m-0">Controls application module logs; module-specific overrides remain in machine logging.json. Audit history has its own recording setting above.</p>
+      {#if loggingMessage}<p class="text-sm" role="status">{loggingMessage} <button class="btn-secondary btn-sm" on:click={loadLoggingConfig}>Retry read</button></p>{/if}
       <button class="btn-primary" on:click={saveLoggingConfig} disabled={savingLogging}>
         {savingLogging ? 'Saving...' : 'Save Logging Config'}
       </button>
@@ -838,7 +694,7 @@
       <div class="setting-label">File Path Manager</div>
       <button
         class="px-2 py-1 border border-gray-300 dark:border-gray-600 rounded bg-white dark:bg-gray-700 text-gray-600 dark:text-gray-300 cursor-pointer text-base transition-all hover:bg-gray-100 dark:hover:bg-gray-600 disabled:opacity-50 disabled:cursor-not-allowed"
-        on:click={refreshStorageStatus}
+        on:click={loadStorageStatus}
         disabled={storageLoading}
         title="Refresh storage status"
       >
@@ -846,6 +702,7 @@
       </button>
     </div>
 
+    {#if storageError}<p class="text-red-600" role="alert">{storageError} <button class="btn-secondary btn-sm" on:click={loadStorageStatus}>Retry</button></p>{/if}
     {#if storageLoading && !storageStatus}
       <p class="text-sm text-gray-500 dark:text-gray-400 m-0">Loading storage status...</p>
     {:else if storageStatus && !storageStatus.authenticated}
@@ -964,18 +821,80 @@
     {/if}
   </div>
 
-  <!-- System Info -->
-  <div class="setting-group">
-    <label class="setting-label" for="system-info-grid">System Info</label>
-    <div id="system-info-grid" class="info-grid">
-      <div class="info-item">
-        <span class="info-key">Phase:</span>
-        <span class="info-value">1 (Intelligence & Autonomy)</span>
-      </div>
-      <div class="info-item">
-        <span class="info-key">Version:</span>
-        <span class="info-value">0.1.0</span>
-      </div>
-    </div>
-  </div>
+
 </div>
+
+<style>
+  .info-grid {
+    @apply flex flex-col gap-2 p-3 rounded-lg bg-black/5;
+  }
+
+  :global(.dark) .info-grid {
+    @apply bg-white/5;
+  }
+
+  .info-item {
+    @apply flex justify-between text-sm;
+  }
+
+  .info-key {
+    @apply text-gray-500;
+  }
+
+  :global(.dark) .info-key {
+    @apply text-gray-400;
+  }
+
+  .info-value {
+    @apply font-semibold text-gray-900;
+  }
+
+  :global(.dark) .info-value {
+    @apply text-gray-100;
+  }
+
+  .toggle-switch {
+    @apply relative inline-block w-12 h-6 cursor-pointer;
+  }
+
+  .toggle-switch input {
+    @apply opacity-0 w-0 h-0;
+  }
+
+  .toggle-slider {
+    @apply absolute cursor-pointer top-0 left-0 right-0 bottom-0 bg-gray-300 transition-all rounded-full;
+  }
+
+  :global(.dark) .toggle-slider {
+    @apply bg-gray-700;
+  }
+
+  .toggle-slider:before {
+    content: "";
+    @apply absolute bg-white transition-all rounded-full;
+    height: 1.125rem;
+    /* 18px, equivalent to h-4.5 */
+    width: 1.125rem;
+    /* 18px, equivalent to w-4.5 */
+    left: 0.1875rem;
+    /* 3px, equivalent to left-0.75 */
+    bottom: 0.1875rem;
+    /* 3px, equivalent to bottom-0.75 */
+  }
+
+  .toggle-switch input:checked + .toggle-slider {
+    @apply bg-violet-600;
+  }
+
+  :global(.dark) .toggle-switch input:checked + .toggle-slider {
+    @apply bg-violet-400;
+  }
+
+  .toggle-switch input:checked + .toggle-slider:before {
+    transform: translateX(1.5rem);
+  }
+
+  .toggle-switch input:disabled + .toggle-slider {
+    @apply opacity-50 cursor-not-allowed;
+  }
+</style>

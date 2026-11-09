@@ -7,6 +7,7 @@
   import {
     safeOutputPreview,
     type ExecutionTimelineEntry,
+    type GraphRunStatus,
   } from '../../lib/client/flow-editor/execution-observability'
 
   interface GraphTrace {
@@ -21,18 +22,20 @@
     graph,
     entries,
     nodeOutputs,
-    isExecuting,
+    status,
     onSelectNode,
   }: {
     graph: SvelteFlowGraph | null
     entries: ExecutionTimelineEntry[]
     nodeOutputs: Record<string, unknown>
-    isExecuting: boolean
+    status: GraphRunStatus
     onSelectNode?: (nodeId: string) => void
   } = $props()
 
   let traces = $state<GraphTrace[]>([])
   let traceError = $state('')
+  let tracesLoading = $state(true)
+  let traceRead: AbortController | null = null
   const branches = $derived(graph ? branchResults(graph, nodeOutputs) : [])
 
   function nodeName(nodeId: string): string {
@@ -41,25 +44,35 @@
   }
 
   async function refreshTraces(): Promise<void> {
+    traceRead?.abort()
+    const read = new AbortController()
+    traceRead = read
+    tracesLoading = true
     traceError = ''
     try {
-      const response = await apiFetch('/api/graph-traces?limit=12')
-      if (!response.ok) throw new Error(`Trace request failed: ${response.status}`)
+      const response = await apiFetch('/api/graph-traces?limit=12', { signal: read.signal })
       const body = await response.json()
+      if (read.signal.aborted) return
+      if (!response.ok) throw new Error(body.error || `Trace request failed: ${response.status}`)
       traces = Array.isArray(body.traces) ? body.traces : []
     } catch (error) {
-      traceError = error instanceof Error ? error.message : String(error)
+      if (!read.signal.aborted) traceError = error instanceof Error ? error.message : String(error)
+    } finally {
+      if (!read.signal.aborted) tracesLoading = false
     }
   }
 
-  onMount(() => { void refreshTraces() })
+  onMount(() => {
+    void refreshTraces()
+    return () => traceRead?.abort()
+  })
 </script>
 
 <div class="execution-panel">
   <section class="timeline-section">
     <div class="panel-heading">
       <h3>Current Run</h3>
-      <span class:running={isExecuting}>{isExecuting ? 'running' : entries.length ? 'complete' : 'not run'}</span>
+      <span class:running={status === 'running'}>{status === 'idle' ? 'not run' : status}</span>
     </div>
     {#if entries.length}
       <div class="timeline-list">
@@ -94,13 +107,17 @@
   </section>
 
   <section class="trace-section">
-    <div class="panel-heading"><h3>Recent Graph Traces</h3><button type="button" onclick={refreshTraces}>Refresh</button></div>
-    {#if traceError}<p class="trace-error">{traceError}</p>
+    <div class="panel-heading"><h3>Recent Graph Traces</h3><button type="button" onclick={refreshTraces} aria-busy={tracesLoading}>Refresh</button></div>
+    {#if traceError}<p class="trace-error" role="alert">{traceError}</p>{/if}
+    {#if tracesLoading && traces.length === 0}<p class="empty">Loading graph traces…</p>
     {:else if traces.length}
       {#each traces as trace}
-        <div class="trace-row"><span>{trace.graph || 'Graph'}</span><strong>{trace.status || 'unknown'}</strong><code>{trace.durationMs !== undefined ? `${trace.durationMs} ms` : new Date(trace.timestamp).toLocaleTimeString()}</code></div>
+        <div class="trace-row">
+          <span>{trace.graph || 'Graph'}</span><strong>{trace.status || 'unknown'}</strong><code>{trace.durationMs !== undefined ? `${trace.durationMs} ms` : new Date(trace.timestamp).toLocaleTimeString()}</code>
+          {#if trace.error}<small class="col-span-3 text-red-400">{trace.error}</small>{/if}
+        </div>
       {/each}
-    {:else}<p class="empty">No persisted graph traces are available.</p>{/if}
+    {:else if !traceError}<p class="empty">No persisted graph traces are available.</p>{/if}
   </section>
 </div>
 

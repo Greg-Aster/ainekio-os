@@ -13,7 +13,6 @@ import { TriggerManager } from './trigger-manager.js';
 import { getTriggerConfigService, type TriggerConfigRead } from './trigger-config-service.js';
 import type {
   AutonomyMode,
-  PersistedQueueState,
   QueueConfig,
   QueueEvent,
   QueueLifecycleState,
@@ -25,7 +24,6 @@ import { audit } from '../audit.js';
 import { eventBus } from '../infrastructure/event-bus/client.js';
 import {
   auditRecovery,
-  clearQueueState,
   createImmediateSaver,
   loadQueueState,
   persistQueueState,
@@ -141,7 +139,7 @@ export class QueueSystem extends EventEmitter {
     });
     this.executionEngine = new ExecutionEngine({ wakeFallbackMs: 1_000,
       maintain: dispatchReady => recoverDurableExecutions(this.queueManager,
-        this.queueConfig?.execution?.terminalExecutionRetentionDays ?? 30, dispatchReady),
+        this.queueConfig?.execution?.terminalExecutionRetentionDays ?? 1, dispatchReady),
     }, this.queueManager);
     this.triggerManager = new TriggerManager(this.queueManager);
     this.triggerManager.setHandlerInspector(config => ({
@@ -569,6 +567,3 @@ export function resetQueueSystem(): void {
   if (instance) void instance.dispose();
   instance = null;
 }
-
-export { clearQueueState };
-export type { PersistedQueueState, QueueEvent };

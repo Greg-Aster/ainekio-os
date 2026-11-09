@@ -1,10 +1,10 @@
 import { writable } from 'svelte/store';
-import { apiFetch } from '../client/api-config';
+import { apiEventSource, apiFetch } from '../client/api-config';
 
-export type AgentCatalogLifecycle = 'scheduled-work' | 'workflow' | 'service';
-export type AgentCatalogOwner = 'trigger-manager' | 'robot-operator' | 'agent-monitor' | 'workflow' | 'available';
-export type AgentCatalogHealth = 'ready' | 'available' | 'missing-source' | 'disabled';
-export type AgentCatalogRisk = 'standard' | 'privileged' | 'destructive';
+type AgentCatalogLifecycle = 'scheduled-work' | 'workflow' | 'service';
+type AgentCatalogOwner = 'trigger-manager' | 'robot-operator' | 'agent-monitor' | 'workflow' | 'available';
+type AgentCatalogHealth = 'ready' | 'available' | 'missing-source' | 'disabled';
+type AgentCatalogRisk = 'standard' | 'privileged' | 'destructive';
 
 export interface AgentCatalogItem {
   id: string;
@@ -51,52 +51,46 @@ export interface AgentCatalogSnapshot {
 
 export const agentCatalogSnapshot = writable<AgentCatalogSnapshot | null>(null);
 export const agentCatalogError = writable<string | null>(null);
-export const agentCatalogConnection = writable<'idle' | 'loading' | 'ready' | 'error'>('idle');
+export const agentCatalogConnection = writable<'idle' | 'loading' | 'ready' | 'reconnecting' | 'error'>('idle');
 
 let users = 0;
-let pollTimer: ReturnType<typeof setInterval> | null = null;
-let loading: Promise<AgentCatalogSnapshot> | null = null;
-
-export async function refreshAgentCatalog(): Promise<AgentCatalogSnapshot> {
-  if (loading) return loading;
-  agentCatalogConnection.set('loading');
-  loading = (async () => {
-    const response = await apiFetch('/api/agent-catalog', { cache: 'no-store' });
-    const data = await response.json().catch(() => ({}));
-    if (!response.ok || data.success === false || !data.snapshot) {
-      throw new Error(data.error || `Agent Catalog request failed: ${response.status}`);
-    }
-    agentCatalogSnapshot.set(data.snapshot);
-    agentCatalogError.set(null);
-    agentCatalogConnection.set('ready');
-    return data.snapshot as AgentCatalogSnapshot;
-  })();
-  try {
-    return await loading;
-  } catch (error) {
-    const message = error instanceof Error ? error.message : String(error);
-    agentCatalogError.set(message);
-    agentCatalogConnection.set('error');
-    throw error;
-  } finally {
-    loading = null;
-  }
-}
+let stream: EventSource | null = null;
 
 export function useAgentCatalog(): () => void {
-  users += 1;
-  if (users === 1) {
-    void refreshAgentCatalog().catch(() => {});
-    pollTimer = setInterval(() => void refreshAgentCatalog().catch(() => {}), 15_000);
+  users++;
+  if (!stream) {
+    agentCatalogConnection.set('loading');
+    stream = apiEventSource('/api/monitor/stream');
+    stream.onmessage = event => {
+      try {
+        const data = JSON.parse(event.data);
+        if (data.type === 'error') throw new Error(data.error);
+        if (data.type !== 'snapshot') return;
+        if (!data.catalog) throw new Error('The monitor snapshot did not include the Agent Catalog');
+        agentCatalogSnapshot.set(data.catalog);
+        agentCatalogError.set(null);
+        agentCatalogConnection.set('ready');
+      } catch (error) {
+        agentCatalogError.set(error instanceof Error ? error.message : String(error));
+        agentCatalogConnection.set('error');
+      }
+    };
+    stream.onerror = () => {
+      agentCatalogConnection.set('reconnecting');
+      agentCatalogError.set('Agent Catalog connection interrupted. Reconnecting…');
+    };
   }
   let released = false;
   return () => {
     if (released) return;
     released = true;
-    users = Math.max(0, users - 1);
-    if (users === 0 && pollTimer) {
-      clearInterval(pollTimer);
-      pollTimer = null;
+    if (--users === 0) {
+      stream!.onmessage = null;
+      stream!.onerror = null;
+      stream!.close();
+      stream = null;
+      agentCatalogSnapshot.set(null);
+      agentCatalogError.set(null);
       agentCatalogConnection.set('idle');
     }
   };
@@ -112,9 +106,6 @@ async function control(action: 'register' | 'unregister', agentId: string): Prom
   if (!response.ok || data.success === false || !data.snapshot) {
     throw new Error(data.error || `Agent Catalog ${action} failed: ${response.status}`);
   }
-  agentCatalogSnapshot.set(data.snapshot);
-  agentCatalogError.set(null);
-  agentCatalogConnection.set('ready');
   return data.snapshot;
 }
 

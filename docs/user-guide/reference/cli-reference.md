@@ -7,7 +7,7 @@ top-level and focused help remain authoritative when commands change.
 ## Core Commands
 
 ### `./bin/mh init`
-Initialize MetaHuman OS directory structure and copy template configuration files.
+Initialize Ainekio OS directory structure and copy template configuration files.
 
 ### `./bin/mh status`
 Show system status overview (identity summary, tasks, recent events).
@@ -93,6 +93,11 @@ Commands:
 - `ps`
 - `stop NAME` or `stop --all [--force]`
 
+`agent status` reports exact outcomes from retained Work Coordinator receipts.
+These counts cover the retained execution window, not an all-time run counter or
+service uptime. `agent logs` reads recent attributed audit entries independently
+of those statistics.
+
 ## LLM Backends
 
 ### `./bin/mh ollama COMMAND`
@@ -120,7 +125,7 @@ Commands:
 
 ### `./bin/mh index build`
 Queue a full embeddings-index rebuild for the current user. Requires `--user`
-and a running MetaHuman server/Work Coordinator. The configured embedding
+and a running Ainekio OS server/Work Coordinator. The configured embedding
 service must be available when the queued job executes.
 
 Example:
@@ -131,27 +136,7 @@ Example:
 ### `./bin/mh index query "text"`
 Query the embeddings index.
 
-## Voice Samples (Collection)
-
-### `./bin/mh voice COMMAND`
-Manage collected voice samples used for training.
-
-Commands:
-- `status`
-- `list`
-- `delete SAMPLE_ID`
-- `export`
-
-## Voice Training & Servers
-
-### `./bin/mh rvc COMMAND`
-RVC (Applio) management.
-
-Commands:
-- `install`
-- `train [--name MODEL] [--epochs N] [--save-every N] [--batch-size N] [--device auto|cpu|cuda]`
-- `status [--name MODEL]`
-- `uninstall`
+## Voice Services
 
 ### `./bin/mh kokoro COMMAND`
 Kokoro TTS management.

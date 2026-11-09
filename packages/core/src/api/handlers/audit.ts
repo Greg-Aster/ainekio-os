@@ -7,7 +7,7 @@
 
 import type { UnifiedRequest, UnifiedResponse } from '../types.js';
 import { successResponse } from '../types.js';
-import { readAuditLog, securityCheck } from '../../audit.js';
+import { queryAuditLog, securityCheck } from '../../audit.js';
 
 /**
  * GET /api/audit - Read audit log for a date or run security check
@@ -24,28 +24,14 @@ export async function handleGetAudit(req: UnifiedRequest): Promise<UnifiedRespon
       return successResponse({ issues, warnings });
     }
 
-    const entries = readAuditLog(date);
-
-    return successResponse({
-      date,
-      entries,
-      summary: {
-        total: entries.length,
-        byLevel: {
-          info: entries.filter((e: { level: string }) => e.level === 'info').length,
-          warn: entries.filter((e: { level: string }) => e.level === 'warn').length,
-          error: entries.filter((e: { level: string }) => e.level === 'error').length,
-          critical: entries.filter((e: { level: string }) => e.level === 'critical').length,
-        },
-        byCategory: {
-          system: entries.filter((e: { category: string }) => e.category === 'system').length,
-          decision: entries.filter((e: { category: string }) => e.category === 'decision').length,
-          action: entries.filter((e: { category: string }) => e.category === 'action').length,
-          security: entries.filter((e: { category: string }) => e.category === 'security').length,
-          data: entries.filter((e: { category: string }) => e.category === 'data').length,
-        },
-      },
-    });
+    const limit = Number(query.limit ?? 100);
+    const before = query.before === undefined ? undefined : Number(query.before);
+    if (!Number.isSafeInteger(limit) || limit < 1 || before !== undefined && (!Number.isSafeInteger(before) || before < 0)) {
+      return { status: 400, error: 'limit must be a positive integer and before a nonnegative byte cursor' };
+    }
+    return successResponse(queryAuditLog({ date, limit, before,
+      category: query.category || undefined, level: query.level || undefined,
+      summary: before === undefined, signal: req.signal }));
   } catch (error) {
     console.error('[audit] GET error:', error);
     return { status: 500, error: (error as Error).message };

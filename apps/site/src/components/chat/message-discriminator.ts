@@ -3,7 +3,7 @@
  * Maps message metadata to appropriate card component
  */
 
-import type { ChatMessage } from '../../lib/client/composables/useMessages';
+import type { ChatMessage, ReasoningStage } from '../../lib/client/composables/useMessages';
 import type { CardComponent, GoalLabelConfig } from './card-types';
 
 /**
@@ -17,6 +17,11 @@ export function getCardComponent(message: ChatMessage): CardComponent {
   // system card, regardless of producer-specific metadata.
   if (meta?.bufferSource === 'system' || meta?.bufferSource === 'robot') {
     return 'SystemMessageCard';
+  }
+
+  // Retained operator policy history uses the existing read-only thought renderer.
+  if (meta?.type === 'operator_proposal' && (role === 'reflection' || role === 'system')) {
+    return 'ReflectionCard';
   }
 
   // Reasoning messages always use ReasoningCard
@@ -37,23 +42,16 @@ export function getCardComponent(message: ChatMessage): CardComponent {
     return 'DreamCard';
   }
 
-  // Reflection messages - check dialogueSource for specificity
+  // Reflections retain their source labels in the existing read-only renderer.
   if (role === 'reflection') {
-    if (meta?.type === 'operator_proposal') {
-      return 'OperatorProposalCard';
-    }
-    if (meta?.dialogueSource === 'agency-system') {
-      return 'AgencyCard';
-    }
-    // Default reflection (idle thoughts, general inner dialogue)
     return 'ReflectionCard';
   }
 
   // Assistant messages with special types
   if (role === 'assistant') {
-    // Agency messages appear in main chat with interactive cards
+    // Legacy Agency records retain their source labels without approval controls.
     if (meta?.dialogueSource === 'agency-system' || meta?.isAgencyMessage) {
-      return 'AgencyCard';
+      return 'ReflectionCard';
     }
     if (meta?.isCuriosityQuestion) {
       return 'CuriosityCard';
@@ -68,24 +66,14 @@ export function getCardComponent(message: ChatMessage): CardComponent {
 
   // System messages - check dialogueSource for special handling
   if (role === 'system') {
-    if (meta?.type === 'operator_proposal') {
-      return 'OperatorProposalCard';
-    }
     if (meta?.dialogueSource === 'agency-system') {
-      return 'AgencyCard';
+      return 'ReflectionCard';
     }
     return 'SystemMessageCard';
   }
 
   // Fallback
   return 'AssistantMessageCard';
-}
-
-/**
- * Check if a card needs interactive features (approval buttons, etc.)
- */
-export function needsInteractiveFeatures(message: ChatMessage): boolean {
-  return message.meta?.type === 'approval_request' && !!message.meta?.desireId;
 }
 
 /**
@@ -121,20 +109,29 @@ export function isVisibleInMode(
 export function getGoalLabelConfig(type?: string): GoalLabelConfig {
   switch (type) {
     case 'approval_request':
-      return { label: 'Goal (Awaiting Approval)', cssClass: 'goal-approval', icon: '🎯' };
+      return { label: 'Goal (Awaiting Approval)', icon: '🎯' };
     case 'desire_plan_complete':
     case 'plan_generated':
-      return { label: 'Goal Plan', cssClass: 'goal-planned', icon: '🎯' };
+      return { label: 'Goal Plan', icon: '🎯' };
     case 'desire_planning_start':
     case 'task_start':
-      return { label: 'Planning Goal', cssClass: 'goal-planning', icon: '🎯' };
+      return { label: 'Planning Goal', icon: '🎯' };
     case 'desire_approved':
-      return { label: 'Goal Approved', cssClass: 'goal-approved', icon: '🎯' };
+      return { label: 'Goal Approved', icon: '🎯' };
     case 'desire_executing':
-      return { label: 'Goal Executing', cssClass: 'goal-executing', icon: '🎯' };
+      return { label: 'Goal Executing', icon: '🎯' };
     default:
-      return { label: 'Agency', cssClass: 'goal-default', icon: '📋' };
+      return { label: 'Agency', icon: '📋' };
   }
+}
+
+/** Format live stages and persisted reasoning metadata with the same labels. */
+export function formatReasoningLabel(stage?: Pick<ReasoningStage, 'round' | 'stage'> | null): string {
+  if (!stage) return '🤔 Reasoning';
+  const stageName = String(stage.stage || 'plan')
+    .replace(/_/g, ' ')
+    .replace(/\b\w/g, c => c.toUpperCase());
+  return `🤔 Round ${stage.round}: ${stageName}`;
 }
 
 /**

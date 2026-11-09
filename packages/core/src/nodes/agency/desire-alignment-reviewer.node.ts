@@ -191,5 +191,3 @@ export const DesireAlignmentReviewerNode: NodeDefinition = defineNode({
   },
   execute,
 });
-
-export default DesireAlignmentReviewerNode;

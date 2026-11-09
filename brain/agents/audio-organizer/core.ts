@@ -39,7 +39,7 @@ interface TranscriptMetadata {
   timestamp?: string
 }
 
-export interface AudioOrganizerOutcome {
+interface AudioOrganizerOutcome {
   metadataFile: string
   audioId?: string
   status: 'organized' | 'skipped' | 'failed'

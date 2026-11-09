@@ -1,14 +1,13 @@
 /**
  * Astro Adapter
  *
- * Makes Astro routes trivially thin - ONE LINE to call unified handlers.
- * SAME business logic as mobile, just different wrapper.
+ * Site's single catch-all endpoint delegates HTTP requests to Core's registry.
+ * Business logic and route definitions are shared with the other transports.
  *
  * Usage in Astro route:
  * ```typescript
  * import { astroHandler } from '@metahuman/core/api/adapters/astro';
- * export const GET = astroHandler;
- * export const POST = astroHandler;
+ * export const ALL = astroHandler;
  * ```
  */
 

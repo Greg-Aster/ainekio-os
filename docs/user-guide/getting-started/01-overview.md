@@ -1,6 +1,6 @@
 # Overview
 
-MetaHuman OS is a local-first application for persistent AI conversation,
+Ainekio OS is a local-first application for persistent AI conversation,
 profile-scoped memory, persona configuration, tasks, cognitive workflows,
 background agents, voice, model routing, training, and optional external
 environment control.
@@ -24,8 +24,7 @@ path.
   Agency.
 - Configure llama.cpp, Ollama, the local-model service, or a supported remote model
   path.
-- Use speech-to-text, text-to-speech, voice conversion, and voice-training
-  workflows when their providers are installed.
+- Use speech-to-text and text-to-speech when their providers are installed.
 - Inspect queued work, finite agents, persistent services, triggers, approvals,
   sleep stages, and Active Operator mode.
 - Edit cognitive graphs and inspect execution traces.
@@ -37,12 +36,12 @@ path.
 The left sidebar is the primary navigation:
 
 - **Chat** contains conversation and buffer views.
-- **Dashboard** contains Overview, Tasks, Approvals, Active Operator, Sleep,
+- **Dashboard** contains Overview, Tasks, Sleep,
   Agent Catalog, and Trigger Manager.
 - **Projects** contains the project and task workspace.
 - **Agency** contains desires, planning, execution, and outcome review.
 - **Persona** contains the Persona Editor, memory views, and Persona Generator.
-- **Voice** contains voice-clone training and voice settings.
+- **Voice** contains speech settings.
 - **AI Training** contains the training wizard, history, and monitor.
 - **System** contains chat settings, general settings, backend controls,
   security, storage, network, addons, Agent Catalog, and Trigger Manager.
@@ -68,7 +67,7 @@ Use the web controls, CLI, or profile-sync workflow described in this guide.
 ## Models and optional services
 
 Conversation and agent features require an available configured LLM backend.
-MetaHuman supports multiple backend families; Ollama is not mandatory.
+Ainekio OS supports multiple backend families; Ollama is not mandatory.
 
 Other features have separate dependencies:
 
@@ -79,7 +78,7 @@ Other features have separate dependencies:
   platform provides it.
 - Speech playback requires a configured TTS provider and an active delivery
   consumer.
-- Voice cloning and AI training require their own tools, models, storage, and
+- AI training requires its own tools, models, storage, and
   often substantial GPU resources.
 - Remote access requires an explicitly configured exposure mode, allowed hosts,
   origins, and authentication.

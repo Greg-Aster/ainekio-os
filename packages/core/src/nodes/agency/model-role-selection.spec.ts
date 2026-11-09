@@ -3,7 +3,6 @@ import test from 'node:test'
 import { executeGoalReviewInsights, GoalReviewInsightsNode } from '../agent/goal-review-insights.node.js'
 import { DesireFeasibilityNode } from './desire-feasibility.node.js'
 import { DesireCheckinEvaluatorNode } from './desire-checkin-evaluator.node.js'
-import { ReActPlannerNode } from '../operator/react-planner.node.js'
 import { QualityScorerNode } from '../cognitive/quality-scorer.node.js'
 import { SelfHealingAnalysisNode } from '../active-operator/self-healing-analysis.node.js'
 import { SearchInterpreterNode } from '../memory/search-interpreter.node.js'
@@ -14,7 +13,7 @@ import { environmentTaskPlannerNode } from '../environment/task-planner.node.js'
 test('role selectors and executable defaults agree across reclassified consumers', () => {
   for (const [node, role] of [
     [GoalReviewInsightsNode, 'psychotherapist'], [DesireFeasibilityNode, 'psychotherapist'],
-    [DesireCheckinEvaluatorNode, 'psychotherapist'], [ReActPlannerNode, 'planner'],
+    [DesireCheckinEvaluatorNode, 'psychotherapist'],
     [QualityScorerNode, 'psychotherapist'], [SelfHealingAnalysisNode, 'coder'],
     [SearchInterpreterNode, 'curator'], [PersonaProfileExtractorNode, 'psychotherapist'],
     [ResponseLLMNode, 'persona'], [environmentTaskPlannerNode, 'planner'],

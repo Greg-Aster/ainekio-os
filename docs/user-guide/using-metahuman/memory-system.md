@@ -1,6 +1,6 @@
 # Memory
 
-MetaHuman OS keeps durable memory per resolved profile. Episodic records, task records, processed artifacts, and the semantic index have different purposes; chat buffers are not a substitute for durable capture.
+Ainekio OS keeps durable memory per resolved profile. Episodic records, task records, processed artifacts, and the semantic index have different purposes; chat buffers are not a substitute for durable capture.
 
 ## Open the Memory Surface
 
@@ -92,6 +92,6 @@ Memory, indexes, inbox files, transcripts, and derived artifacts are private run
 ## Related Guides
 
 - [Tasks and Projects](/user-guide#task-management)
-- [Voice Training and Audio Data](/user-guide#voice-training)
+- [Voice Features](/user-guide#voice-features)
 - [AI Training](/user-guide#ai-training)
 - [Accounts and Security](/user-guide#accounts-security)

@@ -1,8 +1,8 @@
 # Deployment and Remote Access
 
-MetaHuman keeps runtime deployment, remote model execution, and remote browser
+Ainekio OS keeps runtime deployment, remote model execution, and remote browser
 access as separate responsibilities. This repository does not provision compute,
-storage, DNS, or a hosted MetaHuman instance.
+storage, DNS, or a hosted Ainekio OS instance.
 
 ## Runtime deployment ownership
 
@@ -25,7 +25,7 @@ Launch the complete built system with:
 ```
 
 `./start.sh` is the production lifecycle owner. It starts the built standalone
-Site server and the configured background services, including the MetaHuman-owned
+Site server and the configured background services, including the Ainekio OS-owned
 Cloudflare tunnel process. It fails when the production bundle is missing rather
 than building during startup. `pnpm dev` is for local development, and
 `pnpm start` previews only the Site package; neither is the supported full-system
@@ -64,10 +64,10 @@ pnpm build:static
 This uses the same UI components and transport owner as the local application.
 It writes only the static UI artifact to `apps/site/dist-static/`; the normal
 `pnpm build` still writes the local standalone server to `apps/site/dist/`.
-The static route table includes `/`, `/audit`, `/debug`, `/monitor`, `/tasks`,
-`/guide`, and `/user-guide`. API routes, server middleware, agent executables,
-and the legacy filesystem-rendered `/events` page are excluded. Runtime data is
-fetched from the selected machine rather than rendered into the published files.
+The static route table includes `/`, `/audit`, and `/user-guide`.
+API routes, server middleware, and agent executables
+are excluded. Runtime data is fetched from the selected machine rather than
+rendered into the published files.
 The interface can load while every backend is offline; reading data or doing
 work requires the selected machine and its tunnel to be running.
 
@@ -101,7 +101,7 @@ If a backend is protected by Cloudflare Access, sign into its hostname in a
 browser tab first and configure Access CORS/preflight handling for
 `https://mh.ainek.io` using
 [Cloudflare's CORS instructions](https://developers.cloudflare.com/cloudflare-one/access-controls/applications/http-apps/authorization-cookie/cors/).
-Do not place Access service tokens in the static site. MetaHuman login remains
+Do not place Access service tokens in the static site. Ainekio OS login remains
 required independently of Access. Verify actual login, authenticated requests,
 streams, and media from the hosted origin; a build alone cannot establish these.
 
@@ -125,7 +125,7 @@ builds the static artifact, and deploys only `apps/site/dist-static/`.
    settings restrict deployment branches. Let **Publish hosted UI** finish and enable
    **Enforce HTTPS** in Pages when its certificate is ready.
 5. Open `https://mh.ainek.io`, enter the machine's HTTPS tunnel address, and sign
-   into its existing MetaHuman account. Check login, chat/queue streams, audio,
+   into its existing Ainekio OS account. Check login, chat/queue streams, audio,
    machine switching, and the disconnected state with the real backend.
 
 Publishing the UI does not configure GitHub Pages, DNS, Access, tunnels, or backend
@@ -142,7 +142,7 @@ and the credential owner exposed through the application. Configure a supported
 backend through maintained settings; do not add provider-specific API routes,
 fallbacks, queues, or credential files.
 
-Remote model execution does not expose the MetaHuman web application. Use the
+Remote model execution does not expose the Ainekio OS web application. Use the
 tunnel path below when a browser must reach a local installation remotely.
 
 ### Q6A robot task placement
@@ -156,7 +156,7 @@ start a local model or use local Big Brother execution. A missing login, unsuppo
 image transport, remote failure or cancellation returns an explicit result to the
 same task. Heavy inference does not run inside the active task's event step.
 
-For a MetaHuman server, connect under **Settings → Backend → Remote Server**
+For an Ainekio OS server, connect under **Settings → Backend → Remote Server**
 using the selected profile. The existing credential owner saves its server URL
 and session privately. In `etc/llm-backend.json`, the existing `remote.provider`
 must be `server`; `remote.model` selects the server's vision-capable model. An
@@ -173,13 +173,13 @@ does not provision or deploy a server.
 
 ## Desktop Environment Bridge to a remote Q6A gateway
 
-MetaHuman OS and the Environment Bridge can remain together on the desktop while
+Ainekio OS and the Environment Bridge can remain together on the desktop while
 the Ubuntu Q6A runs Ainekio's gateway. The desktop connects outward through a
-Cloudflare Access TCP hostname to the Q6A gateway; no phone or public MetaHuman
+Cloudflare Access TCP hostname to the Q6A gateway; no phone or public Ainekio OS
 Site tunnel is needed for this connection.
 
 On the Q6A, follow the Ainekio checkout's `Master/gateway/README.md` section
-**Desktop MetaHuman connected to a Q6A through Cloudflare**. Its existing relay
+**Desktop Ainekio OS connected to a Q6A through Cloudflare**. Its existing relay
 launcher adds `AINEKIO_CLOUDFLARE_ENVIRONMENT_HOSTNAME` as a TCP route to
 `127.0.0.1:8790` (or the configured gateway port). Create a Cloudflare Access
 application and login policy for that hostname. The existing HTTP `/robot` relay
@@ -206,17 +206,18 @@ Click **Save and connect**. Remote owns the existing `bin/connect-environment` T
 launcher and stops that forwarder when stopped. Do not run a separate desktop
 forwarding service alongside it. The Q6A gateway and connector remain running.
 
-Open **Agent Monitor → Body connection** (or `/monitor#body-connection`) to
+Open **Right sidebar → Agent Monitor → Body connection**
+(or `/#view=chat&sidebar=monitor&section=body-connection`) to
 choose the machine running Body Control. Ainekio's Body Control Settings can
 save a link to this page on your stationary desktop, reachable through its
-existing remote access address. Sign in to MetaHuman as the owner; Body Control
-does not receive MetaHuman credentials.
+existing remote access address. Sign in to Ainekio OS as the owner; Body Control
+does not receive Ainekio OS credentials.
 
-- **This computer** means the MetaHuman host, which can differ from the browser's
+- **This computer** means the Ainekio OS host, which can differ from the browser's
   device. The default adapter URL is `ws://127.0.0.1:8790/environment`.
 - **LAN / Wi-Fi via SSH** accepts any `user@hostname`, `user@IP` or SSH host alias.
   Establish host trust and noninteractive SSH authentication as the OS account
-  running MetaHuman first. SSH config can specify the port and key. Set the remote
+  running Ainekio OS first. SSH config can specify the port and key. Set the remote
   gateway port (default `8790`) and loopback forwarding URL (normally
   `ws://127.0.0.1:18790/environment`). Dashboard port `8791` is separate.
 - **Remote via Cloudflare** uses your existing Access TCP hostname and optional
@@ -250,7 +251,7 @@ the inner WebSocket request. The gateway's existing adapter-token authentication
 still applies. TCP carries the entire gateway port, including `/robot`; the
 separate dashboard port is not forwarded by this route.
 
-Keep the gateway, Q6A connector, desktop forwarder and MetaHuman running. Use
+Keep the gateway, Q6A connector, desktop forwarder and Ainekio OS running. Use
 Agent Monitor's Environment Bridge state/diagnostics to confirm the gateway
 session and connected robot, then exercise owner-selected commands and the
 needed media paths on the actual machines. Local tests do not establish
@@ -259,16 +260,16 @@ Cloudflare login or physical demo readiness. Cloudflare recommends
 
 ## Cloudflare tunnel ownership
 
-MetaHuman's built-in tunnel manager currently owns a **locally managed named
+Ainekio OS's built-in tunnel manager currently owns a **locally managed named
 tunnel**. It runs `cloudflared tunnel run NAME`, records its owned process, and
 coordinates shared request admission with the Site. Cloudflare's remotely managed
-token/service workflow is not controlled by MetaHuman's Network settings.
+token/service workflow is not controlled by Ainekio OS's Network settings.
 
 Do not enable a separate systemd `cloudflared` service alongside the built-in
 manager. Two process owners can start competing tunnel instances and make the UI's
 status and stop controls inaccurate.
 
-The tunnel transports requests; it does not replace MetaHuman authentication or
+The tunnel transports requests; it does not replace Ainekio OS authentication or
 authorization. Use Cloudflare Access as an additional public boundary.
 
 ## Configure a locally managed tunnel
@@ -310,17 +311,17 @@ ingress:
   - service: http_status:404
 ```
 
-Keep the catch-all rule last. If MetaHuman uses a non-default `PORT`, use the same
+Keep the catch-all rule last. If Ainekio OS uses a non-default `PORT`, use the same
 port in the origin service URL.
 
-Validate the Cloudflare configuration before enabling it in MetaHuman:
+Validate the Cloudflare configuration before enabling it in Ainekio OS:
 
 ```bash
 cloudflared tunnel ingress validate
 cloudflared tunnel info metahuman
 ```
 
-### 4. Configure MetaHuman
+### 4. Configure Ainekio OS
 
 Set the non-secret tunnel identity in `etc/cloudflare.json`:
 
@@ -335,7 +336,7 @@ Set the non-secret tunnel identity in `etc/cloudflare.json`:
 
 `enabled` and `autoStart` can also be toggled by an owner under
 **System → Network**. The Network panel starts, stops, and reports the
-process owned by MetaHuman; it does not create the Cloudflare account, tunnel,
+process owned by Ainekio OS; it does not create the Cloudflare account, tunnel,
 credentials, DNS route, or local Cloudflare YAML file.
 
 When the configuration is enabled at startup, `./start.sh` keeps the Site listener
@@ -358,12 +359,12 @@ an allow policy for the intended identities. Follow Cloudflare's current
 rather than relying on pricing, dashboard labels, or limits copied into this
 repository.
 
-Cloudflare Access and MetaHuman sessions are separate checks. Passing Cloudflare
-Access must still lead to the MetaHuman authentication gate.
+Cloudflare Access and Ainekio OS sessions are separate checks. Passing Cloudflare
+Access must still lead to the Ainekio OS authentication gate.
 
 ### Public guest sessions
 
-1. Sign in to MetaHuman as an owner.
+1. Sign in to Ainekio OS as an owner.
 2. Open **System → Security**.
 3. Mark only the intended profile as **Public**.
 4. From a separate browser session, choose **Continue as Guest**.
@@ -399,7 +400,7 @@ Validate each boundary separately:
    without stopping the local Site.
 
 A successful build does not prove that the tunnel is running. A running tunnel does
-not prove that Cloudflare Access or MetaHuman authorization is correct.
+not prove that Cloudflare Access or Ainekio OS authorization is correct.
 
 ## Troubleshooting
 

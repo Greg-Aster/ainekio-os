@@ -1,4 +1,5 @@
-export type TimelineState = 'running' | 'completed' | 'skipped' | 'failed'
+type TimelineState = 'running' | 'completed' | 'skipped' | 'failed'
+export type GraphRunStatus = 'idle' | 'running' | 'completed' | 'waiting' | 'failed' | 'interrupted'
 
 export interface ExecutionTimelineEntry {
   nodeId: string

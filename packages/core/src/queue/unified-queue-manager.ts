@@ -71,7 +71,7 @@ function protectAdmission(task: QueuedTask): QueuedTask {
   return task;
 }
 
-export function isDesireAgentAdmission(input: Pick<TaskInput, 'type' | 'handler' | 'input' | 'metadata'>): boolean {
+function isDesireAgentAdmission(input: Pick<TaskInput, 'type' | 'handler' | 'input' | 'metadata'>): boolean {
   const requestedHandler = input.handler || DEFAULT_HANDLERS[input.type];
   const handler = requestedHandler.startsWith('agent.') ? agentHandlerId(requestedHandler.slice('agent.'.length)) : requestedHandler;
   if (handler === DESIRE_AGENT_HANDLER) {

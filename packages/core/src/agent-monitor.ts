@@ -8,6 +8,8 @@ import path from 'node:path';
 import { systemPaths } from './path-builder.js';
 import { getAgentCatalogSnapshot, type AgentCatalogSnapshot } from './agent-catalog.js';
 import { getQueueManager } from './queue/unified-queue-manager.js';
+import { queryAuditLog } from './audit.js';
+import { readAgentWorkStats } from './queue/queue-persister.js';
 import {
   bootEntryForDescriptor,
   buildAgentDescriptor,
@@ -285,123 +287,25 @@ export function listAvailableAgents(): string[] {
  * Read recent agent logs from audit trail
  */
 export function getAgentLogs(agentName?: string, limit = 50): AgentLog[] {
-  const today = new Date().toISOString().slice(0, 10);
-  const auditFile = path.join(systemPaths.logs, 'audit', `${today}.ndjson`);
-
-  if (!fs.existsSync(auditFile)) {
-    return [];
-  }
-
-  const lines = fs.readFileSync(auditFile, 'utf8').trim().split('\n');
-  const logs: AgentLog[] = [];
+  if (limit <= 0) return [];
   const knownAgents = new Set([
-    ...Object.keys(DESCRIPTORS),
-    ...Object.keys(readRegistry()).filter(isTrackableAgent),
+    ...Object.keys(DESCRIPTORS), ...Object.keys(readRegistry()).filter(isTrackableAgent),
     ...getAgentFailures().map(failure => failure.agent).filter(isTrackableAgent),
   ]);
-
-  for (const line of lines) {
-    if (!line) continue;
-
-    try {
-      const entry = JSON.parse(line);
-
-      // Normalize event fields
-      const normalizedAgent: string | undefined = entry?.details?.agent || entry?.actor;
-      const normalizedMessage: string = entry?.event || entry?.message || '';
-      const normalizedLevel: 'info' | 'warn' | 'error' =
-        entry?.level === 'error' ? 'error' : entry?.level === 'warn' ? 'warn' : 'info';
-
-      // Determine if this log belongs to an agent we're tracking
-      const isAgentLike = !!normalizedAgent && (
-        knownAgents.has(normalizedAgent) || // direct agent name match
-        normalizedAgent === 'agent' || // generic agent actor with details.agent
-        /-service$/.test(normalizedAgent) // background services
-      );
-
-      if (!isAgentLike) continue;
-
-      // If filtering by a specific agent, allow match on details.agent or actor
-      if (agentName && normalizedAgent !== agentName) continue;
-
-      logs.push({
-        timestamp: entry.timestamp,
-        level: normalizedLevel,
-        message: normalizedMessage,
-        agent: normalizedAgent || 'unknown',
-      });
-    } catch (error) {
-      // Skip invalid JSON entry in audit log
-      console.warn(`${LOG_PREFIX} Skipping invalid JSON in audit log:`, (error as Error).message);
-    }
-  }
-
-  return logs.slice(-limit);
+  return queryAuditLog({ date: new Date().toISOString().slice(0, 10), limit, match: entry => {
+    const agent = entry.details?.agent || entry.actor;
+    return !!agent && (knownAgents.has(agent) || agent === 'agent' || /-service$/.test(agent))
+      && (!agentName || agentName === agent);
+  } }).entries.reverse().map(entry => ({
+    timestamp: entry.timestamp,
+    level: entry.level === 'error' || entry.level === 'critical' ? 'error' : entry.level === 'warn' ? 'warn' : 'info',
+    message: entry.event || entry.message || '', agent: entry.details?.agent || entry.actor || 'unknown',
+  }));
 }
 
-/**
- * Get agent statistics from audit logs
- */
-export function getAgentStats(agentName: string): {
-  totalRuns: number;
-  successfulRuns: number;
-  failedRuns: number;
-  lastRun?: string;
-  averageProcessed?: number;
-} {
-  const logs = getAgentLogs(agentName, 1000);
-
-  const isStart = (m: string) => {
-    const s = m.toLowerCase();
-    return (
-      s === 'agent_started' ||
-      s === 'agent_cycle_started' ||
-      s.includes('starting') ||
-      s.includes('started') ||
-      s.includes('waking up') ||
-      s.includes('drifting into a dream')
-    );
-  };
-
-  const isComplete = (m: string, level: AgentLog['level']) => {
-    const s = m.toLowerCase();
-    return (
-      s === 'agent_completed' ||
-      s === 'agent_cycle_completed' ||
-      (s === 'agent_stopped' && level !== 'error') ||
-      s.includes('generated new insight') ||
-      s.includes('triggering') ||
-      s.includes('triggered') ||
-      s.includes('finished') ||
-      s.includes('completed')
-    );
-  };
-
-  const isFail = (m: string, level: AgentLog['level']) => {
-    const s = m.toLowerCase();
-    return (
-      level === 'error' ||
-      s === 'agent_failed' ||
-      s === 'agent_cycle_failed' ||
-      /failed|error|exited with code/.test(s)
-    );
-  };
-
-  const started = logs.filter(l => isStart(l.message)).length;
-  const completed = logs.filter(l => isComplete(l.message, l.level)).length;
-  const failed = logs.filter(l => isFail(l.message, l.level)).length;
-  const successfulRuns = DESCRIPTORS[agentName]?.kind === 'one-shot'
-    ? Math.min(started, completed)
-    : completed;
-
-  const lastRunLog = logs.filter(l => isStart(l.message)).slice(-1)[0];
-
-  return {
-    totalRuns: started,
-    successfulRuns,
-    failedRuns: failed,
-    lastRun: lastRunLog?.timestamp,
-  };
+/** Exact outcomes from retained Coordinator receipts, independent of diagnostic logging. */
+export function getAgentStats(agentName: string) {
+  return readAgentWorkStats(agentName);
 }
 
 /**
@@ -558,6 +462,7 @@ export function getAgentMonitorSnapshot(): AgentMonitorSnapshot {
 
   return {
     timestamp: new Date().toISOString(),
+    catalog,
     runningAgents,
     recentFailures,
     startableAgents,

@@ -22,9 +22,9 @@ const GRAPH_FILE = 'inner-curiosity.json'
 const MAX_EXECUTION_ID_CHARS = 400
 const GRAPH_CACHE: Record<string, CachedGraphEntry | null> = {}
 
-export type InnerCuriositySkipReason = 'disabled' | 'no-memories'
+type InnerCuriositySkipReason = 'disabled' | 'no-memories'
 
-export interface InnerCuriosityFollowOnOutcome {
+interface InnerCuriosityFollowOnOutcome {
   admitted: boolean
   skipped: boolean
   reason?: string

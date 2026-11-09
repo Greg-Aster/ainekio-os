@@ -8,7 +8,7 @@
 import type { UnifiedRequest, UnifiedResponse } from '../types.js';
 import { successResponse, badRequestResponse, notFoundResponse } from '../types.js';
 import { withUserContext } from '../../context.js';
-import { createTask, listActiveTasks, listCompletedTasks, updateTask, updateTaskStatus, deleteTask } from '../../memory.js';
+import { createTask, listActiveTasks, listCompletedTasks, updateTask, updateTaskStatus } from '../../memory.js';
 import { auditDataChange } from '../../audit.js';
 
 /**
@@ -86,7 +86,7 @@ export async function handleCreateTask(req: UnifiedRequest): Promise<UnifiedResp
  * Supports both URL param id and body.taskId for flexibility
  */
 export async function handleUpdateTask(req: UnifiedRequest): Promise<UnifiedResponse> {
-  const { taskId: bodyTaskId, status, title, description, priority, tags, due, start, end, listId } = req.body || {};
+  const { taskId: bodyTaskId, status, title, description, priority, tags, due, start, end } = req.body || {};
   const taskId = req.params?.id || bodyTaskId;
 
   if (!taskId) {
@@ -102,7 +102,6 @@ export async function handleUpdateTask(req: UnifiedRequest): Promise<UnifiedResp
   if (due !== undefined) updates.due = due;
   if (start !== undefined) updates.start = start;
   if (end !== undefined) updates.end = end;
-  if (listId !== undefined) updates.listId = listId;
 
   try {
     await withUserContext(
@@ -130,34 +129,6 @@ export async function handleUpdateTask(req: UnifiedRequest): Promise<UnifiedResp
 
     return successResponse({
       success: true,
-    });
-  } catch (error) {
-    if ((error as Error).message?.includes('not found')) {
-      return notFoundResponse('Task not found');
-    }
-    throw error;
-  }
-}
-
-/**
- * DELETE /api/tasks/:id - Delete a task
- */
-export async function handleDeleteTask(req: UnifiedRequest): Promise<UnifiedResponse> {
-  const taskId = req.params?.id;
-
-  if (!taskId) {
-    return badRequestResponse('Task ID is required');
-  }
-
-  try {
-    const result = await withUserContext(
-      { userId: req.user.userId, username: req.user.username, role: req.user.role },
-      () => deleteTask(taskId)
-    );
-
-    return successResponse({
-      success: true,
-      result,
     });
   } catch (error) {
     if ((error as Error).message?.includes('not found')) {

@@ -1,5 +1,5 @@
 /** Browser-safe terminal contracts. No runtime imports or startup side effects. */
-export type TerminalProvider = 'claude-code' | 'codex'
+export type TerminalProvider = 'claude-code' | 'codex' | 'gemini'
 export interface TerminalSession {
   id: string
   kind: 'provider'

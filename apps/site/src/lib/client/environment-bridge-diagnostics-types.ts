@@ -1,5 +1,5 @@
 /** Browser-side wire DTOs returned by the environment-bridge diagnostics API. */
-export interface EnvironmentBridgeDiagnosticEvent {
+interface EnvironmentBridgeDiagnosticEvent {
   timestamp: string
   kind: string
   bytes?: number

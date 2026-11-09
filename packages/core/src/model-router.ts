@@ -221,6 +221,14 @@ export async function callLLM(callOptions: RouterCallOptions): Promise<RouterRes
           ? resolved.metadata.endpointTier
           : undefined,
         useBigBrother: mergedOptions.useBigBrother,
+        cliProvider: (resolved.metadata?.cliProvider === 'claude-code'
+          || resolved.metadata?.cliProvider === 'codex'
+          || resolved.metadata?.cliProvider === 'gemini')
+          ? resolved.metadata.cliProvider
+          : undefined,
+        reasoningEffort: typeof resolved.metadata?.reasoningEffort === 'string'
+          ? resolved.metadata.reasoningEffort
+          : undefined,
       },
       bridgeProgress
     );

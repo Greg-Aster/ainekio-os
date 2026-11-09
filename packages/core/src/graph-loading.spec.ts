@@ -82,3 +82,66 @@ test('corrected definitions reload even when a deployment preserves the old mtim
   fs.utimesSync(filename, before.atime, before.mtime)
   assert.ok(await loadGraphForMode('timestamps'))
 })
+
+function responseFixture(mode: 'dual' | 'agent' | 'emulation') {
+  const graph = JSON.parse(fs.readFileSync(new URL(`../../../etc/cognitive-graphs/${mode}-mode.json`, import.meta.url), 'utf8'));
+  const state: import('./graph-executor.js').GraphExecutionState = {
+    status: 'completed', startTime: 1,
+    nodes: new Map(graph.nodes.map((node: { id: string; data: { nodeType: string } }) => [node.id, {
+      nodeId: node.id, status: 'completed', definition: { type: node.data.nodeType }, inputs: { response: '<think>Raw reasoning</think>Reply' },
+      outputs: { response: 'Reply', output: '<think>Raw reasoning</think>Reply', stripped: 'Reply', content: 'Reply',
+        persisted: true, entries: [{ role: 'assistant', content: 'Reply', meta: { idempotencyKey: `saved-${node.id}` } }] },
+    }])),
+  };
+  const writer = graph.nodes.find((node: { data: { nodeType: string } }) => node.data.nodeType === 'stream_writer');
+  const output = state.nodes.get(writer.id)!.outputs!;
+  const buffer = graph.nodes.find((node: { id: string; data: { nodeType: string } }) => node.data.nodeType === 'conversation_buffer'
+    && graph.edges.some((edge: { target: string; targetHandle: string }) => edge.target === node.id && edge.targetHandle === 'response'));
+  return { graph, state, writer, output, buffer };
+}
+
+for (const mode of ['dual', 'agent', 'emulation'] as const) {
+  test(`${mode} graph associates raw response presentation with its actual saved entry through output wiring`, async () => {
+    const { findResponseEntryReference } = await import('./graph-runtime.js');
+    const fixture = responseFixture(mode);
+    assert.deepEqual(findResponseEntryReference(fixture.graph, fixture.state, fixture.output, 'output'),
+      { mode: 'conversation', id: `saved-${fixture.buffer.id}` });
+    assert.equal(fixture.output.output, '<think>Raw reasoning</think>Reply', 'identity discovery cannot strip the presented response');
+  });
+}
+
+test('custom response with no Buffer or unrelated equal-text publication has no asserted saved identity', async () => {
+  const { findResponseEntryReference } = await import('./graph-runtime.js');
+  const fixture = responseFixture('dual');
+  fixture.graph.edges = fixture.graph.edges.filter((edge: { target: string }) => edge.target !== fixture.buffer.id);
+  assert.equal(findResponseEntryReference(fixture.graph, fixture.state, fixture.output, 'output'), undefined);
+  fixture.graph.nodes.push({ id: 'unrelated', data: { nodeType: 'fixture' } });
+  fixture.state.nodes.set('unrelated', { nodeId: 'unrelated', status: 'completed', definition: { type: 'fixture' }, outputs: { response: 'Reply' } });
+  fixture.graph.edges.push({ id: 'unrelated-buffer', source: 'unrelated', sourceHandle: 'response', target: fixture.buffer.id, targetHandle: 'response' });
+  assert.equal(findResponseEntryReference(fixture.graph, fixture.state, fixture.output, 'output'), undefined,
+    'equal text from another output cannot prove the response identity');
+});
+
+test('ambiguous custom publications retain distinct identities instead of choosing the first entry', async () => {
+  const { findResponseEntryReference } = await import('./graph-runtime.js');
+  const fixture = responseFixture('dual');
+  fixture.graph.nodes.push({ ...fixture.buffer, id: 'second-buffer' });
+  fixture.state.nodes.set('second-buffer', { ...fixture.state.nodes.get(fixture.buffer.id)!, nodeId: 'second-buffer',
+    outputs: { ...fixture.state.nodes.get(fixture.buffer.id)!.outputs, entries: [
+      { role: 'assistant', content: 'Reply', meta: { idempotencyKey: 'distinct-equal-text-entry' } },
+    ] } });
+  const edge = fixture.graph.edges.find((edge: { target: string; targetHandle: string }) => edge.target === fixture.buffer.id && edge.targetHandle === 'response');
+  fixture.graph.edges.push({ ...edge, id: 'second-response', target: 'second-buffer' });
+  assert.equal(findResponseEntryReference(fixture.graph, fixture.state, fixture.output, 'output'), undefined);
+});
+
+test('inactive or ambiguous response inputs cannot associate a custom output with a saved entry', async () => {
+  const { findResponseEntryReference } = await import('./graph-runtime.js');
+  const fixture = responseFixture('agent');
+  fixture.state.nodes.get(fixture.writer.id)!.inputs = {};
+  assert.equal(findResponseEntryReference(fixture.graph, fixture.state, fixture.output, 'output'), undefined);
+  fixture.state.nodes.get(fixture.writer.id)!.inputs = { response: 'Reply' };
+  const edge = fixture.graph.edges.find((edge: { target: string; targetHandle: string }) => edge.target === fixture.writer.id && edge.targetHandle === 'response');
+  fixture.graph.edges.push({ ...edge, id: 'ambiguous-input' });
+  assert.equal(findResponseEntryReference(fixture.graph, fixture.state, fixture.output, 'output'), undefined);
+});

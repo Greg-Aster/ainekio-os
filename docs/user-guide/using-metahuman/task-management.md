@@ -1,6 +1,6 @@
 # Tasks and Projects
 
-MetaHuman OS keeps tasks and projects in the active profile. The web interface provides project and dependency views; the CLI intentionally exposes only the narrow task operations it implements.
+Ainekio OS keeps tasks and projects in the active profile. The web interface provides project and dependency views; the CLI intentionally exposes only the narrow task operations it implements.
 
 ## Open Projects
 

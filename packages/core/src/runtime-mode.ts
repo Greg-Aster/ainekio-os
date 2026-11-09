@@ -1,25 +1,18 @@
 /**
- * Runtime Mode Management
- *
- * Manages headless mode state for MetaHuman OS. Headless mode keeps the
- * tunnel and web server running while pausing all local agents, allowing
- * remote users to claim full system resources without conflicts.
- *
- * Agent lifecycle is managed directly by enterHeadlessMode/exitHeadlessMode
- * functions - no separate watcher process needed.
+ * Persisted headless startup state. The CLI skips boot-managed agents when this
+ * flag is set. The routed UI/API changes the flag without stopping or resuming
+ * running agents.
  */
 
 import fs from 'fs';
 import path from 'path';
 import { systemPaths } from './path-builder.js';
 import { audit } from './audit.js';
-import { getAgentMonitorSnapshot, stopAllAgents } from './agent-monitor.js';
-import { startAgentProcess } from './agent-process-runner.js';
 
 const RUNTIME_CONFIG_PATH = path.join(systemPaths.etc, 'runtime.json');
 
 export interface RuntimeState {
-  /** True if in headless mode (agents paused, waiting for remote claim) */
+  /** Skip boot-managed agents at system startup */
   headless: boolean;
   /** Who last changed the mode ('local' user or 'remote' session) */
   lastChangedBy: 'local' | 'remote';
@@ -102,95 +95,4 @@ export function setRuntimeMode(
  */
 export function isHeadless(): boolean {
   return getRuntimeMode().headless;
-}
-
-/**
- * Enter headless mode (stop agents, keep tunnel/server running)
- */
-export async function enterHeadlessMode(actor?: string): Promise<void> {
-  console.log('[runtime-mode] Entering headless mode - stopping all agents...');
-
-  // Stop all agents gracefully
-  const result = await stopAllAgents(false);
-
-  console.log(`[runtime-mode] Stopped ${result.stopped.length}/${result.total} agents`);
-  if (result.failed.length > 0) {
-    console.warn(`[runtime-mode] Failed to stop: ${result.failed.join(', ')}`);
-  }
-
-  // Update runtime state
-  setRuntimeMode(
-    {
-      headless: true,
-      lastChangedBy: actor?.includes('remote') ? 'remote' : 'local',
-      claimedBy: null,
-    },
-    actor
-  );
-
-  audit({
-    category: 'system',
-    level: 'info',
-    event: 'headless_mode_activated',
-    message: 'Headless mode activated - agents stopped',
-    actor: actor || 'system',
-    metadata: {
-      stopped: result.stopped,
-      failed: result.failed,
-      total: result.total,
-    }
-  });
-}
-
-/**
- * Exit headless mode (resume normal operation)
- */
-export function exitHeadlessMode(actor?: string, claimedBy?: string): void {
-  console.log('[runtime-mode] Exiting headless mode - resuming agents...');
-
-  // Update runtime state first
-  setRuntimeMode(
-    {
-      headless: false,
-      lastChangedBy: actor?.includes('remote') ? 'remote' : 'local',
-      claimedBy: claimedBy || null,
-    },
-    actor
-  );
-
-  // Start default agents after a brief delay for cleanup
-  setTimeout(() => {
-    void startDefaultAgents(actor);
-  }, 2000);
-}
-
-/**
- * Start configured boot agents when exiting headless mode.
- */
-async function startDefaultAgents(actor?: string): Promise<void> {
-  const bootAgents = getAgentMonitorSnapshot().bootAgents
-    .filter(agent => agent.enabled && agent.startOnSystemBoot)
-    .map(agent => agent.agentId);
-
-  console.log('[runtime-mode] Starting configured boot agents...');
-
-  await Promise.all(bootAgents.map(agentName => startAgentProcess(agentName, {
-    actor: actor || 'system',
-    source: 'runtime-mode',
-    useBootstrap: true,
-    detached: true,
-    waitForMs: 5_000,
-    checkLock: true,
-  })));
-
-  audit({
-    category: 'system',
-    level: 'info',
-    event: 'headless_mode_deactivated',
-    message: 'Headless mode deactivated - agents resumed',
-    actor: actor || 'system',
-    metadata: {
-      startedFromBootConfig: bootAgents,
-    },
-  });
 }

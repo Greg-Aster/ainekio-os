@@ -6,6 +6,8 @@ import { getAgentMonitorSnapshot } from '../../agent-monitor.js';
 import { subscribeEnvironmentBridgeState } from '../../environment-interface/index.js';
 import { subscribeEnvironmentBridgeDiagnostics } from '../../environment-interface/diagnostics.js';
 import { systemPaths } from '../../path-builder.js';
+import { getQueueManager } from '../../queue/unified-queue-manager.js';
+import type { QueueEvent } from '../../queue/types.js';
 
 function sse(data: Record<string, unknown>): string {
   return `data: ${JSON.stringify(data)}\n\n`;
@@ -68,10 +70,12 @@ async function* streamMonitorUpdates(signal: AbortSignal | undefined): AsyncGene
     }, 100);
   };
 
-  const watchPath = (target: string) => {
+  const watchPath = (target: string, options: fs.WatchOptions = {}, filenames?: string[]) => {
     try {
       if (!fs.existsSync(target)) return;
-      const watcher = fs.watch(target, scheduleSnapshot);
+      const watcher = fs.watch(target, options, (_event, filename) => {
+        if (!filenames || filename === null || filenames.includes(filename.toString())) scheduleSnapshot();
+      });
       watcher.on('error', error => push({ type: 'error', error: error.message }));
       watchers.push(watcher);
     } catch (error) {
@@ -81,13 +85,21 @@ async function* streamMonitorUpdates(signal: AbortSignal | undefined): AsyncGene
   };
 
   push({ type: 'connected' });
-  sendSnapshot();
   const unsubscribeBridgeState = subscribeEnvironmentBridgeState(scheduleSnapshot);
   const unsubscribeBridgeDiagnostics = subscribeEnvironmentBridgeDiagnostics(scheduleSnapshot);
+  const queueManager = getQueueManager();
+  const queueListener = (event: QueueEvent) => {
+    if (event.type !== 'task_output') scheduleSnapshot();
+  };
+  queueManager.addEventListener(queueListener);
 
   watchPath(path.join(systemPaths.logs, 'agents'));
   watchPath(path.join(systemPaths.run, 'locks'));
-  watchPath(path.join(systemPaths.root, 'etc', 'agents.json'));
+  // Watch directories so atomic config replacement keeps the subscription alive.
+  watchPath(systemPaths.etc, {}, ['agents.json', 'services.json']);
+  watchPath(systemPaths.agents, { recursive: true });
+  watchPath(path.join(systemPaths.brain, 'services'), { recursive: true });
+  sendSnapshot();
 
   signal?.addEventListener('abort', close, { once: true });
   if (signal?.aborted) close();
@@ -108,6 +120,7 @@ async function* streamMonitorUpdates(signal: AbortSignal | undefined): AsyncGene
     }
     unsubscribeBridgeState();
     unsubscribeBridgeDiagnostics();
+    queueManager.removeEventListener(queueListener);
     for (const watcher of watchers) {
       watcher.close();
     }

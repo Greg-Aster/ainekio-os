@@ -48,5 +48,3 @@ export const DesirePlanReviewTransitionNode: NodeDefinition = defineNode({
   properties: {},
   execute,
 })
-
-export default DesirePlanReviewTransitionNode

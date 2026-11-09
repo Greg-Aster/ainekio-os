@@ -8,4 +8,11 @@ export const codexBackend = createTerminalSessionBackend({
   description: 'Codex in the shared visible Big Brother terminal session',
 })
 
+export const geminiBackend = createTerminalSessionBackend({
+  id: BACKEND_IDS.GEMINI,
+  name: 'Gemini CLI',
+  description: 'Gemini in the shared visible Big Brother terminal session',
+})
+
 registerBackend(codexBackend)
+registerBackend(geminiBackend)

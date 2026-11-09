@@ -11,8 +11,8 @@ import {
 import type { CognitiveMode, TrainingDataSettings } from '@metahuman/core/training-schema'
 
 export type PersonalizationProgram = 'organizer' | 'curator'
-export interface ProgramRunOptions { actor: string; captureOutput?: boolean; logPrefix: string; signal?: AbortSignal }
-export type ProgramRunner = (program: PersonalizationProgram, args: string[], options: ProgramRunOptions) => Promise<number>
+interface ProgramRunOptions { actor: string; captureOutput?: boolean; logPrefix: string; signal?: AbortSignal }
+type ProgramRunner = (program: PersonalizationProgram, args: string[], options: ProgramRunOptions) => Promise<number>
 
 interface DatasetPipelineDependencies {
   runProgram?: ProgramRunner
@@ -71,7 +71,7 @@ export function parseCognitiveMode(value: string, name: string): CognitiveMode {
   return value
 }
 
-export async function runPersonalizationProgram(
+async function runPersonalizationProgram(
   program: PersonalizationProgram,
   args: string[],
   options: ProgramRunOptions,

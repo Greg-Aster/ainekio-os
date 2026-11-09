@@ -1,4 +1,4 @@
-export interface ReplyToMetadata {
+interface ReplyToMetadata {
   questionId?: string;
   content?: string;
   desireId?: string;

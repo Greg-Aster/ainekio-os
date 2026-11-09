@@ -235,16 +235,11 @@ export interface OperatorConfig {
     logDirectory: string;
     verboseErrors: boolean;
   };
-  performance: {
-    cacheCatalog: boolean;
-    catalogTTL: number;
-    parallelSkillExecution: boolean;
-  };
   bigBrotherMode?: {
     enabled: boolean;
-    provider: 'claude-code' | 'aider' | 'gemini-cli' | 'qwen-code' | 'codex';
+    provider: 'claude-code' | 'codex' | 'gemini';
     model?: string; // Model passed to the selected CLI provider
-    reasoningEffort?: string; // Codex reasoning effort; otherwise use tool-executor configuration
+    reasoningEffort?: string; // Codex/Gemini reasoning effort; otherwise use tool-executor configuration
     delegateAll?: boolean; // Route inference through the selected CLI provider
     escalateOnStuck: boolean;
     escalateOnRepeatedFailures: boolean;
@@ -351,11 +346,6 @@ export function getDefaultOperatorConfig(): OperatorConfig {
       logDirectory: 'logs/run/agents',
       verboseErrors: true
     },
-    performance: {
-      cacheCatalog: true,
-      catalogTTL: 60000,
-      parallelSkillExecution: false
-    },
     bigBrotherMode: {
       enabled: false,
       provider: 'claude-code',
@@ -386,9 +376,6 @@ export function invalidateOperatorConfig(username?: string): void {
 // ============================================================================
 
 export interface RuntimeConfig {
-  cognitive?: {
-    useNodePipeline?: boolean;
-  };
   [key: string]: any;
 }
 

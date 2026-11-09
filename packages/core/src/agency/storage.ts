@@ -7,6 +7,9 @@
 
 import fs from 'node:fs';
 import path from 'node:path';
+import { randomUUID } from 'node:crypto';
+import { getUserContext } from '../context.js';
+import { eventBus } from '../infrastructure/event-bus/client.js';
 import { storageClient, validateProfileDeletion } from '../storage-client.js';
 import { ENCRYPTED_EXTENSION } from '../encryption.js';
 import type {
@@ -45,6 +48,14 @@ const SUBCATEGORY = 'desires' as const;
 
 // Folder-based storage: each desire has its own folder at folders/{id}/
 const FOLDER_BASE = 'folders';
+
+function notifyAgencyChange(username?: string, desireId?: string): void {
+  eventBus.emit('core', 'agency.changed', {
+    username: username ?? getUserContext()?.username,
+    desireId,
+    revision: randomUUID(),
+  });
+}
 
 /** Profile-relative Agency history for the existing confirmed memory reset. */
 export function getAgencyHistoryResetPaths(username: string): string[] {
@@ -123,6 +134,7 @@ export async function saveDesire(desire: Desire, username?: string): Promise<voi
     encoding: 'utf8',
   });
   if (!written.success) throw new Error(written.error || 'Failed to persist Agency data');
+  notifyAgencyChange(username, desire.id);
 }
 
 /** Preserve the exact pre-migration manifest in an inert, timestamped backup. */
@@ -170,54 +182,22 @@ export async function loadDesire(desireId: string, username?: string): Promise<D
  * Removes from both folder-based and legacy status-based storage.
  */
 export async function deleteDesire(desire: Desire, username?: string): Promise<void> {
-  const folderPath = getDesireFolderPath(desire.id);
-
-  // Delete manifest from folder-based storage
-  await storageClient.delete({
-    username,
-    category: CATEGORY,
-    subcategory: SUBCATEGORY,
-    relativePath: `${folderPath}/manifest.json`,
-  });
-
-  // Also delete from legacy status directories if present
-  // These are old storage format files at <status>/<desire.id>.json
   const legacyStatuses = [
     'nascent', 'pending', 'evaluating', 'planning', 'questioning', 'reviewing',
     'approved', 'awaiting_approval', 'executing', 'awaiting_review',
     'needs_attention', 'paused', 'completed', 'rejected', 'abandoned',
     'archived', 'failed', 'active', 'executed',
   ];
-
-  for (const status of legacyStatuses) {
-    try {
-      await storageClient.delete({
-        username,
-        category: CATEGORY,
-        subcategory: SUBCATEGORY,
-        relativePath: `${status}/${desire.id}.json`,
-      });
-    } catch {
-      // File might not exist in this status directory - that's fine
-    }
+  const paths = [
+    `${getDesireFolderPath(desire.id)}/manifest.json`,
+    ...legacyStatuses.flatMap(status => [`${status}/${desire.id}.json`, `desires/${status}/${desire.id}.json`]),
+  ];
+  for (const relativePath of paths) {
+    const removed = await storageClient.delete({ username, category: CATEGORY, subcategory: SUBCATEGORY, relativePath });
+    if (!removed.success) throw new Error(removed.error || 'Failed to delete desire');
   }
-
-  // Also clean up from nested desires/pending directory (legacy location)
-  // This is read by listDesiresFromLegacyDirectories and would resurrect deleted desires
-  for (const status of legacyStatuses) {
-    try {
-      await storageClient.delete({
-        username,
-        category: CATEGORY,
-        subcategory: SUBCATEGORY,
-        relativePath: `desires/${status}/${desire.id}.json`,
-      });
-    } catch {
-      // File might not exist - that's fine
-    }
-  }
-
-  // Note: Subdirectories and their contents in folder-based storage remain for audit trail
+  // Plans, scratchpad and execution history remain for audit.
+  notifyAgencyChange(username, desire.id);
 }
 
 /**
@@ -386,6 +366,7 @@ export async function saveAgencyConfig(config: AgencyConfig, username?: string):
     encoding: 'utf8',
   });
   if (!written.success) throw new Error(written.error || 'Failed to persist Agency data');
+  notifyAgencyChange(username, undefined);
 }
 
 // ============================================================================
@@ -424,6 +405,7 @@ export async function saveMetrics(metrics: AgencyMetrics, username?: string): Pr
     encoding: 'utf8',
   });
   if (!written.success) throw new Error(written.error || 'Failed to persist Agency data');
+  notifyAgencyChange(username, undefined);
 }
 
 /**
@@ -850,6 +832,7 @@ export async function savePlanToFolder(
     encoding: 'utf8',
   });
   if (!written.success) throw new Error(written.error || 'Failed to persist Agency data');
+  notifyAgencyChange(username, desireId);
 
   // Update manifest metrics
   const desire = await loadDesireFromFolder(desireId, username);
@@ -921,6 +904,7 @@ export async function saveDesireReviewToFolder(
     encoding: 'utf8',
   });
   if (!written.success) throw new Error(written.error || 'Failed to persist Agency data');
+  notifyAgencyChange(username, desireId);
 }
 
 /** Load one plan or outcome review from the desire's canonical review folder. */
@@ -961,6 +945,7 @@ export async function saveExecutionToFolder(
     encoding: 'utf8',
   });
   if (!written.success) throw new Error(written.error || 'Failed to persist Agency data');
+  notifyAgencyChange(username, desireId);
 }
 
 /**

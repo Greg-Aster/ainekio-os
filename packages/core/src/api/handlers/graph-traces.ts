@@ -32,7 +32,10 @@ export async function handleGetGraphTraces(req: UnifiedRequest): Promise<Unified
     const limit = Math.max(1, Math.min(100, parseInt(req.query?.limit || '20', 10)));
 
     const entries: GraphTraceEntry[] = [];
-    const raw = await fs.readFile(TRACE_FILE, 'utf-8').catch(() => '');
+    const raw = await fs.readFile(TRACE_FILE, 'utf-8').catch(error => {
+      if ((error as NodeJS.ErrnoException).code === 'ENOENT') return '';
+      throw error;
+    });
     if (raw) {
       const lines = raw.trim().split('\n').filter(Boolean);
       const recent = lines.slice(-limit);

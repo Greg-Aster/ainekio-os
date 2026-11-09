@@ -72,15 +72,66 @@ export interface ModelRegistry {
 
 /** The selectable CLI deployment follows Backend Settings; roles own its use. */
 export const BIG_BROTHER_MODEL_ID = 'big-brother.configured';
+export const BIG_BROTHER_CODEX_MODEL_ID = 'big-brother.codex';
+export const BIG_BROTHER_GEMINI_MODEL_ID = 'big-brother.gemini';
+export const BIG_BROTHER_MODEL_IDS = [
+  BIG_BROTHER_MODEL_ID,
+  BIG_BROTHER_CODEX_MODEL_ID,
+  BIG_BROTHER_GEMINI_MODEL_ID,
+] as const;
+
+export function isBigBrotherModelId(modelId: string): boolean {
+  return (BIG_BROTHER_MODEL_IDS as readonly string[]).includes(modelId);
+}
+
 export function configuredBigBrotherModel(username?: string): ModelDefinition {
   const owner = username ?? getUserContext()?.username;
   const config = owner ? loadFreshOperatorConfig(owner).bigBrotherMode : undefined;
   const provider = config?.provider || 'claude-code';
   return {
     provider: 'big-brother', model: config?.model || provider, adapters: [], roles: [],
-    capabilities: provider === 'codex' ? ['text', 'image'] : ['text'],
+    capabilities: (provider === 'codex' || provider === 'gemini') ? ['text', 'image'] : ['text'],
     description: `Big Brother (${provider})`, options: {}, metadata: { cliProvider: provider },
   };
+}
+
+export function bigBrotherModelDefinition(modelId: string, username?: string): ModelDefinition {
+  const owner = username ?? getUserContext()?.username;
+  const config = owner ? loadFreshOperatorConfig(owner).bigBrotherMode : undefined;
+  if (modelId === BIG_BROTHER_CODEX_MODEL_ID) {
+    const model = (config?.provider === 'codex' && config?.model) ? config.model : 'gpt-6.1-sol';
+    const configuredEffort = config?.provider === 'codex' ? config?.reasoningEffort : undefined;
+    const reasoningEffort = (configuredEffort && !(model === 'gpt-6.1-sol' && configuredEffort === 'none'))
+      ? configuredEffort
+      : 'low';
+    return {
+      provider: 'big-brother',
+      model,
+      baseModel: 'BB-Codex',
+      adapters: [],
+      roles: [],
+      capabilities: ['text', 'image'],
+      description: `BB-Codex (${model}, fast, reasoning ${reasoningEffort})`,
+      options: {},
+      metadata: { cliProvider: 'codex', reasoningEffort, preset: 'bb-codex' },
+    };
+  }
+  if (modelId === BIG_BROTHER_GEMINI_MODEL_ID) {
+    const model = (config?.provider === 'gemini' && config?.model) ? config.model : 'gemini-3.8-flash-low';
+    const reasoningEffort = (config?.provider === 'gemini' && config?.reasoningEffort) ? config.reasoningEffort : 'low';
+    return {
+      provider: 'big-brother',
+      model,
+      baseModel: 'BB-Gemini',
+      adapters: [],
+      roles: [],
+      capabilities: ['text', 'image'],
+      description: `BB-Gemini (${model}, effort ${reasoningEffort})`,
+      options: {},
+      metadata: { cliProvider: 'gemini', reasoningEffort, preset: 'bb-gemini' },
+    };
+  }
+  return configuredBigBrotherModel(username);
 }
 
 function isRecord(value: unknown): value is Record<string, unknown> {
@@ -372,8 +423,8 @@ export function resolveModel(
 
   // Look up the model definition
   const savedModel = registry.models[defaultModelId];
-  const modelDef = savedModel?.provider === 'big-brother'
-    ? { ...configuredBigBrotherModel(username), roles: savedModel.roles } : savedModel;
+  const modelDef = isBigBrotherModelId(defaultModelId) || savedModel?.provider === 'big-brother'
+    ? { ...bigBrotherModelDefinition(defaultModelId, username), roles: savedModel?.roles || [] } : savedModel;
   if (!modelDef) {
     throw new Error(`Model definition not found for ID: ${defaultModelId}`);
   }
@@ -421,8 +472,8 @@ export function resolveModelById(modelId: string, username?: string): ResolvedMo
   const registry = loadModelRegistry(false, username);
 
   const savedModel = registry.models[modelId];
-  const modelDef = savedModel?.provider === 'big-brother'
-    ? { ...configuredBigBrotherModel(username), roles: savedModel.roles } : savedModel;
+  const modelDef = isBigBrotherModelId(modelId) || savedModel?.provider === 'big-brother'
+    ? { ...bigBrotherModelDefinition(modelId, username), roles: savedModel?.roles || [] } : savedModel;
   if (!modelDef) {
     throw new Error(`Model definition not found for ID: ${modelId}`);
   }

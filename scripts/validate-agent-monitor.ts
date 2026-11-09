@@ -82,10 +82,43 @@ async function withSuppressedConsoleError<T>(callback: () => Promise<T>): Promis
 
 async function runVariableChecks(): Promise<Check[]> {
   const { readEnvironmentBridgeState } = await import('@metahuman/core/environment-interface');
-  const { handleSetMonitorAgentVariable } = await import('../packages/core/src/api/handlers/monitor');
+  const { astroHandler } = await import('../packages/core/src/api/adapters/astro');
+  const { withUserContext } = await import('@metahuman/core/context');
   const checks: Check[] = [check('web connection settings endpoint reaches the shared owner',
-    sourceContains(path.join(SOURCE_ROOT, 'apps/site/src/pages/api/monitor/agent-variable.ts'), /export const POST = astroHandler/))];
-  const enabledResponse = await handleSetMonitorAgentVariable(ownerRequest('/api/monitor/agent-variable', {
+    sourceContains(path.join(SOURCE_ROOT, 'apps/site/src/pages/api/[...path].ts'), /export const ALL = astroHandler/)
+    && sourceContains(path.join(SOURCE_ROOT, 'packages/core/src/api/router.ts'),
+      /method:\s*'POST',\s*pattern:\s*'\/api\/monitor\/agent-variable',\s*handler:\s*handleSetMonitorAgentVariable,\s*requiresAuth:\s*true,\s*guard:\s*'owner'/))];
+
+  async function setVariable(request: UnifiedRequest) {
+    const url = new URL(request.path, 'http://localhost');
+    const context = {
+      url,
+      request: new Request(url, { method: request.method, body: JSON.stringify(request.body),
+        headers: { 'Content-Type': 'application/json' } }),
+      cookies: {}, params: {},
+      locals: { authResolved: true, userContext: request.user.isAuthenticated ? request.user : undefined },
+    };
+    const response = request.user.isAuthenticated
+      ? await withUserContext(request.user, () => astroHandler(context))
+      : await astroHandler(context);
+    return { status: response.status, data: await response.json() };
+  }
+
+  const beforeDeniedWrite = readEnvironmentBridgeState().enabled;
+  for (const [isAuthenticated, role, expectedStatus] of [
+    [false, 'guest', 401], [true, 'standard', 403],
+  ] as const) {
+    const request = ownerRequest('/api/monitor/agent-variable', {
+      agent: 'environment-bridge', key: 'deliveryEnabled', value: !beforeDeniedWrite,
+    });
+    request.user = { ...request.user, isAuthenticated, role };
+    const response = await setVariable(request);
+    checks.push(check(`${role} request cannot change agent variables through web transport`,
+      response.status === expectedStatus && readEnvironmentBridgeState().enabled === beforeDeniedWrite,
+      `status=${response.status}`));
+  }
+
+  const enabledResponse = await setVariable(ownerRequest('/api/monitor/agent-variable', {
     agent: 'environment-bridge',
     key: 'deliveryEnabled',
     value: true,
@@ -103,7 +136,7 @@ async function runVariableChecks(): Promise<Check[]> {
     enabledVariable?.applyMode,
   ));
 
-  const adapterUrlResponse = await handleSetMonitorAgentVariable(ownerRequest(
+  const adapterUrlResponse = await setVariable(ownerRequest(
     '/api/monitor/agent-variable',
     {
       agent: 'environment-bridge',
@@ -117,7 +150,7 @@ async function runVariableChecks(): Promise<Check[]> {
     'status=' + adapterUrlResponse.status,
   ));
 
-  const bootResponse = await handleSetMonitorAgentVariable(ownerRequest('/api/monitor/agent-variable', {
+  const bootResponse = await setVariable(ownerRequest('/api/monitor/agent-variable', {
     agent: 'maintenance-service',
     key: 'startOnSystemBoot',
     value: true,
@@ -207,8 +240,8 @@ async function main() {
   fs.writeFileSync(todayLog, JSON.stringify({ timestamp: new Date().toISOString(),
     actor: 'reflector', level: 'info', event: 'agent_completed' }) + '\n');
   let auditReads = 0;
-  const originalRead = fs.readFileSync;
-  const reads = mock.method(fs, 'readFileSync', (...args: any[]) => {
+  const originalRead = fs.openSync;
+  const reads = mock.method(fs, 'openSync', (...args: any[]) => {
     if (String(args[0]).startsWith(auditDirectory + path.sep)) auditReads++;
     return (originalRead as any)(...args);
   });
@@ -359,9 +392,8 @@ async function main() {
       && sourceContains(agentMonitorComponent, /Dismiss Failure/),
   ));
   checks.push(check(
-    'Agent Monitor UI bounds start requests without periodic polling',
-    sourceContains(agentMonitorComponent, /controller\.abort\(\)/)
-      && sourceDoesNotContain(agentMonitorComponent, /setInterval\s*\(/),
+    'Agent Monitor UI does not poll for state',
+    sourceDoesNotContain(agentMonitorComponent, /setInterval\s*\(/),
   ));
 
   const siteStylesheet = path.join(SOURCE_ROOT, 'apps', 'site', 'src', 'styles', 'tailwind.css');
@@ -479,10 +511,10 @@ async function main() {
       && sourceDoesNotContain(cli, /headless-watcher/),
   ));
   checks.push(check(
-    'runtime-mode resumes from boot-manager snapshot',
-    sourceContains(runtimeMode, /getAgentMonitorSnapshot\(\)\.bootAgents/)
-      && sourceContains(runtimeMode, /startAgentProcess\(/)
-      && sourceDoesNotContain(runtimeMode, /boredom-service|headless-watcher/),
+    'headless startup flag remains separate from agent lifecycle',
+    sourceContains(runtimeMode, /return getRuntimeMode\(\)\.headless/)
+      && sourceContains(cli, /const defaults = isHeadless\(\)\s*\?\s*\[\]/)
+      && sourceDoesNotContain(runtimeMode, /enterHeadlessMode|exitHeadlessMode|startAgentProcess|stopAllAgents/),
   ));
 
   const descriptorSource = path.join(SOURCE_ROOT, 'packages', 'core', 'src', 'agent-monitor-descriptors.ts');

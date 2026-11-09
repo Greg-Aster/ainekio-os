@@ -2,14 +2,11 @@
   import { onMount } from 'svelte';
   import { apiFetch } from '../lib/client/api-config';
 
-  export let onSelect: (username: string) => void;
   export let onCancel: () => void;
 
   interface Profile {
     username: string;
     displayName: string;
-    visibility: 'private' | 'public';
-    role: 'owner' | 'guest' | 'anonymous';
   }
 
   let profiles: Profile[] = [];
@@ -17,8 +14,8 @@
   let error = '';
   let selecting = false;
 
-  onMount(async () => {
-    await fetchProfiles();
+  onMount(() => {
+    void fetchProfiles();
   });
 
   async function fetchProfiles() {
@@ -26,14 +23,11 @@
       const res = await apiFetch('/api/profiles/list');
       const data = await res.json();
 
-      if (data.success) {
-        profiles = data.profiles;
-      } else {
-        error = data.error || 'Failed to load profiles';
-      }
+      if (!res.ok || !data.success) throw new Error(data.error || 'Failed to load profiles');
+      profiles = data.profiles;
     } catch (err) {
       console.error('[ProfileSelector] Error:', err);
-      error = 'Network error. Please try again.';
+      error = err instanceof Error ? err.message : 'Failed to load profiles';
     } finally {
       loading = false;
     }
@@ -53,16 +47,11 @@
 
       const data = await res.json();
 
-      if (data.success) {
-        onSelect(username);
-        window.location.href = '/'; // Navigate to main app
-      } else {
-        error = data.error || 'Failed to select profile';
-        selecting = false;
-      }
+      if (!res.ok || !data.success) throw new Error(data.error || 'Failed to select profile');
+      window.location.href = '/'; // Core acknowledged the selection; restore its session.
     } catch (err) {
       console.error('[ProfileSelector] Select error:', err);
-      error = 'Network error. Please try again.';
+      error = err instanceof Error ? err.message : 'Failed to select profile';
       selecting = false;
     }
   }
@@ -84,13 +73,8 @@
       <p class="text-white/60 dark:text-white/60 text-[0.9rem] m-0">Choose a public profile to explore</p>
     </div>
 
-    {#if loading}
-      <div class="flex flex-col items-center gap-4 py-12 text-white/60 dark:text-white/60">
-        <div class="w-10 h-10 border-[3px] border-white/10 dark:border-white/10 border-t-blue-400 dark:border-t-blue-400 rounded-full animate-spin"></div>
-        <p>Loading profiles...</p>
-      </div>
-    {:else if error}
-      <div class="flex items-center gap-3 p-4 bg-red-500/10 border border-red-500/30 rounded-lg text-red-500 text-[0.9rem] mb-4">
+    {#if error}
+      <div role="alert" class="flex items-center gap-3 p-4 bg-red-500/10 border border-red-500/30 rounded-lg text-red-500 text-[0.9rem] mb-4">
         <svg class="flex-shrink-0" width="16" height="16" viewBox="0 0 16 16" fill="none">
           <path
             d="M8 1L1 14h14L8 1z"
@@ -102,7 +86,14 @@
         </svg>
         <span>{error}</span>
       </div>
-    {:else if profiles.length === 0}
+    {/if}
+
+    {#if loading}
+      <div class="flex flex-col items-center gap-4 py-12 text-white/60 dark:text-white/60">
+        <div class="w-10 h-10 border-[3px] border-white/10 dark:border-white/10 border-t-blue-400 dark:border-t-blue-400 rounded-full animate-spin"></div>
+        <p>Loading profiles...</p>
+      </div>
+    {:else if profiles.length === 0 && !error}
       <div class="flex flex-col items-center gap-4 py-12 text-center text-white/60 dark:text-white/60">
         <svg class="opacity-40" width="48" height="48" viewBox="0 0 24 24" fill="none">
           <path
@@ -113,16 +104,17 @@
         <h3 class="text-white/80 dark:text-white/80 text-xl m-0">No Public Profiles</h3>
         <p class="text-[0.9rem] max-w-[300px] m-0">There are currently no public profiles available to explore.</p>
       </div>
-    {:else}
+    {:else if profiles.length > 0}
       <div class="flex flex-col gap-4 mb-8">
         {#each profiles as profile}
+          {@const isMerged = profile.username === 'mutant-super-intelligence'}
           <button
-            class="flex items-center gap-4 p-5 bg-white/5 dark:bg-white/5 border border-white/10 dark:border-white/10 rounded-xl cursor-pointer transition-all text-left hover:enabled:bg-white/[0.08] hover:enabled:border-blue-400 hover:enabled:-translate-y-0.5 hover:enabled:shadow-[0_4px_12px_rgba(96,165,250,0.2)] disabled:opacity-50 disabled:cursor-not-allowed {profile.username === 'mutant-super-intelligence' ? 'mutant-profile' : ''}"
+            class="flex items-center gap-4 p-5 bg-white/5 dark:bg-white/5 border border-white/10 dark:border-white/10 rounded-xl cursor-pointer transition-all text-left hover:enabled:bg-white/[0.08] hover:enabled:border-blue-400 hover:enabled:-translate-y-0.5 hover:enabled:shadow-[0_4px_12px_rgba(96,165,250,0.2)] disabled:opacity-50 disabled:cursor-not-allowed {isMerged ? 'mutant-profile' : ''}"
             on:click={() => selectProfile(profile.username)}
             disabled={selecting}
           >
-            <div class="w-12 h-12 rounded-full bg-gradient-to-br from-blue-400 to-blue-300 dark:from-blue-400 dark:to-blue-300 flex items-center justify-center font-bold text-base text-white flex-shrink-0 {profile.username === 'mutant-super-intelligence' ? 'mutant-avatar' : ''}">
-              {#if profile.username === 'mutant-super-intelligence'}
+            <div class="w-12 h-12 rounded-full bg-gradient-to-br from-blue-400 to-blue-300 dark:from-blue-400 dark:to-blue-300 flex items-center justify-center font-bold text-base text-white flex-shrink-0 {isMerged ? 'mutant-avatar' : ''}">
+              {#if isMerged}
                 🧬
               {:else}
                 {getInitials(profile.displayName)}
@@ -131,15 +123,15 @@
             <div class="flex-1 min-w-0">
               <div class="text-white dark:text-white font-semibold text-base overflow-hidden text-ellipsis whitespace-nowrap mb-1">{profile.displayName}</div>
               <div class="text-white/50 dark:text-white/50 text-sm overflow-hidden text-ellipsis whitespace-nowrap mb-2">
-                {#if profile.username === 'mutant-super-intelligence'}
+                {#if isMerged}
                   @merged-consciousness
                 {:else}
                   @{profile.username}
                 {/if}
               </div>
-              <div class="inline-block px-2 py-0.5 rounded text-xs font-semibold {profile.username === 'mutant-super-intelligence' ? 'mutant-badge' : 'uppercase bg-green-500/20 text-green-500 border border-green-500/30'}">
-                {#if profile.username === 'mutant-super-intelligence'}
-                  🧠 Merged conciousness of all public profiles.
+              <div class="inline-block px-2 py-0.5 rounded text-xs font-semibold {isMerged ? 'mutant-badge' : 'uppercase bg-green-500/20 text-green-500 border border-green-500/30'}">
+                {#if isMerged}
+                  🧠 Merged consciousness of all public profiles.
                 {:else}
                   Public
                 {/if}

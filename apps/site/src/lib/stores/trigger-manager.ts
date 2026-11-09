@@ -4,8 +4,8 @@ import type { AutonomyMode } from '../client/active-operator-modes';
 import { coordinatorSnapshot, coordinatorConnection, coordinatorError, useWorkCoordinator } from './work-coordinator';
 import { isOwner } from '../../stores/security-policy';
 
-export type TriggerLifecycle = 'scheduled-work' | 'workflow' | 'service';
-export type TriggerType = 'interval' | 'time-of-day' | 'event' | 'activity' | 'manual';
+type TriggerLifecycle = 'scheduled-work' | 'workflow' | 'service';
+type TriggerType = 'interval' | 'time-of-day' | 'event' | 'activity' | 'manual';
 
 export interface TriggerView {
   id: string;
@@ -93,7 +93,7 @@ function applySnapshot(snapshot: TriggerManagerSnapshot | undefined): void {
   triggerManagerError.set('');
 }
 
-export async function refreshTriggerManager(): Promise<TriggerManagerSnapshot> {
+async function refreshTriggerManager(): Promise<TriggerManagerSnapshot> {
   if (!get(isOwner)) throw new Error('Owner role required for Trigger Manager');
   const response = await apiFetch('/api/trigger-manager', { cache: 'no-store' });
   const data = await response.json().catch(() => ({}));

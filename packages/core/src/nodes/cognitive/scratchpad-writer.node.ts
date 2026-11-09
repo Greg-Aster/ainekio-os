@@ -217,5 +217,3 @@ export const ScratchpadWriterNode: NodeDefinition = defineNode({
   },
   execute,
 });
-
-export default ScratchpadWriterNode;

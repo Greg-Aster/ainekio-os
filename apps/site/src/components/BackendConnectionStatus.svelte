@@ -1,16 +1,11 @@
 <script lang="ts">
-  import { onMount } from 'svelte';
-  import { getApiBaseUrl, isHostedUi } from '../lib/client/api-config';
+  import { getApiBaseUrl } from '../lib/client/api-config';
   import { healthStatus } from '../lib/client/server-health';
 
-  let current = '';
-
-  onMount(() => {
-    current = getApiBaseUrl();
-  });
+  const current = getApiBaseUrl();
 </script>
 
-{#if isHostedUi() && current}
+{#if current}
   <!-- Navigating disposes the old machine's views and subscriptions together.
        Work already admitted there remains owned by its Coordinator. -->
   <a href="/?login"

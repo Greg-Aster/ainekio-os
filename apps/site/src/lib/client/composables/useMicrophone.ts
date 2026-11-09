@@ -1517,7 +1517,7 @@ export function useMicrophone(options: UseMicrophoneOptions) {
       let res: Response;
       try {
         console.log('[useMicrophone] Sending STT request...');
-        res = await apiFetch(`/api/stt?format=webm&collect=1&dur=${dur}`, {
+        res = await apiFetch('/api/stt?format=webm', {
           method: 'POST',
           headers: {
             'Content-Type': 'audio/webm'
@@ -1833,7 +1833,7 @@ export function useMicrophone(options: UseMicrophoneOptions) {
 
     // Set metadata so it shows in notification/lock screen
     navigator.mediaSession.metadata = new MediaMetadata({
-      title: 'MetaHuman Voice Input',
+      title: 'Ainekio OS Voice Input',
       artist: 'Ready to listen',
       album: 'Voice Assistant',
     });
@@ -1850,7 +1850,7 @@ export function useMicrophone(options: UseMicrophoneOptions) {
       }
       navigator.mediaSession.playbackState = 'playing';
       navigator.mediaSession.metadata = new MediaMetadata({
-        title: 'MetaHuman Voice Input',
+        title: 'Ainekio OS Voice Input',
         artist: 'Listening...',
         album: 'Voice Assistant',
       });
@@ -1862,7 +1862,7 @@ export function useMicrophone(options: UseMicrophoneOptions) {
       if (get(isRecording)) {
         stopMic();
         navigator.mediaSession.metadata = new MediaMetadata({
-          title: 'MetaHuman Voice Input',
+          title: 'Ainekio OS Voice Input',
           artist: 'Ready to listen',
           album: 'Voice Assistant',
         });
@@ -1872,7 +1872,7 @@ export function useMicrophone(options: UseMicrophoneOptions) {
           toggleConversationMode();
         }
         navigator.mediaSession.metadata = new MediaMetadata({
-          title: 'MetaHuman Voice Input',
+          title: 'Ainekio OS Voice Input',
           artist: 'Listening...',
           album: 'Voice Assistant',
         });
@@ -1891,7 +1891,7 @@ export function useMicrophone(options: UseMicrophoneOptions) {
       silentAudio.pause();
       navigator.mediaSession.playbackState = 'none';
       navigator.mediaSession.metadata = new MediaMetadata({
-        title: 'MetaHuman Voice Input',
+        title: 'Ainekio OS Voice Input',
         artist: 'Stopped',
         album: 'Voice Assistant',
       });

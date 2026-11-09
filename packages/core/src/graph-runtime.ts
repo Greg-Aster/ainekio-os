@@ -7,6 +7,7 @@
  */
 
 import path from 'node:path'
+import type { ResponseEntryReference } from './cognitive-graph-contract.js'
 import type { SvelteFlowGraph, SvelteFlowNode } from './cognitive-graph-schema.js'
 import {
   executeGraph,
@@ -104,6 +105,56 @@ export async function runGraph(params: GraphRunParams): Promise<GraphExecutionSt
 
 export function extractGraphOutput(graphState: GraphExecutionState): Record<string, any> | null {
   return getGraphOutput(graphState)
+}
+
+/** Identify a saved response only when its actual output wiring proves the association. */
+export function findResponseEntryReference(
+  graph: SvelteFlowGraph,
+  state: GraphExecutionState,
+  output: Record<string, any> | null,
+  outputPort: 'output' | 'response',
+): ResponseEntryReference | undefined {
+  const selected = [...state.nodes].filter(([, node]) => node.status === 'completed' && node.outputs === output)
+  if (selected.length !== 1) return undefined
+  const passthrough: Record<string, readonly string[]> = {
+    stream_writer: ['output', 'response'],
+    thinking_stripper: ['stripped', 'content', 'response'],
+    response_action_router: ['response'],
+    response_context_writer: ['response'],
+    conversation_buffer: ['response'],
+  }
+  const origin = (nodeId: string, port: string): string | undefined => {
+    const visited = new Set<string>()
+    while (true) {
+      const key = JSON.stringify([nodeId, port])
+      const node = state.nodes.get(nodeId)
+      if (visited.has(key) || node?.status !== 'completed' || node.outputs?.[port] == null) return undefined
+      visited.add(key)
+      const type = node.definition?.type || ''
+      if (!passthrough[type]?.includes(port)) return key
+      if (type === 'conversation_buffer' && node.inputs?.entry?.role === 'assistant') return key
+      if (!node.inputs || !Object.hasOwn(node.inputs, 'response')) return undefined
+      const incoming = graph.edges.filter(edge => edge.target === nodeId && edge.targetHandle === 'response')
+      // A Buffer may receive an explicit typed entry instead of a response input.
+      if (type === 'conversation_buffer' && incoming.length === 0) return key
+      if (incoming.length !== 1 || !incoming[0].sourceHandle) return undefined
+      nodeId = incoming[0].source
+      port = incoming[0].sourceHandle
+    }
+  }
+  const selectedOrigin = origin(selected[0][0], outputPort)
+  if (!selectedOrigin) return undefined
+  const candidates: string[] = []
+  for (const [nodeId, node] of state.nodes) {
+    if (node.definition?.type !== 'conversation_buffer' || node.status !== 'completed' || node.outputs?.persisted !== true) continue
+    if (graph.nodes.find(entry => entry.id === nodeId)?.data?.properties?.mode === 'terminal') continue
+    if (origin(nodeId, 'response') !== selectedOrigin) continue
+    const entries = Array.isArray(node.outputs.entries)
+      ? node.outputs.entries.filter((entry: { role?: string }) => entry.role === 'assistant') : []
+    if (entries?.length !== 1 || typeof entries[0].meta?.idempotencyKey !== 'string' || !entries[0].meta.idempotencyKey) continue
+    candidates.push(entries[0].meta.idempotencyKey)
+  }
+  return candidates.length === 1 ? { mode: 'conversation', id: candidates[0] } : undefined
 }
 
 export function collectNodeOutputs(graphState: GraphExecutionState): Record<string, any> {

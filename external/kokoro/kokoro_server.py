@@ -44,7 +44,8 @@ def load_model(device: str) -> Kokoro:
     voices_path = MODEL_DIR / "voices-v1.0.bin"
     if not model_path.is_file() or not voices_path.is_file():
         raise RuntimeError("Kokoro ONNX assets are missing; run bin/install-kokoro.sh")
-    threads = int(os.environ.get("OMP_NUM_THREADS", "2"))
+    default_threads = str(min(8, max(2, (os.cpu_count() or 4) // 2)))
+    threads = int(os.environ.get("OMP_NUM_THREADS", default_threads))
     if threads < 1:
         raise ValueError("OMP_NUM_THREADS must be a positive integer")
     options = ort.SessionOptions()
@@ -179,7 +180,7 @@ def render_speech(
             try:
                 audio, sample_rate = model.create(
                     result.phonemes, voice=voice_to_use, speed=speed,
-                    is_phonemes=True, trim=False, sentence_pause=0, clause_pause=0,
+                    is_phonemes=True, trim=True, sentence_pause=0.2, clause_pause=0.08,
                 )
             except Exception as error:
                 if requested_device != "auto" or processing_device != "cuda" or not is_cuda_runtime_failure(error):
@@ -191,7 +192,7 @@ def render_speech(
                 fallback_reason = "cuda_inference_failed"
                 audio, sample_rate = model.create(
                     result.phonemes, voice=voice_to_use, speed=speed,
-                    is_phonemes=True, trim=False, sentence_pause=0, clause_pause=0,
+                    is_phonemes=True, trim=True, sentence_pause=0.2, clause_pause=0.08,
                 )
             if sample_rate != 24000 or not len(audio) or not np.isfinite(audio).all():
                 raise ValueError("Kokoro ONNX produced invalid audio")

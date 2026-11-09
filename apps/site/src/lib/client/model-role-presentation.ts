@@ -36,7 +36,12 @@ function hasAdapter(model: ModelInventoryEntry): boolean {
 function baseIdentity(model: ModelInventoryEntry): string {
   const name = hasAdapter(model) && model.provider !== 'llama-cpp'
     ? model.baseModel || model.model : model.model;
-  return JSON.stringify([model.provider, name, model.options?.endpoint || '']);
+  return JSON.stringify([
+    model.provider,
+    name,
+    model.options?.endpoint || '',
+    model.provider === 'big-brother' ? model.id : '',
+  ]);
 }
 
 function adapterIdentity(model: ModelInventoryEntry): string {
@@ -52,8 +57,11 @@ export function buildBaseModelChoices(models: ModelInventoryEntry[]): BaseModelC
     if (!choice) {
       const name = hasAdapter(model) && model.provider !== 'llama-cpp'
         ? model.baseModel || model.model : model.model;
+      const label = model.provider === 'big-brother' && model.baseModel
+        ? `${model.baseModel} (${name})`
+        : (model.baseModel?.split('/').pop() || name);
       choice = {
-        key, model: name, label: model.baseModel?.split('/').pop() || name,
+        key, model: name, label,
         provider: model.provider, endpoint: model.options?.endpoint || '',
         base: hasAdapter(model) ? {
           id: `${model.provider}.${name}`, provider: model.provider, model: name,

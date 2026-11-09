@@ -29,7 +29,7 @@ export interface CLIBackendConfig {
 
 export interface EscalationConfig {
   enabled: boolean;
-  defaultBackend: 'claude-code' | 'aider' | 'gemini-cli' | 'qwen-code' | 'codex';
+  defaultBackend: 'claude-code' | 'codex' | 'gemini';
   escalateOnStuck: boolean;
   escalateOnRepeatedFailures: boolean;
   maxRetries: number;
@@ -41,10 +41,8 @@ export interface ToolExecutorConfig {
   activeBackend: string;
   backends: {
     'claude-code': CLIBackendConfig;
-    'qwen-code': CLIBackendConfig;
-    'aider': CLIBackendConfig;
-    'gemini-cli': CLIBackendConfig;
     'codex': CLIBackendConfig;
+    'gemini': CLIBackendConfig;
     [key: string]: any;
   };
   escalation: EscalationConfig;
@@ -68,27 +66,6 @@ const defaultConfig: ToolExecutorConfig = {
       args: ['--print'],
       timeout: 60000,
     },
-    'qwen-code': {
-      description: 'Qwen Code CLI',
-      enabled: false,
-      command: 'qwen-code',
-      args: [],
-      timeout: 120000,
-    },
-    'aider': {
-      description: 'Aider AI pair programming',
-      enabled: false,
-      command: 'aider',
-      args: ['--no-auto-commits', '--yes'],
-      timeout: 180000,
-    },
-    'gemini-cli': {
-      description: 'Google Gemini CLI',
-      enabled: false,
-      command: 'gemini',
-      args: ['--non-interactive'],
-      timeout: 120000,
-    },
     'codex': {
       description: 'OpenAI Codex CLI',
       enabled: false,
@@ -96,6 +73,15 @@ const defaultConfig: ToolExecutorConfig = {
       args: ['exec', '--color', 'always', '--json'],
       timeout: 120000,
       reasoningEffort: 'low',
+    },
+    'gemini': {
+      description: 'Google Antigravity Gemini CLI',
+      enabled: true,
+      command: 'agy',
+      args: ['--input-format', 'stream-json', '--output-format', 'stream-json', '--disable-slash-commands'],
+      timeout: 120000,
+      reasoningEffort: 'low',
+      dangerouslySkipPermissions: true,
     },
   },
   escalation: {

@@ -7,7 +7,7 @@ import { getQueueManager } from '../queue/unified-queue-manager.js';
 
 export const TTS_DELIVERY_LEASE_MS = 20_000;
 export const TTS_DELIVERY_RETRY_DELAY_MS = 5_000;
-export const TTS_DELIVERY_MAX_ATTEMPTS = 3;
+const TTS_DELIVERY_MAX_ATTEMPTS = 3;
 export const TTS_DELIVERY_MAX_AGE_MS = 10 * 60_000;
 
 export interface TTSQueueItem {
@@ -48,7 +48,7 @@ export type TTSInterruptionReason =
   | 'manual-stop'
   | 'speech-disabled';
 
-export interface TTSQueueInterruption {
+interface TTSQueueInterruption {
   revision: number;
   generation: number;
   reason: TTSInterruptionReason;
@@ -67,7 +67,7 @@ export interface TTSQueueState {
   lastInterruption?: TTSQueueInterruption;
 }
 
-export interface ClaimedTTSQueueItem extends Omit<TTSQueueItem, 'lease'> {
+interface ClaimedTTSQueueItem extends Omit<TTSQueueItem, 'lease'> {
   leaseToken: string;
   leaseExpiresAt: number;
 }

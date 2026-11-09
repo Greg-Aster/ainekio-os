@@ -18,9 +18,9 @@ import {
 } from '@metahuman/core'
 import type { AgentContext, AgentInput, AgentResult } from '@metahuman/agent-runtime'
 
-export const MAX_PROFILE_SYNC_DAYS = 3650
-export const MAX_MEMORY_SYNC_PAGES = 1000
-export const MEMORY_SYNC_PAGE_SIZE = 100
+const MAX_PROFILE_SYNC_DAYS = 3650
+const MAX_MEMORY_SYNC_PAGES = 1000
+const MEMORY_SYNC_PAGE_SIZE = 100
 export const PROFILE_SYNC_REQUEST_TIMEOUT_MS = 30_000
 
 export interface SyncProgress {
@@ -40,7 +40,7 @@ export interface SyncOptions {
   signal?: AbortSignal
 }
 
-export interface MemorySyncOutcome {
+interface MemorySyncOutcome {
   id: string
   status: 'imported' | 'deduplicated' | 'failed'
   eventId?: string
@@ -157,7 +157,7 @@ async function responseError(response: Response, operation: string): Promise<str
   return `${operation} failed (${response.status})${compact ? `: ${compact}` : ''}`
 }
 
-export async function authenticateWithServer(
+async function authenticateWithServer(
   serverUrl: string,
   username: string,
   password: string,
@@ -200,7 +200,7 @@ export async function fetchProfileBundle(
   }
 }
 
-export async function fetchCredentials(
+async function fetchCredentials(
   serverUrl: string,
   sessionId: string,
   signal?: AbortSignal,

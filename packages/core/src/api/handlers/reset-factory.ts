@@ -20,7 +20,7 @@ import { createTTSDeliveryQueueStore } from '../../tts/delivery-queue.js'
 
 const BUFFER_MODES: CanonicalBufferMode[] = ['conversation', 'inner', 'system', 'robot', 'terminal']
 
-export interface ResetFactoryDependencies {
+interface ResetFactoryDependencies {
   coordinator(): Promise<UnifiedQueueManager>
   cancelExecution(username: string, executionId: string, reason: string): void
   trainingProcesses(): ReturnType<typeof listTrainingProcesses>

@@ -174,6 +174,7 @@ ${answersText ? `- Previous answers from user:\n${answersText}` : ''}
       sessionId: _context?.sessionId,
       preferredBackend,
       username: userContext?.username,
+      signal: _context?.abortSignal,
     };
 
     // If we have emitEvent, wire up streaming callbacks
@@ -218,15 +219,17 @@ ${answersText ? `- Previous answers from user:\n${answersText}` : ''}
     }
 
     return {
-      scratchpad: [{
-        thought: `Delegated task execution to ${backend.name}`,
-        action: "claude_full_task",
-        observation: response.trim()
-      }],
-      finalResponse: response.trim(),
-      success: true,
-      delegatedTo: backend.id,
-      bypassedReActLoop: true,
+      result: {
+        scratchpad: [{
+          thought: `Delegated task execution to ${backend.name}`,
+          action: "claude_full_task",
+          observation: response.trim()
+        }],
+        finalResponse: response.trim(),
+        success: true,
+        delegatedTo: backend.id,
+        bypassedReActLoop: true,
+      },
     };
   } catch (error) {
     console.error('[ClaudeFullTask] Error:', error);
@@ -254,18 +257,7 @@ ${answersText ? `- Previous answers from user:\n${answersText}` : ''}
       actor: 'big-brother',
     });
 
-    const userMessage = `I encountered an error while delegating to Big Brother: ${errorMsg}`;
-
-    return {
-      scratchpad: [{
-        thought: "Attempted to delegate to Big Brother backend",
-        action: "claude_full_task",
-        observation: `ERROR: ${errorMsg}`
-      }],
-      finalResponse: userMessage,
-      success: false,
-      error: errorMsg,
-    };
+    throw error;
   }
 };
 

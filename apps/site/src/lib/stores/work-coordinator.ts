@@ -34,6 +34,9 @@ export interface PersonResume {
 }
 
 export interface QueueSnapshot {
+  agencyChange?: { revision: string; desireId?: string };
+  activeOperator?: ActiveOperatorStatus;
+  activeOperatorError?: string;
   triggerManager?: TriggerManagerSnapshot;
   lifecycle: string;
   running: boolean;
@@ -43,6 +46,24 @@ export interface QueueSnapshot {
   tasks: WorkView[];
   canConfirmRobotStopped: boolean;
   executions: { executionId: string; graph: string; status: string; waitingReason?: string; updatedAt: string; personResume?: PersonResume }[];
+}
+
+export interface ActiveOperatorStatus {
+  configuration?: { autonomyMode: 'reactive' | 'semi' | 'full'; semiAssessmentMinutes: number };
+  mode: 'reactive' | 'semi' | 'full';
+  health: string;
+  healthMessage?: string;
+  operations: {
+    id: string; name: string; description: string; activation: number;
+    lastAssessment: { assessedAt: string; reason: string; instruction: string; mode?: string } | null;
+    recordedActivity: { id: string; state: string; createdAt: string; completedAt?: string; result?: { executions?: { executionId: string; status: string }[] } }[];
+  }[];
+  assessments: { assessedAt: string; mode: string; assessmentReason?: string; levels: Record<string, { activation: number }> }[];
+  queue: { length: number; tasks: Pick<WorkView, 'id' | 'type' | 'handler' | 'state' | 'priority' | 'source'>[] };
+  robotOperator: {
+    runtime: { lifecycle: string; reason: string } | null;
+    episodes: { id: string; child: string; state: string; source: string; createdAt: string; downstreamCount: number; outcome: string }[];
+  };
 }
 
 export const coordinatorSnapshot = writable<QueueSnapshot | null>(null);

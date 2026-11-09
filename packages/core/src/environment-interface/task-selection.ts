@@ -2,7 +2,6 @@ import { projectRobotStatusContext } from '../robot-status.js'
 import { normalizeLocomotionGoal } from './active-task.js'
 import { normalizeEnvironmentTargetBox } from './visual-approach.js'
 import { recognitionImageAssociation, projectEnvironmentVisualFrame } from './perception.js'
-import { projectDesireAwareness } from '../agency/lifecycle-policy.js'
 import type { EnvironmentTaskProgram, EnvironmentTaskStep } from './active-task.js'
 import {
   ENVIRONMENT_MOTION_CLASSES,
@@ -42,7 +41,7 @@ export const ENVIRONMENT_TASK_OUTCOMES = [
   'wait',
 ] as const;
 
-export type EnvironmentTaskOutcome = typeof ENVIRONMENT_TASK_OUTCOMES[number];
+type EnvironmentTaskOutcome = typeof ENVIRONMENT_TASK_OUTCOMES[number];
 
 export const ENVIRONMENT_COMPLETION_BASES = [
   'none',
@@ -52,13 +51,13 @@ export const ENVIRONMENT_COMPLETION_BASES = [
   'user_input',
 ] as const;
 
-export type EnvironmentCompletionBasis = typeof ENVIRONMENT_COMPLETION_BASES[number];
+type EnvironmentCompletionBasis = typeof ENVIRONMENT_COMPLETION_BASES[number];
 
-export const ENVIRONMENT_CONTINUATION_POLICIES = ['none', 'bounded'] as const;
+const ENVIRONMENT_CONTINUATION_POLICIES = ['none', 'bounded'] as const;
 
-export type EnvironmentContinuationPolicy = typeof ENVIRONMENT_CONTINUATION_POLICIES[number];
+type EnvironmentContinuationPolicy = typeof ENVIRONMENT_CONTINUATION_POLICIES[number];
 
-export const ENVIRONMENT_ACTION_PURPOSES = [
+const ENVIRONMENT_ACTION_PURPOSES = [
   'expression',
   'information_gain',
   'task_effect',
@@ -66,13 +65,13 @@ export const ENVIRONMENT_ACTION_PURPOSES = [
 
 export type EnvironmentActionPurpose = typeof ENVIRONMENT_ACTION_PURPOSES[number];
 
-export type EnvironmentVisualEvidenceMode = 'single' | 'comparison';
+type EnvironmentVisualEvidenceMode = 'single' | 'comparison';
 
 function isRecord(value: unknown): value is Record<string, unknown> {
   return Boolean(value) && typeof value === 'object' && !Array.isArray(value);
 }
 
-export function normalizedEnvironmentActionPurpose(value: unknown): EnvironmentActionPurpose | null {
+function normalizedEnvironmentActionPurpose(value: unknown): EnvironmentActionPurpose | null {
   return typeof value === 'string'
     && ENVIRONMENT_ACTION_PURPOSES.includes(value as EnvironmentActionPurpose)
     ? value as EnvironmentActionPurpose
@@ -197,7 +196,7 @@ export function projectSelectorState(value: unknown): unknown {
  * adapter owns their complete meaning; this projection does not choose a command
  * or shorten its description.
  */
-export function projectRobotCommandDescriptions(
+function projectRobotCommandDescriptions(
   capabilities: Pick<EnvironmentCapabilities, 'robotCommands' | 'robotCommandDescriptions' | 'locomotion'>,
 ): Record<string, string> {
   if (!isRecord(capabilities.robotCommandDescriptions)) return {};

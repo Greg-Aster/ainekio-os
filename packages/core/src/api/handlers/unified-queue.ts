@@ -15,6 +15,13 @@ import {
   type WorkCognitiveMode,
 } from '../../queue/index.js';
 import { audit } from '../../audit.js';
+import { watch } from 'node:fs';
+import { basename, dirname } from 'node:path';
+import { getModeController } from '../../active-operator/mode-controller.js';
+import { ACTIVE_OPERATOR_CONFIG_FILE } from '../../active-operator/state-persister.js';
+import { ROBOT_OPERATOR_RUNTIME_FILE } from '../../robot-operator.js';
+import { readActiveOperatorStatus } from './active-operator.js';
+import { eventBus } from '../../infrastructure/event-bus/client.js';
 import { beginTTSUserTurn } from '../../tts/delivery-queue.js';
 import type { UnifiedRequest, UnifiedResponse, UnifiedUser } from '../types.js';
 
@@ -290,33 +297,14 @@ export async function handleQueueControl(req: UnifiedRequest): Promise<UnifiedRe
   return success({ success: result, action, state: system.getState() });
 }
 
-export async function handleGetTriggers(): Promise<UnifiedResponse> {
-  const system = getQueueSystem();
-  const snapshot = system.triggers.getSnapshot();
-  return success({
-    success: true,
-    triggers: snapshot.triggers,
-    nextTriggers: system.getState().nextTriggers,
-    snapshot,
-    compatibilityAlias: true,
-  });
-}
-
-export async function handleRecordActivity(req: UnifiedRequest): Promise<UnifiedResponse> {
-  const authError = requireUser(req.user);
-  if (authError) return authError;
-  const system = getQueueSystem();
-  system.recordActivity(req.user.username);
-  return success({ success: true, lastActivity: system.getState().lastActivity });
-}
-
 export async function handleQueueStream(req: UnifiedRequest): Promise<UnifiedResponse> {
   if (!req.user.isAuthenticated) return failure('Authentication required', 401);
   async function* stream(): AsyncIterable<string> {
     const system = getQueueSystem();
-    const pending: (QueueEvent | { type: 'trigger-state' })[] = [];
+    const pending: (QueueEvent | { type: 'trigger-state' | 'operator-state' | 'agency-state' })[] = [];
+    let agencyChange: { revision: string; desireId?: string } | undefined;
     let wake: (() => void) | undefined;
-    const listener = (event: QueueEvent | { type: 'trigger-state' }) => {
+    const listener = (event: QueueEvent | { type: 'trigger-state' | 'operator-state' | 'agency-state' }) => {
       // Observation must not synchronously load execution history inside the
       // coordinator's command/receipt callback. The reader owns its projection.
       pending.push(event);
@@ -324,22 +312,46 @@ export async function handleQueueStream(req: UnifiedRequest): Promise<UnifiedRes
       wake = undefined;
     };
     const triggerListener = () => listener({ type: 'trigger-state' });
+    const operatorListener = () => listener({ type: 'operator-state' });
+    const controller = getModeController();
+    const snapshot = async () => {
+      const queue = { ...queueSnapshot(req.user), agencyChange };
+      try { return { ...queue, activeOperator: await readActiveOperatorStatus(req.user.username, req.user.role === 'owner') }; }
+      catch (error) { return { ...queue, activeOperatorError: (error as Error).message }; }
+    };
+    const watchers: ReturnType<typeof watch>[] = [];
+    let observationError: Error | undefined;
     system.on('queue', listener);
     if (req.user.role === 'owner') system.triggers.on('stateChange', triggerListener);
+    controller.on('modeChanged', operatorListener);
+    const unsubscribeAgency = req.user.role === 'owner' ? eventBus.subscribe(event => {
+      if (event.event === 'agency.changed' && event.data?.username === req.user.username) {
+        agencyChange = { revision: String(event.data.revision), desireId: event.data.desireId as string | undefined };
+        listener({ type: 'agency-state' });
+      }
+    }) : () => {};
     try {
-      yield sse({ type: 'snapshot', snapshot: queueSnapshot(req.user), timestamp: new Date().toISOString() });
+      for (const file of [ROBOT_OPERATOR_RUNTIME_FILE, ACTIVE_OPERATOR_CONFIG_FILE]) {
+        const watcher = watch(dirname(file), (_event, filename) => {
+          if (filename?.toString() === basename(file)) operatorListener();
+        });
+        watcher.on('error', error => { observationError = error; operatorListener(); });
+        watchers.push(watcher);
+      }
+      yield sse({ type: 'snapshot', snapshot: await snapshot(), timestamp: new Date().toISOString() });
       while (!req.signal?.aborted) {
+        if (observationError) { yield sse({ type: 'error', error: observationError.message }); return; }
         if (pending.length > 0) {
           const events = pending.splice(0);
-          let snapshot: ReturnType<typeof queueSnapshot>;
-          try { snapshot = queueSnapshot(req.user); }
+          let current: Awaited<ReturnType<typeof snapshot>>;
+          try { current = await snapshot(); }
           catch (error) {
             yield sse({ type: 'error', error: (error as Error).message });
             return;
           }
           for (const [index, event] of events.entries()) {
             yield sse({ type: event.type, event,
-              ...(index === events.length - 1 ? { snapshot } : {}) });
+              ...(index === events.length - 1 ? { snapshot: current } : {}) });
           }
           continue;
         }
@@ -355,15 +367,16 @@ export async function handleQueueStream(req: UnifiedRequest): Promise<UnifiedRes
           if (req.signal?.aborted) finish();
         });
         if (pending.length === 0 && !req.signal?.aborted) {
-          yield req.user.role === 'owner'
-            ? sse({ type: 'reconcile', snapshot: queueSnapshot(req.user) })
-            : ': heartbeat\n\n';
+          yield ': heartbeat\n\n';
         }
       }
     } finally {
       wake?.();
       system.off('queue', listener);
       if (req.user.role === 'owner') system.triggers.off('stateChange', triggerListener);
+      controller.off('modeChanged', operatorListener);
+      unsubscribeAgency();
+      for (const watcher of watchers) watcher.close();
     }
   }
   return { status: 200, stream: stream(), headers: { 'Content-Type': 'text/event-stream', 'Cache-Control': 'no-cache', Connection: 'keep-alive', 'X-Accel-Buffering': 'no' } };

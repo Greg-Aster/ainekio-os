@@ -6,7 +6,7 @@
  */
 
 import { routeRequest } from '../router.js';
-import type { UnifiedRequest, UnifiedResponse, UnifiedUser } from '../types.js';
+import type { UnifiedRequest, UnifiedUser } from '../types.js';
 import { validateSession } from '../../sessions.js';
 import { getUser } from '../../users.js';
 
@@ -35,7 +35,7 @@ export interface MobileResponse {
 /**
  * Auth required error - indicates user must be redirected to auth gate
  */
-export class MobileAuthRequiredError extends Error {
+class MobileAuthRequiredError extends Error {
   constructor(message: string = 'Authentication required - redirect to auth gate') {
     super(message);
     this.name = 'MobileAuthRequiredError';

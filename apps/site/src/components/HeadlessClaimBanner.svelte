@@ -1,113 +1,60 @@
 <script lang="ts">
-  import { onMount } from 'svelte';
-  import { apiFetch, isMobileApp } from '../lib/client/api-config';
+  import { isMobileApp } from '../lib/client/api-config';
+  import { activeView, statusStore, systemSection } from '../stores/navigation';
 
-  interface RuntimeMode {
-    headless: boolean;
-    lastChangedBy: 'local' | 'remote';
-    changedAt: string;
-    claimedBy: string | null;
+  const isMobile = isMobileApp();
+  let dismissed = false;
+
+  function openNetworkSettings() {
+    systemSection.set('network');
+    activeView.set('system');
+    dismissed = true;
   }
-
-  let runtimeMode: RuntimeMode | null = null;
-  let loading = false;
-  let error: string | null = null;
-  let claiming = false;
-  let showBanner = false;
-  let isMobile = false;
-
-  async function loadRuntimeMode() {
-    // Skip on mobile - headless mode is a server-only feature
-    if (isMobile) return;
-
-    try {
-      const res = await apiFetch('/api/runtime/mode');
-      if (res.ok) {
-        const mode: RuntimeMode = await res.json();
-        runtimeMode = mode;
-        // Show banner if in headless mode
-        showBanner = mode.headless;
-      }
-    } catch (err) {
-      // Silently fail - this is not critical for app operation
-      console.warn('Failed to load runtime mode (expected on mobile):', err);
-    }
-  }
-
-  async function claimRuntime() {
-    error = null;
-    claiming = true;
-
-    try {
-      const res = await apiFetch('/api/runtime/mode', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ headless: false }),
-      });
-
-      if (res.ok) {
-        showBanner = false;
-        // Reload to refresh agent status
-        setTimeout(() => window.location.reload(), 1500);
-      } else {
-        const data = await res.json();
-        error = data.error || 'Failed to claim runtime';
-      }
-    } catch (err) {
-      error = err instanceof Error ? err.message : 'Failed to claim runtime';
-    } finally {
-      claiming = false;
-    }
-  }
-
-  function dismiss() {
-    showBanner = false;
-  }
-
-  onMount(() => {
-    isMobile = isMobileApp();
-
-    // Skip loading on mobile - this is a server-only feature
-    if (isMobile) return;
-
-    loadRuntimeMode();
-    // Check every 10 seconds for changes
-    const interval = setInterval(loadRuntimeMode, 10000);
-    return () => clearInterval(interval);
-  });
 </script>
 
-{#if showBanner}
+{#if !isMobile && !dismissed && $statusStore?.data?.runtime?.headless}
   <div class="fixed top-20 left-1/2 -translate-x-1/2 z-[1000] max-w-[600px] w-[90%] bg-gradient-to-br from-amber-400 to-amber-500 text-amber-900 p-6 rounded-xl shadow-2xl animate-slide-down sm:top-[60px] sm:w-[95%] sm:p-4">
     <div class="flex items-start gap-4 sm:flex-col">
       <div class="text-3xl shrink-0">🖥️</div>
       <div class="flex-1">
         <h3 class="m-0 mb-2 text-lg font-bold text-amber-900">Headless Mode Active</h3>
         <p class="m-0 text-sm leading-relaxed text-amber-800">
-          Local agents are paused. Click "Claim Runtime" to resume full system
-          operations and dedicate all resources to your remote session.
+          Boot-managed agents are skipped when the system starts in headless mode.
+          Changing this setting does not stop or resume running agents.
         </p>
       </div>
       <div class="flex flex-col gap-2 shrink-0 sm:w-full">
         <button
           class="px-4 py-2 rounded-md border-0 font-semibold text-sm cursor-pointer transition-all whitespace-nowrap bg-amber-900 text-amber-100 hover:bg-amber-800 disabled:opacity-60 disabled:cursor-not-allowed sm:w-full"
-          on:click={claimRuntime}
-          disabled={claiming}
+          on:click={openNetworkSettings}
         >
-          {claiming ? 'Claiming...' : 'Claim Runtime'}
+          Open Network Settings
         </button>
         <button
           class="px-4 py-2 rounded-md font-semibold text-sm cursor-pointer transition-all whitespace-nowrap bg-transparent text-amber-900 border border-amber-800 hover:bg-amber-800/10 disabled:opacity-60 disabled:cursor-not-allowed sm:w-full"
-          on:click={dismiss}
-          disabled={claiming}
+          on:click={() => dismissed = true}
         >
           Dismiss
         </button>
       </div>
     </div>
-
-    {#if error}
-      <div class="mt-4 p-3 bg-red-900/20 border border-red-900 rounded-md text-red-900 text-sm">{error}</div>
-    {/if}
   </div>
 {/if}
+
+<style>
+  .animate-slide-down {
+    animation: slide-down 0.3s ease-out;
+  }
+
+  @keyframes slide-down {
+    from {
+      opacity: 0;
+      transform: translateX(-50%) translateY(-20px);
+    }
+
+    to {
+      opacity: 1;
+      transform: translateX(-50%) translateY(0);
+    }
+  }
+</style>

@@ -1,6 +1,6 @@
 /**
  * Text-to-Speech Service (Refactored with Provider Architecture)
- * Supports multiple TTS providers: Piper, RVC, Kokoro
+ * Supports Piper and Kokoro TTS providers.
  */
 
 import fs from 'node:fs';
@@ -12,7 +12,6 @@ import { audit } from './audit.js';
 import { PiperService } from './tts/providers/piper-service.js';
 import { createLogger } from './logger.js';
 const log = createLogger('tts');
-import { RVCService } from './tts/providers/rvc-service.js';
 import { KokoroService } from './tts/providers/kokoro-service.js';
 import type { ITextToSpeechService, TTSConfig, CacheConfig, TTSSynthesizeOptions, TTSStatus } from './tts/interface.js';
 
@@ -60,7 +59,7 @@ function loadUserConfig(username?: string): VoiceConfig {
     tts: { ...globalConfig?.tts, ...userConfig?.tts },
     cache: { ...globalConfig?.cache, ...userConfig?.cache },
   } as VoiceConfig;
-  for (const provider of ['piper', 'rvc', 'kokoro'] as const) {
+  for (const provider of ['piper', 'kokoro'] as const) {
     const base = globalConfig?.tts?.[provider];
     const override = userConfig?.tts?.[provider];
     if (base || override) Object.assign(merged.tts, { [provider]: { ...base, ...override } });
@@ -150,12 +149,6 @@ function resolveConfigPaths(rawConfig: VoiceConfig, username?: string): VoiceCon
     resolved.tts.piper.config = resolved.tts.piper.config ? resolvePath(resolved.tts.piper.config)! : '';
   }
 
-  // Resolve RVC paths
-  if (resolved.tts?.rvc) {
-    resolved.tts.rvc.referenceAudioDir = resolvePath(resolved.tts.rvc.referenceAudioDir)!;
-    resolved.tts.rvc.modelsDir = resolvePath(resolved.tts.rvc.modelsDir)!;
-  }
-
   // Resolve Kokoro paths
   if (resolved.tts?.kokoro) {
     resolved.tts.kokoro.customVoicepackPath = resolvePath(resolved.tts.kokoro.customVoicepackPath)!;
@@ -205,32 +198,10 @@ export function createTTSService(provider?: TTSConfig['provider'], username?: st
   const selectedProvider = provider || cfg.tts.provider;
 
 
-  log.debug(' createTTSService:', {
-    selectedProvider,
-    activeUsername,
-    rvcConfig: cfg.tts.rvc,
-    rvcReferenceAudioDir: cfg.tts.rvc?.referenceAudioDir,
-    rvcModelsDir: cfg.tts.rvc?.modelsDir
-  });
-
   // Always create fresh service (no caching) to ensure per-user paths are respected
   let service: ITextToSpeechService;
 
-  if (selectedProvider === 'rvc') {
-    // Check if RVC config exists
-    if (!cfg.tts.rvc) {
-      console.error('[TTS] RVC config missing. Config keys:', Object.keys(cfg.tts));
-      throw new Error('RVC not configured. Please install the addon via System Settings.');
-    }
-
-    // RVC requires Piper for base audio generation
-    if (!cfg.tts.piper) {
-      throw new Error('RVC requires Piper TTS. Please check voice.json configuration.');
-    }
-
-    const piperService = new PiperService(cfg.tts.piper, cfg.cache);
-    service = new RVCService(cfg.tts.rvc, cfg.cache, piperService);
-  } else if (selectedProvider === 'kokoro') {
+  if (selectedProvider === 'kokoro') {
     service = buildKokoroService(cfg);
   } else if (selectedProvider === 'piper') {
     if (!cfg.tts.piper) {
@@ -290,7 +261,7 @@ export function clearTTSCache(provider?: 'piper'): void {
 export async function generateMultiVoiceSpeech(
   text: string,
   voiceModels: string[],
-  options?: TTSSynthesizeOptions & { provider?: 'piper' | 'rvc' }
+  options?: TTSSynthesizeOptions & { provider?: 'piper' }
 ): Promise<Buffer> {
   if (voiceModels.length === 0) {
     throw new Error('At least one voice model is required');

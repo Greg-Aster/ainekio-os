@@ -1,6 +1,6 @@
 # Troubleshooting
 
-Diagnose MetaHuman from the canonical owner outward. A running process proves
+Diagnose Ainekio OS from the canonical owner outward. A running process proves
 only that the process exists; verify the request, state transition, durable
 output, and user-visible result separately.
 

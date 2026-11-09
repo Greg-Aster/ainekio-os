@@ -48,7 +48,7 @@ export async function runProvider(
     await display(terminalHeading(`MetaHuman Big Brother — ${providerLabel(provider)}`))
     signal.throwIfAborted()
     const child = spawn(invocation.command, invocation.args, {
-      cwd: options.workingDirectory || ROOT, detached: true,
+      cwd: invocation.cwd || options.workingDirectory || ROOT, detached: true,
       env: { ...process.env, TERM: 'xterm-256color', NO_COLOR: '1', IS_SANDBOX: '1' },
       stdio: ['pipe', 'pipe', 'pipe'],
     })

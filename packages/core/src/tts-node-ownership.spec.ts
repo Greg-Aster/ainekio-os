@@ -13,8 +13,8 @@ const speechPreference = read('apps/site/src/lib/client/assistant-speech-prefere
 const queueHandler = read('packages/core/src/api/handlers/tts-queue-stream.ts');
 const synthesisStreamHandler = read('packages/core/src/api/handlers/tts-stream.ts');
 const deliveryQueue = read('packages/core/src/tts/delivery-queue.ts');
-const deliveryTransport = read('apps/site/src/pages/api/tts-queue-delivery.ts');
-const interruptionTransport = read('apps/site/src/pages/api/tts-queue-interrupt.ts');
+const transport = read('apps/site/src/pages/api/[...path].ts');
+const router = read('packages/core/src/api/router.ts');
 const unifiedQueueHandler = read('packages/core/src/api/handlers/unified-queue.ts');
 const environmentBridgeHandler = read('packages/core/src/api/handlers/environment-bridge.ts');
 
@@ -80,9 +80,10 @@ assert.match(
   /import TTSQueueConsumer from ['"]\.\/TTSQueueConsumer\.svelte['"]/,
   'the always-mounted application center must import the admitted TTS queue consumer',
 );
+const queueConsumerMount = centerContent.indexOf('<TTSQueueConsumer />');
+const firstViewBranch = centerContent.search(/\{#if\s+\$activeView\b/);
 assert.ok(
-  centerContent.indexOf('<TTSQueueConsumer />') >= 0
-  && centerContent.indexOf('<TTSQueueConsumer />') < centerContent.indexOf("{#if $activeView === 'chat'}"),
+  queueConsumerMount >= 0 && firstViewBranch >= 0 && queueConsumerMount < firstViewBranch,
   'the admitted TTS queue consumer must mount outside the Chat view condition',
 );
 assert.match(
@@ -156,15 +157,16 @@ assert.match(
   'the TTS delivery owner must atomically supersede queued speech and retain explicit item lifecycle updates',
 );
 assert.match(
-  deliveryTransport,
-  /export const POST = astroHandler;/,
-  'the TTS delivery API shell must remain thin transport over the core handler',
+  router,
+  /method: 'POST', pattern: '\/api\/tts-queue-delivery', handler: handleTtsQueueDelivery/,
+  'Core must register TTS delivery over its existing handler',
 );
 assert.match(
-  interruptionTransport,
-  /export const POST = astroHandler;/,
-  'the TTS interruption API shell must remain thin transport over the core handler',
+  router,
+  /method: 'POST', pattern: '\/api\/tts-queue-interrupt', handler: handleTtsQueueInterrupt/,
+  'Core must register TTS interruption over its existing handler',
 );
+assert.match(transport, /export const ALL = astroHandler/);
 assert.match(
   chat,
   /sendMessage\(\)[\s\S]*?interruptAssistantSpeech\('user-input'\)/,

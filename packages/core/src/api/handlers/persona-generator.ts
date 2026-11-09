@@ -171,7 +171,8 @@ export async function handlePersonaGeneratorLoad(req: UnifiedRequest): Promise<U
     const authError = requireAuthenticated(req);
     if (authError) return authError;
 
-    if (!resolvePersonaPath('therapy')) {
+    const interviewsPath = resolvePersonaPath('therapy');
+    if (!interviewsPath) {
       return error('Access denied', 403);
     }
 
@@ -184,6 +185,14 @@ export async function handlePersonaGeneratorLoad(req: UnifiedRequest): Promise<U
     const { session, response } = await loadOwnedSession(req.user.username, req.user.userId, sessionId);
     if (response) return response;
 
+    if (session!.status === 'finalized') {
+      const summary = JSON.parse(fs.readFileSync(path.join(interviewsPath, sessionId, 'summary.json'), 'utf-8'));
+      return json({ success: true, session, reviewData: {
+        extracted: summary.extracted,
+        diff: { ...summary.diff, text: summary.diffText },
+        confidence: summary.extracted.confidence,
+      } });
+    }
     return json({ success: true, session });
   } catch (err) {
     console.error('[persona/generator/load] Error:', err);

@@ -338,5 +338,3 @@ export const DesireUpdaterNode: NodeDefinition = defineNode({
   },
   execute,
 });
-
-export default DesireUpdaterNode;

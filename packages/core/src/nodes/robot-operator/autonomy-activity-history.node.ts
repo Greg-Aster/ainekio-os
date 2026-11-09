@@ -72,7 +72,7 @@ function workActivity(task: Pick<QueuedTask, 'id' | 'input' | 'metadata' | 'hand
 }
 
 /** Current execution facts replace initial admission claims, preserving attributed work receipts. */
-export function projectAutonomyActivityOutcomes(history: RobotAutonomyActivityRecord[], store: ExecutionStore) {
+function projectAutonomyActivityOutcomes(history: RobotAutonomyActivityRecord[], store: ExecutionStore) {
   const records = new Map([...new Set(history.flatMap(activity => activity.executionIds ?? []))]
     .map(executionId => [executionId, store.find(executionId)] as const))
   return history.map(activity => {

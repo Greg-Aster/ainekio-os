@@ -31,7 +31,7 @@ async function ensureBackendFunctions(): Promise<boolean> {
 /**
  * Check if a remote server is reachable and get its status
  */
-export async function checkRemoteServerHealth(serverUrl: string): Promise<{
+async function checkRemoteServerHealth(serverUrl: string): Promise<{
   healthy: boolean;
   latencyMs: number;
   serverVersion?: string;
@@ -301,50 +301,6 @@ export async function handleRemoteServerHealth(req: UnifiedRequest): Promise<Uni
     });
   } catch (error) {
     console.error('[remote-server] Health check failed:', error);
-    return errorResponse((error as Error).message, 500);
-  }
-}
-
-/**
- * GET /api/remote-server/models - Fetch available models from remote server
- */
-export async function handleRemoteServerModels(req: UnifiedRequest): Promise<UnifiedResponse> {
-  try {
-    const { query, user } = req;
-
-    // Get server URL from query or config
-    let serverUrl = query?.serverUrl;
-    let auth: { sessionId: string } | undefined;
-
-    const available = await ensureBackendFunctions();
-    if (available) {
-      const config = loadBackendConfig();
-      if (!serverUrl) {
-        serverUrl = config.remote?.serverUrl;
-      }
-
-      // Load saved sessionId from user credentials (secure - no password stored)
-      if (user.isAuthenticated && config.remote?.credentials?.sessionId) {
-        auth = { sessionId: config.remote.credentials.sessionId };
-      }
-    }
-
-    if (!serverUrl) {
-      return errorResponse('No remote server URL configured', 400);
-    }
-
-    const result = await fetchRemoteModels(serverUrl, auth);
-
-    if (!result.success) {
-      return errorResponse(result.error || 'Failed to fetch models', 502);
-    }
-
-    return successResponse({
-      serverUrl,
-      models: result.models,
-    });
-  } catch (error) {
-    console.error('[remote-server] Model fetch failed:', error);
     return errorResponse((error as Error).message, 500);
   }
 }

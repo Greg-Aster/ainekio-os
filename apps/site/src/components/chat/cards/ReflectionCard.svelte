@@ -1,13 +1,19 @@
 <script lang="ts">
   import BaseMessageCard from './BaseMessageCard.svelte';
+  import { getGoalLabelConfig } from '../message-discriminator';
   import type { ChatMessage } from '../../../lib/client/composables/useMessages';
 
   export let message: ChatMessage;
   export let index: number;
   export let isSelected: boolean = false;
 
-  // Determine source label based on dialogueSource
-  $: sourceLabel = getSourceLabel(message.meta?.dialogueSource);
+  $: isAgencyMessage = message.meta?.type !== 'operator_proposal' && (
+    message.meta?.dialogueSource === 'agency-system' || (message.role === 'assistant' && message.meta?.isAgencyMessage)
+  );
+
+  $: sourceLabel = message.meta?.type === 'operator_proposal'
+    ? { label: 'Operator Policy', icon: '🧭' }
+    : isAgencyMessage ? getGoalLabelConfig(message.meta?.type) : getSourceLabel(message.meta?.dialogueSource);
 
   function getSourceLabel(source?: string): { label: string; icon: string } {
     switch (source) {
@@ -43,7 +49,7 @@
   {isSelected}
   roleLabel={sourceLabel.label}
   roleIcon={sourceLabel.icon}
-  accentColor={message.meta?.displayColor || '#8b5cf6'}
+  accentColor={message.meta?.displayColor || (isAgencyMessage ? '#f59e0b' : '#8b5cf6')}
   on:messageClick
   on:deleteMessage
   on:validateMessage

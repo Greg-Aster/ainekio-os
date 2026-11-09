@@ -77,8 +77,6 @@ for (const control of [
   'config.outputTarget',
   'config.piper.currentVoice',
   'config.piper.speakingRate',
-  'config.rvc.speakerId',
-  'config.rvc.device',
   'config.kokoro.voice',
   'config.kokoro.speed',
   'config.kokoro.normalizeCustomVoicepacks',

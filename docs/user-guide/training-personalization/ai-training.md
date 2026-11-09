@@ -1,6 +1,6 @@
 # AI Training
 
-MetaHuman saves conversations and inner dialogue as profile memories. Training uses reviewed examples derived from those memories. A completed run creates a **candidate**; it does not change model assignments.
+Ainekio OS saves conversations and inner dialogue as profile memories. Training uses reviewed examples derived from those memories. A completed run creates a **candidate**; it does not change model assignments.
 
 ## Choose the learning objective
 

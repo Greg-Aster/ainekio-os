@@ -6,12 +6,59 @@
 
 import type { UnifiedRequest, UnifiedResponse } from '../types.js';
 import { getDefaultProfilePath, getProfilePathsWithStatus } from '../../path-builder.js';
-import { getProfileStorageConfig, updateProfileStorage } from '../../users.js';
+import { getProfileStorageConfig, updateProfileStorage, verifyUserPassword } from '../../users.js';
 import { audit } from '../../audit.js';
 import { validateProfilePath } from '../../path-security.js';
 import { getStorageInfo } from '../../external-storage.js';
-import { estimateMigrationDuration } from '../../profile-migration.js';
+import { estimateMigrationDuration, migrateProfile } from '../../profile-migration.js';
 import { getEncryptionMeta, isProfileEncrypted } from '../../encryption.js';
+
+/** POST /api/profile-path — migrate the authenticated profile, streaming progress. */
+export async function handleMigrateProfilePath(req: UnifiedRequest): Promise<UnifiedResponse> {
+  const { path: newPath, keepSource = true, overwrite = false, encryption } = req.body || {};
+  if (!newPath) return { status: 400, error: 'Path is required' };
+
+  const validation = validateProfilePath(newPath, { checkExists: false });
+  if (!validation.valid) {
+    audit({
+      level: 'warn', category: 'security', event: 'profile_path_validation_failed',
+      details: { userId: req.user.userId, username: req.user.username,
+        attemptedPath: newPath, errors: validation.errors },
+      actor: req.user.userId,
+    });
+    return { status: 400, data: { error: 'Invalid path', details: validation.errors, warnings: validation.warnings } };
+  }
+
+  const { paths } = getProfilePathsWithStatus(req.user.username);
+  if (paths.root === newPath) return { status: 400, error: 'New path is same as current path' };
+  if (encryption?.useLoginPassword && ['aes256', 'luks'].includes(encryption.type)
+    && !verifyUserPassword(req.user.username, encryption.password)) {
+    return { status: 401, error: 'Incorrect login password' };
+  }
+
+  const options: Parameters<typeof migrateProfile>[3] = {
+    keepSource, overwrite,
+    // Live agents modify buffers and indexes during migration.
+    validateIntegrity: false,
+    encryption: encryption?.type && encryption.type !== 'none' ? {
+      type: encryption.type, password: encryption.password,
+      containerSize: encryption.containerSize, useLoginPassword: encryption.useLoginPassword,
+    } : undefined,
+  };
+  async function* progress(): AsyncIterable<string> {
+    try {
+      for await (const update of migrateProfile(req.user.userId, req.user.username, newPath, options)) {
+        yield `data: ${JSON.stringify({ progress: update })}\n\n`;
+      }
+    } catch (error) {
+      const message = (error as Error).message;
+      yield `data: ${JSON.stringify({ error: message, progress: {
+        step: 'error', status: 'failed', message: 'Migration failed', error: message,
+      } })}\n\n`;
+    }
+  }
+  return { status: 200, stream: progress() };
+}
 
 /**
  * GET /api/profile-path

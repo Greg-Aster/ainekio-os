@@ -8,12 +8,9 @@
    * 1. User clicks/selects this card
    * 2. User types response in the main chat input
    * 3. Response is routed through the response pipeline (cardType: 'curiosity_response')
-   * 4. Multi-turn conversation continues while card is selected
-   * 5. Deselecting ends the thread, outputs are saved as curiosity memory
    *
    * The "Skip" action dismisses the question without requiring a response.
    */
-  import { createEventDispatcher } from 'svelte';
   import BaseMessageCard from './BaseMessageCard.svelte';
   import type { ChatMessage } from '../../../lib/client/composables/useMessages';
   import { apiFetch } from '../../../lib/client/api-config';
@@ -22,26 +19,13 @@
   export let index: number;
   export let isSelected: boolean = false;
 
-  const dispatch = createEventDispatcher();
-
-  // Response state
-  let hasResponded = false;
-  let wasSkipped = false;
+  let skippedQuestionId: string | undefined;
   let isSkipping = false;
-  let skipError = '';
+  let skipError: { questionId: string | undefined; message: string } | null = null;
 
-  // Check if this question was already answered or skipped (from meta)
-  $: if (message.meta?.answered) {
-    hasResponded = true;
-    wasSkipped = false;
-  }
-  $: if (message.meta?.skipped) {
-    hasResponded = true;
-    wasSkipped = true;
-  }
-
-  // Question ID for tracking
   $: questionId = message.meta?.questionId || message.meta?.curiosityQuestionId;
+  $: wasSkipped = Boolean(message.meta?.skipped || (questionId && skippedQuestionId === questionId));
+  $: hasResponded = Boolean(message.meta?.answered || wasSkipped);
 
   /**
    * Skip this curiosity question without responding
@@ -50,43 +34,28 @@
   async function handleSkip() {
     if (isSkipping || hasResponded) return;
 
+    const requestedQuestionId = questionId;
     isSkipping = true;
-    skipError = '';
+    skipError = null;
 
     try {
       const response = await apiFetch('/api/curiosity/questions/skip', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
-          questionId,
+          questionId: requestedQuestionId,
         }),
       });
-      if (!response.ok) throw new Error(`Could not skip curiosity question (${response.status})`);
-
-      hasResponded = true;
-      wasSkipped = true;
-
-      // Notify parent that question was skipped
-      dispatch('curiosityResponded', {
-        questionId,
-        response: null,
-        action: 'skipped',
-      });
+      if (!response.ok) {
+        const data = await response.json();
+        throw new Error(data.error || `Could not skip curiosity question (${response.status})`);
+      }
+      skippedQuestionId = requestedQuestionId;
     } catch (error) {
-      console.error('[CuriosityCard] Error skipping question:', error);
-      skipError = error instanceof Error ? error.message : 'Could not skip this question';
+      skipError = { questionId: requestedQuestionId, message: error instanceof Error ? error.message : 'Could not skip this question' };
     } finally {
       isSkipping = false;
     }
-  }
-
-  /**
-   * Called by parent when a response was sent via main input
-   * Updates local state to show confirmation
-   */
-  export function markAsResponded() {
-    hasResponded = true;
-    wasSkipped = false;
   }
 </script>
 
@@ -148,8 +117,8 @@
           {/if}
         </button>
       </div>
-      {#if skipError}
-        <p class="skip-error" role="alert">{skipError}</p>
+      {#if skipError?.questionId === questionId && skipError}
+        <p class="skip-error" role="alert">{skipError.message}</p>
       {/if}
     {/if}
   </svelte:fragment>
@@ -186,14 +155,14 @@
   }
 
   .status-responded {
-    background: rgba(34, 197, 94, 0.15);
-    color: #4ade80;
+    background: rgba(34, 197, 94, 0.1);
+    color: #16a34a;
     border: 1px solid rgba(34, 197, 94, 0.3);
   }
 
   .status-skipped {
-    background: rgba(107, 114, 128, 0.15);
-    color: #9ca3af;
+    background: rgba(107, 114, 128, 0.1);
+    color: #6b7280;
     border: 1px solid rgba(107, 114, 128, 0.3);
   }
 
@@ -208,7 +177,7 @@
 
   .skip-error {
     margin: 0.5rem 0 0;
-    color: #fca5a5;
+    color: #dc2626;
     font-size: 0.75rem;
   }
 
@@ -221,7 +190,7 @@
 
   .selection-hint .hint-text {
     font-size: 0.8125rem;
-    color: var(--text-muted, #9ca3af);
+    color: var(--text-muted);
     opacity: 0.8;
   }
 
@@ -231,14 +200,14 @@
     align-items: center;
     gap: 0.5rem;
     padding: 0.375rem 0.75rem;
-    background: rgba(139, 92, 246, 0.15);
+    background: rgba(139, 92, 246, 0.1);
     border: 1px solid rgba(139, 92, 246, 0.3);
     border-radius: 9999px;
   }
 
   .selection-active .hint-text {
     font-size: 0.8125rem;
-    color: #a78bfa;
+    color: #7c3aed;
     font-weight: 500;
   }
 
@@ -270,7 +239,7 @@
     min-width: 60px;
     padding: 0.375rem 0.75rem;
     background: transparent;
-    color: var(--text-muted, #9ca3af);
+    color: var(--text-muted);
     border: 1px solid rgba(139, 92, 246, 0.25);
     border-radius: 0.375rem;
     font-size: 0.8125rem;
@@ -282,7 +251,7 @@
   .skip-btn:hover:not(:disabled) {
     background: rgba(139, 92, 246, 0.1);
     border-color: rgba(139, 92, 246, 0.4);
-    color: var(--text-primary, #f3f4f6);
+    color: var(--text-primary);
   }
 
   .skip-btn:disabled {
@@ -306,26 +275,25 @@
     }
   }
 
-  /* Light mode adjustments */
-  :global(.light) .status-responded {
-    background: rgba(34, 197, 94, 0.1);
-    color: #16a34a;
+  :global(.dark) .skip-error {
+    color: #fca5a5;
   }
 
-  :global(.light) .status-skipped {
-    background: rgba(107, 114, 128, 0.1);
-    color: #6b7280;
+  :global(.dark) .status-responded {
+    background: rgba(34, 197, 94, 0.15);
+    color: #4ade80;
   }
 
-  :global(.light) .selection-active {
-    background: rgba(139, 92, 246, 0.1);
+  :global(.dark) .status-skipped {
+    background: rgba(107, 114, 128, 0.15);
+    color: #9ca3af;
   }
 
-  :global(.light) .selection-active .hint-text {
-    color: #7c3aed;
+  :global(.dark) .selection-active {
+    background: rgba(139, 92, 246, 0.15);
   }
 
-  :global(.light) .selection-hint .hint-text {
-    color: #6b7280;
+  :global(.dark) .selection-active .hint-text {
+    color: #a78bfa;
   }
 </style>

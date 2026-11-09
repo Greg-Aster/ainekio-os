@@ -422,14 +422,8 @@ export function getProfilePaths(username: string) {
     actions: path.join(profileRoot, 'logs', 'actions'),
     sync: path.join(profileRoot, 'logs', 'sync'),
 
-    // Voice training (profile-specific)
-    voiceTraining: path.join(profileRoot, 'out', 'voice-training', 'recordings'),
-    voiceDataset: path.join(profileRoot, 'out', 'voice-training', 'dataset'),
+    // Voice configuration (profile-specific)
     voiceConfig: path.join(profileRoot, 'etc', 'voice.json'),
-
-    // RVC voice models (profile-specific)
-    rvcReference: path.join(profileRoot, 'out', 'voices', 'rvc'),
-    rvcModels: path.join(profileRoot, 'out', 'voices', 'rvc-models'),
 
     // Kokoro TTS (profile-specific)
     kokoroReference: path.join(profileRoot, 'out', 'voices', 'kokoro'),

@@ -76,11 +76,11 @@ export const ENVIRONMENT_BRIDGE_FIELDS = new Set([
   'deliveryEnabled',
 ]);
 
-export function triggerConfigPath(): string {
+function triggerConfigPath(): string {
   return path.join(systemPaths.root, 'etc', 'agents.json');
 }
 
-export function serviceConfigPath(): string {
+function serviceConfigPath(): string {
   return path.join(systemPaths.root, 'etc', 'services.json');
 }
 
@@ -495,7 +495,7 @@ export function buildAgentDescriptor(id: string, catalogEntry?: AgentCatalogEntr
   };
 }
 
-export function variableValue(descriptor: AgentDescriptor, key: string): string | number | boolean | string[] | null | undefined {
+function variableValue(descriptor: AgentDescriptor, key: string): string | number | boolean | string[] | null | undefined {
   return descriptor.variables.find(variable => variable.key === key)?.value;
 }
 

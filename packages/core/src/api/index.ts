@@ -21,7 +21,7 @@
 export * from './types.js';
 
 // Router
-export { routeRequest, registerRoute, listRoutes } from './router.js';
+export { routeRequest, listRoutes } from './router.js';
 
 // Adapters - export for convenient imports
 export { astroHandler } from './adapters/astro.js';

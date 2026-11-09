@@ -1,9 +1,15 @@
 /**
- * Browser-safe cognitive graph scheduling contract.
+ * Browser-safe cognitive graph contracts.
  *
  * This module has no runtime dependencies so editors and the engine share one
  * persisted contract and one set of defaults.
  */
+
+/** The actual saved entry presented by a streamed graph response. */
+export interface ResponseEntryReference {
+  mode: 'conversation' | 'inner';
+  id: string;
+}
 
 export type GraphConditionValue = string | number | boolean | null;
 

@@ -1,95 +1,22 @@
 <script lang="ts">
-  import { onMount } from 'svelte';
-  import { apiFetch } from '../../lib/client/api-config';
+  import type { OnboardingState } from '@metahuman/core/onboarding/types';
 
+  export let state: OnboardingState;
+  export let completing = false;
   export let onComplete: () => void;
   export let onBack: () => void;
 
-  interface OnboardingState {
-    completed: boolean;
-    currentStep: number;
-    stepsCompleted: Record<string, boolean>;
-    dataCollected: {
-      identityQuestions: number;
-      personalityQuestions: number;
-      filesIngested: number;
-      tasksCreated: number;
-      memoriesCreated: number;
-    };
-  }
-
-  let state: OnboardingState | null = null;
-  let loading = true;
-  let completing = false;
-  let error = '';
-
-  onMount(async () => {
-    await loadState();
-  });
-
-  async function loadState() {
-    loading = true;
-    try {
-      const response = await apiFetch('/api/onboarding/state');
-      if (!response.ok) {
-        throw new Error('Failed to load onboarding state');
-      }
-      const data = await response.json();
-      state = data.state;
-    } catch (err) {
-      error = (err as Error).message;
-    } finally {
-      loading = false;
-    }
-  }
-
-  async function handleComplete() {
-    completing = true;
-    error = '';
-
-    try {
-      const response = await apiFetch('/api/onboarding/complete', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-      });
-
-      if (!response.ok) {
-        throw new Error('Failed to complete onboarding');
-      }
-
-      // Call parent completion handler
-      onComplete();
-    } catch (err) {
-      error = (err as Error).message;
-      completing = false;
-    }
-  }
-
   function getTotalDataPoints(): number {
-    if (!state) return 0;
-    const { dataCollected } = state;
-    return (
-      dataCollected.identityQuestions +
-      dataCollected.personalityQuestions +
-      dataCollected.filesIngested +
-      dataCollected.tasksCreated +
-      dataCollected.memoriesCreated
-    );
+    return Object.values(state.dataCollected).reduce((total, count) => total + count, 0);
   }
 </script>
 
 <div class="flex flex-col gap-10 max-w-4xl mx-auto p-8 md:p-4">
-  {#if loading}
-    <div class="flex flex-col items-center gap-4 py-12 px-8">
-      <div class="w-12 h-12 border-4 border-gray-200 dark:border-gray-600 border-t-indigo-500 rounded-full animate-spin"></div>
-      <p class="text-gray-500 dark:text-gray-400">Loading your progress...</p>
-    </div>
-  {:else if state}
     <div class="flex flex-col items-center text-center gap-4 py-8 px-4">
       <div class="text-7xl animate-bounce">🎉</div>
       <h1 class="text-4xl md:text-3xl font-bold bg-gradient-to-br from-indigo-500 to-purple-600 dark:from-indigo-400 dark:to-purple-400 bg-clip-text text-transparent">You're All Set!</h1>
       <p class="text-lg leading-relaxed text-gray-500 dark:text-gray-400 max-w-xl">
-        Your MetaHuman is ready to begin learning and operating as your digital consciousness.
+        Your profile setup is ready. Continue to chat, memory tools and the capabilities enabled for this installation.
       </p>
     </div>
 
@@ -138,7 +65,7 @@
       </div>
 
       <div class="text-center text-lg text-gray-700 dark:text-gray-300 pt-4 border-t border-gray-200 dark:border-gray-600">
-        <strong class="text-indigo-500 text-xl">{getTotalDataPoints()}</strong> total data points captured
+        <strong class="text-indigo-500 text-xl">{getTotalDataPoints()}</strong> total recorded data points
       </div>
     </div>
 
@@ -150,8 +77,8 @@
           <div>
             <h3 class="text-lg font-semibold text-gray-900 dark:text-gray-50 mb-2">Background Processing</h3>
             <p class="text-base leading-relaxed text-gray-500 dark:text-gray-400">
-              The Organizer agent will enrich your memories with tags, entities, and connections.
-              This happens automatically in the background.
+              Uploaded files stay in the selected server’s inbox until Inbox Ingestor processes them.
+              Organizer can enrich stored memories when it runs.
             </p>
           </div>
         </div>
@@ -161,8 +88,8 @@
           <div>
             <h3 class="text-lg font-semibold text-gray-900 dark:text-gray-50 mb-2">Personality Modeling</h3>
             <p class="text-base leading-relaxed text-gray-500 dark:text-gray-400">
-              Your MetaHuman will analyze your communication patterns and personality traits
-              to build a model that thinks like you.
+              The personality details you provided are stored in your persona profile
+              for configured conversation and agent workflows.
             </p>
           </div>
         </div>
@@ -172,8 +99,8 @@
           <div>
             <h3 class="text-lg font-semibold text-gray-900 dark:text-gray-50 mb-2">Continuous Learning</h3>
             <p class="text-base leading-relaxed text-gray-500 dark:text-gray-400">
-              As you use the system, your MetaHuman will learn from your decisions,
-              preferences, and interactions to become more aligned with you over time.
+              Memories can inform later interactions. Changes to trained models use
+              the configured training and review process.
             </p>
           </div>
         </div>
@@ -183,8 +110,8 @@
           <div>
             <h3 class="text-lg font-semibold text-gray-900 dark:text-gray-50 mb-2">Autonomous Operation</h3>
             <p class="text-base leading-relaxed text-gray-500 dark:text-gray-400">
-              Background agents will work on your goals, generate reflections,
-              and perform tasks autonomously while respecting your trust boundaries.
+              Enabled agents and autonomy workflows can pursue tasks under your configured trust policy.
+              Inspect their status and results from the Dashboard.
             </p>
           </div>
         </div>
@@ -197,7 +124,7 @@
         <div class="flex flex-col items-center text-center gap-3 p-6 bg-white dark:bg-gray-700 border border-gray-200 dark:border-gray-600 rounded-lg transition-all hover:-translate-y-1 hover:shadow-lg">
           <div class="text-4xl">💬</div>
           <h3 class="text-base font-semibold text-gray-900 dark:text-gray-50">Chat Interface</h3>
-          <p class="text-sm leading-snug text-gray-500 dark:text-gray-400">Have conversations with your digital consciousness</p>
+          <p class="text-sm leading-snug text-gray-500 dark:text-gray-400">Talk with your companion and assistant</p>
         </div>
 
         <div class="flex flex-col items-center text-center gap-3 p-6 bg-white dark:bg-gray-700 border border-gray-200 dark:border-gray-600 rounded-lg transition-all hover:-translate-y-1 hover:shadow-lg">
@@ -235,26 +162,14 @@
     <div class="flex items-start gap-4 p-6 bg-gradient-to-br from-emerald-50 to-green-100 dark:from-emerald-900 dark:to-green-900 border-2 border-emerald-500 rounded-lg">
       <div class="text-3xl flex-shrink-0">🔒</div>
       <div>
-        <strong class="block text-lg text-emerald-800 dark:text-emerald-300 mb-2">Your Privacy is Protected</strong>
+        <strong class="block text-lg text-emerald-800 dark:text-emerald-300 mb-2">Storage and Processing</strong>
         <p class="text-base leading-relaxed text-emerald-700 dark:text-emerald-200">
-          All your data remains on your local machine. MetaHuman OS operates 100% locally
-          with no cloud dependencies, no external API calls, and no data sharing.
+          Your account data is stored on the selected Ainekio OS server. Configured model providers,
+          profile sync and integrations may send data to other machines or services.
+          Review your provider and sync settings to see where data is processed.
         </p>
       </div>
     </div>
-
-    {#if error}
-      <div class="flex items-center gap-2 px-4 py-3 bg-red-100 dark:bg-red-900 border border-red-500 rounded-md text-red-800 dark:text-red-200 text-sm">
-        <span class="text-xl">⚠️</span>
-        {error}
-      </div>
-    {/if}
-  {:else}
-    <div class="flex flex-col items-center gap-4 py-12 px-8 text-center">
-      <span class="text-xl">⚠️</span>
-      <p class="text-gray-500 dark:text-gray-400">Failed to load onboarding data</p>
-    </div>
-  {/if}
 
   <div class="flex justify-between gap-4 pt-4 border-t border-gray-200 dark:border-gray-700 md:flex-col">
     <button class="px-6 py-3 text-base font-semibold bg-gray-100 dark:bg-gray-700 text-gray-700 dark:text-gray-300 border border-gray-300 dark:border-gray-600 rounded-lg cursor-pointer transition-all hover:bg-gray-200 dark:hover:bg-gray-600 disabled:opacity-50 disabled:cursor-not-allowed" on:click={onBack} disabled={completing}>
@@ -262,7 +177,7 @@
     </button>
     <button
       class="px-8 py-4 text-lg font-semibold bg-gradient-to-br from-indigo-500 to-purple-600 text-white border-none rounded-lg cursor-pointer transition-all hover:-translate-y-0.5 hover:shadow-lg hover:shadow-indigo-500/40 disabled:opacity-50 disabled:cursor-not-allowed disabled:hover:transform-none disabled:hover:shadow-none"
-      on:click={handleComplete}
+      on:click={onComplete}
       disabled={completing}
     >
       {completing ? 'Finalizing...' : 'Complete Onboarding 🚀'}

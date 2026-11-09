@@ -9,6 +9,7 @@ import {
   discardRobotSpeech,
   stageRobotSpeech,
 } from './robot-audio.js';
+import { ROBOT_SPEECH_CHUNK_POLICY } from './speech-chunks.js';
 import { createKokoroTTSService } from '../tts.js';
 import type { EnvironmentAction } from '../environment-interface/types.js';
 import type { SvelteFlowGraph } from '../cognitive-graph-schema.js';
@@ -138,6 +139,7 @@ export async function* prepareRobotSpeechChunks(
   for await (const chunk of service.synthesizeStream(text, {
     signal: options.signal, voice: options.voiceId || options.voice,
     speakingRate: options.speed, langCode: options.langCode, requestId: options.requestId,
+    chunkPolicy: ROBOT_SPEECH_CHUNK_POLICY,
   })) {
     options.signal?.throwIfAborted();
     const artifact = stageRobotSpeech(combineRobotSpeechWavChunks([chunk.audio], robotVolumePercent));

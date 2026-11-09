@@ -1,5 +1,5 @@
 <script lang="ts">
-  import { onDestroy, onMount } from 'svelte';
+  import { onMount } from 'svelte';
   import { openTriggerManagerSettings } from '../stores/navigation';
   import { autonomyModeDefinition } from '../lib/client/active-operator-modes';
   import {
@@ -13,8 +13,6 @@
     type TriggerView,
   } from '../lib/stores/trigger-manager';
 
-  let release: (() => void) | undefined;
-  let clock: ReturnType<typeof setInterval> | undefined;
   let now = Date.now();
   let offsetMs = 0;
   let anchoredServerTime = '';
@@ -92,12 +90,12 @@
   }
 
   onMount(() => {
-    release = useTriggerManager();
-    clock = setInterval(() => now = Date.now(), 1_000);
-  });
-  onDestroy(() => {
-    release?.();
-    if (clock) clearInterval(clock);
+    const release = useTriggerManager();
+    const clock = setInterval(() => now = Date.now(), 1_000);
+    return () => {
+      release();
+      clearInterval(clock);
+    };
   });
 </script>
 
@@ -130,7 +128,11 @@
   </header>
 
   {#if !$triggerManagerSnapshot}
-    <div class="py-12 text-center text-gray-500">Waiting for authoritative Trigger Manager state…</div>
+    {#if $triggerManagerError}
+      <div class="py-12 text-center text-red-600 dark:text-red-300">{$triggerManagerError}</div>
+    {:else}
+      <div class="py-12 text-center text-gray-500">{$triggerManagerConnection === 'live' ? 'Trigger Manager snapshot unavailable.' : 'Waiting for authoritative Trigger Manager state…'}</div>
+    {/if}
   {:else}
     <section class="mb-4 rounded border border-gray-200 dark:border-gray-800">
       <div class="border-b border-gray-200 p-3 font-semibold dark:border-gray-800">Next trigger timeline</div>

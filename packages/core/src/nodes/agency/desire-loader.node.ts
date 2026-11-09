@@ -131,5 +131,3 @@ export const DesireLoaderNode: NodeDefinition = defineNode({
   },
   execute,
 });
-
-export default DesireLoaderNode;

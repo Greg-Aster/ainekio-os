@@ -13,9 +13,9 @@ const RECEIPT_SCHEMA_VERSION = 1;
 const MAX_RECEIPTS = 768;
 const MAX_EXECUTION_ID_CHARS = 400;
 
-export type InnerCuriositySkipReason = 'disabled' | 'no-memories';
+type InnerCuriositySkipReason = 'disabled' | 'no-memories';
 
-export type InnerCuriosityOutcome =
+type InnerCuriosityOutcome =
   | {
     status: 'generated';
     username: string;
@@ -32,14 +32,14 @@ export type InnerCuriosityOutcome =
     reason: InnerCuriositySkipReason;
   };
 
-export interface InnerCuriosityExecutionIdentity {
+interface InnerCuriosityExecutionIdentity {
   username: string;
   executionId: string;
   idempotencyKey: string;
   timestamp: string;
 }
 
-export interface InnerCuriosityFollowOnReceipt {
+interface InnerCuriosityFollowOnReceipt {
   admitted: boolean;
   skipped: boolean;
   reason?: string;
@@ -60,11 +60,11 @@ interface InnerCuriosityReceiptBase extends InnerCuriosityExecutionIdentity {
   preparedAt: string;
 }
 
-export interface PreparedInnerCuriosityReceipt extends InnerCuriosityReceiptBase {
+interface PreparedInnerCuriosityReceipt extends InnerCuriosityReceiptBase {
   status: 'prepared';
 }
 
-export interface CompletedInnerCuriosityReceipt extends InnerCuriosityReceiptBase {
+interface CompletedInnerCuriosityReceipt extends InnerCuriosityReceiptBase {
   status: 'completed';
   completedAt: string;
   /** Absent only on receipts written before graph-owned follow-on observability. */
@@ -85,10 +85,6 @@ export interface InnerCuriosityPrepareDependencies {
 
 export interface InnerCuriosityCompleteDependencies extends InnerCuriosityPrepareDependencies {
   auditGenerated: (receipt: CompletedInnerCuriosityReceipt, deduplicated: boolean) => void;
-}
-
-function errorMessage(error: unknown): string {
-  return error instanceof Error ? error.message : String(error);
 }
 
 function throwIfAborted(context: NodeExecutionContext): void {
@@ -654,7 +650,3 @@ export const InnerCuriosityCompleteNode: NodeDefinition = defineNode({
   description: 'Validates buffer, memory, and follow-on results before marking the execution durably complete.',
   execute: executeInnerCuriosityComplete,
 });
-
-export function innerCuriosityErrorMessage(error: unknown): string {
-  return errorMessage(error);
-}

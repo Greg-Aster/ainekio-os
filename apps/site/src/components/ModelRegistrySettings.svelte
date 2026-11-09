@@ -1,21 +1,20 @@
 <script lang="ts">
-  import { onMount } from 'svelte'
+  import { onDestroy, onMount } from 'svelte'
   import { apiFetch } from '../lib/client/api-config'
 
   interface RegistryModel {
     id: string
-    aliases?: string[]
     provider: string
     model: string
     description?: string
-    roles?: string[]
     capabilities?: string[]
     options?: Record<string, any>
     source?: string
   }
 
+  let alive = true
+  let registryRead: AbortController | null = null
   let models: RegistryModel[] = []
-  let environmentModelId = ''
   let selectedModelId = ''
   let imageCapable = false
   let maxImages = 4
@@ -24,18 +23,14 @@
   let enableThinking = false
   let allowedImageMimeTypes = ['image/jpeg', 'image/png', 'image/webp']
   let loading = true
-  let savingAssignment = false
   let savingOptions = false
   let message = ''
   let error = ''
 
   $: selectedModel = models.find(model => model.id === selectedModelId) || null
 
-  function modelForAssignment(modelId: string): RegistryModel | undefined {
-    return models.find(model => model.id === modelId || model.aliases?.includes(modelId))
-  }
-
-  onMount(loadRegistry)
+  onMount(() => { void loadRegistry() })
+  onDestroy(() => { alive = false; registryRead?.abort() })
 
   function clearFeedback() {
     message = ''
@@ -47,7 +42,7 @@
     if (!model) return
     imageCapable = model.capabilities?.includes('image') ?? false
     maxImages = Number(model.options?.maxImages ?? 4)
-    maxImageMb = Math.max(1, Math.round(Number(model.options?.maxImageBytes ?? 5 * 1024 * 1024) / 1024 / 1024))
+    maxImageMb = Number(model.options?.maxImageBytes ?? 5 * 1024 * 1024) / 1024 / 1024
     contextWindow = Number(model.options?.contextWindow ?? 8192)
     enableThinking = Boolean(model.options?.enableThinking ?? false)
     allowedImageMimeTypes = Array.isArray(model.options?.allowedImageMimeTypes)
@@ -55,56 +50,40 @@
       : ['image/jpeg', 'image/png', 'image/webp']
   }
 
+  function selectedOptions() {
+    return {
+      modelId: selectedModelId, capabilities: imageCapable ? ['text', 'image'] : ['text'],
+      options: {
+        maxImages: Number(maxImages), maxImageBytes: Number(maxImageMb) * 1024 * 1024,
+        allowedImageMimeTypes: [...allowedImageMimeTypes], contextWindow: Number(contextWindow), enableThinking,
+      },
+    }
+  }
+
   async function loadRegistry() {
+    const before = JSON.stringify(selectedOptions())
+    registryRead?.abort()
+    const controller = new AbortController()
+    registryRead = controller
     loading = true
     clearFeedback()
     try {
-      const response = await apiFetch('/api/model-registry?cognitiveMode=environment')
+      const response = await apiFetch('/api/model-registry', { signal: controller.signal })
       const data = await response.json()
       if (!response.ok || !data.success) {
         throw new Error(data.error || 'Failed to load model registry')
       }
 
-      models = Array.isArray(data.availableModels) ? data.availableModels : []
-      const assignedModelId = data.roleAssignments?.persona || ''
-      environmentModelId = modelForAssignment(assignedModelId)?.id || assignedModelId
-      const editableModels = models.filter(model => model.source === 'user-registry')
-      if (!selectedModelId || !editableModels.some(model => model.id === selectedModelId)) {
-        selectedModelId = modelForAssignment(environmentModelId)?.id || editableModels[0]?.id || ''
-      }
-      loadSelectedOptions()
+      controller.signal.throwIfAborted()
+      models = data.availableModels.filter((model: RegistryModel) => model.source === 'user-registry')
+      if (!selectedModelId || !models.some(model => model.id === selectedModelId)) {
+        selectedModelId = models[0]?.id || ''
+        loadSelectedOptions()
+      } else if (JSON.stringify(selectedOptions()) === before) loadSelectedOptions()
     } catch (cause) {
-      error = (cause as Error).message
+      if (!controller.signal.aborted) error = (cause as Error).message
     } finally {
-      loading = false
-    }
-  }
-
-  async function assignEnvironmentModel() {
-    if (!environmentModelId) return
-    savingAssignment = true
-    clearFeedback()
-    try {
-      const response = await apiFetch('/api/model-registry', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          role: 'persona',
-          modelId: environmentModelId,
-          cognitiveMode: 'environment',
-        }),
-      })
-      const data = await response.json()
-      if (!response.ok || !data.success) {
-        throw new Error(data.error || 'Failed to assign the Environment Mode model')
-      }
-      selectedModelId = environmentModelId
-      await loadRegistry()
-      message = 'Environment Mode model assignment saved.'
-    } catch (cause) {
-      error = (cause as Error).message
-    } finally {
-      savingAssignment = false
+      if (registryRead === controller) loading = false
     }
   }
 
@@ -117,30 +96,22 @@
 
     savingOptions = true
     clearFeedback()
+    const submitted = selectedOptions()
     try {
       const response = await apiFetch('/api/model-registry', {
         method: 'PUT',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          modelId: selectedModelId,
-          capabilities: imageCapable ? ['text', 'image'] : ['text'],
-          options: {
-            maxImages: Number(maxImages),
-            maxImageBytes: Number(maxImageMb) * 1024 * 1024,
-            allowedImageMimeTypes,
-            contextWindow: Number(contextWindow),
-            enableThinking,
-          },
-        }),
+        body: JSON.stringify(submitted),
       })
       const data = await response.json()
       if (!response.ok || !data.success) {
         throw new Error(data.error || 'Failed to save model input options')
       }
-      await loadRegistry()
+      if (!alive) return
+      models = models.map(model => model.id === submitted.modelId ? { ...model, ...data.model } : model)
       message = 'Model input options saved through the model registry.'
     } catch (cause) {
-      error = (cause as Error).message
+      if (alive) error = (cause as Error).message
     } finally {
       savingOptions = false
     }
@@ -150,7 +121,7 @@
 <div class="setting-group">
   <div class="flex items-start justify-between gap-3 mb-3">
     <div>
-      <span class="setting-label m-0">Model Routing and Input Capabilities</span>
+      <span class="setting-label m-0">Registered Model Input Capabilities</span>
       <p class="text-sm text-gray-500 dark:text-gray-400 m-0 mt-1">
         Uses the normal user model registry. Image input does not select or start a separate backend.
       </p>
@@ -167,30 +138,16 @@
     <div class="text-sm rounded-md border px-3 py-2 mb-3 bg-emerald-500/10 border-emerald-500/30 text-emerald-700 dark:text-emerald-300">{message}</div>
   {/if}
 
-  {#if !loading && models.length === 0}
-    <p class="text-sm text-gray-500 dark:text-gray-400 m-0">No models are available from the active backend or user registry.</p>
+  {#if !loading && !error && models.length === 0}
+    <p class="text-sm text-gray-500 dark:text-gray-400 m-0">No registered models are available to edit.</p>
   {:else}
-    <div class="grid grid-cols-1 md:grid-cols-2 gap-3">
-      <label class="block text-sm">
-        <span class="block font-medium text-gray-700 dark:text-gray-300 mb-1">Environment Mode model</span>
-        <select class="select-field w-full" bind:value={environmentModelId} disabled={loading || savingAssignment}>
-          {#each models as model}
-            <option value={model.id}>{model.description || model.model} ({model.provider}){model.capabilities?.includes('image') ? ' - image' : ''}</option>
-          {/each}
-        </select>
-      </label>
-      <div class="flex items-end">
-        <button class="btn-primary" on:click={assignEnvironmentModel} disabled={!environmentModelId || savingAssignment}>
-          {savingAssignment ? 'Assigning...' : 'Assign through model registry'}
-        </button>
-      </div>
-    </div>
+    <p class="text-sm text-gray-500 dark:text-gray-400">Assign models to cognitive roles in the sidebar's model settings.</p>
 
     <div class="mt-5 pt-4 border-t border-gray-200 dark:border-gray-700">
       <label class="block text-sm mb-3">
         <span class="block font-medium text-gray-700 dark:text-gray-300 mb-1">Edit registered model options</span>
         <select class="select-field w-full" bind:value={selectedModelId} on:change={loadSelectedOptions} disabled={loading}>
-          {#each models.filter(model => model.source === 'user-registry') as model}
+          {#each models as model}
             <option value={model.id}>{model.description || model.model} ({model.provider})</option>
           {/each}
         </select>
@@ -208,7 +165,7 @@
           </label>
           <label class="block text-sm">
             <span class="block font-medium text-gray-700 dark:text-gray-300 mb-1">Maximum size per image (MB)</span>
-            <input class="input-field" type="number" min="1" max="20" bind:value={maxImageMb} />
+            <input class="input-field" type="number" min="1" max="20" step="any" bind:value={maxImageMb} />
           </label>
           <label class="block text-sm">
             <span class="block font-medium text-gray-700 dark:text-gray-300 mb-1">Context window</span>

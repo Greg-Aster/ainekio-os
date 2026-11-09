@@ -1,26 +1,16 @@
 <script lang="ts">
-  import { onMount } from 'svelte';
+  import { onDestroy, onMount } from 'svelte';
   import { apiFetch } from '../lib/client/api-config';
   import { DEFAULT_OLLAMA_CHAT_MODEL } from '../lib/client/model-defaults';
   import { statusRefreshTrigger } from '../stores/navigation';
 
   type DefaultBackend = 'auto' | 'ollama' | 'llama-cpp';
   type ResolvedBackend = 'llama-cpp' | 'ollama' | 'remote' | 'offline';
-  type BigBrotherProvider = 'claude-code' | 'aider' | 'gemini-cli' | 'qwen-code' | 'codex';
+  type BigBrotherProvider = 'claude-code' | 'codex' | 'gemini';
 
   interface BackendAvailability {
     llamaCpp: { configured: boolean; running: boolean; model?: string; error?: string };
     ollama: { installed: boolean; running: boolean; model?: string };
-  }
-
-  interface BackendStatus {
-    backend: string;
-    resolvedBackend: ResolvedBackend;
-    running: boolean;
-    model?: string;
-    endpoint?: string;
-    health: 'healthy' | 'starting' | 'degraded' | 'offline';
-    reason?: string;
   }
 
   interface LocalModelArtifact {
@@ -59,11 +49,6 @@
     provider: string;
     model?: string;
     reasoningEffort?: string;
-    escalateOnStuck: boolean;
-    escalateOnRepeatedFailures: boolean;
-    maxRetries: number;
-    includeFullScratchpad: boolean;
-    autoApplySuggestions: boolean;
   }
 
   const defaultBackendOptions: Array<{ value: DefaultBackend; label: string; description: string }> = [
@@ -74,12 +59,20 @@
 
   const bigBrotherProviderOptions: { value: BigBrotherProvider; label: string; description: string }[] = [
     { value: 'claude-code', label: 'Claude Code', description: 'Runs in the visible Big Brother terminal' },
-    { value: 'aider', label: 'Aider', description: 'AI pair programming with git integration' },
-    { value: 'gemini-cli', label: 'Gemini CLI', description: 'Google Gemini CLI' },
-    { value: 'qwen-code', label: 'Qwen Code', description: 'Qwen Code CLI' },
     { value: 'codex', label: 'Codex', description: 'Runs in the visible Big Brother terminal' },
+    { value: 'gemini', label: 'Gemini (Antigravity)', description: 'Runs Gemini Flash in the visible Big Brother terminal' },
   ];
 
+  let mounted = true;
+  let configLoaded = false;
+  let configError: string | null = null;
+  let configRead: AbortController | null = null;
+  let statusRead: AbortController | null = null;
+  let loraRead: AbortController | null = null;
+  let bigBrotherRead: AbortController | null = null;
+  let loraError: string | null = null;
+  let bigBrotherError: string | null = null;
+  let connectedRemoteUrl = '';
   let loading = true;
   let error: string | null = null;
   let savedNotice: string | null = null;
@@ -88,7 +81,6 @@
   let configuredActiveBackend = 'auto';
   let preferredLocalBackend: 'ollama' | 'llama-cpp' = 'ollama';
   let resolvedBackend: ResolvedBackend | null = null;
-  let backendStatus: BackendStatus | null = null;
   let available: BackendAvailability | null = null;
   let sharedArtifacts: LocalModelArtifact[] = [];
   let statusLoading = false;
@@ -157,10 +149,14 @@
   let savingBigBrother = false;
 
   onMount(() => {
-    void loadBackendSettings().then(() => {
-      void loadOllamaLoras();
-    });
+    void loadBackendSettings();
+    void loadStatus();
     loadBigBrotherConfig();
+  });
+
+  onDestroy(() => {
+    mounted = false;
+    configRead?.abort(); statusRead?.abort(); loraRead?.abort(); bigBrotherRead?.abort();
   });
 
   function isDefaultBackend(value: string): value is DefaultBackend {
@@ -168,7 +164,7 @@
   }
 
   function restartNotice(label = 'Backend configuration saved'): string {
-    return `${label}. Restart MetaHuman OS for this setting to take effect cleanly.`;
+    return `${label}. Restart Ainekio OS for this setting to take effect cleanly.`;
   }
 
   function clearMessages() {
@@ -196,6 +192,7 @@
     const artifact = ollamaArtifacts.find(candidate => candidate.id === ollamaModelSelection);
     if (!artifact) {
       ollamaModel = '';
+      void loadOllamaLoras('');
       return;
     }
     ollamaModel = artifact.displayName;
@@ -230,38 +227,44 @@
     ollamaKeepAlive = config.ollama?.keepAlive || '5m';
     ollamaEnableThinking = config.ollama?.enableThinking ?? false;
 
-    if (config.remote?.serverUrl) {
-      remoteServerUrl = config.remote.serverUrl;
-    }
+    remoteServerUrl = config.remote?.serverUrl || '';
+    connectedRemoteUrl = remoteServerUrl;
 
     syncOllamaModelSelection();
   }
 
   async function loadOllamaLoras(targetModel = ollamaModel) {
+    if (!mounted) return;
+    loraRead?.abort();
+    const controller = new AbortController();
+    loraRead = controller;
+    loraError = null;
     if (!targetModel.trim()) {
       ollamaLoraAdapters = [];
+      loadingOllamaLoras = false;
       return;
     }
     loadingOllamaLoras = true;
     try {
       const res = await apiFetch(`/api/ollama/loras?model=${encodeURIComponent(targetModel.trim())}`, {
-        signal: AbortSignal.timeout(8000),
+        signal: AbortSignal.any([controller.signal, AbortSignal.timeout(8000)]),
       });
-      const data = await res.json().catch(() => ({}));
+      const data = await res.json();
       if (!res.ok || !data.success) {
         throw new Error(data.error || `Ollama LoRA settings returned ${res.status}`);
       }
-      ollamaLoraAdapters = data.available || [];
+      controller.signal.throwIfAborted();
+      ollamaLoraAdapters = data.available;
     } catch (err) {
-      console.error('[BackendSettings] Ollama LoRA settings failed:', err);
-      ollamaLoraAdapters = [];
+      if (!controller.signal.aborted) loraError = err instanceof Error ? err.message : String(err);
     } finally {
-      loadingOllamaLoras = false;
+      if (loraRead === controller) loadingOllamaLoras = false;
     }
   }
 
   async function buildOllamaLora(adapter: OllamaLoraAdapter) {
     if (adapter.unavailableReason || !ollamaModel.trim()) return;
+    const baseModel = ollamaModel.trim();
     buildingOllamaLora = adapter.name;
     clearMessages();
     try {
@@ -270,16 +273,17 @@
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
           adapterName: adapter.name,
-          baseModel: ollamaModel.trim(),
+          baseModel,
         }),
       });
-      const data = await res.json().catch(() => ({}));
+      const data = await res.json();
       if (!res.ok || !data.success) {
         error = data.error || 'Failed to create Ollama model from the selected LoRA';
         return;
       }
-      ollamaModel = data.modelName;
-      savedNotice = `${data.modelName} was created and selected for new Ollama requests.`;
+      if (!mounted) return;
+      if (ollamaModel.trim() === baseModel) ollamaModel = data.modelName;
+      savedNotice = `${data.modelName} was created and saved as the Ollama default.`;
       await loadStatus();
       await loadOllamaLoras(ollamaModel);
       statusRefreshTrigger.update(n => n + 1);
@@ -291,50 +295,59 @@
   }
 
   async function loadBackendSettings() {
+    if (!mounted) return;
+    configRead?.abort();
+    const controller = new AbortController();
+    configRead = controller;
+    configError = null;
     loading = true;
-    void loadStatus();
 
     try {
       const res = await apiFetch('/api/llm-backend/config', {
-        signal: AbortSignal.timeout(5000),
+        signal: AbortSignal.any([controller.signal, AbortSignal.timeout(5000)]),
       });
       if (!res.ok) {
         throw new Error(`Backend configuration returned ${res.status}`);
       }
-      applyBackendConfig(await res.json());
+      const config = await res.json();
+      controller.signal.throwIfAborted();
+      applyBackendConfig(config);
+      configLoaded = true;
+      void loadOllamaLoras();
     } catch (err) {
-      console.error('[BackendSettings] Error loading config:', err);
-      error = 'Failed to load saved backend configuration';
+      if (!controller.signal.aborted) configError = 'Failed to load saved backend configuration';
     } finally {
-      loading = false;
+      if (configRead === controller) loading = false;
     }
   }
 
   async function loadStatus(): Promise<boolean> {
+    if (!mounted) return false;
+    statusRead?.abort();
+    const controller = new AbortController();
+    statusRead = controller;
     statusLoading = true;
     statusWarning = null;
     try {
       const res = await apiFetch('/api/llm-backend/status', {
-        signal: AbortSignal.timeout(8000),
+        signal: AbortSignal.any([controller.signal, AbortSignal.timeout(8000)]),
       });
       if (!res.ok) {
         throw new Error(`Backend status returned ${res.status}`);
       }
 
       const data = await res.json();
-      backendStatus = data.active;
+      controller.signal.throwIfAborted();
       available = data.available;
       resolvedBackend = data.active?.resolvedBackend || null;
       sharedArtifacts = data.sharedArtifacts || data.available?.sharedArtifacts || [];
-      applyBackendConfig(data.config);
-      void loadOllamaLoras(ollamaModel);
+      syncOllamaModelSelection();
       return true;
     } catch (err) {
-      console.error('[BackendSettings] Error loading status:', err);
-      statusWarning = 'Live service status is unavailable. Saved settings are still editable.';
+      if (!controller.signal.aborted) statusWarning = 'Live service status is unavailable. Saved settings are still editable.';
       return false;
     } finally {
-      statusLoading = false;
+      if (statusRead === controller) statusLoading = false;
     }
   }
 
@@ -360,7 +373,7 @@
         body: JSON.stringify(updates),
       });
 
-      const data = await res.json().catch(() => ({}));
+      const data = await res.json();
       if (!res.ok || !data.success) {
         error = data.error || 'Failed to save default backend';
         return;
@@ -393,7 +406,9 @@
       });
       const data = await response.json();
       if (!response.ok || !data.success) throw new Error(data.error || 'Could not save llama.cpp settings');
-      applyBackendConfig(data.config);
+      configuredActiveBackend = 'llama-cpp';
+      activeBackend = 'llama-cpp';
+      preferredLocalBackend = 'llama-cpp';
       await loadStatus();
       savedNotice = 'llama.cpp settings saved and selected.';
       window.dispatchEvent(new CustomEvent('backend-changed', { detail: { backend: 'llama-cpp', requiresRestart: false } }));
@@ -432,7 +447,7 @@
         }),
       });
 
-      const data = await res.json().catch(() => ({}));
+      const data = await res.json();
       if (!res.ok || !data.success) {
         error = data.error || 'Failed to save Ollama config';
         return;
@@ -460,12 +475,12 @@
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ action }),
       });
-      const data = await res.json().catch(() => ({}));
+      const data = await res.json();
       if (!res.ok || !data.success) {
         error = data.error || `Failed to ${action} ${getBackendLabel(backend)}`;
         return;
       }
-      setTimeout(loadStatus, 2000);
+      await loadStatus();
     } catch (err) {
       error = `Failed to ${action} ${getBackendLabel(backend)}`;
     } finally {
@@ -474,21 +489,31 @@
   }
 
   async function loadBigBrotherConfig() {
+    if (!mounted) return;
+    bigBrotherRead?.abort();
+    const controller = new AbortController();
+    bigBrotherRead = controller;
+    const draft = JSON.stringify([bigBrotherProvider, bigBrotherModel, bigBrotherReasoningEffort]);
+    bigBrotherError = null;
     try {
-      const res = await apiFetch('/api/big-brother-config');
-      if (res.ok) {
-        const data = await res.json();
-        bigBrotherConfig = data.config;
+      const res = await apiFetch('/api/big-brother-config', { signal: controller.signal });
+      const data = await res.json();
+      if (!res.ok) throw new Error(data.error || 'Failed to load Big Brother configuration');
+      controller.signal.throwIfAborted();
+      bigBrotherConfig = data.config;
+      if (JSON.stringify([bigBrotherProvider, bigBrotherModel, bigBrotherReasoningEffort]) === draft) {
         bigBrotherModel = data.config?.model || '';
         bigBrotherReasoningEffort = data.config?.reasoningEffort || '';
         bigBrotherProvider = data.config?.provider || 'claude-code';
       }
     } catch (err) {
-      console.error('[BackendSettings] Error loading Big Brother config:', err);
+      if (!controller.signal.aborted) bigBrotherError = err instanceof Error ? err.message : String(err);
     }
   }
 
   async function saveBigBrotherConfig() {
+    const submitted = { model: bigBrotherModel, reasoningEffort: bigBrotherReasoningEffort, provider: bigBrotherProvider };
+    const stillSubmitted = () => bigBrotherModel === submitted.model && bigBrotherReasoningEffort === submitted.reasoningEffort && bigBrotherProvider === submitted.provider;
     savingBigBrother = true;
     clearMessages();
 
@@ -496,27 +521,27 @@
       const res = await apiFetch('/api/big-brother-config', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          model: bigBrotherModel,
-          reasoningEffort: bigBrotherReasoningEffort,
-          provider: bigBrotherProvider,
-          escalateOnStuck: bigBrotherConfig?.escalateOnStuck ?? true,
-          escalateOnRepeatedFailures: bigBrotherConfig?.escalateOnRepeatedFailures ?? true,
-          maxRetries: bigBrotherConfig?.maxRetries ?? 1,
-          includeFullScratchpad: bigBrotherConfig?.includeFullScratchpad ?? true,
-          autoApplySuggestions: bigBrotherConfig?.autoApplySuggestions ?? false,
-        }),
+        body: JSON.stringify(submitted),
       });
 
-      if (res.ok) {
-        await loadBigBrotherConfig();
-        statusRefreshTrigger.update(n => n + 1);
-      } else {
-        const data = await res.json().catch(() => ({}));
-        error = data.error || 'Failed to save escalation config';
+      const data = await res.json();
+      if (!res.ok || !data.success) throw new Error(data.error || 'Failed to save Big Brother settings');
+      if (!mounted) return;
+      bigBrotherConfig = data.config;
+      if (stillSubmitted()) {
+        bigBrotherProvider = data.config.provider;
+        bigBrotherModel = data.config.model || '';
+        bigBrotherReasoningEffort = data.config.reasoningEffort || '';
       }
-    } catch (err) {
-      error = 'Failed to save escalation config';
+      statusRefreshTrigger.update(n => n + 1);
+    } catch (cause) {
+      if (!mounted) return;
+      error = cause instanceof Error ? cause.message : String(cause);
+      if (bigBrotherConfig && stillSubmitted()) {
+        bigBrotherProvider = bigBrotherConfig.provider;
+        bigBrotherModel = bigBrotherConfig.model || '';
+        bigBrotherReasoningEffort = bigBrotherConfig.reasoningEffort || '';
+      }
     } finally {
       savingBigBrother = false;
     }
@@ -579,6 +604,8 @@
 
       const data = await res.json();
       if (res.ok && data.success) {
+        if (!mounted) return;
+        connectedRemoteUrl = data.sessionSaved ? data.serverUrl : connectedRemoteUrl;
         remoteServerTestResult = {
           success: true,
           latencyMs: data.latencyMs,
@@ -605,11 +632,12 @@
       const res = await apiFetch('/api/remote-server/disconnect', { method: 'DELETE' });
       if (res.ok) {
         remoteServerUrl = '';
+        connectedRemoteUrl = '';
         remoteServerTestResult = null;
         await loadStatus();
         statusRefreshTrigger.update(n => n + 1);
       } else {
-        const data = await res.json().catch(() => ({}));
+        const data = await res.json();
         error = data.error || 'Failed to disconnect';
       }
     } catch (err) {
@@ -652,8 +680,8 @@
     Set the default chat route, manage local services, and keep utility models available for indexing and routed tasks.
   </p>
 
-  {#if error}
-    <div class="banner banner-error mb-4">{error}</div>
+  {#if error || configError}
+    <div class="banner banner-error mb-4">{error || configError}</div>
   {/if}
 
   {#if savedNotice}
@@ -671,6 +699,8 @@
 
   {#if loading}
     <div class="text-center py-8 text-gray-500">Loading backend settings...</div>
+  {:else if !configLoaded}
+    <div class="banner banner-error">Saved backend configuration is unavailable. <button class="btn-secondary" on:click={loadBackendSettings}>Reload configuration</button></div>
   {:else}
     <section class="panel p-4 mb-6 bg-gray-50 dark:bg-gray-900/50">
       <div class="flex items-start justify-between gap-4 mb-4">
@@ -683,7 +713,7 @@
         <div class="text-right text-sm">
           <div class="text-gray-500 dark:text-gray-400">Resolved now</div>
           <div class="font-semibold text-gray-800 dark:text-gray-100">
-            {getBackendIcon(resolvedBackend || 'offline')} {getBackendLabel(resolvedBackend || 'offline')}
+            {resolvedBackend ? `${getBackendIcon(resolvedBackend)} ${getBackendLabel(resolvedBackend)}` : 'Unavailable'}
           </div>
         </div>
       </div>
@@ -719,7 +749,7 @@
       <div class="panel p-4 mb-4 {configuredActiveBackend === 'llama-cpp' ? 'border-2 border-violet-500 dark:border-violet-400' : ''}">
         <div class="flex items-center gap-2 mb-3">
           <h5 class="m-0 text-lg font-semibold text-gray-900 dark:text-gray-100">llama.cpp</h5>
-          <span class="ml-auto text-sm">{available?.llamaCpp?.running ? 'Running' : 'Offline'}</span>
+          <span class="ml-auto text-sm">{available ? (available.llamaCpp?.running ? 'Running' : 'Offline') : 'Unavailable'}</span>
         </div>
         <p class="text-sm text-gray-500 dark:text-gray-400">Connect to your existing llama-server. Start and stop it using its installed service. Context size must match the server; image input requires a vision model and projector.</p>
         {#if available?.llamaCpp?.error && llamaModel}
@@ -776,7 +806,7 @@
             {:else}
               <label class="block text-sm">
                 <span class="block font-medium text-gray-700 dark:text-gray-300 mb-1">Custom model name</span>
-                <input class="input-field font-mono" bind:value={ollamaModel} placeholder="model:tag" />
+                <input class="input-field font-mono" bind:value={ollamaModel} on:input={() => { loraRead?.abort(); ollamaLoraAdapters = []; }} on:change={() => loadOllamaLoras()} placeholder="model:tag" />
                 <span class="block mt-1 text-xs text-gray-500 dark:text-gray-400">The model must already exist in the configured Ollama service.</span>
               </label>
             {/if}
@@ -867,6 +897,8 @@
                   </p>
                   {#if loadingOllamaLoras}
                     <div class="text-xs text-gray-500">Loading profile adapters…</div>
+                  {:else if loraError}
+                    <div class="banner banner-error">{loraError}<button class="btn-secondary btn-sm" on:click={() => loadOllamaLoras()}>Reload adapters</button></div>
                   {:else if ollamaLoraAdapters.length === 0}
                     <div class="rounded-md bg-gray-50 dark:bg-gray-800 p-2 text-xs text-gray-500 dark:text-gray-400">
                       No profile LoRA directories containing adapter_model.safetensors and adapter_config.json were found.
@@ -912,14 +944,14 @@
             </div>
 
             <p class="m-0 text-xs text-gray-500 dark:text-gray-400">
-              Starts automatically with MetaHuman OS when selected as the default backend.
+              Starts automatically with Ainekio OS when selected as the default backend.
             </p>
           </div>
 
           <div class="flex items-center gap-2 text-sm mb-4">
             <span class="text-gray-500 dark:text-gray-400">Status:</span>
             <span class="font-semibold {available?.ollama.running ? 'text-green-600 dark:text-green-400' : 'text-red-600 dark:text-red-400'}">
-              {available?.ollama.running ? 'Running' : available?.ollama.installed ? 'Stopped' : 'Not installed'}
+              {!available ? 'Unavailable' : available.ollama.running ? 'Running' : available.ollama.installed ? 'Stopped' : 'Not installed'}
             </span>
             {#if available?.ollama.model}
               <span class="font-mono text-xs text-gray-500 dark:text-gray-400">• {available.ollama.model}</span>
@@ -952,8 +984,10 @@
         Remote servers can stay available alongside local services for routed tasks and fallback model access.
       </p>
 
+      {#if connectedRemoteUrl}<p class="text-sm">Saved remote connection: {connectedRemoteUrl}</p>{/if}
       <label for="remote-server" class="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1">Server URL</label>
       <input
+        on:input={() => remoteServerTestResult = null}
         id="remote-server"
         type="text"
         bind:value={remoteServerUrl}
@@ -965,11 +999,11 @@
       <div class="grid grid-cols-1 sm:grid-cols-2 gap-3 mb-3">
         <label class="block text-sm">
           <span class="block text-gray-600 dark:text-gray-400 mb-1">Username</span>
-          <input type="text" bind:value={remoteServerUsername} placeholder="Your MetaHuman username" disabled={savingRemoteConfig || testingRemoteServer} class="input-field" />
+          <input type="text" bind:value={remoteServerUsername} on:input={() => remoteServerTestResult = null} placeholder="Your Ainekio OS username" disabled={savingRemoteConfig || testingRemoteServer} class="input-field" />
         </label>
         <label class="block text-sm">
           <span class="block text-gray-600 dark:text-gray-400 mb-1">Password</span>
-          <input type="password" bind:value={remoteServerPassword} placeholder="Your password" disabled={savingRemoteConfig || testingRemoteServer} class="input-field" />
+          <input type="password" bind:value={remoteServerPassword} on:input={() => remoteServerTestResult = null} placeholder="Your password" disabled={savingRemoteConfig || testingRemoteServer} class="input-field" />
         </label>
       </div>
 
@@ -985,7 +1019,7 @@
         <button class="btn-success" on:click={connectToRemoteServer} disabled={savingRemoteConfig || testingRemoteServer || !remoteServerUrl}>
           {savingRemoteConfig ? 'Connecting...' : 'Connect & Save'}
         </button>
-        {#if remoteServerUrl && remoteServerTestResult?.success}
+        {#if connectedRemoteUrl}
           <button class="btn-danger" on:click={disconnectRemoteServer} disabled={savingRemoteConfig}>
             Disconnect
           </button>
@@ -996,7 +1030,7 @@
         <div class="mt-4 p-3 rounded-lg text-sm {remoteServerTestResult.success ? 'bg-green-100 dark:bg-green-900/30 border border-green-300 dark:border-green-700' : 'bg-red-100 dark:bg-red-900/30 border border-red-300 dark:border-red-700'}">
           {#if remoteServerTestResult.success}
             <div class="font-medium text-green-700 dark:text-green-300">
-              Connected successfully{remoteServerTestResult.latencyMs ? ` (${remoteServerTestResult.latencyMs}ms)` : ''}
+              Server responded successfully{remoteServerTestResult.latencyMs ? ` (${remoteServerTestResult.latencyMs}ms)` : ''}
             </div>
             {#if remoteServerTestResult.models && remoteServerTestResult.models.length > 0}
               <div class="flex flex-wrap gap-1.5 mt-2">
@@ -1020,6 +1054,8 @@
       </p>
 
 
+      {#if bigBrotherError}<div class="banner banner-error">{bigBrotherError}<button class="btn-secondary" on:click={loadBigBrotherConfig}>Reload Big Brother settings</button></div>{/if}
+      {#if bigBrotherConfig}
       <label for="big-brother-provider" class="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1">Provider</label>
       <select id="big-brother-provider" bind:value={bigBrotherProvider} on:change={() => { bigBrotherModel = ''; saveBigBrotherConfig(); }} disabled={savingBigBrother} class="select-field w-full mb-3">
         {#if !bigBrotherProviderOptions.some(option => option.value === bigBrotherProvider)}
@@ -1030,15 +1066,15 @@
         {/each}
       </select>
 
-      {#if bigBrotherProvider === 'codex' || bigBrotherProvider === 'claude-code'}
+      {#if bigBrotherProvider === 'codex' || bigBrotherProvider === 'claude-code' || bigBrotherProvider === 'gemini'}
         <label for="big-brother-model" class="block text-sm font-medium mb-1">Model</label>
         <input id="big-brother-model" class="input-field w-full mb-3" bind:value={bigBrotherModel} on:change={saveBigBrotherConfig} disabled={savingBigBrother} placeholder="CLI default" />
       {/if}
-      {#if bigBrotherProvider === 'codex'}
+      {#if bigBrotherProvider === 'codex' || bigBrotherProvider === 'gemini'}
         <label for="big-brother-reasoning" class="block text-sm font-medium mb-1">Reasoning effort</label>
         <select id="big-brother-reasoning" class="select-field w-full mb-3" bind:value={bigBrotherReasoningEffort} on:change={saveBigBrotherConfig} disabled={savingBigBrother}>
           <option value="">CLI backend setting</option>
-          {#each ['none', 'low', 'medium', 'high', 'xhigh', 'max'] as effort}
+          {#each (bigBrotherProvider === 'gemini' ? ['low', 'medium', 'high', 'xhigh', 'max'] : ['none', 'low', 'medium', 'high', 'xhigh', 'max']) as effort}
             <option value={effort}>{effort}</option>
           {/each}
         </select>
@@ -1051,6 +1087,7 @@
         </div>
       </div>
 
+      {/if}
     </section>
 
   {/if}

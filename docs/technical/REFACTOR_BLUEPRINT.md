@@ -95,8 +95,11 @@ packages/core
 - `packages/core` must not import from `apps`, `brain`, Astro, Svelte, or UI code.
 - `apps/site` client code must not import runtime-heavy core modules. Browser-safe
   types and schemas are allowed through explicit exports only.
-- `apps/site/src/pages/api` is transport-only. Business logic belongs in
-  `packages/core/src/api/handlers` or an explicitly documented service owner.
+- `packages/core/src/api/router.ts` is the single API registry for paths, methods,
+  named path parameters and route policy. Site's `pages/api/[...path].ts` forwards
+  all requests through the shared Astro/HTTP adapters; it has no second registry.
+  Business logic, including profile migration SSE, belongs in Core handlers or
+  their documented service owner. Literal paths precede parameter patterns.
 - `brain/*` calls public `@metahuman/core` exports, not deep
   `packages/core/src/...` paths.
 - CLI commands parse and delegate. Durable behavior belongs in core or an

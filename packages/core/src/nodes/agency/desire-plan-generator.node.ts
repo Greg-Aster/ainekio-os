@@ -25,7 +25,6 @@ import type {
   PlanGenerationOutput,
   DesireGoalType,
   DesireMilestone,
-  DesireExecution,
 } from '../../agency/types.js';
 import type { TrustLevel } from '../../skills.js';
 import { generatePlanId, initializeGoalProgress } from '../../agency/types.js';
@@ -624,5 +623,3 @@ export const DesirePlanGeneratorNode: NodeDefinition = defineNode({
   },
   execute,
 });
-
-export default DesirePlanGeneratorNode;

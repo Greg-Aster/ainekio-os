@@ -45,6 +45,38 @@ export function getCachedAudio(
   return null;
 }
 
+interface CacheDirIndex {
+  totalBytes: number;
+  entries: Map<string, { size: number; mtimeMs: number }>;
+}
+
+const directoryIndexCache = new Map<string, CacheDirIndex>();
+
+function getOrLoadDirIndex(directory: string): CacheDirIndex {
+  let index = directoryIndexCache.get(directory);
+  if (index && fs.existsSync(directory)) {
+    return index;
+  }
+  const entries = new Map<string, { size: number; mtimeMs: number }>();
+  let totalBytes = 0;
+  if (fs.existsSync(directory)) {
+    for (const file of fs.readdirSync(directory)) {
+      if (!file.endsWith('.wav')) continue;
+      const filePath = path.join(directory, file);
+      try {
+        const stat = fs.statSync(filePath);
+        totalBytes += stat.size;
+        entries.set(filePath, { size: stat.size, mtimeMs: stat.mtimeMs });
+      } catch {
+        // Ignore files deleted concurrently
+      }
+    }
+  }
+  index = { totalBytes, entries };
+  directoryIndexCache.set(directory, index);
+  return index;
+}
+
 /**
  * Save audio to cache
  */
@@ -63,9 +95,19 @@ export function cacheAudio(
   // Ensure cache directory exists
   if (!fs.existsSync(cacheConfig.directory)) {
     fs.mkdirSync(cacheConfig.directory, { recursive: true });
+    directoryIndexCache.delete(cacheConfig.directory);
+  }
+
+  const index = getOrLoadDirIndex(cacheConfig.directory);
+  const previous = index.entries.get(cachePath);
+  if (previous) {
+    index.totalBytes = Math.max(0, index.totalBytes - previous.size);
   }
 
   fs.writeFileSync(cachePath, audioBuffer);
+  index.entries.set(cachePath, { size: audioBuffer.length, mtimeMs: Date.now() });
+  index.totalBytes += audioBuffer.length;
+  enforceCacheLimit(cacheConfig, cachePath, index);
 
   audit({
     level: 'info',
@@ -82,26 +124,41 @@ export function cacheAudio(
   });
 }
 
+function enforceCacheLimit(cacheConfig: CacheConfig, preservePath?: string, preloadedIndex?: CacheDirIndex): void {
+  if (!cacheConfig.maxSizeMB || cacheConfig.maxSizeMB <= 0 || !fs.existsSync(cacheConfig.directory)) {
+    return;
+  }
+
+  const maxBytes = cacheConfig.maxSizeMB * 1024 * 1024;
+  const index = preloadedIndex ?? getOrLoadDirIndex(cacheConfig.directory);
+  if (index.totalBytes <= maxBytes) return;
+
+  const sorted = [...index.entries.entries()].sort((a, b) => a[1].mtimeMs - b[1].mtimeMs);
+  for (const [filePath, meta] of sorted) {
+    if (index.totalBytes <= maxBytes) break;
+    if (preservePath && filePath === preservePath) continue;
+    try {
+      fs.unlinkSync(filePath);
+    } catch {
+      // Ignore concurrent unlink
+    }
+    index.entries.delete(filePath);
+    index.totalBytes = Math.max(0, index.totalBytes - meta.size);
+  }
+}
+
 /**
  * Get cache statistics
  */
 export function getCacheStats(cacheConfig: CacheConfig): { size: number; files: number } {
-  let cacheSize = 0;
-  let cacheFiles = 0;
-
-  if (cacheConfig.enabled && fs.existsSync(cacheConfig.directory)) {
-    const files = fs.readdirSync(cacheConfig.directory).filter((f) => f.endsWith('.wav'));
-    cacheFiles = files.length;
-
-    for (const file of files) {
-      const filePath = path.join(cacheConfig.directory, file);
-      cacheSize += fs.statSync(filePath).size;
-    }
+  if (!cacheConfig.enabled || !fs.existsSync(cacheConfig.directory)) {
+    return { size: 0, files: 0 };
   }
 
+  const index = getOrLoadDirIndex(cacheConfig.directory);
   return {
-    size: Math.round((cacheSize / (1024 * 1024)) * 100) / 100, // MB
-    files: cacheFiles,
+    size: Math.round((index.totalBytes / (1024 * 1024)) * 100) / 100, // MB
+    files: index.entries.size,
   };
 }
 
@@ -110,6 +167,7 @@ export function getCacheStats(cacheConfig: CacheConfig): { size: number; files: 
  */
 export function clearCache(cacheConfig: CacheConfig): number {
   if (!cacheConfig.enabled || !fs.existsSync(cacheConfig.directory)) {
+    directoryIndexCache.delete(cacheConfig.directory);
     return 0;
   }
 
@@ -118,6 +176,7 @@ export function clearCache(cacheConfig: CacheConfig): number {
   for (const file of files) {
     fs.unlinkSync(path.join(cacheConfig.directory, file));
   }
+  directoryIndexCache.delete(cacheConfig.directory);
 
   audit({
     level: 'info',

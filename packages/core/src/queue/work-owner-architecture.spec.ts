@@ -119,11 +119,6 @@ assert.ok(
 );
 
 assert.ok(
-  !source('packages/core/src/api/handlers/config.ts').includes('writeFileSync'),
-  'domain settings must delegate trigger writes to TriggerConfigService',
-);
-
-assert.ok(
   source('packages/core/src/queue/queue-system.ts').includes('eventBus.subscribe'),
   'configured event triggers must be attached once to the canonical event bus',
 );
@@ -201,7 +196,6 @@ assert.ok(
 for (const indexAdmissionPath of [
   'packages/cli/src/main.ts',
   'packages/core/src/api/handlers/vector-index.ts',
-  'packages/core/src/system-operator/index-maintenance.ts',
 ]) {
   const contents = source(indexAdmissionPath);
   assert.ok(
@@ -230,8 +224,9 @@ assert.ok(
 );
 
 assert.ok(
-  fs.existsSync(path.join(ROOT, 'apps/site/src/pages/api/internal/work-coordinator/enqueue.ts')),
-  'the server-owned coordinator handoff must have a thin site transport route',
+  source('packages/core/src/api/router.ts').includes("pattern: '/api/internal/work-coordinator/enqueue'")
+    && source('apps/site/src/pages/api/[...path].ts').includes('export const ALL = astroHandler'),
+  'the server-owned coordinator handoff must be registered in Core and use the shared Site transport',
 );
 
 const managerSource = source('packages/core/src/queue/unified-queue-manager.ts');

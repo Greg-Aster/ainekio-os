@@ -60,7 +60,7 @@ interface RunRemoteTrainingResult {
 interface SshConnection { user: string; host: string; port: number; key: string; knownHosts: string }
 interface CommandResult { stdout: string; stderr: string; exitCode: number }
 
-export function quoteShell(value: string): string {
+function quoteShell(value: string): string {
   return "'" + value.replace(/'/g, "'\\''") + "'"
 }
 

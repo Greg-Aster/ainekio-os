@@ -1,25 +1,25 @@
-# MetaHuman OS Ethical Use Policy
+# Ainekio OS Ethical Use Policy
 
 **Effective date:** 2026-08-31
 **Version:** 1.1
 
 ## Purpose
 
-MetaHuman OS is intended for consent-based personal agents and digital
+Ainekio OS is intended for consent-based personal agents and digital
 personality extensions. It must not be used for deception, abuse, or harm.
 
 ## Prohibited uses
 
 ### Impersonation without consent
 
-Do not use MetaHuman OS to impersonate a living or deceased person without the
+Do not use Ainekio OS to impersonate a living or deceased person without the
 express authorization of that person or the lawful owner of the relevant data.
 This includes creating a deceptive persona or training on another person's
 writing, voice, likeness, or private data without permission.
 
 ### Malicious systems
 
-Do not use MetaHuman OS to build or operate systems intended to harass, defraud,
+Do not use Ainekio OS to build or operate systems intended to harass, defraud,
 manipulate, exploit, surveil, or harm people. Do not use it to spread deceptive
 content or to evade another system's security and consent boundaries.
 
@@ -28,7 +28,7 @@ over consequential actions.
 
 ### Violations of law or rights
 
-Do not use MetaHuman OS to violate applicable law, intellectual-property rights,
+Do not use Ainekio OS to violate applicable law, intellectual-property rights,
 privacy rights, contractual restrictions, or the security of another person or
 system.
 
@@ -48,7 +48,7 @@ system.
 
 ## Responsibility and enforcement
 
-MetaHuman OS runs on operator-controlled infrastructure. The project does not
+Ainekio OS runs on operator-controlled infrastructure. The project does not
 provide centralized monitoring or a remote mechanism that can disable an
 installation. The installation operator remains responsible for configuration,
 supervision, compliance, and resulting actions. Hosting providers, model

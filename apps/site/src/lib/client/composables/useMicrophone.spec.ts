@@ -53,6 +53,7 @@ setGlobal('fetch', async (url: string, options?: RequestInit) => {
   if (url === '/api/activity-ping') return Response.json({});
   const target = new URL(url, 'http://fixture.invalid');
   assert.equal(target.pathname, '/api/stt');
+  assert.equal(target.searchParams.has('collect'), false);
   requests.push({ url: target, bytes: new Uint8Array(options!.body as ArrayBuffer) });
   return Response.json({ transcript: '' });
 });
@@ -74,18 +75,16 @@ try {
   assert.ok(stoppedRecorders.includes(continuous));
   continuous.finish();
   await settle(() => requests.length === 1);
-  assert.equal(requests[0]!.url.searchParams.get('dur'), '13634');
   assert.deepEqual(requests[0]!.bytes, continuous.data);
   await settle(() => !get(mic.isRecording));
 
-  // Existing single-stop case keeps the same duration and bytes.
+  // Existing single-stop case keeps the final audio bytes.
   await mic.startMic();
   const single = recorders.at(-1)!;
   now += 2_000;
   mic.stopMic();
   single.finish();
   await settle(() => requests.length === 2);
-  assert.equal(requests[1]!.url.searchParams.get('dur'), '2000');
   assert.deepEqual(requests[1]!.bytes, single.data);
 
   // TTS-driven stop still finalizes the original recording.
@@ -98,7 +97,6 @@ try {
   playing = false;
   tts.finish();
   await settle(() => requests.length === 3);
-  assert.equal(requests[2]!.url.searchParams.get('dur'), '1500');
 
   // The existing short/empty checks remain; no clamp or lowered threshold.
   await mic.startMic();
@@ -138,7 +136,6 @@ try {
   await settle(() => requests.length === 5);
   assert.deepEqual(requests[3]!.bytes, older.data);
   assert.deepEqual(requests[4]!.bytes, newer.data);
-  assert.equal(requests[4]!.url.searchParams.get('dur'), '2000');
 
   // Explicit TTS suspension still discards an interrupted continuous capture.
   mic.toggleContinuousMode();

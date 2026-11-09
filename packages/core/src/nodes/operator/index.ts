@@ -1,18 +1,11 @@
 /**
  * Operator Nodes
  *
- * Nodes that handle ReAct loop components: planning, skill execution,
- * observation formatting, completion checking, and response synthesis
+ * Native task delegation, response synthesis and reusable scratchpad nodes
  */
 
-export { ReActPlannerNode } from './react-planner.node.js';
-export { SkillExecutorNode } from './skill-executor.node.js';
-export { ObservationFormatterNode } from './observation-formatter.node.js';
-export { CompletionCheckerNode } from './completion-checker.node.js';
 export { ResponseSynthesizerNode } from './response-synthesizer.node.js';
 export { PlanParserNode } from './plan-parser.node.js';
-export { ErrorRecoveryNode } from './error-recovery.node.js';
-export { StuckDetectorNode } from './stuck-detector.node.js';
 export { ClaudeFullTaskNode } from './claude-full-task.node.js';
 export { IterationCounterNode } from './iteration-counter.node.js';
 export { ScratchpadCompletionCheckerNode } from './scratchpad-completion-checker.node.js';

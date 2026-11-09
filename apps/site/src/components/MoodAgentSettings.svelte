@@ -24,19 +24,24 @@
   let saving = false;
   let feedback = '';
   let error = '';
+  let read: AbortController | undefined;
 
   async function load() {
+    read?.abort();
+    const current = new AbortController();
+    read = current;
     loading = true;
     error = '';
     try {
-      const response = await apiFetch('/api/mood-settings', { cache: 'no-store' });
-      const body = await response.json().catch(() => ({}));
+      const response = await apiFetch('/api/mood-settings', { cache: 'no-store', signal: current.signal });
+      const body = await response.json();
+      if (current.signal.aborted) return;
       if (!response.ok || body.success === false) throw new Error(body.error || 'Failed to load Mood settings');
       data = body as MoodData;
     } catch (cause) {
-      error = (cause as Error).message;
+      if (!current.signal.aborted) error = (cause as Error).message;
     } finally {
-      loading = false;
+      if (read === current) { read = undefined; loading = false; }
     }
   }
 
@@ -45,23 +50,43 @@
     saving = true;
     feedback = '';
     error = '';
+    const settings = { ...data.settings };
+    const trigger = data.trigger ? { ...data.trigger } : null;
     try {
       const response = await apiFetch('/api/mood-settings', {
         method: 'PUT',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
-          settings: data.settings,
-          trigger: data.trigger ? {
-            enabled: data.trigger.enabled,
-            eventCountThreshold: Number(data.trigger.eventCountThreshold),
-            idleResetSeconds: Number(data.trigger.idleResetSeconds),
+          settings,
+          trigger: trigger ? {
+            enabled: trigger.enabled,
+            eventCountThreshold: Number(trigger.eventCountThreshold),
+            idleResetSeconds: Number(trigger.idleResetSeconds),
           } : undefined,
         }),
       });
-      const body = await response.json().catch(() => ({}));
+      const body = await response.json();
       if (!response.ok || body.success === false) throw new Error(body.error || 'Failed to save Mood settings');
-      data = body as MoodData;
-      feedback = 'Mood settings and trigger admission were applied live.';
+      const saved = body as MoodData;
+      let newerEdits = false;
+      for (const key of Object.keys(settings) as Array<keyof MoodData['settings']>) {
+        if (data.settings[key] !== settings[key]) {
+          saved.settings = { ...saved.settings, [key]: data.settings[key] };
+          newerEdits = true;
+        }
+      }
+      if (trigger && data.trigger && saved.trigger) {
+        for (const key of ['enabled', 'eventCountThreshold', 'idleResetSeconds'] as const) {
+          if (data.trigger[key] !== trigger[key]) {
+            saved.trigger = { ...saved.trigger, [key]: data.trigger[key] };
+            newerEdits = true;
+          }
+        }
+      }
+      data = saved;
+      feedback = newerEdits
+        ? 'Submitted Mood settings were applied. Newer edits have not been saved.'
+        : 'Mood settings and trigger admission were applied live.';
     } catch (cause) {
       error = (cause as Error).message;
     } finally {
@@ -69,7 +94,10 @@
     }
   }
 
-  onMount(load);
+  onMount(() => {
+    void load();
+    return () => read?.abort();
+  });
 </script>
 
 <section class="mb-6 rounded border border-violet-500/30 bg-violet-500/5 p-4">
@@ -85,6 +113,8 @@
   {#if error}<div class="mt-3 rounded bg-red-500/10 p-2 text-xs text-red-700 dark:text-red-300">{error}</div>{/if}
   {#if loading}
     <div class="py-6 text-center text-sm text-gray-500">Loading Mood configuration…</div>
+  {:else if !data}
+    <button class="mt-3 rounded border px-3 py-2 text-xs dark:border-gray-700" on:click={load}>Retry loading Mood settings</button>
   {:else if data}
     {#if data.trigger}
       <label class="mt-4 flex items-start gap-3 rounded border border-violet-500/30 bg-violet-500/5 p-3 text-sm">

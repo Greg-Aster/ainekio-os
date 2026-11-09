@@ -18,10 +18,7 @@ const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const repoRoot = path.resolve(__dirname, '../..');
 const mobilePages = [
   ['/', 'index.astro'],
-  ['/debug', 'debug.astro'],
-  ['/guide', 'guide.astro'],
   ['/persona', 'persona.astro'],
-  ['/tasks', 'tasks.astro'],
   ['/user-guide', 'user-guide.astro'],
 ];
 

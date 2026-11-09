@@ -22,7 +22,9 @@ executor and the web editor.
   interpreted body events use **Other Body Events** (`body-event-trigger-mode.json`)
   with its existing Environment delegation.
 - `dual-mode.json`, `agent-mode.json`, `emulation-mode.json`, and
-  `environment-mode.json` own the four interactive conversation modes.
+  `environment-mode.json` own the four interactive conversation modes. Agent Mode
+  delegates its command branch through `claude_full_task` to the configured Big
+  Brother provider; it has no local skill registry or separate approval queue.
 - Agent and workflow graphs own bounded background work such as curation,
   reflection, dreaming, agency, and Robot Operator behavior.
 - Desire Agent remains the sole public Agency controller. `desire-executor.json`

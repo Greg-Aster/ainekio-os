@@ -13,7 +13,7 @@ export interface DesireFeasibilityResult {
   blockers?: string[]
 }
 
-export interface DesireFeasibilityDependencies {
+interface DesireFeasibilityDependencies {
   callModel: typeof callLLMText
 }
 
@@ -66,7 +66,7 @@ function throwIfAborted(context: NodeExecutionContext): void {
   throw new DOMException('Desire feasibility assessment cancelled', 'AbortError')
 }
 
-export async function executeDesireFeasibility(
+async function executeDesireFeasibility(
   inputs: Record<string, unknown>,
   context: NodeExecutionContext,
   properties: Record<string, unknown> = {},

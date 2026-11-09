@@ -4,10 +4,15 @@
   import { clearSecurityPolicy, fetchSecurityPolicy, policyStore, isOwner } from '../stores/security-policy';
   import { apiFetch, apiUrl } from '../lib/client/api-config';
   import HeadlessClaimBanner from './HeadlessClaimBanner.svelte';
+  import ThemeToggle from './ThemeToggle.svelte';
+  import LeftSidebar from './LeftSidebar.svelte';
+  import CenterContent from './CenterContent.svelte';
+  import RightSidebar from './RightSidebar.svelte';
   // FlowEditorLayout is loaded dynamically to avoid bundling @xyflow/svelte in client
   type FlowEditorLayoutComponentType = typeof import('./flow-editor/FlowEditorLayout.svelte').default;
   let FlowEditorLayoutComponent: FlowEditorLayoutComponentType | null = null;
   let flowEditorLoading = false;
+  let flowEditorError = '';
 
   // Sidebar visibility state - mobile-first defaults
   let leftSidebarOpen = false;
@@ -36,22 +41,25 @@
   $: cognitiveMode = $policyStore ? cognitiveModes.find(mode => mode.id === $policyStore.mode) ?? null : null;
   let modeMenuOpen = false;
   let modeLoading = false;
+  let modeSaving = false;
   let modeError = '';
   let modeMenuAnchor: HTMLDivElement | null = null;
 
   // System status and allowed modes
   let systemStatus: any = null;
   let allowedModes: string[] = [];
+  let systemStatusError = '';
 
   // AuthGate owns session restoration; the layout consumes its result.
   $: currentUser = $currentUserStore;
   $: displayUsername = $userDisplayNameStore;
   let userMenuOpen = false;
+  let logoutError = '';
   let userMenuAnchor: HTMLElement | null = null;
 
   // Persona name and icon state
-  $: personaName = $statusStore?.identity?.name || 'MetaHuman OS';
-  $: personaIcon = $statusStore?.identity?.icon || null;
+  $: personaName = $statusStore?.data?.identity?.name || 'Ainekio OS';
+  $: personaIcon = $statusStore?.data?.identity?.icon || null;
   let personaIconError = false;
   $: if (personaIcon) personaIconError = false;
 
@@ -109,36 +117,49 @@
     }
   }
 
-  async function loadStatus(bustCache = false) {
+  let statusRead: AbortController | undefined;
+  let modeRead: AbortController | undefined;
+  let systemRead: AbortController | undefined;
+  let closed = false;
+
+  async function loadStatus() {
+    statusRead?.abort();
+    const controller = statusRead = new AbortController();
     try {
-      // Add timestamp to bust server-side cache when explicitly requested
-      const cacheBust = bustCache ? `?_t=${Date.now()}` : '';
-      const res = await apiFetch(`/api/status${cacheBust}`, { cache: 'no-store' });
+      const res = await apiFetch('/api/status', { cache: 'no-store', signal: controller.signal });
       if (!res.ok) throw new Error(`Failed to load portal status (status ${res.status})`);
       const data = await res.json();
-      statusStore.set(data);  // Store the response for other components to use
+      if (!controller.signal.aborted) statusStore.set({ data, error: null, receivedAt: Date.now() });
     } catch (error) {
-      console.warn('Failed to load portal status:', error);
+      if (!controller.signal.aborted) statusStore.update(current => ({ ...current, data: current?.data ?? null, error: (error as Error).message }));
     }
   }
 
   async function loadCognitiveModeState() {
+    modeRead?.abort();
+    if (closed) return;
+    const current = modeRead = new AbortController();
     modeLoading = true;
     try {
-      const res = await apiFetch('/api/cognitive-mode', { cache: 'no-store' });
+      const res = await apiFetch('/api/cognitive-mode', { cache: 'no-store', signal: current.signal });
       if (!res.ok) throw new Error(`Failed to load cognitive mode (status ${res.status})`);
       const data = await res.json();
+      if (current.signal.aborted) return;
       cognitiveModes = Array.isArray(data?.modes) ? data.modes : [];
       modeError = '';
     } catch (error) {
-      modeError = (error as Error).message;
+      if (!current.signal.aborted) modeError = (error as Error).message;
     } finally {
-      modeLoading = false;
+      if (modeRead === current) {
+        modeRead = undefined;
+        modeLoading = modeSaving;
+      }
     }
   }
 
   async function changeCognitiveMode(nextMode: ModeDefinition['id']) {
     if (modeLoading) return;
+    modeSaving = true;
     modeLoading = true;
     try {
       const res = await apiFetch('/api/cognitive-mode', {
@@ -148,18 +169,17 @@
       });
 
       if (!res.ok) {
-        // Handle specific error cases with user-friendly messages
-        if (res.status === 403) {
-          const data = await res.json().catch(() => ({}));
-          throw new Error('Please log in to change cognitive modes. Only authenticated users can switch between modes.');
-        }
-        throw new Error(`Failed to update cognitive mode (status ${res.status})`);
+        const data = await res.json().catch(() => ({}));
+        throw new Error(data.error || `Failed to update cognitive mode (status ${res.status})`);
       }
 
+      if (closed) return;
       await loadCognitiveModeState();
+      if (closed) return;
 
       // Refresh security policy to update UI controls (operator/yolo toggles, etc.)
       await fetchSecurityPolicy();
+      if (closed) return;
 
       // Trigger status refresh (trust level may have auto-adjusted if coupled)
       statusRefreshTrigger.update(n => n + 1);
@@ -168,33 +188,42 @@
     } catch (error) {
       modeError = (error as Error).message;
     } finally {
-      modeLoading = false;
+      modeSaving = false;
+      modeLoading = Boolean(modeRead && !modeRead.signal.aborted);
     }
   }
 
   async function fetchSystemStatus() {
+    systemRead?.abort();
+    if (closed) return;
+    const current = systemRead = new AbortController();
     try {
-      const res = await apiFetch('/api/system-status');
+      const res = await apiFetch('/api/system-status', { signal: current.signal });
       const data = await res.json();
-
-      if (data.success) {
-        systemStatus = data;
-        allowedModes = data.allowedModes || [];
-      }
+      if (current.signal.aborted) return;
+      if (!res.ok || !data.success) throw new Error(data.error || `Failed to load system status (status ${res.status})`);
+      systemStatus = data;
+      allowedModes = data.allowedModes || [];
+      systemStatusError = '';
     } catch (error) {
-      console.error('[ChatLayout] Failed to fetch system status:', error);
+      if (!current.signal.aborted) systemStatusError = (error as Error).message;
     }
   }
 
   async function handleLogout() {
+    logoutError = '';
     try {
-      await apiFetch('/api/auth/logout', { method: 'POST' });
+      const response = await apiFetch('/api/auth/logout', { method: 'POST' });
+      if (!response.ok) {
+        const result = await response.json().catch(() => ({}));
+        throw new Error(result.error || `Logout failed (status ${response.status})`);
+      }
       clearSecurityPolicy();
       currentUserStore.set(null);
       statusStore.set(null);
       window.location.href = '/';
     } catch (err) {
-      console.error('[ChatLayout] Logout failed:', err);
+      logoutError = (err as Error).message;
     }
   }
 
@@ -216,6 +245,7 @@
 
   // Restore layout preferences and load the authenticated portal state
   onMount(() => {
+    closed = false;
     updateScreenSize();
 
     // On desktop, default to open; on mobile, default to closed
@@ -253,8 +283,10 @@
     window.addEventListener('resize', setVH);
     window.addEventListener('orientationchange', setVH);
 
-    void loadStatus();
-    void loadCognitiveModeState();
+    const unsubscribeStatus = statusRefreshTrigger.subscribe(() => {
+      void loadStatus();
+      void loadCognitiveModeState();
+    });
     void fetchSystemStatus();
     document.addEventListener('click', handleGlobalClick, true);
 
@@ -269,6 +301,11 @@
     window.addEventListener('focus', handleVisibility);
 
     return () => {
+      unsubscribeStatus();
+      statusRead?.abort();
+      modeRead?.abort();
+      systemRead?.abort();
+      closed = true;
       window.removeEventListener('resize', updateScreenSize);
       window.removeEventListener('resize', setVH);
       window.removeEventListener('orientationchange', setVH);
@@ -279,25 +316,23 @@
     };
   });
 
-  // Watch for refresh trigger changes - bust cache on manual refresh
-  $: if ($statusRefreshTrigger > 0) {
-    void loadStatus(true);  // Always bust cache on manual refresh
-    void loadCognitiveModeState();
-  }
-
   // Dynamically load FlowEditorLayout when node editor mode is activated
   // This prevents @xyflow/svelte from being bundled into the main client bundle
-  $: if ($nodeEditorMode && !FlowEditorLayoutComponent && !flowEditorLoading) {
+  $: if ($nodeEditorMode && !FlowEditorLayoutComponent && !flowEditorLoading && !flowEditorError) {
+    void loadFlowEditor();
+  }
+
+  async function loadFlowEditor() {
     flowEditorLoading = true;
-    import('./flow-editor/FlowEditorLayout.svelte')
-      .then(module => {
-        FlowEditorLayoutComponent = module.default;
-        flowEditorLoading = false;
-      })
-      .catch(err => {
-        console.error('[ChatLayout] Failed to load FlowEditorLayout:', err);
-        flowEditorLoading = false;
-      });
+    flowEditorError = '';
+    try {
+      const module = await import('./flow-editor/FlowEditorLayout.svelte');
+      FlowEditorLayoutComponent = module.default;
+    } catch (error) {
+      flowEditorError = (error as Error).message;
+    } finally {
+      flowEditorLoading = false;
+    }
   }
 
   // Toggle functions with persistence
@@ -386,6 +421,12 @@
     </div>
   {:else if FlowEditorLayoutComponent}
     <svelte:component this={FlowEditorLayoutComponent} cognitiveMode={cognitiveMode?.id} />
+  {:else if flowEditorError}
+    <div class="p-6 bg-white dark:bg-slate-950 text-gray-900 dark:text-gray-100 h-screen">
+      <p role="alert">Unable to load the Flow Editor: {flowEditorError}</p>
+      <button class="underline" on:click={() => window.location.reload()}>Reload page</button>
+      <button class="underline ml-4" on:click={() => nodeEditorMode.set(false)}>Return to site</button>
+    </div>
   {/if}
 {:else}
 <div class="flex flex-col app-root w-screen overflow-hidden bg-white dark:bg-slate-950">
@@ -453,6 +494,9 @@
                 </svg>
                 Logout
               </button>
+              {#if logoutError}
+                <p class="px-4 text-sm text-red-700 dark:text-red-300" role="alert">{logoutError}</p>
+              {/if}
             {:else}
               <a
                 href="/"
@@ -549,7 +593,7 @@
           <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M10 20l4-16m4 4l4 4-4 4M6 16l-4-4 4-4"/>
         </svg>
       </button>
-      <slot name="header-actions" />
+      <ThemeToggle />
     </div>
   </header>
 
@@ -561,6 +605,14 @@
   {#if modeError}
     <div class="px-4 py-2 text-sm text-red-700 dark:text-red-300 bg-red-50 dark:bg-red-950/40 border-b border-red-200 dark:border-red-900/60">
       Cognitive mode error: {modeError}
+      <button class="underline ml-2" on:click={loadCognitiveModeState}>Retry cognitive modes</button>
+    </div>
+  {/if}
+
+  {#if systemStatusError}
+    <div class="px-4 py-2 text-sm text-red-700 dark:text-red-300" role="alert">
+      {systemStatusError}
+      <button class="underline ml-2" on:click={fetchSystemStatus}>Retry system status</button>
     </div>
   {/if}
 
@@ -593,7 +645,7 @@
       class="flex flex-col border-r border-gray-200 dark:border-gray-800 bg-gray-50 dark:bg-gray-900 overflow-hidden transition-all duration-300 ease-in-out {leftSidebarOpen ? 'w-[280px]' : 'w-0 border-0'} max-md:fixed max-md:left-0 max-md:top-[57px] max-md:bottom-0 max-md:z-30 max-md:shadow-lg"
     >
       <div class="flex flex-col w-[280px] h-full overflow-y-auto overflow-x-hidden">
-        <slot name="left-sidebar" />
+        <LeftSidebar />
       </div>
     </aside>
 
@@ -610,7 +662,7 @@
 
     <!-- Center Chat Area -->
     <main class="flex flex-col flex-1 overflow-hidden bg-white dark:bg-slate-950 relative">
-      <slot name="center" />
+      <CenterContent />
     </main>
 
     <!-- Right Sidebar (Developer Tools) -->
@@ -638,7 +690,7 @@
       style={rightSidebarOpen && !isMobile ? `width: ${rightSidebarWidth}px` : rightSidebarOpen ? 'width: 280px' : ''}
     >
       <div class="flex flex-col h-full overflow-y-auto overflow-x-hidden" style={!isMobile ? `width: ${rightSidebarWidth}px` : 'width: 280px'}>
-        <slot name="right-sidebar" />
+        <RightSidebar />
       </div>
     </aside>
 
@@ -657,16 +709,63 @@
 {/if}
 
 <style>
-  /* App root dynamic viewport height */
-  .app-root {
-    height: 100vh;
-    min-height: 100vh;
+  .brand-name {
+    @apply font-bold;
+    letter-spacing: 0.04em;
   }
 
-  @supports (height: 100dvh) {
-    .app-root {
-      height: 100dvh;
-      min-height: 100dvh;
+  .persona-icon {
+    @apply w-7 h-7 rounded-full flex-shrink-0;
+  }
+
+  .persona-icon-fallback {
+    @apply w-7 h-7 flex items-center justify-center flex-shrink-0;
+    font-size: 20px;
+  }
+
+  .mode-menu-trigger {
+    @apply flex items-center gap-2 px-3 py-2 border border-gray-300 rounded-md transition-all cursor-pointer
+           bg-transparent;
+    color: var(--mode-accent, inherit);
+    box-shadow: 0 0 12px rgba(148, 163, 184, 0.15);
+  }
+
+  :global(.dark) .mode-menu-trigger {
+    @apply border-gray-600;
+  }
+
+  .mode-menu-trigger:hover {
+    box-shadow: 0 0 20px var(--mode-glow, rgba(124, 58, 237, 0.25));
+    border-color: var(--mode-accent, rgba(124, 58, 237, 0.45));
+  }
+
+  .mode-menu-trigger.active {
+    box-shadow: 0 0 24px var(--mode-glow, rgba(124, 58, 237, 0.35));
+    border-color: var(--mode-accent, rgba(124, 58, 237, 0.55));
+  }
+
+  .mode-dot {
+    @apply inline-flex rounded-full;
+    height: 8px;
+    width: 8px;
+    box-shadow: 0 0 10px var(--mode-accent, rgba(124, 58, 237, 0.5));
+  }
+
+  .mode-text {
+    @apply font-semibold;
+  }
+
+  @media (max-width: 640px) {
+    .brand-name {
+      display: none;
+    }
+
+    .mode-text {
+      display: none;
+    }
+
+    .mode-menu-trigger {
+      @apply px-2 py-2;
     }
   }
 
@@ -676,27 +775,34 @@
   }
 
   /* Sidebar scrollbars - custom pseudo-elements that can't be done with Tailwind */
+
   aside > div::-webkit-scrollbar {
     width: 6px;
   }
+
   aside > div::-webkit-scrollbar-track {
     background: transparent;
   }
+
   aside > div::-webkit-scrollbar-thumb {
     background: rgba(0, 0, 0, 0.2);
     border-radius: 3px;
   }
+
   :global(.dark) aside > div::-webkit-scrollbar-thumb {
     background: rgba(255, 255, 255, 0.2);
   }
+
   aside > div::-webkit-scrollbar-thumb:hover {
     background: rgba(0, 0, 0, 0.3);
   }
+
   :global(.dark) aside > div::-webkit-scrollbar-thumb:hover {
     background: rgba(255, 255, 255, 0.3);
   }
 
   /* Right sidebar resize handle */
+
   .sidebar-resize-handle {
     width: 6px;
     cursor: col-resize;
@@ -709,12 +815,14 @@
 
   .sidebar-resize-handle:hover,
   .sidebar-resize-handle.resizing {
-    background: rgb(96 165 250); /* blue-400 */
+    background: rgb(96 165 250);
+    /* blue-400 */
   }
 
   :global(.dark) .sidebar-resize-handle:hover,
   :global(.dark) .sidebar-resize-handle.resizing {
-    background: rgb(59 130 246); /* blue-500 */
+    background: rgb(59 130 246);
+    /* blue-500 */
   }
 
   .sidebar-resize-handle:focus {

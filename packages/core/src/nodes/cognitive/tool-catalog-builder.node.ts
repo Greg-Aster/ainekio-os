@@ -4,10 +4,10 @@
  */
 
 import { defineNode, type NodeDefinition, type NodeExecutor } from '../types.js';
-import { getCachedCatalog, getCatalogEntries } from '../../tool-catalog.js';
+import { buildToolCatalog, getCatalogEntries } from '../../tool-catalog.js';
 
 const execute: NodeExecutor = async (_inputs, _context, _properties) => {
-  const catalog = getCachedCatalog();
+  const catalog = buildToolCatalog();
   const entries = getCatalogEntries();
 
   return {

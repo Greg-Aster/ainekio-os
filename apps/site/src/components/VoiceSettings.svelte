@@ -3,7 +3,6 @@
   import { useTTS } from '../lib/client/composables/useTTS';
   import { calculateVoiceVolume } from '../lib/client/utils/audio-utils.js';
   import { apiFetch } from '../lib/client/api-config';
-  import ServerStatusIndicator from './ServerStatusIndicator.svelte';
 
   interface PiperVoice {
     id: string;
@@ -32,32 +31,18 @@
       kokoroActiveDevice?: 'cpu' | 'cuda' | null;
       kokoroFallbackReason?: string | null;
     };
-    provider: 'piper' | 'rvc' | 'kokoro';
+    provider: 'piper' | 'kokoro';
     outputTarget: 'local' | 'robot';
     piper?: {
       voices: PiperVoice[];
       currentVoice: string;
       speakingRate: number;
     };
-
-    rvc?: {
-      speakerId: string;
-      pitchShift: number;
-      speed: number;
-      autoFallbackToPiper: boolean;
-      indexRate?: number;
-      volumeEnvelope?: number;
-      protect?: number;
-      f0Method?: string;
-      device?: 'cuda' | 'cpu';
-      speakers?: Array<{id: string; name: string; hasModel: boolean; hasIndex: boolean}>;
-    };
     kokoro?: {
       langCode: string;
       voice: string;
       speed: number;
       autoFallbackToPiper: boolean;
-      useCustomVoicepack: boolean;
       normalizeCustomVoicepacks?: boolean;
       voices?: KokoroVoice[];
       device?: 'cuda' | 'cpu' | 'auto';
@@ -68,9 +53,7 @@
       computeType: 'int8' | 'float16' | 'float32';
       language: string;
       useServer: boolean;
-      autoStart: boolean;
-      serverStatus?: string;
-      vad?: {
+      vad: {
         voiceThreshold: number;
         silenceDelay: number;
         minDuration: number;
@@ -78,13 +61,7 @@
     };
   }
 
-  type LoadedVoiceConfig = Omit<VoiceConfig, 'stt'> & {
-    stt?: NonNullable<VoiceConfig['stt']> & {
-      vad: NonNullable<NonNullable<VoiceConfig['stt']>['vad']>;
-    };
-  };
-
-  let config: LoadedVoiceConfig | null = null;
+  let config: VoiceConfig | null = null;
   let loading = true;
   let saving = false;
   let error: string | null = null;
@@ -93,23 +70,26 @@
   const ttsApi = useTTS();
   let previewRequestId: string | null = null;
   let testingVoice = false;
-  let testAudio: HTMLAudioElement | null = null;
-  let isGuest = false;
 
   let hardwareButtonsEnabled = false;
-  let nativeVoiceModeEnabled = false;
-  let isCapacitorApp = false;
 
   let vadTestRecording = false;
   let vadTestVolume = 0;
   let vadTestSpeaking = false;
   let vadTestTranscription = '';
   let vadTestError: string | null = null;
-  let vadMediaRecorder: MediaRecorder | null = null;
-  let vadAudioChunks: Blob[] = [];
-  let vadAnalyser: AnalyserNode | null = null;
-  let vadSilenceTimer: number | null = null;
-  let vadStartTime: number | null = null;
+  interface VADCapture {
+    controller: AbortController;
+    chunks: Blob[];
+    startedAt: number;
+    recorder?: MediaRecorder;
+    stream?: MediaStream;
+    context?: AudioContext;
+    analyser?: AnalyserNode;
+    frame?: number;
+    silenceTimer?: number;
+  }
+  let vadCapture: VADCapture | null = null;
 
   const providerInfo = {
     piper: {
@@ -118,17 +98,10 @@
       description: 'Fast, neural text-to-speech with multiple voice models',
       color: '#3b82f6',
     },
-
-    rvc: {
-      name: 'RVC',
-      icon: '🎭',
-      description: 'High-fidelity voice conversion with pitch control',
-      color: '#8b5cf6',
-    },
     kokoro: {
       name: 'Kokoro TTS',
       icon: '🫀',
-      description: '54 pre-built voices across 8 languages (StyleTTS2)',
+      description: 'Multilingual synthesis with built-in and imported voicepacks',
       color: '#f59e0b',
     },
   };
@@ -140,54 +113,11 @@
   async function loadSettings() {
     try {
       loading = true;
-      isCapacitorApp = typeof window !== 'undefined' &&
-        !!(window as any).Capacitor &&
-        (window as any).Capacitor.isNativePlatform?.() === true;
-
       hardwareButtonsEnabled = localStorage.getItem('mh-hardware-buttons') === 'true';
-      nativeVoiceModeEnabled = localStorage.getItem('mh-native-voice-mode') === 'true';
 
       const response = await apiFetch('/api/voice-settings');
       if (!response.ok) throw new Error('Failed to load voice settings');
-      const settings: VoiceConfig = await response.json();
-      config = {
-        ...settings,
-        stt: settings.stt ? {
-          ...settings.stt,
-          vad: settings.stt.vad ?? {
-            voiceThreshold: 12,
-            silenceDelay: 5000,
-            minDuration: 500,
-          },
-        } : undefined,
-      };
-      isGuest = false;
-      if (config) {
-        config.outputTarget = config.outputTarget === 'robot' ? 'robot' : 'local';
-      }
-
-      if (config && config.rvc) {
-        config.rvc.indexRate = config.rvc.indexRate ?? 1.0;
-        config.rvc.volumeEnvelope = config.rvc.volumeEnvelope ?? 0.0;
-        config.rvc.protect = config.rvc.protect ?? 0.15;
-        config.rvc.f0Method = config.rvc.f0Method || 'rmvpe';
-        config.rvc.device = config.rvc.device || 'cuda';
-      }
-
-      if (config && config.kokoro) {
-        config.kokoro.device = config.kokoro.device || 'cpu';
-        config.kokoro.normalizeCustomVoicepacks = config.kokoro.normalizeCustomVoicepacks ?? true;
-      }
-
-      if (config && config.stt) {
-        config.stt.model = config.stt.model || 'base.en';
-        config.stt.device = config.stt.device || 'cpu';
-        config.stt.computeType = config.stt.computeType || 'int8';
-        config.stt.language = config.stt.language || 'en';
-        config.stt.useServer = config.stt.useServer ?? true;
-        config.stt.autoStart = config.stt.autoStart ?? true;
-        config.stt.serverStatus = config.stt.serverStatus || 'unknown';
-      }
+      config = await response.json();
 
       error = null;
     } catch (e) {
@@ -202,21 +132,20 @@
       saving = true;
       successMessage = null;
       error = null;
+      const settings = config?.kokoro ? {
+        ...config,
+        kokoro: { ...config.kokoro, useCustomVoicepack: config.kokoro.voice.startsWith('custom_') },
+      } : config;
 
       const response = await apiFetch('/api/voice-settings', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify(config),
+        body: JSON.stringify(settings),
       });
 
       const result = await response.json();
 
       if (!response.ok) {
-        if (result.error?.includes('Authentication required')) {
-          isGuest = true;
-          error = "We apologize! You're viewing this profile as a guest and can't save settings. You can still test the voice to hear how it sounds! 🎙️";
-          throw new Error(error);
-        }
         throw new Error(result.error || 'Failed to save settings');
       }
 
@@ -239,10 +168,11 @@
       }
 
       successMessage = result.message || 'Settings saved successfully!';
-      setTimeout(() => { successMessage = null; }, 5000);
       window.dispatchEvent(new CustomEvent('voice-settings-updated'));
+      return true;
     } catch (e) {
       if (!error) error = String(e);
+      return false;
     } finally {
       saving = false;
     }
@@ -250,104 +180,42 @@
 
   async function testVoice(forceProvider?: Provider) {
     if (!config) return;
-    const providerToTest = forceProvider || config.provider;
-
+    const provider = forceProvider || config.provider;
+    if (previewRequestId) ttsApi.interruptPlaybackRequest(previewRequestId, 'superseded');
+    const requestId = `voice-preview-${crypto.randomUUID()}`;
+    previewRequestId = requestId;
+    testingVoice = true;
+    error = null;
+    successMessage = null;
     try {
-      testingVoice = true;
-      error = null;
-
-      if (testAudio) {
-        testAudio.pause();
-        testAudio = null;
-      }
-
-      const requestBody: any = { text: testText, provider: providerToTest };
-      const useStreaming = providerToTest === 'rvc' || providerToTest === 'kokoro';
-
-      if (providerToTest === 'piper' && config.piper) {
+      const options: Parameters<typeof ttsApi.speak>[1] = {
+        streaming: provider === 'kokoro', provider, requestId,
+      };
+      if (provider === 'piper' && config.piper) {
         const piper = config.piper;
         const voice = piper.voices.find(v => v.id === piper.currentVoice);
-        if (!voice) {
-          error = 'Please select a voice';
-          testingVoice = false;
-          return;
-        }
-        requestBody.voiceId = voice.modelPath;
-        requestBody.speakingRate = config.piper.speakingRate;
-      } else if (providerToTest === 'rvc' && config.rvc) {
-        requestBody.voiceId = config.rvc.speakerId;
-        requestBody.pitchShift = config.rvc.pitchShift;
-        requestBody.speed = config.rvc.speed;
-      } else if (providerToTest === 'kokoro' && config.kokoro) {
+        if (!voice) throw new Error('Please select a voice');
+        options.voice = voice.modelPath;
+        options.speed = config.piper.speakingRate;
+      } else if (provider === 'kokoro' && config.kokoro) {
         if (config.kokoro.voice.startsWith('custom_')) {
-          try {
-            await saveSettings();
-          } catch (e) {
-            const errorMsg = String(e);
-            if (!errorMsg.includes('Authentication required')) {
-              error = 'Failed to save custom voicepack settings before testing';
-              testingVoice = false;
-              return;
-            }
-            isGuest = true;
-          }
-          requestBody.langCode = config.kokoro.langCode;
-          requestBody.speed = config.kokoro.speed;
+          if (!await saveSettings()) return;
         } else {
-          requestBody.voiceId = config.kokoro.voice;
-          requestBody.langCode = config.kokoro.langCode;
-          requestBody.speed = config.kokoro.speed;
+          options.voice = config.kokoro.voice;
         }
+        options.langCode = config.kokoro.langCode;
+        options.speed = config.kokoro.speed;
       }
-
-      if (useStreaming) {
-        const requestId = `voice-preview-${crypto.randomUUID()}`;
-        previewRequestId = requestId;
-        try {
-          const outcome = await ttsApi.speak(testText, {
-            streaming: true,
-            provider: providerToTest,
-            voice: requestBody.voiceId,
-            langCode: requestBody.langCode,
-            speed: requestBody.speed,
-            pitchShift: requestBody.pitchShift,
-            requestId,
-          });
-          if (outcome === 'failed') {
-            throw new Error('Speech preview failed. See the server and browser logs for details.');
-          }
-        } finally {
-          if (previewRequestId === requestId) previewRequestId = null;
-          testingVoice = false;
-        }
-        return;
-      }
-
-      const response = await apiFetch('/api/tts', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify(requestBody),
-      });
-
-      if (!response.ok) throw new Error('Failed to generate audio');
-
-      const audioBlob = await response.blob();
-      const audioUrl = URL.createObjectURL(audioBlob);
-
-      testAudio = new Audio(audioUrl);
-      testAudio.onended = () => {
-        URL.revokeObjectURL(audioUrl);
-        testingVoice = false;
-      };
-      testAudio.onerror = () => {
-        error = 'Failed to play audio';
-        testingVoice = false;
-      };
-
-      await testAudio.play();
+      if (previewRequestId !== requestId) return;
+      const outcome = await ttsApi.speak(testText, options);
+      if (outcome === 'failed') throw new Error('Speech preview failed. See the server and browser logs for details.');
     } catch (e) {
-      error = String(e);
-      testingVoice = false;
+      if (previewRequestId === requestId) error = String(e);
+    } finally {
+      if (previewRequestId === requestId) {
+        previewRequestId = null;
+        testingVoice = false;
+      }
     }
   }
 
@@ -359,121 +227,106 @@
 
   async function startVADTest() {
     if (!config?.stt?.vad) return;
-
+    const vad = config.stt.vad;
+    cancelVADTest();
+    const capture: VADCapture = { controller: new AbortController(), chunks: [], startedAt: Date.now() };
+    vadCapture = capture;
     try {
       vadTestError = null;
       vadTestTranscription = '';
       vadTestSpeaking = false;
       vadTestVolume = 0;
-      vadAudioChunks = [];
-
-      const stream = await navigator.mediaDevices.getUserMedia({
+      capture.stream = await navigator.mediaDevices.getUserMedia({
         audio: { echoCancellation: true, noiseSuppression: true, autoGainControl: true }
       });
+      capture.controller.signal.throwIfAborted();
+      capture.context = new AudioContext();
+      const source = capture.context.createMediaStreamSource(capture.stream);
+      capture.analyser = capture.context.createAnalyser();
+      capture.analyser.fftSize = 2048;
+      capture.analyser.smoothingTimeConstant = 0.8;
+      source.connect(capture.analyser);
 
-      const audioContext = new AudioContext();
-      const source = audioContext.createMediaStreamSource(stream);
-      vadAnalyser = audioContext.createAnalyser();
-      vadAnalyser.fftSize = 2048;
-      vadAnalyser.smoothingTimeConstant = 0.8;
-      source.connect(vadAnalyser);
-
-      vadMediaRecorder = new MediaRecorder(stream, { mimeType: 'audio/webm' });
-      vadMediaRecorder.ondataavailable = (e) => {
-        if (e.data.size > 0) vadAudioChunks.push(e.data);
+      capture.recorder = new MediaRecorder(capture.stream, { mimeType: 'audio/webm' });
+      capture.recorder.ondataavailable = (e) => {
+        if (e.data.size > 0) capture.chunks.push(e.data);
       };
-
-      vadMediaRecorder.start();
+      capture.recorder.onerror = (event) => {
+        if (capture.controller.signal.aborted) return;
+        vadTestError = (event as Event & { error?: Error }).error?.message || 'Microphone recording failed';
+        cancelVADTest();
+      };
+      capture.recorder.start();
       vadTestRecording = true;
-      vadStartTime = Date.now();
-      runVADAnalysis();
+      capture.startedAt = Date.now();
+      runVADAnalysis(capture, vad);
     } catch (err) {
-      vadTestError = `Failed to start recording: ${(err as Error).message}`;
+      if (!capture.controller.signal.aborted) vadTestError = `Failed to start recording: ${(err as Error).message}`;
+      capture.controller.abort();
+      releaseVADResources(capture);
+      if (vadCapture === capture) {
+        vadCapture = null;
+        vadTestRecording = false;
+      }
     }
   }
 
-  function runVADAnalysis() {
-    if (!vadTestRecording || !vadAnalyser || !config?.stt?.vad) return;
-
+  function runVADAnalysis(capture: VADCapture, vad: NonNullable<VoiceConfig['stt']>['vad']) {
     const tick = () => {
-      if (!vadTestRecording || !vadAnalyser) return;
-
-      vadTestVolume = calculateVoiceVolume(vadAnalyser, 150);
-      const threshold = config?.stt?.vad?.voiceThreshold ?? 12;
-      const silenceDelay = config?.stt?.vad?.silenceDelay ?? 5000;
-
-      if (vadTestVolume > threshold) {
+      if (!vadTestRecording || capture.controller.signal.aborted || !capture.analyser) return;
+      vadTestVolume = calculateVoiceVolume(capture.analyser, 150);
+      if (vadTestVolume > vad.voiceThreshold) {
         if (!vadTestSpeaking) vadTestSpeaking = true;
-        if (vadSilenceTimer) {
-          clearTimeout(vadSilenceTimer);
-          vadSilenceTimer = null;
+        if (capture.silenceTimer !== undefined) {
+          clearTimeout(capture.silenceTimer);
+          capture.silenceTimer = undefined;
         }
-      } else if (vadTestSpeaking && !vadSilenceTimer) {
-        vadSilenceTimer = window.setTimeout(() => {
-          vadTestSpeaking = false;
-          stopVADTest();
-        }, silenceDelay);
+      } else if (vadTestSpeaking && capture.silenceTimer === undefined) {
+        capture.silenceTimer = window.setTimeout(() => { void stopVADTest(capture, vad); }, vad.silenceDelay);
       }
-
-      requestAnimationFrame(tick);
+      capture.frame = requestAnimationFrame(tick);
     };
-
-    requestAnimationFrame(tick);
+    capture.frame = requestAnimationFrame(tick);
   }
 
-  async function stopVADTest() {
-    if (!vadMediaRecorder || !config?.stt?.vad) return;
-
+  async function stopVADTest(capture: VADCapture, vad: NonNullable<VoiceConfig['stt']>['vad']) {
+    const recorder = capture.recorder;
+    if (!recorder || capture.controller.signal.aborted) return;
+    capture.recorder = undefined;
     try {
       vadTestRecording = false;
       vadTestSpeaking = false;
 
-      if (vadSilenceTimer) {
-        clearTimeout(vadSilenceTimer);
-        vadSilenceTimer = null;
-      }
-
-      const duration = vadStartTime ? (Date.now() - vadStartTime) : 0;
-      const minDuration = config.stt.vad.minDuration ?? 500;
-
-      if (duration < minDuration) {
-        vadTestError = `Recording too short (${duration}ms). Minimum: ${minDuration}ms`;
-        if (vadMediaRecorder.state !== 'inactive') vadMediaRecorder.stop();
-        vadMediaRecorder.stream.getTracks().forEach(track => track.stop());
+      const duration = Date.now() - capture.startedAt;
+      if (duration < vad.minDuration) {
+        vadTestError = `Recording too short (${duration}ms). Minimum: ${vad.minDuration}ms`;
+        if (recorder.state !== 'inactive') recorder.stop();
         return;
       }
 
       const audioBlob = await new Promise<Blob>((resolve, reject) => {
-        const recorder = vadMediaRecorder!;
-        const chunks = vadAudioChunks;
-
-        recorder.onstop = () => {
-          if (chunks.length === 0) {
+        const finish = () => {
+          if (capture.chunks.length === 0) {
             reject(new Error('No audio data recorded'));
             return;
           }
-          resolve(new Blob(chunks, { type: 'audio/webm' }));
+          resolve(new Blob(capture.chunks, { type: 'audio/webm' }));
         };
-
-        if (recorder.state !== 'inactive') {
-          recorder.stop();
-        } else {
-          if (chunks.length === 0) {
-            reject(new Error('No audio data recorded'));
-            return;
-          }
-          resolve(new Blob(chunks, { type: 'audio/webm' }));
-        }
+        recorder.onstop = finish;
+        recorder.onerror = (event) => reject((event as Event & { error?: Error }).error || new Error('Microphone recording failed'));
+        if (recorder.state !== 'inactive') recorder.stop();
+        else finish();
       });
-
-      vadMediaRecorder.stream.getTracks().forEach(track => track.stop());
-
+      releaseVADResources(capture);
+      capture.controller.signal.throwIfAborted();
       vadTestTranscription = 'Transcribing...';
       const buf = await audioBlob.arrayBuffer();
+      capture.controller.signal.throwIfAborted();
 
       const response = await apiFetch('/api/stt?format=webm', {
         method: 'POST',
         body: buf,
+        signal: capture.controller.signal,
       });
 
       if (!response.ok) {
@@ -482,56 +335,80 @@
       }
 
       const result = await response.json();
+      capture.controller.signal.throwIfAborted();
       vadTestTranscription = result.transcript || result.text || '(no speech detected)';
     } catch (err) {
-      vadTestError = `${(err as Error).message}`;
-      vadTestTranscription = '';
+      if (!capture.controller.signal.aborted) {
+        vadTestError = (err as Error).message;
+        vadTestTranscription = '';
+      }
     } finally {
-      vadTestVolume = 0;
+      capture.controller.abort();
+      releaseVADResources(capture);
+      if (vadCapture === capture) {
+        vadCapture = null;
+        vadTestRecording = false;
+        vadTestSpeaking = false;
+        vadTestVolume = 0;
+      }
     }
   }
 
+  function releaseVADResources(capture: VADCapture) {
+    if (capture.frame !== undefined) {
+      cancelAnimationFrame(capture.frame);
+      capture.frame = undefined;
+    }
+    if (capture.silenceTimer !== undefined) {
+      clearTimeout(capture.silenceTimer);
+      capture.silenceTimer = undefined;
+    }
+    const recorder = capture.recorder;
+    capture.recorder = undefined;
+    if (recorder && recorder.state !== 'inactive') recorder.stop();
+    const stream = capture.stream;
+    capture.stream = undefined;
+    stream?.getTracks().forEach(track => track.stop());
+    const context = capture.context;
+    capture.context = undefined;
+    capture.analyser = undefined;
+    if (context) void context.close().catch(error => console.error('[VoiceSettings] Failed to close VAD audio context:', error));
+  }
+
   function cancelVADTest() {
+    const capture = vadCapture;
+    vadCapture = null;
+    capture?.controller.abort();
+    if (capture) releaseVADResources(capture);
     vadTestRecording = false;
     vadTestSpeaking = false;
-
-    if (vadSilenceTimer) {
-      clearTimeout(vadSilenceTimer);
-      vadSilenceTimer = null;
-    }
-
-    if (vadMediaRecorder && vadMediaRecorder.state !== 'inactive') {
-      vadMediaRecorder.stop();
-      vadMediaRecorder.stream.getTracks().forEach(track => track.stop());
-    }
-
     vadTestVolume = 0;
     vadTestTranscription = '';
   }
 
   onMount(loadSettings);
   onDestroy(() => {
+    cancelVADTest();
     if (previewRequestId) ttsApi.interruptPlaybackRequest(previewRequestId, 'cleanup');
-    if (testAudio) {
-      testAudio.pause();
-      URL.revokeObjectURL(testAudio.src);
-      testAudio = null;
-    }
+    previewRequestId = null;
   });
 </script>
 
 <div class="p-6 max-w-[800px]">
   <h3 class="text-2xl font-semibold text-gray-800 dark:text-gray-100 m-0 mb-6">🎙️ Voice Settings</h3>
+  <p class="mb-6 text-sm text-gray-500 dark:text-gray-400">
+    Manage shared Kokoro and Whisper services in
+    <a href="#view=voice&sidebar=servers" class="text-violet-600 dark:text-violet-400 underline">Server Status</a>.
+  </p>
 
   {#if loading}
     <div class="py-8 text-center text-gray-500">Loading voice settings...</div>
-  {:else if error}
+  {:else if error && !config}
     <div class="p-3 bg-red-100 dark:bg-red-500/10 border border-red-500 rounded-lg text-red-600 dark:text-red-400 mb-4">{error}</div>
+    <button class="btn btn-secondary" on:click={loadSettings}>Retry</button>
   {:else if config}
-    {#if isGuest}
-      <div class="p-4 bg-gradient-to-br from-blue-100 to-indigo-100 dark:from-blue-500/15 dark:to-indigo-500/15 border-2 border-blue-500 dark:border-blue-400 rounded-xl text-blue-800 dark:text-blue-300 mb-6 text-sm leading-relaxed text-center font-medium">
-        👋 You're viewing these voice settings as a guest! You can test how the voice sounds, but only the profile owner can make changes. Feel free to explore and listen! 🎧
-      </div>
+    {#if error}
+      <div class="banner banner-error mb-4">{error}</div>
     {/if}
     {#if successMessage}
       <div class="p-3 bg-green-100 dark:bg-green-500/10 border border-emerald-500 rounded-lg text-emerald-600 dark:text-emerald-400 mb-4">{successMessage}</div>
@@ -555,7 +432,7 @@
         {#each providerEntries as [key, info]}
           <button
             class="p-5 border-2 rounded-xl bg-white dark:bg-gray-800 cursor-pointer transition-all text-center hover:translate-y-[-2px] hover:shadow-lg disabled:opacity-50 disabled:cursor-not-allowed {config.provider === key ? 'bg-gradient-to-br from-violet-500/15 dark:from-violet-500/25' : 'border-gray-200 dark:border-gray-700'}"
-            style="border-color: {config.provider === key ? info.color : ''}; --provider-color: {info.color}"
+            style="border-color: {config.provider === key ? info.color : ''}"
             on:click={() => switchProvider(key)}
             disabled={saving}
           >
@@ -600,118 +477,9 @@
         </div>
       </div>
 
-    {:else if config.provider === 'rvc' && config.rvc}
-      <div class="bg-gray-50 dark:bg-gray-900 rounded-xl p-6 mb-6">
-        <h4 class="m-0 mb-4 text-lg text-gray-800 dark:text-gray-100">RVC Settings</h4>
-
-        <div class="mb-6">
-          <label for="rvc-speaker" class="block font-medium text-gray-700 dark:text-gray-300 mb-2 text-sm">Voice Model</label>
-          {#if config.rvc.speakers && config.rvc.speakers.length > 0}
-            <select id="rvc-speaker" bind:value={config.rvc.speakerId} disabled={saving} class="select-field">
-              {#each config.rvc.speakers as speaker}
-                <option value={speaker.id}>{speaker.name} {speaker.hasIndex ? '✓' : ''}</option>
-              {/each}
-            </select>
-            <p class="mt-2 text-xs text-gray-500 dark:text-gray-400">Select a trained voice model. ✓ indicates index file available for better quality.</p>
-          {:else}
-            <input id="rvc-speaker" type="text" bind:value={config.rvc.speakerId} placeholder="default" disabled={saving} class="input-field" />
-            <p class="mt-2 text-xs text-gray-500 dark:text-gray-400">No trained models found. Train a model first or enter speaker ID manually.</p>
-          {/if}
-        </div>
-
-        <div class="mb-6">
-          <label for="rvc-pitch" class="block font-medium text-gray-700 dark:text-gray-300 mb-2 text-sm">Pitch Shift: {config.rvc.pitchShift > 0 ? '+' : ''}{config.rvc.pitchShift} semitones</label>
-          <input id="rvc-pitch" type="range" min="-12" max="12" step="1" bind:value={config.rvc.pitchShift} disabled={saving} class="range-slider" />
-          <div class="flex justify-between text-xs text-gray-500 dark:text-gray-400 mt-1">
-            <span>-12 (Lower)</span><span>0 (Normal)</span><span>+12 (Higher)</span>
-          </div>
-        </div>
-
-        <div class="mb-6">
-          <label for="rvc-speed" class="block font-medium text-gray-700 dark:text-gray-300 mb-2 text-sm">Speed: {config.rvc.speed.toFixed(2)}x</label>
-          <input id="rvc-speed" type="range" min="0.5" max="2.0" step="0.05" bind:value={config.rvc.speed} disabled={saving} class="range-slider" />
-          <div class="flex justify-between text-xs text-gray-500 dark:text-gray-400 mt-1">
-            <span>Slower</span><span>Normal</span><span>Faster</span>
-          </div>
-        </div>
-
-        <!-- Advanced Quality Settings -->
-        <div class="my-6 p-4 bg-gray-100 dark:bg-gray-800 rounded-lg border border-gray-200 dark:border-gray-700">
-          <h5 class="my-2 text-gray-500 dark:text-gray-400 text-sm font-semibold">⚙️ Advanced Quality Settings</h5>
-
-          <div class="mb-6">
-            <label for="rvc-index-rate" class="block font-medium text-gray-700 dark:text-gray-300 mb-2 text-sm">Index Rate: {(config.rvc.indexRate ?? 1.0).toFixed(2)}</label>
-            <input id="rvc-index-rate" type="range" min="0.0" max="1.0" step="0.05" bind:value={config.rvc.indexRate} disabled={saving} class="range-slider" />
-            <p class="mt-2 text-xs text-gray-500 dark:text-gray-400">Voice retrieval strength (higher = more voice characteristics, 1.0 recommended)</p>
-          </div>
-
-          <div class="mb-6">
-            <label for="rvc-volume-envelope" class="block font-medium text-gray-700 dark:text-gray-300 mb-2 text-sm">Volume Envelope: {(config.rvc.volumeEnvelope ?? 0.0).toFixed(2)}</label>
-            <input id="rvc-volume-envelope" type="range" min="0.0" max="1.0" step="0.05" bind:value={config.rvc.volumeEnvelope} disabled={saving} class="range-slider" />
-            <p class="mt-2 text-xs text-gray-500 dark:text-gray-400">RMS mix rate (0.0 = pure conversion, 1.0 = blend with original)</p>
-          </div>
-
-          <div class="mb-6">
-            <label for="rvc-protect" class="block font-medium text-gray-700 dark:text-gray-300 mb-2 text-sm">Consonant Protection: {(config.rvc.protect ?? 0.15).toFixed(2)}</label>
-            <input id="rvc-protect" type="range" min="0.0" max="0.5" step="0.01" bind:value={config.rvc.protect} disabled={saving} class="range-slider" />
-            <p class="mt-2 text-xs text-gray-500 dark:text-gray-400">Protect voiceless consonants (0.15-0.20 recommended for clarity)</p>
-          </div>
-
-          <div class="mb-6">
-            <label for="rvc-f0-method" class="block font-medium text-gray-700 dark:text-gray-300 mb-2 text-sm">Pitch Detection Method</label>
-            <select id="rvc-f0-method" bind:value={config.rvc.f0Method} disabled={saving} class="select-field">
-              <option value="rmvpe">RMVPE (Recommended)</option>
-              <option value="crepe">CREPE (High Quality)</option>
-              <option value="crepe-tiny">CREPE Tiny (Faster)</option>
-              <option value="fcpe">FCPE</option>
-            </select>
-            <p class="mt-2 text-xs text-gray-500 dark:text-gray-400">RMVPE is the most accurate for most voices</p>
-          </div>
-
-          <div class="mb-6">
-            <label for="rvc-device" class="block font-medium text-gray-700 dark:text-gray-300 mb-2 text-sm">Device for Inference</label>
-            <select id="rvc-device" bind:value={config.rvc.device} disabled={saving} class="select-field">
-              <option value="cuda">GPU (CUDA) - Faster</option>
-              <option value="cpu">CPU - Slower, no GPU conflicts</option>
-            </select>
-            <p class="mt-2 text-xs text-gray-500 dark:text-gray-400">The selected device is applied to each conversion process.</p>
-          </div>
-
-          <div class="mt-4 p-3 bg-blue-50 dark:bg-blue-900/30 border-l-[3px] border-blue-500 rounded text-sm">
-            <strong class="text-gray-800 dark:text-gray-100">💡 Quality Tips:</strong>
-            <ul class="mt-2 pl-5 text-gray-700 dark:text-gray-300">
-              <li class="my-1">For grainy voice: Keep Index Rate at 1.0, Volume Envelope at 0.0</li>
-              <li class="my-1">For robotic voice: Increase Consonant Protection to 0.20-0.25</li>
-              <li class="my-1">For muffled voice: Decrease Consonant Protection to 0.10-0.15</li>
-              <li class="my-1">Test after each adjustment to hear the difference</li>
-            </ul>
-          </div>
-        </div>
-
-        <div class="mb-6">
-          <label class="flex items-center gap-2 cursor-pointer font-normal">
-            <input type="checkbox" bind:checked={config.rvc.autoFallbackToPiper} disabled={saving} />
-            Auto-fallback to Piper if model unavailable
-          </label>
-        </div>
-
-        <div class="mt-6 pt-6 border-t-2 border-gray-200 dark:border-gray-700">
-          <label for="rvc-test-text" class="block text-[0.95rem] font-semibold text-gray-800 dark:text-gray-100 mb-2">Test RVC Voice</label>
-          <textarea id="rvc-test-text" bind:value={testText} rows="2" placeholder="Enter text to test RVC voice conversion..." disabled={testingVoice || saving} class="input-field"></textarea>
-          <button class="w-full py-3 px-6 border-none rounded-lg font-semibold cursor-pointer transition-all mt-3 bg-violet-500 text-white hover:bg-violet-600 disabled:opacity-50 disabled:cursor-not-allowed" on:click={() => testVoice('rvc')} disabled={testingVoice || saving}>
-            {testingVoice ? '🔊 Playing...' : '▶️ Test RVC'}
-          </button>
-        </div>
-      </div>
-
     {:else if config.provider === 'kokoro' && config.kokoro}
       <div class="bg-gray-50 dark:bg-gray-900 rounded-xl p-6 mb-6">
         <h4 class="m-0 mb-4 text-lg text-gray-800 dark:text-gray-100">Kokoro ONNX Settings</h4>
-
-        <div class="mb-6">
-          <div class="block font-medium text-gray-700 dark:text-gray-300 mb-2 text-sm">Server Status</div>
-          <ServerStatusIndicator serverName="Kokoro" statusEndpoint="/api/kokoro-server" controlEndpoint="/api/kokoro-server" autoRefresh={true} refreshInterval={15000} />
-        </div>
 
         <div class="mb-6">
           <label for="kokoro-voice" class="block font-medium text-gray-700 dark:text-gray-300 mb-2 text-sm">Voice</label>
@@ -801,15 +569,7 @@
           </p>
         </div>
 
-        <div class="mb-6">
-          <label class="flex items-center gap-2 cursor-pointer font-normal">
-            <input type="checkbox" bind:checked={config.kokoro.useCustomVoicepack} disabled={saving} />
-            <span>Use Custom Voicepack</span>
-          </label>
-          <p class="mt-2 text-xs text-gray-500 dark:text-gray-400">Enable to use your trained voicepack instead of built-in voices.</p>
-        </div>
-
-        {#if config.kokoro.useCustomVoicepack}
+        {#if config.kokoro.voice.startsWith('custom_')}
           <div class="mb-6">
             <label class="flex items-center gap-2 cursor-pointer font-normal">
               <input type="checkbox" bind:checked={config.kokoro.normalizeCustomVoicepacks} disabled={saving} />
@@ -907,58 +667,6 @@
           <p class="mt-2 text-xs text-gray-500 dark:text-gray-400">Persistent server keeps model in memory for instant transcription</p>
         </div>
 
-        {#if config.stt.useServer}
-          <p class="mb-6 text-xs text-gray-500 dark:text-gray-400">Boot lifecycle is system-managed; status and controls are available in the Server tab.</p>
-
-          <div class="mb-6">
-            <div class="block font-medium text-gray-700 dark:text-gray-300 mb-2 text-sm">Server Status</div>
-            <ServerStatusIndicator serverName="Whisper STT" statusEndpoint="/api/whisper-server" controlEndpoint="/api/whisper-server" autoRefresh={true} refreshInterval={15000} />
-          </div>
-        {/if}
-
-        {#if isCapacitorApp}
-          <div class="mt-8 pt-6 border-t-2 border-gray-200 dark:border-gray-700">
-            <h5 class="my-4 text-gray-500 dark:text-gray-400 text-base font-semibold">📱 Native Device Voice Mode</h5>
-
-            <div class="mb-6">
-              <label class="flex items-center gap-2 cursor-pointer font-normal">
-                <input type="checkbox" checked={nativeVoiceModeEnabled} on:change={(e) => {
-                  nativeVoiceModeEnabled = e.currentTarget.checked;
-                  localStorage.setItem('mh-native-voice-mode', nativeVoiceModeEnabled ? 'true' : 'false');
-                  window.dispatchEvent(new CustomEvent('voice-settings-updated'));
-                }} disabled={saving} />
-                Use device's built-in voice (faster, works offline)
-              </label>
-              <p class="mt-2 text-xs text-gray-500 dark:text-gray-400">
-                {#if nativeVoiceModeEnabled}
-                  <strong class="text-emerald-500">✓ Native Mode Active</strong> - Using your device's speech recognition and text-to-speech.
-                {:else}
-                  <strong>Remote Mode Active</strong> - Using server-based Whisper (STT) and your custom trained voice (TTS).
-                {/if}
-              </p>
-              <div class="grid grid-cols-2 gap-4 mt-4 p-4 bg-gray-100 dark:bg-gray-800 rounded-lg text-sm">
-                <div>
-                  <strong class="block mb-2 text-gray-700 dark:text-gray-100">Native Device:</strong>
-                  <ul class="m-0 pl-5 text-gray-500 dark:text-gray-400">
-                    <li class="my-1">⚡ Instant response</li>
-                    <li class="my-1">📴 Works offline</li>
-                    <li class="my-1">🔋 Lower battery usage</li>
-                    <li class="my-1">🗣️ Generic device voice</li>
-                  </ul>
-                </div>
-                <div>
-                  <strong class="block mb-2 text-gray-700 dark:text-gray-100">Remote Server:</strong>
-                  <ul class="m-0 pl-5 text-gray-500 dark:text-gray-400">
-                    <li class="my-1">🎯 More accurate STT (Whisper)</li>
-                    <li class="my-1">🎭 Custom trained voice</li>
-                    <li class="my-1">🌐 Requires network</li>
-                    <li class="my-1">⏱️ ~1-2s latency</li>
-                  </ul>
-                </div>
-              </div>
-            </div>
-          </div>
-        {/if}
 
         <div class="mt-8 pt-6 border-t-2 border-gray-200 dark:border-gray-700">
           <h5 class="my-4 text-gray-500 dark:text-gray-400 text-base font-semibold">🎧 Hardware Button Capture</h5>
@@ -979,7 +687,7 @@
           <h5 class="my-4 text-gray-500 dark:text-gray-400 text-base font-semibold">⚙️ Voice Activity Detection Settings</h5>
 
           <div class="mb-6">
-            <label for="vad-threshold" class="block font-medium text-gray-700 dark:text-gray-300 mb-2 text-sm">Voice Threshold: {config.stt.vad?.voiceThreshold ?? 12}</label>
+            <label for="vad-threshold" class="block font-medium text-gray-700 dark:text-gray-300 mb-2 text-sm">Voice Threshold: {config.stt.vad.voiceThreshold}</label>
             <input id="vad-threshold" type="range" min="0" max="100" step="1" bind:value={config.stt.vad.voiceThreshold} disabled={saving} class="range-slider" />
             <div class="flex justify-between text-xs text-gray-500 dark:text-gray-400 mt-1">
               <span>0 (Very Sensitive)</span><span>50</span><span>100 (Less Sensitive)</span>
@@ -988,7 +696,7 @@
           </div>
 
           <div class="mb-6">
-            <label for="vad-silence-delay" class="block font-medium text-gray-700 dark:text-gray-300 mb-2 text-sm">Silence Delay: {(config.stt.vad?.silenceDelay ?? 5000) / 1000} seconds</label>
+            <label for="vad-silence-delay" class="block font-medium text-gray-700 dark:text-gray-300 mb-2 text-sm">Silence Delay: {config.stt.vad.silenceDelay / 1000} seconds</label>
             <input id="vad-silence-delay" type="range" min="1000" max="30000" step="500" bind:value={config.stt.vad.silenceDelay} disabled={saving} class="range-slider" />
             <div class="flex justify-between text-xs text-gray-500 dark:text-gray-400 mt-1">
               <span>1s (Quick)</span><span>15s</span><span>30s (Patient)</span>
@@ -997,7 +705,7 @@
           </div>
 
           <div class="mb-6">
-            <label for="vad-min-duration" class="block font-medium text-gray-700 dark:text-gray-300 mb-2 text-sm">Minimum Duration: {config.stt.vad?.minDuration ?? 500}ms</label>
+            <label for="vad-min-duration" class="block font-medium text-gray-700 dark:text-gray-300 mb-2 text-sm">Minimum Duration: {config.stt.vad.minDuration}ms</label>
             <input id="vad-min-duration" type="range" min="100" max="5000" step="100" bind:value={config.stt.vad.minDuration} disabled={saving} class="range-slider" />
             <div class="flex justify-between text-xs text-gray-500 dark:text-gray-400 mt-1">
               <span>100ms (Short)</span><span>2.5s</span><span>5s (Long)</span>
@@ -1027,7 +735,7 @@
                   </div>
                   <div class="relative h-10 bg-gray-200 dark:bg-gray-700 rounded-lg overflow-hidden">
                     <div class="h-full transition-[width] duration-100 {vadTestSpeaking ? 'bg-gradient-to-r from-red-500 to-red-400' : 'bg-gradient-to-r from-blue-500 to-blue-400'}" style="width: {vadTestVolume}%"></div>
-                    <div class="absolute top-0 bottom-0 w-[3px] bg-amber-400 shadow-[0_0_8px_rgba(251,191,36,0.8)]" style="left: {config.stt.vad?.voiceThreshold ?? 12}%"></div>
+                    <div class="absolute top-0 bottom-0 w-[3px] bg-amber-400 shadow-[0_0_8px_rgba(251,191,36,0.8)]" style="left: {config.stt.vad.voiceThreshold}%"></div>
                   </div>
                 </div>
                 <button class="w-full py-3 px-6 border-none rounded-lg font-semibold cursor-pointer transition-all bg-red-500 text-white hover:bg-red-600" on:click={cancelVADTest}>
@@ -1053,14 +761,9 @@
 
     <!-- Actions -->
     <div class="mt-6">
-      <button class="w-full py-3 px-6 border-none rounded-lg font-semibold cursor-pointer transition-all bg-violet-600 text-white hover:bg-violet-700 disabled:opacity-50 disabled:cursor-not-allowed" on:click={saveSettings} disabled={saving || isGuest} title={isGuest ? "Guest users cannot save settings" : "Save voice settings"}>
-        {saving ? 'Saving...' : isGuest ? '🔒 Guest Mode (Read-Only)' : '💾 Save Settings'}
+      <button class="w-full py-3 px-6 border-none rounded-lg font-semibold cursor-pointer transition-all bg-violet-600 text-white hover:bg-violet-700 disabled:opacity-50 disabled:cursor-not-allowed" on:click={saveSettings} disabled={saving} title="Save voice settings">
+        {saving ? 'Saving...' : '💾 Save Settings'}
       </button>
-      {#if isGuest}
-        <p class="mt-3 text-center text-sm text-gray-500 dark:text-gray-400 italic">
-          💡 Tip: Log in or create an account to customize your own voice settings!
-        </p>
-      {/if}
     </div>
   {/if}
 </div>

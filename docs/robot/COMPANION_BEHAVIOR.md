@@ -73,7 +73,7 @@ companionship retain their separate [evidence levels](QUALIFICATION.md#evidence-
 
 ## Modes and lifecycle
 
-Three separate controls describe different aspects of operation:
+Three separate controls govern operation:
 
 | Control | Choices / function | Distinction |
 | --- | --- | --- |
@@ -81,13 +81,11 @@ Three separate controls describe different aspects of operation:
 | Robot autonomy mode | Reactive, Semi, Full | Selects how new embodied work is initiated and continued |
 | Lifecycle | MetaHuman Sleep Workflow; body Idle/Doze/sleep states | Cognitive maintenance and physical power/peripheral states are separate |
 
-[The cognitive-mode source](../../packages/core/src/cognitive-mode.ts) defines Dual for deep identity/memory-oriented operation, Agent for command/task assistance, Emulation for use of an existing persona with read-only defaults, and Environment for embodied interaction. These descriptions are mode definitions, not a fresh qualification of every mode. Environment Mode is the robot workflow discussed throughout this reference.
-
-The cognitive mode also determines whose conversational replies personalization should learn. The owner-confirmed distinction between Dual Consciousness and Environment Mode is recorded under [Conversational training by cognitive mode](MODELS_AND_LEARNING.md#conversational-training-by-cognitive-mode).
+[The cognitive-mode source](../../packages/core/src/cognitive-mode.ts) defines Dual for deep identity/memory-oriented operation, Agent for command/task assistance, Emulation for use of an existing persona with read-only defaults, and Environment for embodied interaction. Environment Mode is the robot workflow covered throughout this reference. Cognitive mode also determines whose conversational replies personalization learns; see [Conversational training by cognitive mode](MODELS_AND_LEARNING.md#conversational-training-by-cognitive-mode).
 
 ### Robot autonomy modes — owner-defined behavior
 
-These are the robot's three autonomy modes within the embodied system. Body power states and the Sleep Workflow are separate features; they must not be conflated with this mode selection.
+These are the robot's three autonomy modes within the embodied system. Body power states and the Sleep Workflow are separate features.
 
 | Mode | Intended function | End-to-end acceptance |
 | --- | --- | --- |
@@ -95,24 +93,17 @@ These are the robot's three autonomy modes within the embodied system. Body powe
 | Semi-autonomous | Reactive interaction plus selected self-directed work, managed through Active Operator in Agency. Periodic assessments add or subtract model-selected amounts from operation percentages; a function reaching 100% is triggered. | Both ongoing interaction and inactivity inform model-selected activation. Context produces relevant, varied activity without independent per-task timers or a permanently filled task queue. |
 | Fully autonomous | Continuously choose and carry out meaningful self-directed activity: musing, reasoning, tasks, agents, movement or the Sleep workflow. | The robot originates and pursues activity without a person supplying its next step. No-operation decisions, idle assessment loops, event-only suspension, repeated commands without progress and repeated fault commentary do not satisfy Full Auto. Selected work remains independent of subsequent assessments. |
 
-The LLM owns high-level choices. Implementing Full autonomy means making the decision, execution, evidence, memory and review paths work together. It does not mean adding a fixed task rotation, keyword behaviors, mandatory activity quotas or an imposed personality. Existing code and current settings are evidence of implementation, not authority to redefine these intended modes.
-
-**Owner decision, 2026-10-26:** Reactive retains physical-event reactions and
-excludes self-directed activities. This resolves the earlier user-input-only
-wording: boot/wake and other physical events are permitted inputs, not an
-authorization for an autonomous goal loop. Event admission remains with the
-existing body-event owners; this clarification does not prescribe a particular
-movement, emotion or response.
+The LLM owns high-level choices. Implementing Full autonomy means making the decision, execution, evidence, memory and review paths work together—not adding a fixed task rotation, keyword behaviors, mandatory activity quotas or an imposed personality. Reactive retains physical-event reactions (boot/wake, tipping, rapid movement, motor stall) through the existing body-event owners while excluding self-directed activities.
 
 ### Sleep, wake, and maintenance
 
-MetaHuman's existing [Sleep Workflow](../../packages/core/src/queue/sleep-workflow.ts) sequences Organizer → memory Curator → Environment decision-review proposals → eligible personalization training → Desire Agent → Dreamer → persona review → memory-index refresh. The Environment Training Curator uses its existing agent and proposal store for recorded Intent and Task decisions; its Agent Catalog enable switch controls this stage. Proposals retain separate human review and specialist training; this stage does not fit or activate models or review Freestyle motions. Enabled settings and stage results determine what actually runs. User activity ends the remaining sleep chain through its existing lifecycle owner; awake automation and robot operator scheduling are coordinated with it.
+MetaHuman's [Sleep Workflow](../../packages/core/src/queue/sleep-workflow.ts) sequences Organizer → memory Curator → Environment decision-review proposals → eligible personalization training → Desire Agent → Dreamer → persona review → memory-index refresh. The Environment Training Curator uses its existing agent and proposal store for recorded Intent and Task decisions (controlled by its Agent Catalog enable switch); proposals retain separate human review and specialist training without fitting or activating models or reviewing Freestyle motions during Sleep. User activity ends the remaining sleep chain through its lifecycle owner, coordinated with awake automation and robot operator scheduling.
 
-Its purpose is to organize experience, support reviewed learning and persona development, and produce internal material for later cognition. A session labelled completed may contain failed or skipped stages; the historical diary (retained locally) records an example. This lifecycle is separate from putting the body into a low-power state. A body boot/wake event also does not mean that a MetaHuman sleep session occurred.
+Sleep organizes experience, supports reviewed learning and persona development, and produces internal material for later cognition. It is separate from body low-power states, and a body boot/wake event does not imply a MetaHuman sleep session occurred.
 
 ## Memory, persona, and inner dialogue
 
-The companion's continuity comes from several kinds of state, not from a language model automatically remembering every earlier request:
+The companion's continuity comes from distinct state owners rather than a language model automatically remembering every earlier request:
 
 | Information | Purpose | What it is not |
 | --- | --- | --- |
@@ -125,24 +116,15 @@ The companion's continuity comes from several kinds of state, not from a languag
 | Model weights / LoRAs | Learned behavior and tendencies following training | Live storage of the current conversation |
 | Inference context / cache | Input and working state for generation, with backend-dependent reuse | The authoritative persistent memory store |
 
-The interface can merge feeds visually while their records retain separate speaker, source, type, identity and time. An inner thought must remain distinguishable from a human statement, an assistant reply, a dream, a camera observation, and a body receipt. The originating turn time, a result's acquisition time, and the time it was received can differ.
+The interface can merge feeds visually while their records retain separate speaker, source, type, identity and time (originating turn time, acquisition time and receipt time can differ). Semantic memory search includes both the person's messages and Ainekio's saved replies (`indexContentMode: all`), with speaker attribution attached so a retrieved assistant statement establishes what was said rather than whether its factual claims were true. Retrieval eligibility is separate from mode-aware training and Curator policies in [Models and learning](MODELS_AND_LEARNING.md#models-and-learning). Memory selection supports relevance or newest ordering, explicit time ranges and latest-sleep-cycle scope through the memory owner; the current input record is excluded from its own recall by saved identity while earlier records remain eligible.
 
-**Owner-approved retrieval policy, 2026-10-16:** semantic memory search includes both the person's messages and Ainekio's saved replies through the existing installation-wide `indexContentMode: all` setting. Ainekio's index is rebuilt through the existing index owner. Speaker attribution remains attached: a retrieved assistant statement establishes what it said, not whether its factual claims were correct. Retrieval eligibility is separate from the mode-aware training and Curator policies in [the model and learning contract](MODELS_AND_LEARNING.md#models-and-learning). Changing this setting does not change retrieval cutoffs or require history in every model call.
+Robot Status uses the [live projection owner](../../packages/core/src/robot-status-live.ts) to expose current execution and command evidence to the interface and workflow context. It preserves motion parameters (`continuous`, `units`, `durationMs`), command work state/start time, correlated receipts, overall objective criteria, and behavior-step criteria (plain actions have no behavior-step criteria). It also separates the current running/waiting task from `parkedGoals` (unfinished idle objectives retaining their identity, source, decision and timestamps). Each saved summary, environment description, user-context field and uncertainty list retains optional `situationEvidence` (producer recording time, source timestamps and frame references); receipt updates do not renew retained prose. Robot Status admits no actions and creates no independent goal store.
 
-Robot Status uses the [live projection owner](../../packages/core/src/robot-status-live.ts) to expose current execution and command evidence to the interface and workflow context. Its projection preserves motion parameters including `continuous`, `units` and `durationMs`, command work state/start time, correlated receipts, the overall objective's criteria, and a behavior step's separate criteria. A plain action has no behavior-step criteria. An omitted parameter remains omitted, and a queued or acknowledged command is not proof of physical movement or arrival. Each saved summary, environment description, user-context field and uncertainty list retains its own optional `situationEvidence`: producer recording time, source timestamps and frame references. Receipt updates do not renew retained prose. Older records without this provenance remain unknown; a snapshot save time is not the acquisition time of its descriptions. This projection admits no actions and creates no independent goal store; the [qualification guide](QUALIFICATION.md) identifies the evidence needed to validate it.
-
-Reflection, Dreamer, Daydreamer, Inner Curiosity, Train of Thought and mood review provide different internal activities. Dreams/daydreams are generated imagination; reflection examines supplied experience; curiosity can pose questions and retrieve or investigate related information; associative thought can continue from a persisted seed. They contribute to the intended inner life and can inform later decisions when the workflow selects that context. They are not all necessarily spoken, and their existence does not prove they currently influence each autonomous choice. Workflow-connected TTS remains independent of generation: a saved reflection or daydream can complete its finite agent task while speech delivery is pending, with the actual delivery result retained separately. Inner Curiosity carries the original delegated purpose into both its question and answer stages and presents selected memories with their recorded identity, time, type and available speaker/source/mode. Historical assistant speech is evidence of what was said, not a current sensor measurement.
-
-**Owner-confirmed dream behavior, 2026-10-14:** keep the sleep-generated surreal stories derived from remembered events, saved as dreams and recalled as dreams. The owner accepted this behavior after the recorded recall test (retained locally). Dream content remains attributed imagination rather than evidence that the described physical events occurred.
-
-Long-term continuity requires the complete save → index → retrieve → deliver → use path. A request about the most recent dream also needs correct dream attribution and temporal selection. The diary records cases where stored dreams existed but routing or retrieval failed. These are distinct defects from absent dream generation. Persona evolution and model training are also distinct: changing a persona record does not itself retrain a model.
-
-Memory selection supports relevance or newest ordering, explicit time ranges and
-latest-sleep-cycle scope through the existing memory owner. The current input
-record is excluded from its own recall by saved identity; earlier records,
-including identical earlier questions, remain eligible. Qualification checks what
-was retrieved and used, not just whether records exist. Historical recall and
-retry results remain in the reference history (retained locally).
+Reflection, Dreamer, Daydreamer, Inner Curiosity, Train of Thought and mood review provide internal activities:
+- **Dreams and daydreams** are generated surreal or imaginative stories derived from remembered events, saved and recalled with dream attribution rather than treated as physical events.
+- **Reflection** examines supplied experience; **associative thought** continues from a persisted seed.
+- **Inner Curiosity** carries the original delegated purpose into both question and answer stages and presents selected memories with their recorded identity, time, type and speaker/source/mode.
+- Workflow-connected TTS is independent of generation: a saved reflection or daydream completes its finite agent task while speech delivery settles separately.
 
 References: [buffer owner](../../packages/core/src/conversation-buffer.ts), [memory owner](../../packages/core/src/memory.ts), [Robot Status](../../packages/core/src/robot-status.ts), [Inner Curiosity graph](../../etc/cognitive-graphs/inner-curiosity.json), [Dreamer graph](../../etc/cognitive-graphs/dreamer-mode.json), [Daydreamer graph](../../etc/cognitive-graphs/daydreamer-mode.json), [Train of Thought](../../etc/cognitive-graphs/train-of-thought.json), [persona learning](../../packages/core/src/persona-learning.ts).
 
@@ -158,197 +140,59 @@ References: [buffer owner](../../packages/core/src/conversation-buffer.ts), [mem
 | Agency outcome review | Review of Agency-owned plans and steps through their own lifecycle |
 | Weekly Goal Review | Separate project-progress/insight workflow; not the robot's per-objective continuation owner |
 
-**Owner-confirmed distinction, October 15:** persona goals describe the general direction of the companion's development and aspirations. Desires describe particular outcomes the companion currently wants to achieve. Specificity and purpose distinguish them; a desire can take time to satisfy without becoming a general persona goal. A robot execution objective is the outcome of a particular admitted request or activity and remains distinct from both.
+**Persona goals vs. Agency desires:**
+- **Psychotherapist** (internally `psychoanalyzer`, using the `psychotherapist` role) is the sole autonomous editor of persona and persona goals through the persona-learning owner. Human statements remain attributed to the speaker and do not automatically become Ainekio's traits.
+- **Desire Agent** is the public controller for Agency work (invocable manually, by Sleep, or by Robot Autonomy) covering generation, planning, execution, outcome review and check-in. It reads standing persona goals as context (via Persona Formatter's standing-goal selection) but never creates or edits persona fields. Agency-owned steps use Agency outcome review rather than Robot Goal Review.
+- **Desire nurturing** reassesses all open desires (including those in planning or execution) against enabled conversation, episodic memory, task, goal, curiosity, reflection and dream sources, standing persona goals, and actual robot state/capabilities. The model selects an exact target strength in `[0, 1]` with a reason and supporting evidence references for changes (distinct from elapsed-time decay). Unchanged evidence or repeated reads of the same event do not count as new reinforcement. Generation receives the current review's proposed relevance changes before persistence. At strength `0`, the Agency storage owner archives the desire (retaining history) and requests Coordinator cancellation of its remaining work; late receipts do not reopen an archived desire.
+- Desire generation and nurturing select the `psychotherapist` model role with the per-node Reasoning checkbox off; only Full Autonomy assessments request high reasoning through the connected mode input.
 
-The model uses goals, attributed experience and actual operating state to decide whether a specific desire is warranted. It may create, strengthen, weaken, retain, complete or archive desires as the evidence and lifecycle justify. An empty desire list is neither inherently a success nor inherently a failure. Evaluation must check whether meaningful supported opportunities or unfinished needs were missed, whether obsolete concerns were retained, and whether claimed progress matches execution evidence. The owner clarifies intended design; the owner is not expected to choose the desired verdict for each model review.
-
-Psychotherapist is the sole autonomous editor of persona goals through the existing persona-learning owner. Desire Agent owns specific desires through Agency and may use persona goals as context. Strong or repeatedly reinforced desires do not automatically become persona goals. A goal is not fulfilled merely because an associated desire, action or conversation ends. Cleanup of historically misplaced specific items must preserve their provenance and history and must not treat an old record as evidence of a current need. The current owner-authorized goal-list reconciliation is recorded in the historical evaluation (retained locally).
-
-Nurturing reviews every open desire, including those already being planned or executed. The model selects a relevance strength on the existing zero-to-one scale and cites attributed evidence for a change; it can reduce, increase or retain strength. Zero means archival with history retained. The existing elapsed-time decay policy remains separate. Archival requests cancellation of that desire's remaining work through Coordinator; a cancellation request is not proof that physical activity stopped, and late receipts do not reopen the desire.
-
-The review draws on enabled saved conversation and memory sources, standing persona goals, the selected robot's actual state and capabilities, and current or explicitly linked execution records. Memory type, speaker, source and timestamps distinguish conversation, observations and imagined material. An original request, the selected program, a command receipt and evidence of the desired outcome remain different facts. Generation receives the current review's proposed relevance changes explicitly as uncommitted decisions; after persistence, duplicate comparisons use the resulting open desires. Unchanged evidence is not new reinforcement merely because the agent runs again.
-
-In the shared Environment Mode workflow, Intent selects whether a response is needed. Task selects executable actions, sensing and behaviors; it does not compose or publish speech. The conversation context builder joins the selected results, and Persona generates the outward reply through the single conversation delivery path. The former speech program step has been removed, including exact spoken lines inserted between motion steps. This makes Persona the single speech author for that execution path rather than having Task speak and Persona repeat it. Independent controller or agent outputs retain their own documented workflow ownership.
-
-A conversational exchange does not require inventing a goal. Goal Review applies only to an unfinished non-Agency objective selected for review, after selected work returns; an explicit wait for new input does not request another immediate review. Finite action-result objectives with no selected continuation settle from their receipts: success completes the objective, while terminal failure ends the one-off task as failed and remains available to Persona as response evidence. A failure does not silently select continued pursuit. Goals selected for continued pursuit remain saved without reserving a worker; new conversation and body commands can run independently. When review is selected, it uses returned actions and observations; review may revise its objective and completion criteria, mark it complete, retain it pending relevant input, or abandon it. Review does not start planning or actions. A reply is selected by Intent through `needsResponse`, not treated as a goal. Task and Goal Review completion bases are `action_result`, `visual_observation`, `environment_state`, and `user_input`. Goal Review returns assessment data and does not publish conversation or speech. Robot Status displays this state; the durable execution retains it.
-
-Persona receives the current execution’s correlated action results after a selected program returns, independently of whether Intent selected Goal Review. The graph visibly connects Active Task’s result to the existing Current Execution reader; when review is selected, its existing dependency supplies the assessment before the final context is assembled. Skipping Goal Review must not discard motion receipts or leave admission as the only supplied evidence.
-
-**Objective completion and step completion are separate.** `taskDecision.completionCriteria` describes success for the overall request; it does not terminate an open-ended action. A visual behavior's own `completionCriteria` governs that behavior's Finish path. For example, an objective to obtain a view beneath a desk does not make a bare `crawl` stop beneath it, and a capture scheduled after that crawl cannot execute while the action remains unfinished. Goal Review assesses the supplied results; it cannot retrospectively supply a missing movement endpoint. This distinction belongs in capability/context delivery, execution, status and evaluation, without replacing the model's choices with scripted navigation.
-
-For an open request such as finding a wallet, the intended system preserves the request, records searches and observations, and lets the model assess what to try next or whether the outcome is established. This is not a hardcoded wallet-search procedure. The original request and later corrections remain distinguishable from the planner's interpretation.
-
-### Active Operator and initiative — owner intent, 2026-10-23
-
-Active Operator manages the relevance and activation of available functions in the Agency interface. Semi uses its configured assessment interval; Full Auto has no configured waiting interval or model-selected suspension. Assessment selects activity rather than independently timing each agent. Every Semi assessment supplies one or more nonzero signed adjustments. The model chooses the functions, directions, amounts and reasons from current circumstances; elapsed time does not mechanically increment any operation. Conversation, quiet periods and environmental changes should inform which functions become relevant, rather than merely postpone all assessment until conversation stops. Reaching 100% requests that operation in Semi mode.
-
-Assessment needs relevant, attributed context: recent conversation and interaction activity; time of day and inactivity; current perception and body connection; available capabilities; persona and standing goals; desires; inner activity and memories; existing work, recent selections and actual outcomes. These sources are not interchangeable, and historical evidence must retain its time and uncertainty. The owner's examples are acceptance scenarios, not keyword rules: substantial conversation can make conversation-related processing relevant; lack of incoming triggers can make boredom and other self-directed functions relevant; nighttime can make dreaming or Sleep relevant. None prescribes an automatic verdict merely because that circumstance exists.
-
-Full mode retains reactive interaction and the existing operation catalog while
-continuously originating and carrying out meaningful activity. It can muse,
-reason, pursue tasks, trigger agents, move or run the Sleep workflow. It must not
-wait for a human, an external event or a configured interval to supply its next
-activity. An empty desire list does not remove this responsibility. No operation,
-all-zero selections and repeated assessments that perform nothing are not valid
-Full Auto outcomes. The model chooses meaningful activity from the available
-capabilities; this does not authorize a scripted fallback, forced movement or a
-fixed rotation. Deliberately running the Sleep workflow is activity, not idle.
-
-The owner specifies that when the robot body is disconnected, embodied autonomy functions should neither be triggered nor have their activation updated. A connected gateway alone does not establish a connected body. Physical disconnection does not suspend Full Auto's available non-embodied activity: reasoning, memory, agents and Sleep remain distinct from unavailable physical actions. This is intended behavior, not a claim that current admission implements that separation.
-
-Nighttime motivation uses the existing Sleep/Dreamer ownership. Sleep Workflow is
-an available model-selected operation; its enabled, sleep-window and inactivity
-settings determine admission. Periodic Semi assessment and Sleep eligibility
-remain distinct. Qualify the complete choice, stage outcomes and return to
-interaction using the [Sleep scenario](QUALIFICATION.md#representative-scenarios).
+**Environment Mode execution and Goal Review:**
+- In [`environment-mode.json`](../../etc/cognitive-graphs/environment-mode.json), Intent (`orchestrator` role) selects whether a response is needed (`needsResponse`) and which routes/context to run. Task (`environmentActionSelector` or `environmentVision`) selects executable actions, sensing and behaviors; it does not author speech. Persona is the single outward speech author for that execution path.
+- Conversational exchanges do not require inventing a goal. Finite `action_result` objectives with no selected continuation settle directly from their receipts (success completes the objective; terminal failure ends the one-off task as failed and supplies the evidence to Persona).
+- **Goal Review** ([`robot-goal-review-mode.json`](../../etc/cognitive-graphs/robot-goal-review-mode.json)) runs only for an unfinished non-Agency objective selected for review after selected work returns (an explicit wait for new input does not trigger immediate review). Completion bases are `action_result`, `visual_observation`, `environment_state` and `user_input`. Review returns assessment data—it may revise the objective and completion criteria, mark it complete, retain it as a parked goal pending input, or abandon it—without starting new planning/actions or publishing speech.
+- Active Task's correlated results always reach the Current Execution reader for Persona, whether or not Goal Review ran.
+- **Objective completion vs. step completion:** `taskDecision.completionCriteria` defines success for the overall request and does not terminate an open-ended action; a visual behavior step's own `completionCriteria` governs when that step requests gait Finish.
 
 ### Active Operator execution contract
 
-The editable [Active Operator graph](../../etc/cognitive-graphs/robot-autonomy-controller-mode.json)
-is shared by Semi and Full. It selects activity; the shared Environment graph
-executes admitted intentions. The mode contract below describes the required
-behavior. Inspect the responsible source and deployment before claiming that an
-installation satisfies it.
+The editable [Active Operator graph](../../etc/cognitive-graphs/robot-autonomy-controller-mode.json) ([`brain/agents/active-operator/`](../../brain/agents/active-operator/)) is shared by Semi and Full modes to assess relevance and select activity; the shared Environment Mode graph executes admitted intentions.
 
-In Semi and Full modes, Active Operator runs the same editable activation-assessment workflow. Semi starts that workflow periodically using `semiAssessmentMinutes`, default five minutes, exposed in Active Operator settings. Conversation does not restart the countdown; entering Semi or finishing an assessment starts a fresh interval. The persistence owner preserves the former saved inactivity interval when reading old settings. Queue bookkeeping does not bypass the interval. Full requests its next assessment when the current assessment finishes, without a waiting interval, event-only wake condition or waiting for selected work to finish. The model receives the active persona as standing context, plus selected recent conversation, inner activity, robot outcomes/status, environment evidence, operation meanings, retained levels and recorded activity. Semi adds each returned signed `delta` to the retained activation of that function, keeping the resulting percentage between 0 and 100, and requests each updated function whose resulting activation reaches 100. Every Semi assessment must contain one or more nonzero adjustments; empty decisions, zero adjustments, ineffective adjustments that leave a level unchanged without triggering its function, and the superseded absolute-value input are invalid. An assessment may progress activation without immediately triggering work. Full retains absolute activation updates and requests the highest positive returned activation even below 100, with returned order breaking ties. A valid Full decision must select meaningful activity through an available operation or an existing execution/Desire target; empty and all-zero selections are not successful Full decisions. Omitted operations retain their previous levels without being requested again. Selected work runs through independent Work Coordinator admissions, so its duration does not block subsequent assessment. The assessment itself does not author outward speech. Human messages and autonomous intentions enter separate inputs of the same Environment Mode graph. Its input join preserves the selected origin and planner metadata, and the shared Intent, context, Task, action-result, Goal Review and final-response paths execute the request. The separate Robot Autonomy Executor graph has been removed; the Autonomy Controller remains the decision owner. Active goals, observations and recorded results inform the controller or an appropriately triggered Semi Auto agent when choosing and planning work. Goal Review updates the durable goal shown by Robot Status after selected work returns; it does not trigger the next planning pass. Task also has no `continue` outcome. The executor records program results without manufacturing a continued-pursuit decision; advancing already selected program steps remains distinct from choosing new work. Abandonment removes a goal from active consideration while retaining its original instruction and recorded results. Current source does not implement Full mode as a compulsory rotation of movements.
-
-The graph first loads the active persona through the existing Persona Loader and Persona Formatter. Identity, background, personality and traits, values, and standing goals are supplied to both the Orchestrator context-selection request and the Autonomy activity assessment in Semi and Full modes. Optional context selection cannot omit or narrow this standing persona. Explicit inactive/LoRA-only persona mode remains absent. The configured Orchestrator selects additional assessment context from the trigger, mode, available source identities and recorded operation state. It uses the familiar Environment routing fields: `taskContext` selects additional sources; this selector does not execute activities. Visible source branches load the selected conversation, private thoughts, robot actions, memory, status, environment, camera evidence, execution, activity, observation history and desires. Memory retrieval uses the selected query and scope; there is no unconditional newest-memory read. Conversation does not also merge private thoughts in this graph. Complete selected records retain their source, speaker, identity and time; repeated content uses lossless JSON Pointer references. Selection quality remains a model qualification concern, separately from correct graph gating.
-
-The controller hands already-read context to Environment with its originating intention. Existing source owners reuse only matching retrieval scopes and camera session evidence, preserving frame identity and acquisition time. A new query, different scope or explicit acquisition still uses its normal owner. Human input clears unrelated autonomous context. This removes duplicate reads without turning historical records into current-world evidence, adding a global cache or prescribing what the robot should do.
+- **Scheduling and activation rules:**
+  - **Semi mode** runs the assessment workflow periodically using `semiAssessmentMinutes` (default 5 minutes) measured from entering Semi or finishing the last assessment; conversation does not reset the timer. Every Semi assessment must return one or more nonzero signed `delta` adjustments applied to retained operation percentages in `[0, 100]`, triggering any function that reaches `100%`. Empty decisions, zero adjustments, or adjustments that leave levels unchanged without triggering are invalid. Elapsed time never mechanically increments activation.
+  - **Full mode** requests its next assessment immediately when the current assessment finishes—without a waiting interval, event-only wake condition, `reconsider` pause, or waiting for selected work to finish. Full updates absolute activation levels and dispatches the highest positive activation (even below 100, with returned order breaking ties) or targets an existing execution or Desire lifecycle operation. Empty or all-zero Full decisions are invalid.
+  - Omitted operations retain their previous levels without re-triggering. Sleep Workflow is an available model-selected operation governed by its enabled, sleep-window and inactivity settings.
+- **Standing persona and selected context:**
+  - The graph first loads the active persona through Persona Loader and Persona Formatter (including standing proposed, planning, aspirational and active goals). Identity, background, personality, values and standing goals are supplied as standing context to both the Orchestrator context-selection call and the Autonomy activity assessment; optional source selection cannot omit or narrow them.
+  - The Orchestrator selects additional sources via `taskContext` (conversation, private thoughts, robot actions, memory via Memory Router query/scope, status, environment, camera evidence, execution, activity, observation history and desires). Complete records retain speaker, source, identity and time, using lossless JSON Pointer references for repeated data.
+  - Already-read context is handed to Environment Mode with the originating intention; source owners reuse only matching retrieval scopes and camera session evidence while human input clears unrelated autonomous context.
 
 ### Full Auto continuity — owner contract
 
-**Activity and assessment are different.** The product requirement is sustained,
-meaningful self-directed activity with progress and accurate outcomes. An LLM
-assessment is one means of selecting that activity; its frequency, token use or
-GPU utilization does not demonstrate engagement. A previously selected pursuit
-can still be running while another assessment occurs.
+Full Auto requires sustained, meaningful self-directed activity with progress and accurate outcomes. Every successful Full assessment must select or continue meaningful activity—musing, reasoning, tasks, agents, movement or the Sleep workflow. Doing nothing, returning all-zero activations, or running idle assessment loops is invalid, and code must never substitute a scripted fallback, forced movement or fixed task rotation.
 
-**Approved scheduling policy:** Full currently requests another assessment when
-the preceding assessment settles, independently of selected work. Semi uses its
-configured assessment interval. These scheduling choices remain in force; this
-documentation update does not replace them with event-only wakeups, waits, limits
-or a different loop.
-
-**Open design question:** does that Full assessment cadence produce useful new
-choices while work is already progressing, or repeatedly spend inference on the
-same situation? Evaluate selected context, ongoing work, actual outcomes,
-duplicate requests and resource use together. Any scheduling change needs an
-explicit owner decision at the existing Active Operator responsibility. Do not
-redefine continuous companionship as continuous model generation, or claim that
-an immediate assessment loop proves useful autonomy.
-
-**Owner requirement, 2026-10-26:** Full Auto is a self-directed robot that remains
-meaningfully engaged while enabled. Every successful assessment selects or
-continues meaningful activity. The model may choose musing, reasoning, tasks,
-agents, movement or the Sleep workflow. Doing nothing is not a valid choice.
-Recording a reason, updating percentages or repeatedly running an assessment
-without activity does not satisfy this requirement.
-
-The assessment records its reason and selected activity in the existing execution
-and activation history. Newly updated activation levels retain their originating
-mode; older unattributed records stay unknown. Semi retains its configured
-interval and must make one or more signed adjustments on each assessment; an
-adjustment need not immediately trigger an operation.
-
-Full Auto can select new work or address an existing execution by its recorded ID. A continuation enters that execution through the existing event owner with autonomous authorship, the complete instruction, reason and attributed context. It preserves the original objective and actual results. Selecting a Desire identifies the existing desire and its lifecycle operation; Agency remains the owner of planning, execution, review and check-in. This does not turn a desire summary into an unreviewed motion command or let the controller edit persona.
-
-The shared Environment executor accepts conversational and computer-tool intentions as well as physical and sensing objectives. Intent selects those routes independently. Successful delegated tool work remains completed while its response's speech rendering is pending; the durable output workflow retains later speech outcomes. Pending speech does not turn the tool result into failure or request another execution of the tool.
-
-Full Auto's existing Active Operator requests its next assessment after the
-current assessment finishes. There is no model-selected `reconsider` policy,
-quiet option, future-time pause or event-only suspension in the intended Full
-contract. Selected operations execute independently; their duration and receipts
-do not become a global assessment barrier. The LLM owns the activity choice and
-requested behavioral ordering. Use the existing assessment and work owners.
-
-Human input, returned results, changed observations, desires and memories inform
-subsequent decisions; they are not prerequisites for another Full assessment.
-Preserve source, speaker, time and uncertainty. Transport clocks and successful
-processing counters are not environmental changes, and retained body events must
-not be presented as new observations. Restart must preserve admitted work and
-actual outcomes without replaying completed physical actions.
-
-Full has its own graph-owned instruction and activity-selection contract.
-Empty or all-zero decisions are errors, not successful self-directed activity.
-The model chooses the operation, intention and continuation target; no replacement
-action, automatic retry or fixed rotation is supplied. Semi makes model-selected
-signed adjustments on each periodic assessment and triggers functions at 100.
-Qualification must follow a chosen brief through its actual workflow results
-and into useful subsequent choices. Selecting an operation or displaying
-an intention alone does not qualify companion behavior.
-
-Recent attributed recall remains available. Full can additionally select a topic, time range, record order, memory type or sleep cycle for the next assessment through the existing Memory Router. All selected records and complete intentions cross the handoff without semantic truncation, text deduplication or removal of speaker/time/source attribution. A stored memory remains historical evidence, independently of current camera or robot status.
-
-Activity context now reads canonical execution outcomes after temporary queue receipts have been released. The graph's existing Task Receipt Limit selects completed activities; all linked running, waiting and idle objectives remain available. Robot Status separates its current running/waiting task from `parkedGoals`: unfinished idle objectives retain their identity, source, decision and timestamps without claiming current work. Activity outcomes pair the task’s selected action ID with its correlated receipt and retain the latest activity result separately. Later speech playback cannot replace that action’s evidence. Full ordered events remain available through execution context. Selected work, its returned receipt, and evidence that its objective succeeded are separate facts. The controller can use those facts for another decision; a completed movement receipt alone does not prove a visual or conversational goal succeeded.
-
-The shared Core Robot Operator body-connection reader identifies the selected
-body. Its connection state is included in the assessment's activation state;
-disconnection does not prevent assessment or dispatch of model-selected
-nonphysical activity. Physical execution still depends on the actual body
-connection; a gateway connection alone is insufficient. Already-admitted actions
-retain their actual receipts and uncertain outcomes. Tests cover disconnected
-assessment and nonphysical dispatch; useful live activity remains a separate
-qualification question.
-
-An assessment's finite camera read must not remain stranded after its Bridge connection ends or the application restarts. The Bridge owner resolves a disconnected read with its actual failure; authenticated Coordinator recovery applies that same rule to restored requests and delivers the correlated result to the waiting execution. Stream teardown releases its subscription and owned work even when the consumer is paused, and failed stream setup leaves no subscriber behind. This is connection-lifecycle reconciliation, not a camera timeout, a retry loop or evidence that physical work completed. Persistent depth acquisition retains its separate existing reconnect lifecycle.
-
-Autonomous intentions sent to Environment-style execution are displayed in Inner Dialogue and saved in long-term memory by the existing Inner Dialogue Buffer and Inner Dialogue Memory Saver nodes. The entry contains the selected instruction, stated reason and observed context, tagged `autonomy` and `autonomy-intention`. Metadata retains the originating agent, trigger source, decision time, source observation time, session, cycle and execution identities. This records the model's declared intention rather than claiming the selected motion has completed; action receipts remain separate evidence. Observer, Movement, Reflection and direct Full Auto Controller handoffs use this same output path. This adds no spoken announcement or model call.
-
-Desire Agent is the public controller for Agency work and can be invoked manually or selected by Sleep or Robot Autonomy. Its stages handle generation, planning, execution, outcome review and check-in as needed. It operates within the Desire system: it may read persona as context, but must not create or update persona goals or other persona fields. Agency-owned steps do not acquire a second continuation owner in Robot Goal Review. How well enduring goals and fresh experience inform new desires remains an integration question for the [qualification scenarios](QUALIFICATION.md#representative-scenarios).
-
-Standing persona goals and fresh reinforcement evidence have different purposes. Full Autonomy needs recorded proposed, planning, aspirational and active aims, retaining their status and horizon; an aim is not automatically an active task. Desire review needs the same context even after earlier evidence has been consumed, without treating unchanged goals as new evidence or reinforcement. The approved October 15 extension adds an optional standing-goal selection to the existing Persona Formatter and shares the recorded-goal selection with Desire. Other formatter consumers retain active-only defaults. Deployment and behavioral evidence are recorded in the historical diary (retained locally).
-
-The **Intent Orchestrator** is the program-wide input-routing responsibility, represented by the single `orchestrator` category. Task Decisions selects concrete supported actions, Planner develops complex plans, Psychotherapist independently assesses experience and outcomes, and Persona expresses identity, conversation and self-directed intentions. These are the approved distinctions in [the model and learning contract](MODELS_AND_LEARNING.md#models-and-learning). The category consolidation preserves each mode's existing Intent assignment, including the trained Environment specialist, rather than assigning the small model to unrelated higher reasoning. Activation evidence belongs in the dated qualification record; the category name alone does not establish which artifact is serving.
-
-**Psychotherapist owns autonomous persona changes.** The owner clarified on October 15 that this is the only agent allowed to edit persona. It analyzes saved conversational evidence and develops Ainekio's persona through the existing persona-learning and persistence owners. Greg's statements remain attributed to Greg; they do not automatically become Ainekio's traits or circumstances. Explicit manual persona editing, onboarding and restoration remain separate owner actions. The existing agent is internally identified as `psychoanalyzer` and uses the `psychotherapist` model role; its manual and Sleep triggers do not imply a continuously running service.
-
-Desire nurturing must not promote specific desires into persona goals. Completing
-an Agency desire or robot execution does not by itself change a standing persona
-aspiration. Reconciliation of misplaced items preserves original evidence and
-persona history; it does not fabricate current needs or revive obsolete tasks.
-The earlier goal-list cleanup is retained in the reference history.
-
-**Desire relevance must be reviewed throughout its open lifecycle.** A triggered review reassesses all open desires against fresh attributed evidence and current lifecycle state. The model selects an exact target strength from zero to one, with a reason and supporting evidence references for changes; an unchanged assessment may have no references. This replaces the fixed positive reinforcement increment for model relevance review. Existing elapsed-time decay remains distinct. At zero, the Agency storage owner saves archived disposition and strength together, retaining history. The existing Desire outcome/Coordinator path requests cancellation of that desire's remaining work. Archived status and a cancellation request do not establish that physical work stopped; actual receipts and uncertain outcomes remain recorded. Late planning or execution results must preserve the saved archival and newer relevance assessment. Source qualification, recovery checks and activation are tracked in the historical diary (retained locally).
-
-Nurturing uses the enabled conversation, episodic memory, task, goal, curiosity,
-reflection and dream sources gathered by the existing Desire owner. Source windows
-and record counts belong to its settings; they are not a second semantic-search
-policy in this document. Selected content remains complete and retains
-speaker/source/mode/time attribution. Standing goals provide context, not fresh
-evidence. Repeatedly reading the same event must not count as fresh reinforcement.
-Qualification must check whether the same event arriving through buffer and memory
-is recognized as the same evidence; the historical identity gap is not a claim
-that this handoff has been repaired.
-
-**Workflow nodes select model categories, and the status widget assigns models to those categories.** Desire generation and nurturing select `psychotherapist`; the status widget owns its current deployment for each mode. The owner's October 26 reasoning rule keeps this ordinary work's Reasoning checkbox off. Full Autonomy assessments alone request high reasoning through the connected mode input; Semi assessments and ordinary task execution request none. An explicit node override takes precedence over the checkbox, and an unchecked ordinary Codex call requests none rather than inheriting a higher configured effort. Diagnostic and delegated terminal sessions retain their separate settings. This does not change the category's persona-editing authority: Desire still writes only Agency records, while Psychotherapist's separate review agent owns autonomous persona edits. Planning, execution and outcome stages retain their existing role selections unless explicitly reassigned.
+- **Independent execution and continuation:** Selected operations run through independent Work Coordinator admissions so their duration does not block subsequent assessments. Full can initiate new work, continue an existing execution by ID through the durable autonomy event owner (preserving original objective, autonomous authorship and prior results), or invoke a Desire lifecycle stage through Desire Agent. Delegated computer-tool work settles independently while speech rendering is pending.
+- **Canonical activity and connection state:**
+  - Activity context reads canonical execution outcomes (up to Task Receipt Limit for completed activities, plus all linked running, waiting and idle objectives), pairing each selected action ID with its correlated receipt so later speech playback cannot overwrite action evidence.
+  - Core's Robot Operator body-connection reader reports actual selected-body connectivity (a gateway connection alone is insufficient). When the robot body is disconnected, embodied functions must not be triggered or updated, while non-embodied activity (reasoning, memory, agents, Sleep) remains available.
+  - Disconnected finite camera reads resolve immediately with their actual failure across Bridge teardown and Coordinator recovery without leaving stranded subscribers.
+- **Inner Dialogue recording:** Autonomous intentions dispatched to Environment execution (including Observer, Movement, Reflection and direct Full Auto Controller handoffs) are published to Inner Dialogue Buffer and saved by Inner Dialogue Memory Saver with the selected instruction, stated reason, observed context and provenance metadata (`autonomy`, `autonomy-intention`). This records the declared intention without claiming physical completion or adding spoken output.
 
 References: [autonomy controller](../../etc/cognitive-graphs/robot-autonomy-controller-mode.json), [shared human/autonomy executor](../../etc/cognitive-graphs/environment-mode.json), [Active Operator](../../brain/agents/active-operator/), [Robot Goal Review](../../etc/cognitive-graphs/robot-goal-review-mode.json), [Weekly Goal Review](../../etc/cognitive-graphs/goal-review.json), [Agency owners](../../packages/core/src/agency), [remaining-objective routing](../../packages/core/src/nodes/utility/execution-context.node.ts).
 
 ## Workflows and interaction examples
 
-Connections and the existing execution owners determine actual scheduling.
-This describes responsibility and information flow, not a mandatory serial sequence.
+Connections and the existing execution owners determine scheduling. This describes responsibility and information flow, not a mandatory serial sequence:
 
 1. User/event input enters the graph with originating instruction and attribution.
 2. Intent Orchestrator selects needed routes and context.
 3. Persona, history, memory, Robot Status, current execution, available capabilities and camera evidence feed the relevant context builders.
-4. Task Decision selects an executable plan or delegation. Visual Planning and the existing plan resolver contribute when selected.
-5. The existing active-task executor dispatches selected operations and records progress/outcomes.
-6. Remaining-objective routing conditionally invokes Goal Review for an unfinished owned objective. Its assessment returns as data; unrelated conversation does not require review.
-7. When Intent selects `needsResponse`, the final context builder combines its selected sources, returned execution/image evidence and applicable goal assessment. Graph dependencies hold the builder until selected results return; unselected branches are skipped. Persona generates the response and the single Conversation Out records and speaks it. The caller then handles newer input, selected continuation or an explicitly selected input wait.
-8. Save nodes retain Intent and Task decisions for later curation. Tool delegation has its own eventual result-return path.
+4. Task Decision selects an executable plan or delegation. Visual Planning and the plan resolver contribute when selected.
+5. The active-task executor dispatches selected operations and records progress and outcomes.
+6. Remaining-objective routing conditionally invokes Goal Review for an unfinished owned objective; its assessment returns as data.
+7. When Intent selects `needsResponse`, the final context builder waits on selected graph branches, combines selected sources, returned execution/image evidence and applicable goal assessment, and passes them to Persona. Conversation Out records and speaks the reply.
+8. Save nodes retain Intent and Task decisions for later curation.
 
-Core distinction: **request → selected plan → dispatched operation → operation receipt → evidence about the objective**. These are different events. Saying “done” or receiving a command completion does not by itself prove that an object was found, tracking is active, or a clearer image was obtained.
-
-An ordinary command does not require a separate Goal Review call. Finite
-objectives whose selected completion basis is `action_result` can settle from
-their correlated completion results as described above; program completion alone
-does not establish a broader visual or environmental objective. Goal Review is
-an Intent-selected assessment of an eligible unfinished objective, and Active
-Operator chooses subsequent autonomous work. Neither edits standing persona goals.
-Conversation inference or delivery failure remains a failure, rather than an
-empty successful reply.
+Core distinction: **request → selected plan → dispatched operation → operation receipt → evidence about the objective**. Receiving command completion does not by itself prove that an object was found, tracking is active, or a clearer image was obtained. Conversation inference or delivery failure remains a failure rather than an empty successful reply.
 
 Sources: [Environment graph](../../etc/cognitive-graphs/environment-mode.json), [autonomy controller](../../etc/cognitive-graphs/robot-autonomy-controller-mode.json), [shared human/autonomy executor](../../etc/cognitive-graphs/environment-mode.json), [Goal Review](../../etc/cognitive-graphs/robot-goal-review-mode.json).
 

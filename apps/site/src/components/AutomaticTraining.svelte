@@ -43,19 +43,10 @@
       blockers: string[]
       trainableSamples: number
       newSamplesSinceLastRun: number
-      lastCompletedAt: string | null
-      cooldownEndsAt: string | null
-      runningProcess: { name: string; pid: number } | null
       remoteCredentialsConfigured: boolean
     }
     dataset: {
-      organizedMemories: number
-      pendingOrganization: number
-      curatedMemories: number
-      pendingCuration: number
-      validCuratedRecords: number
       invalidCuratedRecords: number
-      trainableSamples: number
     }
     integration: {
       owner: 'sleep-workflow'
@@ -70,44 +61,15 @@
     vramGB: number | null
     trainingEnvironmentError: string | null
     hasUnsloth: boolean
-    hasRunpodKey: boolean
-    hasPreviousModel: boolean
     hasS3Configured: boolean
   }
 
-  const defaults: AutomaticTrainingConfig = {
-    version: 1,
-    enabled: false,
-    method: 'local-lora',
-    trainingTarget: 'llama-cpp',
-    minimumTrainableSamples: 250,
-    minimumNewSamples: 50,
-    cooldownHours: 168,
-    maxRuntimeMinutes: 180,
-    baseModel: DEFAULT_TRAINING_MODEL,
-    epochs: 1,
-    maxSamples: 3000,
-    useRollingWindow: false,
-    recentDays: 30,
-    olderSamples: 3000,
-    loraRank: 16,
-    loraAlpha: 32,
-    learningRate: 0.0001,
-    batchSize: 1,
-    gradientAccumulationSteps: 16,
-    maxSequenceLength: 2048,
-    quantization: 'Q4_K_M',
-    runpodTemplateId: 'metahuman-runpod-trainer',
-    runpodGpuType: 'NVIDIA H100 PCIe',
-    enableS3Upload: false,
-  }
-
   let status: AutomaticTrainingStatus | null = null
-  let config: AutomaticTrainingConfig = { ...defaults }
+  let config: AutomaticTrainingConfig | null = null
   let capabilities: SystemCapabilities | null = null
-  let dataSettings = parseTrainingDataSettings()
-  let useAllSamples = false
+  let dataSettings: TrainingDataSettings | null = null
   let lastSampleCap = 3000
+  const observation = new AbortController()
 
   let loading = true
   let saving = false
@@ -119,18 +81,21 @@
   let savedMessage = ''
   let dataSavedMessage = ''
 
-  $: usesLoRA = config.method === 'local-lora' || config.method === 'remote-lora'
-  $: usesRunpod = config.method === 'remote-lora' || config.method === 'fine-tune'
-  $: effectiveBatchSize = config.batchSize * config.gradientAccumulationSteps
+  $: usesLoRA = config?.method === 'local-lora' || config?.method === 'remote-lora'
+  $: usesRunpod = config?.method === 'remote-lora' || config?.method === 'fine-tune'
+  $: effectiveBatchSize = config ? config.batchSize * config.gradientAccumulationSteps : 0
+  $: useAllSamples = config?.maxSamples === null
 
-  function applyStatus(next: AutomaticTrainingStatus) {
+  function applyStatus(next: AutomaticTrainingStatus, submitted?: string) {
     status = next
-    config = { ...next.config }
-    useAllSamples = next.config.maxSamples === null
-    if (next.config.maxSamples !== null) lastSampleCap = next.config.maxSamples
+    if (config === null || JSON.stringify(config) === submitted) {
+      config = { ...next.config }
+      if (next.config.maxSamples !== null) lastSampleCap = next.config.maxSamples
+    }
   }
 
   function handleMethodChange() {
+    if (!config) return
     if (config.method !== 'fine-tune' && (config.loraRank < 1 || config.loraAlpha < 1)) {
       config = { ...config, loraRank: 16, loraAlpha: 32 }
     }
@@ -138,55 +103,37 @@
   }
 
   function handleAllSamples(event: Event) {
+    if (!config) return
     const checked = (event.target as HTMLInputElement).checked
-    useAllSamples = checked
     if (checked) {
       if (config.maxSamples !== null) lastSampleCap = config.maxSamples
       config = { ...config, maxSamples: null }
     } else {
       config = { ...config, maxSamples: lastSampleCap }
     }
+    savedMessage = ''
   }
 
   function applyRecommendedPreset() {
-    if (config.method === 'fine-tune') {
-      config = {
-        ...config,
-        baseModel: DEFAULT_FULL_TRAINING_MODEL,
-        epochs: 2,
-        maxSamples: 5000,
-        useRollingWindow: true,
-        recentDays: 30,
-        olderSamples: 5000,
-        loraRank: 0,
-        loraAlpha: 0,
-        learningRate: 0.00002,
-        batchSize: 4,
-        gradientAccumulationSteps: 8,
-        maxSequenceLength: 2048,
-        quantization: 'Q4_K_M',
-      }
-      lastSampleCap = 5000
-    } else {
-      config = {
-        ...config,
-        baseModel: DEFAULT_TRAINING_MODEL,
-        epochs: 1,
-        maxSamples: 3000,
-        useRollingWindow: false,
-        recentDays: 30,
-        olderSamples: 3000,
-        loraRank: 16,
-        loraAlpha: 32,
-        learningRate: 0.0001,
-        batchSize: 1,
-        gradientAccumulationSteps: 16,
-        maxSequenceLength: 2048,
-        quantization: 'Q4_K_M',
-      }
-      lastSampleCap = 3000
+    if (!config) return
+    const full = config.method === 'fine-tune'
+    lastSampleCap = full ? 5000 : 3000
+    config = {
+      ...config,
+      baseModel: full ? DEFAULT_FULL_TRAINING_MODEL : DEFAULT_TRAINING_MODEL,
+      epochs: full ? 2 : 1,
+      maxSamples: lastSampleCap,
+      useRollingWindow: full,
+      recentDays: 30,
+      olderSamples: lastSampleCap,
+      loraRank: full ? 0 : 16,
+      loraAlpha: full ? 0 : 32,
+      learningRate: full ? 0.00002 : 0.0001,
+      batchSize: full ? 4 : 1,
+      gradientAccumulationSteps: full ? 8 : 16,
+      maxSequenceLength: 2048,
+      quantization: 'Q4_K_M',
     }
-    useAllSamples = false
     savedMessage = ''
   }
 
@@ -194,12 +141,13 @@
     loading = true
     error = ''
     try {
-      const response = await apiFetch('/api/training/automatic')
+      const response = await apiFetch('/api/training/automatic', { signal: observation.signal })
       const body = await response.json()
+      if (observation.signal.aborted) return
       if (!response.ok) throw new Error(body.error || 'Failed to load automatic training settings')
       applyStatus(body)
     } catch (cause) {
-      error = cause instanceof Error ? cause.message : 'Failed to load automatic training settings'
+      if (!observation.signal.aborted) error = cause instanceof Error ? cause.message : 'Failed to load automatic training settings'
     } finally {
       loading = false
     }
@@ -208,8 +156,9 @@
   async function loadCapabilities() {
     capabilityError = ''
     try {
-      const response = await apiFetch('/api/system/gpu-info')
+      const response = await apiFetch('/api/system/gpu-info', { signal: observation.signal })
       const body = await response.json()
+      if (observation.signal.aborted) return
       if (!response.ok) throw new Error(body.error || 'Failed to inspect training capabilities')
       capabilities = {
         hasLocalGPU: body.hasLocalGPU === true,
@@ -217,12 +166,10 @@
         vramGB: typeof body.vramGB === 'number' ? body.vramGB : null,
         trainingEnvironmentError: body.trainingEnvironmentError ?? null,
         hasUnsloth: body.hasUnsloth === true,
-        hasRunpodKey: body.hasRunpodKey === true,
-        hasPreviousModel: body.hasPreviousModel === true,
         hasS3Configured: body.hasS3Configured === true,
       }
     } catch (cause) {
-      capabilityError = cause instanceof Error ? cause.message : 'Failed to inspect training capabilities'
+      if (!observation.signal.aborted) capabilityError = cause instanceof Error ? cause.message : 'Failed to inspect training capabilities'
     }
   }
 
@@ -230,18 +177,21 @@
     dataLoading = true
     dataError = ''
     try {
-      const response = await apiFetch('/api/training-data')
+      const response = await apiFetch('/api/training-data', { signal: observation.signal })
       const body = await response.json()
+      if (observation.signal.aborted) return
       if (!response.ok) throw new Error(body.error || 'Failed to load training-data composition')
       dataSettings = parseTrainingDataSettings(body.config)
     } catch (cause) {
-      dataError = cause instanceof Error ? cause.message : 'Failed to load training-data composition'
+      if (!observation.signal.aborted) dataError = cause instanceof Error ? cause.message : 'Failed to load training-data composition'
     } finally {
       dataLoading = false
     }
   }
 
   async function saveSettings() {
+    if (!config) return
+    const submitted = JSON.stringify(config)
     saving = true
     error = ''
     savedMessage = ''
@@ -249,12 +199,14 @@
       const response = await apiFetch('/api/training/automatic', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify(config),
+        body: submitted,
       })
       const body = await response.json()
       if (!response.ok) throw new Error(body.error || 'Failed to save automatic training settings')
-      applyStatus(body)
-      savedMessage = 'Automatic admission and launch settings saved.'
+      if (observation.signal.aborted) return
+      const changed = JSON.stringify(config) !== submitted
+      applyStatus(body, submitted)
+      savedMessage = changed ? 'Submitted settings saved. Your newer edits are not saved.' : 'Automatic training settings saved.'
     } catch (cause) {
       error = cause instanceof Error ? cause.message : 'Failed to save automatic training settings'
     } finally {
@@ -263,6 +215,8 @@
   }
 
   async function saveTrainingDataConfig() {
+    if (!dataSettings) return
+    const submitted = JSON.stringify(dataSettings)
     dataSaving = true
     dataError = ''
     dataSavedMessage = ''
@@ -270,12 +224,15 @@
       const response = await apiFetch('/api/training-data', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify(dataSettings),
+        body: submitted,
       })
       const body = await response.json()
       if (!response.ok) throw new Error(body.error || 'Failed to save training-data composition')
-      dataSettings = parseTrainingDataSettings(body.config)
-      dataSavedMessage = 'Training-data composition saved for manual and automatic runs.'
+      if (observation.signal.aborted) return
+      const changed = JSON.stringify(dataSettings) !== submitted
+      if (!changed) dataSettings = parseTrainingDataSettings(body.config)
+      dataSavedMessage = changed ? 'Submitted composition saved. Your newer edits are not saved.' : 'Training-data composition saved for manual and automatic runs.'
+      void loadStatus()
     } catch (cause) {
       dataError = cause instanceof Error ? cause.message : 'Failed to save training-data composition'
     } finally {
@@ -292,6 +249,7 @@
     void loadStatus()
     void loadCapabilities()
     void loadTrainingDataConfig()
+    return () => observation.abort()
   })
 </script>
 
@@ -302,9 +260,12 @@
       Configure both admission policy and the complete training launch. Automatic runs use the same refined
       dataset, hyperparameter contract, and trainer boundary as the manual Training Wizard.
     </p>
+    <button type="button" class="btn-secondary mt-3" on:click={() => { void loadStatus(); void loadCapabilities() }} disabled={saving || loading}>
+      Refresh readiness
+    </button>
   </div>
 
-  {#if loading}
+  {#if loading && !config}
     <div class="flex items-center justify-center p-12 text-sm text-gray-400 animate-pulse">
       Loading automatic training settings...
     </div>
@@ -316,15 +277,10 @@
       <div class="banner banner-success mb-5">{savedMessage}</div>
     {/if}
 
-    <div class="mb-6 rounded-xl border border-amber-500/40 bg-amber-500/10 p-4 text-sm text-amber-100">
-      <div class="font-semibold">Sleep-cycle trigger is not installed yet</div>
-      <div class="mt-1 text-amber-100/80">
-        These settings are persisted and launch-ready, but enabling the policy alone will not start training.
-        Sleep admission remains the next implementation stage.
-      </div>
-    </div>
-
     {#if status}
+      <div class="mb-6 rounded-xl border border-gray-700 bg-gray-900 p-4 text-sm text-gray-300">
+        {status.integration.message}
+      </div>
       <div class="mb-6 grid grid-cols-1 gap-3 sm:grid-cols-2 lg:grid-cols-4">
         <div class="stat-card">
           <div class="stat-value {status.readiness.eligible ? 'text-emerald-500' : 'text-amber-400'}">
@@ -360,12 +316,13 @@
       {/if}
     {/if}
 
-    <form on:submit|preventDefault={saveSettings} class="space-y-5">
+    {#if config}
+    <form on:submit|preventDefault={saveSettings} on:input={() => savedMessage = ''} on:change={() => savedMessage = ''} class="space-y-5">
       <section class="rounded-xl border border-gray-700 bg-gray-900/70 p-5 sm:p-6">
         <label class="flex cursor-pointer items-start justify-between gap-6">
           <span>
             <span class="block font-semibold text-gray-100">Enable automatic training policy</span>
-            <span class="mt-1 block text-sm text-gray-500">The future Sleep trigger will honor this switch and every gate below.</span>
+            <span class="mt-1 block text-sm text-gray-500">Sleep checks this policy after Organizer and Curator finish.</span>
           </span>
           <input type="checkbox" class="mt-1 h-5 w-5 accent-emerald-600" bind:checked={config.enabled} />
         </label>
@@ -492,7 +449,7 @@
       <section class="rounded-xl border border-gray-700 bg-gray-900/70 p-5 sm:p-6">
         <div class="mb-5">
           <h4 class="m-0 text-lg font-semibold text-gray-100">Model and optimization</h4>
-          <p class="mt-1 text-sm text-gray-500">These values are passed to the selected trainer; they are no longer display-only settings.</p>
+          <p class="mt-1 text-sm text-gray-500">These values are passed to the selected trainer.</p>
         </div>
 
         <div class="grid grid-cols-1 gap-5 sm:grid-cols-2">
@@ -624,14 +581,12 @@
       </section>
 
       <div class="flex flex-wrap items-center justify-between gap-4 rounded-xl border border-gray-700 bg-gray-900/70 p-5">
-        <button type="button" class="btn-secondary" on:click={() => { void loadStatus(); void loadCapabilities() }} disabled={saving}>
-          Refresh readiness
-        </button>
         <button type="submit" class="btn-primary" disabled={saving}>
           {saving ? 'Saving...' : 'Save automatic training settings'}
         </button>
       </div>
     </form>
+    {/if}
 
     <section class="mt-6 rounded-xl border border-gray-700 bg-gray-900/70 p-5 sm:p-6">
       <div class="mb-5">
@@ -643,6 +598,7 @@
 
       {#if dataError}
         <div class="banner banner-error mb-4">{dataError}</div>
+        <button type="button" class="btn-secondary mb-4" on:click={loadTrainingDataConfig}>Reload composition</button>
       {/if}
       {#if dataSavedMessage}
         <div class="banner banner-success mb-4">{dataSavedMessage}</div>
@@ -650,7 +606,7 @@
 
       {#if dataLoading}
         <div class="p-6 text-center text-sm text-gray-500 animate-pulse">Loading training-data composition...</div>
-      {:else}
+      {:else if dataSettings}
         <TrainingDataControls
           settings={dataSettings}
           disabled={dataSaving}

@@ -64,13 +64,3 @@ test('Desire Agent is the sole public trigger and lifecycle admission owner', ()
   assert.doesNotMatch(conversationBuffer, /userInitiated|messageId: appendedUserMessage|observedAt: appendedUserMessage/)
   assert.doesNotMatch(source('packages/core/src/queue/trigger-manager.ts'), /userInitiatedEvent/)
 })
-
-test('operator proposals do not expose legacy Desire stage admissions', () => {
-  const proposalOwner = source('packages/core/src/active-operator/operator-proposals.ts')
-  const proposalHandler = source('packages/core/src/api/handlers/operator-proposals.ts')
-
-  for (const legacyType of ['desire_generate', 'desire_advance', 'desire_execute']) {
-    assert.doesNotMatch(proposalOwner, new RegExp(`['"]${legacyType}['"]`))
-    assert.doesNotMatch(proposalHandler, new RegExp(`['"]${legacyType}['"]`))
-  }
-})

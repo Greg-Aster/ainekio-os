@@ -35,10 +35,8 @@ Agents and models:
   backend <command>   Inspect or switch the active backend
 
 Audio and voice:
-  voice <command>         Inspect samples and export training data
   voice-server <command>  Manage shared Kokoro/Whisper services
   kokoro <command>        Manage Kokoro
-  rvc <command>           Manage RVC
 
 Context:
   --user <name>, -u <name>  Run the command in one user's profile context

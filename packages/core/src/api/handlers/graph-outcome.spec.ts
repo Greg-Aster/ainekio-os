@@ -21,8 +21,7 @@ const { setAuditEnabled } = await import('../../audit.js');
 setAuditEnabled(false);
 const runtime = await import('../../graph-runtime.js');
 const { withUserContext } = await import('../../context.js');
-const { writeBufferEntry } = await import('../../conversation-buffer.js');
-const { createRobotBufferMessage } = await import('../../nodes/output/robot-buffer.node.js');
+const { getBufferPathForUser } = await import('../../conversation-buffer.js');
 const username = 'outcome-fixture';
 fs.mkdirSync(path.join(root, 'profiles', username), { recursive: true });
 registerProfileStorageConfigGetter(candidate => candidate === username
@@ -36,7 +35,7 @@ fs.copyFileSync(path.join(repo, 'etc', 'cognitive-graphs', 'response-pipeline.js
   path.join(root, 'etc', 'cognitive-graphs', 'response-pipeline.json'));
 
 // Exercise the actual canonical output owner first: generation and staging
-// succeed, then relay rejects conflicting content for an existing receipt.
+// succeed, then the relay encounters a real filesystem failure at the buffer.
 const graph = {
   version: '1.0', format: 'svelte-flow' as const, name: 'Output delivery failure fixture',
   scheduler: { version: 1 as const, activation: 'demand' as const, skippedState: 'explicit' as const,
@@ -56,13 +55,16 @@ const record = { direction: 'inbound' as const, status: 'completed', message: 'O
   targetSessionId: 'fixture-body', actionId: 'fixture-action',
   feedback: { id: 'fixture-result', timestamp: '2026-09-07T00:00:00Z', type: 'completed',
     message: 'Original result', actionId: 'fixture-action' } };
-await writeBufferEntry(username, 'robot', createRobotBufferMessage(record));
+const bufferPath = getBufferPathForUser(username, 'robot');
+assert.ok(bufferPath.startsWith(root + path.sep));
+fs.mkdirSync(bufferPath, { recursive: true });
 const failed = await withUserContext({ userId: username, username, role: 'owner' }, () => runtime.runGraph({
   graph, context: { username, userId: username, userMessage: 'A generated response before persistence failed.',
-    bridgeRecord: { ...record, message: 'Conflicting result' } },
+    bridgeRecord: record },
 }));
 assert.equal(failed.status, 'failed');
 assert.ok(failed.error);
+assert.match(failed.error.message, /EISDIR/);
 assert.deepEqual(runtime.listFailedNodes(failed), []);
 assert.equal(failed.nodes.get('buffer')?.outputs?.persisted, true);
 assert.equal(runtime.extractGraphOutput(failed)?.response, 'A generated response before persistence failed.');
@@ -99,7 +101,6 @@ const streamingMock = mock.module('../../graph-streaming.js', { namedExports: {
   ...streaming,
   loadGraphForMode: async () => ({ graph, source: 'isolated-fixture' }),
 } });
-const { handleExecuteGraph } = await import('./execute-graph.js');
 const { handleExecuteGraphStream } = await import('./execute-graph-stream.js');
 const { handlePersonaChat } = await import('./persona-chat.js');
 const { extractResponsePipelineResult, handleResponsePipeline } = await import('./response-pipeline.js');
@@ -111,13 +112,6 @@ const request = (): UnifiedRequest => ({
   method: 'POST', path: '/api/persona_chat',
   user: requestUser,
   body: { graph, message: 'Hello', mode: 'conversation', stream: false, sessionId: `fixture-${Math.random()}` },
-});
-
-test('direct graph API reports the global delivery failure, not successful staging', async () => {
-  returnedState = failed;
-  const result = await handleExecuteGraph(request());
-  assert.equal(result.status, 500);
-  assert.equal(result.error, failed.error!.message);
 });
 
 test('editor stream reports failure without a subsequent graph-complete event', async () => {
@@ -140,7 +134,7 @@ test('persona chat does not turn earlier generated text into successful completi
 }));
 
 test('response pipeline preserves the global error when no node failed', () => {
-  assert.throws(() => extractResponsePipelineResult(failed), error => error instanceof Error
+  assert.throws(() => extractResponsePipelineResult(failed, graph), error => error instanceof Error
     && error.message === failed.error!.message);
 });
 
@@ -177,10 +171,6 @@ test('Controller reports activation assessment and independent admissions', asyn
 
 test('editor waiting response preserves saved execution identity and is not completion', async () => {
   returnedState = { ...failed, status: 'waiting', error: undefined, executionId: 'waiting-fixture' };
-  const response = await handleExecuteGraph(request());
-  assert.equal(response.status, 200);
-  assert.equal((response.data as any)?.result?.status, 'waiting');
-  assert.equal((response.data as any)?.result?.executionId, 'waiting-fixture');
   const events: string[] = [];
   for await (const chunk of (await handleExecuteGraphStream({ body: { graph, sessionId: 'fixture-stream' }, user: { username: '' } } as UnifiedRequest)).stream!) events.push(chunk);
   assert.ok(events.some(event => event.includes('event: graph_waiting') && event.includes('waiting-fixture')));
@@ -264,6 +254,55 @@ test('existing conversational cancellation remains a cancellation event', () => 
   assert.ok(result.data.events.every((event: any) => event.type !== 'answer' && event.type !== 'error'));
 }));
 
+test('chat replies still persist Agency clarifying answers after proposal observer retirement', () => withUserContext(requestUser, async () => {
+  const agency = await import('../../agency/index.js');
+  const now = new Date().toISOString();
+  const desire: import('../../agency/types.js').Desire = {
+    id: 'desire-chat-answer', title: 'Clarify the retained Agency goal', description: 'Fixture', reason: 'Fixture',
+    source: 'reflection', status: 'questioning', strength: 0.8, baseWeight: 1, threshold: 0.7,
+    decayRate: 0.03, lastReviewedAt: now, reinforcements: 1, runCount: 1,
+    risk: 'low', requiredTrustLevel: 'suggest', createdAt: now, updatedAt: now,
+    metrics: agency.initializeDesireMetrics(),
+    clarifyingQuestions: { phase: 'before_planning', questions: [{ id: 'question-one', text: 'Which result?', type: 'free_text', required: true }], answers: [] },
+  };
+  await agency.saveDesire(desire, username);
+  returnedState = { ...failed, status: 'completed', error: undefined };
+  for (const answer of ['The first answer', 'A repeated reply']) {
+    const req = request();
+    req.body.message = answer;
+    req.body.replyToDesireId = desire.id;
+    assert.equal((await handlePersonaChat(req)).status, 200);
+    const saved = await agency.loadDesire(desire.id, username);
+    assert.equal(saved?.clarifyingQuestions?.answers.length, 1);
+    assert.equal(saved?.clarifyingQuestions?.answers[0].answer, 'The first answer');
+    assert.ok(saved?.clarifyingQuestions?.completedAt);
+    assert.equal(saved?.metrics.userInputCount, 1);
+  }
+}));
+
 test.after(() => {
   streamingMock.restore(); usersMock.restore(); coreMock.restore(); runtimeMock.restore(); eventBus.disconnect();
 });
+
+test('Inner response stream reports the actual saved reflection identity and preserves raw presentation', () => withUserContext(requestUser, async () => {
+  const previous = returnedState;
+  returnedState = { status: 'completed', startTime: 1, nodes: new Map([
+    ['response', { nodeId: 'response', status: 'completed', definition: { type: 'stream_writer' },
+      outputs: { output: '<think>Preserved inner reasoning</think>Inner reply' } }],
+  ]) };
+  try {
+    const response = await handlePersonaChat({ ...request(), body: { message: 'An inner thought', mode: 'inner',
+      sessionId: 'inner-identity-fixture', stream: true } });
+    const events: Array<{ type: string; data: Record<string, any> }> = [];
+    for await (const chunk of response.stream!) {
+      for (const line of chunk.split('\n')) if (line.startsWith('data: ')) events.push(JSON.parse(line.slice(6)));
+    }
+    const answer = events.find(event => event.type === 'answer')!.data;
+    assert.equal(answer.response, '<think>Preserved inner reasoning</think>Inner reply');
+    assert.equal(answer.responseEntry.mode, 'inner');
+    const saved = JSON.parse(fs.readFileSync(getBufferPathForUser(username, 'inner'), 'utf8')).messages
+      .find((entry: { meta?: { idempotencyKey?: string } }) => entry.meta?.idempotencyKey === answer.responseEntry.id);
+    assert.equal(saved.role, 'reflection');
+    assert.equal(saved.content, answer.response);
+  } finally { returnedState = previous; }
+}));

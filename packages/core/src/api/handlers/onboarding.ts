@@ -6,7 +6,10 @@
  */
 
 import type { UnifiedRequest, UnifiedResponse } from '../types.js';
-import { successResponse } from '../types.js';
+import { successResponse, badRequestResponse } from '../types.js';
+import { randomUUID } from 'node:crypto';
+import path from 'node:path';
+import { storageClient } from '../../storage-client.js';
 import {
   getOnboardingState,
   updateOnboardingState,
@@ -15,6 +18,18 @@ import {
   completeOnboarding,
   type OnboardingState,
 } from '../../onboarding.js';
+
+/** POST /api/ingest — store an uploaded document in the existing profile inbox. */
+export async function handleUploadInboxFile(req: UnifiedRequest): Promise<UnifiedResponse> {
+  const file = req.body?.file as { name: string; buffer: Buffer } | undefined;
+  if (!file?.name || !Buffer.isBuffer(file.buffer)) return badRequestResponse('File is required');
+  const result = await storageClient.write({
+    username: req.user.username, category: 'memory', subcategory: 'inbox',
+    relativePath: `${randomUUID()}-${path.basename(file.name)}`, data: file.buffer,
+  });
+  if (!result.success) return { status: 500, error: result.error };
+  return successResponse({ success: true, path: result.path, state: 'stored-in-inbox' });
+}
 
 /**
  * GET /api/onboarding/state - Get current onboarding progress

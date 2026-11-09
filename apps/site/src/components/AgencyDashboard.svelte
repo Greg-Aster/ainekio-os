@@ -5,242 +5,23 @@
   import { isOwner } from '../stores/security-policy';
   import { apiEventSource, apiFetch } from '../lib/client/api-config';
 
-  // Track last load time to avoid redundant reloads
-  let lastLoadTime = 0;
-  const RELOAD_THRESHOLD_MS = 5000; // Min 5 seconds between reloads
-
-  // Types
-  interface PlanStep {
-    order: number;
-    action: string;
-    skill?: string;
-    inputs?: Record<string, unknown>;
-    expectedOutcome: string;
-    risk: string;
-    requiresApproval: boolean;
-  }
-
-  interface DesirePlan {
-    id: string;
-    version: number;
-    steps: PlanStep[];
-    estimatedRisk: string;
-    requiredSkills: string[];
-    requiredTrustLevel: string;
-    operatorGoal: string;
-    createdAt: string;
-    basedOnCritique?: string;
-  }
-
-  interface DesireScratchpadEntry {
-    timestamp: string;
-    type: string;
-    description: string;
-    actor: string;
-    agentName?: string;
-    data?: Record<string, unknown>;
-  }
-
-  // Now uses a summary for folder-based scratchpad storage
-  interface DesireScratchpadSummary {
-    entryCount: number;
-    lastEntryNumber: number;
-    lastEntryAt?: string;
-    lastEntryType?: string;
-  }
-
-  // Behavioral metrics that reveal desire nature over time
-  interface DesireMetrics {
-    cycleCount: number;
-    completionCount: number;
-    currentCycle: number;
-    totalActiveTimeMs: number;
-    totalIdleTimeMs: number;
-    avgCycleTimeMs: number;
-    lastActivityAt: string;
-    peakStrength: number;
-    troughStrength: number;
-    reinforcementCount: number;
-    decayCount: number;
-    netReinforcement: number;
-    planVersionCount: number;
-    planRejectionCount: number;
-    planRevisionCount: number;
-    executionAttemptCount: number;
-    executionSuccessCount: number;
-    executionFailCount: number;
-    outcomeRetryCount: number;
-    avgSuccessScore: number;
-    userInputCount: number;
-    userApprovalCount: number;
-    userRejectionCount: number;
-    userCritiqueCount: number;
-  }
-
-  interface DesireExecution {
-    startedAt: string;
-    completedAt?: string;
-    status: string;
-    currentStep?: number;
-    stepsCompleted?: number;
-    stepsTotal?: number;
-    result?: unknown;
-    error?: string;
-  }
-
-  interface DesireOutcomeReview {
-    id: string;
-    verdict: string;
-    reasoning: string;
-    successScore: number;
-    lessonsLearned: string[];
-    nextAttemptSuggestions?: string[];
-    reviewedAt: string;
-    notifyUser: boolean;
-    userMessage?: string;
-    executionSummary?: string;
-  }
-
-  interface ClarifyingQuestion {
-    id: string;
-    text: string;
-    type: 'free_text' | 'yes_no' | 'choice';
-    options?: string[];
-    required: boolean;
-  }
-
-  interface DesireClarifyingQuestions {
-    questions: ClarifyingQuestion[];
-    answers: Array<{ questionId: string; answer: string; answeredAt: string }>;
-    askedAt?: string;
-    completedAt?: string;
-  }
-
-  // Long-running goal types
-  type DesireGoalType = 'one_time' | 'recurring' | 'long_running';
-
-  interface DesireMilestone {
-    id: string;
-    order: number;
-    title: string;
-    description?: string;
-    status: 'pending' | 'in_progress' | 'completed' | 'skipped';
-    completedAt?: string;
-    tasks?: string[];
-    calendarEvents?: string[];
-  }
-
-  interface DesireGoalProgress {
-    currentMilestone: number;
-    totalMilestones: number;
-    completedMilestones: number;
-    progressPercent: number;
-    estimatedCompletionDate?: string;
-    lastCheckinAt?: string;
-    nextCheckinAt?: string;
-  }
-
-  interface Desire {
-    id: string;
-    title: string;
-    description: string;
-    reason: string;
-    metrics?: DesireMetrics;  // Behavioral metrics (replaces hardcoded type)
-    source: string;
-    status: string;
-    strength: number;
-    baseWeight: number;
-    risk: string;
-    createdAt: string;
-    updatedAt: string;
-    plan?: DesirePlan;
-    planHistory?: DesirePlan[];
-    userCritique?: string;
-    critiqueAt?: string;
-    review?: {
-      verdict: string;
-      alignmentScore: number;
-      reasoning?: string;
-      concerns?: string[];
-    };
-    execution?: DesireExecution;
-    scratchpad?: DesireScratchpadSummary;
-    outcomeReview?: DesireOutcomeReview;
-    clarifyingQuestions?: DesireClarifyingQuestions;
-    folderPath?: string;  // For folder-based storage
-    // Long-running goal fields
-    goalType?: DesireGoalType;
-    completionCriteria?: string;
-    milestones?: DesireMilestone[];
-    goalProgress?: DesireGoalProgress;
-  }
-
-  interface AgencyMetrics {
-    totalGenerated: number;
-    totalCompleted: number;
-    totalRejected: number;
-    totalAbandoned: number;
-    totalFailed: number;
-    completedToday: number;
-    successRate: number;
-  }
-
-  interface AgencyConfigView {
-    enabled: boolean;
-    mode: 'off' | 'supervised' | 'autonomous' | 'yolo';
-    thresholds: {
-      activation: number;
-      autoApprove: number;
-      decay: { enabled: boolean; ratePerDay: number; minStrength: number; reinforcementBoost: number; initialStrength: number };
-    };
-    sources: Record<string, { enabled: boolean; weight: number }>;
-    limits: {
-      maxActiveDesires: number;
-      maxPendingDesires: number;
-      maxDailyExecutions: number;
-      retentionDays: { completed: number; rejected: number; abandoned: number };
-    };
-    riskPolicy: {
-      reviewBypass: 'never' | 'trust_based' | 'always';
-      autoApproveRisk: string[];
-      requireApprovalRisk: string[];
-      blockRisk: string[];
-      autoApproveTrustLevel: string;
-    };
-    execution: { preferredBackend: string; fallbackBackend: string; feasibilityCheckEnabled: boolean; maxPlanRetries: number };
-    logging: { verbose: boolean; logToTerminal: boolean; logToInnerDialogue: boolean };
-  }
+  import type { Desire, DesirePlan, DesireScratchpadEntry, DesireMetrics, DesireGoalType, AgencyMetrics, AgencyConfig } from '@metahuman/core/agency/types';
+  import { coordinatorSnapshot, coordinatorConnection, coordinatorError, useWorkCoordinator } from '../lib/stores/work-coordinator';
 
   const riskLevels = ['none', 'low', 'medium', 'high', 'critical'] as const;
   type RiskPolicyList = 'autoApproveRisk' | 'requireApprovalRisk' | 'blockRisk';
 
-  interface DesireCounts {
-    nascent: number;
-    pending: number;
-    evaluating: number;
-    planning: number;
-    reviewing: number;
-    approved: number;
-    executing: number;
-    awaiting_review: number;
-    questioning: number;
-    awaiting_approval: number;
-    needs_attention: number;
-    paused: number;
-    completed: number;
-    rejected: number;
-    abandoned: number;
-    archived: number;
-    failed: number;
-  }
-
   // State
   let desires: Desire[] = [];
   let metrics: AgencyMetrics | null = null;
-  let counts: DesireCounts | null = null;
   let summary: { total: number; active: number; waiting: number; needsAction: number; completed: number; failed: number } | null = null;
-  let agencyConfig: AgencyConfigView | null = null;
+  let agencyConfig: AgencyConfig | null = null;
+  let activationThreshold: number | null = null;
   let savingAgencyConfig = false;
+  let agencyConfigDirty = false;
+  let dataError = '';
+  let listRead: AbortController | null = null;
+  let executionRead: AbortController | null = null;
 
   let loading = true;
   let error = '';
@@ -254,6 +35,7 @@
     { value: 'archived', label: 'Archived', icon: '📦' },
     { value: 'all', label: 'All', icon: '' },
   ];
+  $: sortedDesires = [...desires].sort((a, b) => (b.strength || 0) - (a.strength || 0));
   $: statusFilterLabel = statusFilters.find(filter => filter.value === statusFilter)?.label;
   let processingId: string | null = null;
 
@@ -295,24 +77,31 @@
 
   // Individual file viewer state
   let selectedFileName: string | null = null;
-  let selectedFileContent: any = null;
+  let selectedFileContent: DesireScratchpadEntry | null = null;
   let fileViewLoading = false;
+  let scratchpadRead: AbortController | null = null;
+  let fileRead: AbortController | null = null;
+  let planListRead: AbortController | null = null;
+  let planRead: AbortController | null = null;
+  let scratchpadError = '';
+  let fileError = '';
+  let planListError = '';
+  let planError = '';
 
   // Plan browser state
   let planVersions: string[] = [];
-  let planLoading = false;
   let selectedPlanVersion: number | null = null;
   let viewingPlan: DesirePlan | null = null;
 
   // Execution data state
   let executionData: Record<string, any[]> = {}; // desireId -> executions array
   let executionLoading: Record<string, boolean> = {};
+  let executionErrors: Record<string, string> = {};
 
   // Loading state for agent operations
   let agentProcessingId: string | null = null;
   let agentOperation: 'planning' | 'reviewing' | 'executing' | null = null;
   let currentLoadingMessage = '';
-  let loadingMessageInterval: ReturnType<typeof setInterval> | null = null;
 
   // Coordinator workflow progress state
   let streamingPhase = '';
@@ -320,89 +109,22 @@
   let streamingSteps = 0;
   let streamEventSource: EventSource | null = null;
   const streamObservation = new AbortController();
+  let operationRead: AbortController | null = null;
 
-  // Cheeky loading messages for different operations
-  const PLANNING_MESSAGES = [
-    "becoming you...",
-    "stealing your soul...",
-    "downloading your thoughts...",
-    "absorbing your essence...",
-    "plotting world domination...",
-    "consulting the dark arts...",
-    "sacrificing a rubber duck...",
-    "bribing the LLM gods...",
-    "negotiating with chaos...",
-    "channeling forbidden knowledge...",
-    "performing digital witchcraft...",
-    "manifesting your desires...",
-    "hacking the matrix...",
-    "communing with silicon spirits...",
-    "decoding your subconscious...",
-  ];
-
-  const REVIEWING_MESSAGES = [
-    "judging your life choices...",
-    "consulting the ethics council...",
-    "checking if this is evil...",
-    "asking my lawyer...",
-    "running background check...",
-    "verifying you're not a robot...",
-    "checking the alignment stars...",
-    "consulting the safety oracle...",
-    "measuring your karma...",
-    "scanning for chaos energy...",
-  ];
-
-  const EXECUTING_MESSAGES = [
-    // Execution phase
-    "making it happen...",
-    "unleashing the agents...",
-    "engaging hyperdrive...",
-    "deploying the minions...",
-    "activating skynet...",
-    "executing order 66...",
-    "releasing the kraken...",
-    "pressing the big red button...",
-    "crossing the rubicon...",
-    "pulling the lever...",
-    // Outcome review phase
-    "analyzing the aftermath...",
-    "grading your performance...",
-    "determining if we nailed it...",
-    "consulting the oracle...",
-    "measuring success vibes...",
-    "reviewing the tape...",
-    "checking for collateral damage...",
-    "calculating satisfaction score...",
-    "evaluating the results...",
-    "deciding your fate...",
-  ];
-
-  function getRandomMessage(operation: 'planning' | 'reviewing' | 'executing'): string {
-    let messages: string[];
-    switch (operation) {
-      case 'planning': messages = PLANNING_MESSAGES; break;
-      case 'reviewing': messages = REVIEWING_MESSAGES; break;
-      case 'executing': messages = EXECUTING_MESSAGES; break;
-    }
-    return messages[Math.floor(Math.random() * messages.length)];
-  }
-
-  function startLoadingMessages(operation: 'planning' | 'reviewing' | 'executing') {
+  function beginOperation(id: string, operation: 'planning' | 'reviewing' | 'executing', message: string): AbortController {
+    finishOperation();
+    operationRead = new AbortController();
+    agentProcessingId = processingId = id;
     agentOperation = operation;
-    currentLoadingMessage = getRandomMessage(operation);
-
-    // Rotate messages every 2 seconds
-    loadingMessageInterval = setInterval(() => {
-      currentLoadingMessage = getRandomMessage(operation);
-    }, 10000);
+    streamingPhase = currentLoadingMessage = message;
+    return operationRead;
   }
 
-  function stopLoadingMessages() {
-    if (loadingMessageInterval) {
-      clearInterval(loadingMessageInterval);
-      loadingMessageInterval = null;
-    }
+  function finishOperation(read?: AbortController) {
+    if (read && read !== operationRead) return;
+    operationRead?.abort();
+    operationRead = null;
+    processingId = null;
     if (streamEventSource) {
       streamEventSource.close();
       streamEventSource = null;
@@ -451,6 +173,7 @@
   }
 
   function getNatureLabel(metrics?: DesireMetrics): string {
+    if (!metrics) return 'Unobserved';
     const nature = inferDesireNature(metrics);
     switch (nature) {
       case 'recurring': return 'Recurring';
@@ -635,65 +358,14 @@
     }
   }
 
-  // Svelte action to load execution data when element mounts
-  function loadExecutionOnMount(node: HTMLElement, desireId: string) {
-    loadExecutionData(desireId);
-    return {
-      update(newDesireId: string) {
-        if (newDesireId !== desireId) {
-          desireId = newDesireId;
-          loadExecutionData(desireId);
-        }
-      }
-    };
-  }
-
-  async function loadDesires() {
-    try {
-      const params = new URLSearchParams({ status: statusFilter });
-      const url = `/api/agency/desires?${params}`;
-      console.log(`[AgencyDashboard] Loading desires with canonical filter: "${statusFilter}"`);
-      const res = await apiFetch(url);
-      if (!res.ok) throw new Error('Failed to load desires');
-      const data = await res.json();
-      desires = data.desires || [];
-      console.log(`[AgencyDashboard] Loaded ${desires.length} desires. Statuses: ${[...new Set(desires.map((d: any) => d.status))].join(', ')}`);
-    } catch (e) {
-      error = (e as Error).message;
-    }
-  }
-
-  async function loadMetrics() {
-    try {
-      const res = await apiFetch('/api/agency/metrics');
-      if (!res.ok) throw new Error('Failed to load metrics');
-      const data = await res.json();
-      metrics = data.metrics;
-      counts = data.counts;
-      summary = data.summary;
-    } catch (e) {
-      console.error('Failed to load metrics:', e);
-    }
-  }
-
-  async function loadAgencyConfig() {
-    try {
-      const res = await apiFetch('/api/agency/config');
-      const data = await res.json();
-      if (!res.ok) throw new Error(data.error || 'Failed to load Agency settings');
-      agencyConfig = data.config;
-    } catch (e) {
-      console.error('Failed to load Agency settings:', e);
-    }
-  }
-
   function updateSourceConfig(source: string, field: 'enabled' | 'weight', value: boolean | number) {
     if (!agencyConfig) return;
+    const sourceKey = source as keyof AgencyConfig['sources'];
     agencyConfig = {
       ...agencyConfig,
       sources: {
         ...agencyConfig.sources,
-        [source]: { ...agencyConfig.sources[source], [field]: value },
+        [sourceKey]: { ...agencyConfig.sources[sourceKey], [field]: value },
       },
     };
   }
@@ -712,16 +384,21 @@
 
   async function saveAgencySettings() {
     if (!agencyConfig) return;
+    const submitted = JSON.stringify(agencyConfig);
     savingAgencyConfig = true;
     try {
       const res = await apiFetch('/api/agency/config', {
         method: 'PUT',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify(agencyConfig),
+        body: submitted,
       });
       const data = await res.json();
       if (!res.ok) throw new Error(data.error || 'Failed to save Agency settings');
-      agencyConfig = data.config;
+      activationThreshold = data.config?.thresholds?.activation ?? null;
+      if (JSON.stringify(agencyConfig) === submitted) {
+        agencyConfigDirty = false;
+        agencyConfig = data.config;
+      }
     } catch (e) {
       error = (e as Error).message;
     } finally {
@@ -733,28 +410,26 @@
    * Load scratchpad entries for a desire
    */
   async function loadScratchpadEntries(desireId: string, offset = 0) {
+    scratchpadRead?.abort();
+    const read = new AbortController();
+    scratchpadRead = read;
     scratchpadLoading = true;
-    scratchpadOffset = offset;
-    expandedEntryIndex = null; // Reset expanded entry when paginating
+    scratchpadError = '';
+    expandedEntryIndex = null;
     try {
-      const params = new URLSearchParams({
-        desireId,
-        offset: String(offset),
-        limit: String(scratchpadLimit),
-      });
-      const res = await apiFetch(`/api/agency/scratchpad?${params}`);
-      if (!res.ok) throw new Error('Failed to load scratchpad');
+      const params = new URLSearchParams({ desireId, offset: String(offset), limit: String(scratchpadLimit) });
+      const res = await apiFetch(`/api/agency/scratchpad?${params}`, { signal: read.signal });
       const data = await res.json();
+      if (read.signal.aborted) return;
+      if (!res.ok) throw new Error(data.error || 'Failed to load scratchpad');
       scratchpadEntries = data.entries || [];
       scratchpadFiles = data.files || [];
       scratchpadTotal = data.total || 0;
+      scratchpadOffset = offset;
     } catch (e) {
-      console.error('Failed to load scratchpad:', e);
-      scratchpadEntries = [];
-      scratchpadFiles = [];
-      scratchpadTotal = 0;
+      if (!read.signal.aborted) scratchpadError = (e as Error).message;
     } finally {
-      scratchpadLoading = false;
+      if (scratchpadRead === read) { scratchpadRead = null; scratchpadLoading = false; }
     }
   }
 
@@ -762,44 +437,55 @@
    * Load a specific scratchpad file by name
    */
   async function loadScratchpadFile(desireId: string, filename: string) {
-    if (selectedFileName === filename) {
-      // Toggle off if already selected
-      selectedFileName = null;
-      selectedFileContent = null;
-      return;
-    }
-
-    fileViewLoading = true;
+    fileRead?.abort();
+    const read = new AbortController();
+    fileRead = read;
     selectedFileName = filename;
+    selectedFileContent = null;
+    fileViewLoading = true;
+    fileError = '';
     try {
       const params = new URLSearchParams({ desireId, filename });
-      const res = await apiFetch(`/api/agency/scratchpad?${params}`);
-      if (!res.ok) throw new Error('Failed to load file');
+      const res = await apiFetch(`/api/agency/scratchpad?${params}`, { signal: read.signal });
       const data = await res.json();
+      if (read.signal.aborted) return;
+      if (!res.ok) throw new Error(data.error || 'Failed to load file');
       selectedFileContent = data.entry;
     } catch (e) {
-      console.error('Failed to load scratchpad file:', e);
-      selectedFileContent = { error: 'Failed to load file content' };
+      if (!read.signal.aborted) fileError = (e as Error).message;
     } finally {
-      fileViewLoading = false;
+      if (fileRead === read) { fileRead = null; fileViewLoading = false; }
     }
+  }
+
+  function toggleScratchpadFile(desireId: string, filename: string) {
+    if (selectedFileName !== filename) { void loadScratchpadFile(desireId, filename); return; }
+    fileRead?.abort();
+    fileRead = null;
+    fileViewLoading = false;
+    selectedFileName = null;
+    selectedFileContent = null;
+    fileError = '';
   }
 
   /**
    * Load plan versions for a desire
    */
   async function loadPlanVersions(desireId: string) {
-    planLoading = true;
+    planListRead?.abort();
+    const read = new AbortController();
+    planListRead = read;
+    planListError = '';
     try {
-      const res = await apiFetch(`/api/agency/plans?desireId=${desireId}`);
-      if (!res.ok) throw new Error('Failed to load plans');
+      const res = await apiFetch(`/api/agency/plans?desireId=${encodeURIComponent(desireId)}`, { signal: read.signal });
       const data = await res.json();
+      if (read.signal.aborted) return;
+      if (!res.ok) throw new Error(data.error || 'Failed to load plans');
       planVersions = data.versions || [];
     } catch (e) {
-      console.error('Failed to load plans:', e);
-      planVersions = [];
+      if (!read.signal.aborted) planListError = (e as Error).message;
     } finally {
-      planLoading = false;
+      if (planListRead === read) planListRead = null;
     }
   }
 
@@ -807,80 +493,119 @@
    * Load a specific plan version
    */
   async function loadPlanVersion(desireId: string, version: number) {
-    planLoading = true;
+    planRead?.abort();
+    const read = new AbortController();
+    planRead = read;
+    selectedPlanVersion = version;
+    viewingPlan = null;
+    planError = '';
     try {
-      const res = await apiFetch(`/api/agency/plans?desireId=${desireId}&version=${version}`);
-      if (!res.ok) throw new Error('Failed to load plan version');
+      const res = await apiFetch(`/api/agency/plans?desireId=${encodeURIComponent(desireId)}&version=${version}`, { signal: read.signal });
       const data = await res.json();
+      if (read.signal.aborted) return;
+      if (!res.ok) throw new Error(data.error || 'Failed to load plan version');
       viewingPlan = data.plan;
-      selectedPlanVersion = version;
     } catch (e) {
-      console.error('Failed to load plan version:', e);
-      viewingPlan = null;
+      if (!read.signal.aborted) planError = (e as Error).message;
     } finally {
-      planLoading = false;
+      if (planRead === read) planRead = null;
     }
+  }
+
+  function showCurrentPlan(plan: DesirePlan | undefined) {
+    planRead?.abort();
+    planRead = null;
+    viewingPlan = plan || null;
+    selectedPlanVersion = null;
+    planError = '';
   }
 
   /**
    * Load execution attempts for a desire
    */
   async function loadExecutionData(desireId: string) {
-    if (executionData[desireId] || executionLoading[desireId]) {
-      return; // Already loaded or loading
-    }
-
-    executionLoading = { ...executionLoading, [desireId]: true };
+    executionRead?.abort();
+    const read = new AbortController();
+    executionRead = read;
+    executionLoading = { [desireId]: true };
+    executionErrors = { ...executionErrors, [desireId]: '' };
     try {
-      const res = await apiFetch(`/api/agency/desires/${desireId}/executions`);
-      if (!res.ok) throw new Error('Failed to load executions');
+      const res = await apiFetch(`/api/agency/desires/${desireId}/executions`, { signal: read.signal });
       const data = await res.json();
-      executionData = { ...executionData, [desireId]: data.executions || [] };
+      if (!res.ok) throw new Error(data.error || 'Failed to load executions');
+      if (!read.signal.aborted) executionData = { ...executionData, [desireId]: data.executions };
     } catch (e) {
-      console.error('Failed to load execution data:', e);
-      executionData = { ...executionData, [desireId]: [] };
+      if (!read.signal.aborted) executionErrors = { ...executionErrors, [desireId]: (e as Error).message };
     } finally {
-      executionLoading = { ...executionLoading, [desireId]: false };
+      if (executionRead === read) {
+        executionRead = null;
+        executionLoading = {};
+      }
     }
   }
 
   /**
    * Toggle scratchpad viewer and load entries
    */
+  function closeScratchpadView() {
+    scratchpadRead?.abort(); fileRead?.abort(); planListRead?.abort(); planRead?.abort();
+    scratchpadRead = fileRead = planListRead = planRead = null;
+    scratchpadLoading = fileViewLoading = false;
+    scratchpadError = fileError = planListError = planError = '';
+    showScratchpadFor = null;
+    scratchpadEntries = [];
+    scratchpadFiles = [];
+    scratchpadTotal = scratchpadOffset = 0;
+    selectedFileName = null;
+    selectedFileContent = null;
+    planVersions = [];
+    selectedPlanVersion = null;
+    viewingPlan = null;
+    expandedEntryIndex = null;
+  }
+
   async function toggleScratchpadWithLoad(desireId: string) {
-    expandedEntryIndex = null; // Reset expanded entry when switching
-    if (showScratchpadFor === desireId) {
-      showScratchpadFor = null;
-      scratchpadEntries = [];
-      scratchpadFiles = [];
-    } else {
+    const opening = showScratchpadFor !== desireId;
+    closeScratchpadView();
+    if (opening) {
       showScratchpadFor = desireId;
-      await loadScratchpadEntries(desireId, 0);
-      await loadPlanVersions(desireId);
+      await Promise.all([loadScratchpadEntries(desireId), loadPlanVersions(desireId)]);
     }
   }
 
-  async function loadAll(showLoading = true, force = false) {
-    // Skip if recently loaded (unless forced)
-    const now = Date.now();
-    if (!force && now - lastLoadTime < RELOAD_THRESHOLD_MS) {
-      return;
-    }
-
+  async function loadAll(showLoading = true) {
+    if (streamObservation.signal.aborted) return;
+    listRead?.abort();
+    const read = new AbortController();
+    listRead = read;
     if (showLoading) loading = true;
-    error = '';
     try {
-      await Promise.all([loadDesires(), loadMetrics(), loadAgencyConfig()]);
-      lastLoadTime = Date.now();
+      const params = new URLSearchParams({ status: statusFilter });
+      const [list, stats, settings] = await Promise.all([
+        `/api/agency/desires?${params}`, '/api/agency/metrics', '/api/agency/config',
+      ].map(async url => {
+        const response = await apiFetch(url, { signal: read.signal });
+        const data = await response.json();
+        if (!response.ok) throw new Error(data.error || `Failed to load ${url}`);
+        return data;
+      }));
+      if (read.signal.aborted) return;
+      desires = list.desires;
+      metrics = stats.metrics;
+      summary = stats.summary;
+      activationThreshold = settings.config?.thresholds?.activation ?? null;
+      if (!agencyConfigDirty) agencyConfig = settings.config;
+      dataError = '';
+      executionData = {};
+      if (expandedCardId) void loadExecutionData(expandedCardId);
+      if (showScratchpadFor) {
+        void loadScratchpadEntries(showScratchpadFor, scratchpadOffset);
+        void loadPlanVersions(showScratchpadFor);
+      }
+    } catch (caught) {
+      if (!read.signal.aborted) dataError = (caught as Error).message;
     } finally {
-      loading = false;
-    }
-  }
-
-  // Reload when tab becomes visible (user switches back)
-  function handleVisibilityChange() {
-    if (document.visibilityState === 'visible' && $isOwner) {
-      loadAll(false); // Silent reload, respects threshold
+      if (listRead === read) { listRead = null; loading = false; }
     }
   }
 
@@ -893,7 +618,7 @@
         const data = await res.json();
         throw new Error(data.error || 'Failed to approve desire');
       }
-      await loadAll(true, true); // Force reload after action
+      await loadAll();
     } catch (e) {
       error = (e as Error).message;
     } finally {
@@ -916,7 +641,7 @@
         const data = await res.json();
         throw new Error(data.error || 'Failed to reject desire');
       }
-      await loadAll(true, true); // Force reload after action
+      await loadAll();
     } catch (e) {
       error = (e as Error).message;
     } finally {
@@ -943,7 +668,7 @@
       const data = await res.json();
       // Show success feedback
       alert(`✅ Check-in requested!\n\n${data.message || 'The system will evaluate progress on this goal shortly.'}`);
-      await loadAll(true, true);
+      await loadAll();
     } catch (e) {
       error = (e as Error).message;
       alert(`❌ Failed to request check-in: ${error}`);
@@ -967,7 +692,7 @@
       }
 
       console.log(`[AgencyDashboard] 🔄 ${data.message}`);
-      await loadAll(true, true);
+      await loadAll();
     } catch (e) {
       error = (e as Error).message;
     } finally {
@@ -988,7 +713,7 @@
         const data = await res.json();
         throw new Error(data.error || 'Failed to archive desire');
       }
-      await loadAll(true, true);
+      await loadAll();
     } catch (e) {
       error = (e as Error).message;
     } finally {
@@ -1008,7 +733,7 @@
         const data = await res.json();
         throw new Error(data.error || 'Failed to pause desire');
       }
-      await loadAll(true, true);
+      await loadAll();
     } catch (e) {
       error = (e as Error).message;
     } finally {
@@ -1044,9 +769,11 @@
       });
       const data = await res.json();
       if (!res.ok) throw new Error(data.error || 'Failed to submit clarifying answers');
-      delete questionAnswers[desire.id];
-      questionAnswers = { ...questionAnswers };
-      await loadAll(true, true);
+      if (questionAnswers[desire.id] === values) {
+        delete questionAnswers[desire.id];
+        questionAnswers = { ...questionAnswers };
+      }
+      await loadAll();
     } catch (e) {
       error = (e as Error).message;
     } finally {
@@ -1066,7 +793,7 @@
         const data = await res.json();
         throw new Error(data.error || 'Failed to revive desire');
       }
-      await loadAll(true, true);
+      await loadAll();
     } catch (e) {
       error = (e as Error).message;
     } finally {
@@ -1083,7 +810,7 @@
         const data = await res.json();
         throw new Error(data.error || 'Failed to delete desire');
       }
-      await loadAll(true, true); // Force reload after action
+      await loadAll();
     } catch (e) {
       error = (e as Error).message;
     } finally {
@@ -1103,7 +830,7 @@
         const data = await res.json();
         throw new Error(data.error || 'Failed to advance desire');
       }
-      await loadAll(true, true);
+      await loadAll();
     } catch (e) {
       error = (e as Error).message;
     } finally {
@@ -1112,51 +839,44 @@
   }
 
   /** Generate a plan through the coordinator-owned Desire Planner agent. */
-  async function handleGeneratePlan(id: string, critique?: string) {
-    agentProcessingId = id;
-    processingId = id;
-    startLoadingMessages('planning');
-
-    // Reset streaming state
-    streamingPhase = 'Starting...';
-    streamingOutput = '';
-    streamingSteps = 0;
+  async function handleGeneratePlan(id: string) {
+    const read = beginOperation(id, 'planning', 'Requesting a plan…');
+    let outcome: 'pending' | 'complete' | 'failed' = 'pending';
 
     try {
       // Read coordinator progress from the transport-only SSE route.
       const response = await apiFetch(`/api/agency/desires/${id}/generate-plan-stream`, {
         method: 'POST',
-        signal: streamObservation.signal,
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify(critique ? { critique } : {}),
+        signal: read.signal,
       });
 
       if (!response.ok) {
-        throw new Error('Failed to start plan generation stream');
+        const data = await response.json();
+        throw new Error(data.error || 'Failed to start plan generation stream');
       }
 
-      for await (const frame of readServerEvents(response, streamObservation.signal)) {
-        handleStreamEvent(frame.event, JSON.parse(frame.data), id);
+      for await (const frame of readServerEvents(response, read.signal)) {
+        handleStreamEvent(frame.event, JSON.parse(frame.data));
+        if (frame.event === 'complete') outcome = 'complete';
+        else if (frame.event === 'error') outcome = 'failed';
       }
 
-      // Clear any critique text after successful generation
-      if (critiqueText[id]) {
-        critiqueText[id] = '';
-      }
-      expandedCardId = null;
-      await loadAll(true, true);
+      if (read.signal.aborted) return;
+      if (outcome === 'pending') throw new Error('Planning observation ended without a completed outcome. The result is unconfirmed.');
+      if (outcome === 'failed') return;
+      if (expandedCardId === id) expandedCardId = null;
+      if (!read.signal.aborted) await loadAll();
     } catch (e) {
-      error = (e as Error).message;
+      if (!read.signal.aborted) error = (e as Error).message;
     } finally {
-      stopLoadingMessages();
-      processingId = null;
+      finishOperation(read);
     }
   }
 
   /**
    * Handle streaming SSE events from plan generation
    */
-  function handleStreamEvent(eventType: string, data: any, desireId: string) {
+  function handleStreamEvent(eventType: string, data: any) {
     switch (eventType) {
       case 'phase':
         streamingPhase = data.message || data.phase;
@@ -1190,38 +910,36 @@
   async function handleExecute(id: string) {
     if (!confirm('Execute this desire now? This will run the plan through Big Brother.')) return;
 
-    agentProcessingId = id;
-    processingId = id;
-    agentOperation = 'executing';
-    streamingOutput = '';
-    streamingPhase = 'Starting execution...';
-    currentLoadingMessage = 'Initializing...';
+    const read = beginOperation(id, 'executing', 'Requesting execution…');
+    let outcome: 'pending' | 'complete' | 'failed' = 'pending';
 
     try {
       // Use streaming endpoint with POST for real-time progress
       // (EventSource is GET-only, so we use fetch with manual SSE parsing)
       const res = await apiFetch(`/api/agency/desires/${id}/run-stream`, {
         method: 'POST',
-        signal: streamObservation.signal,
+        signal: read.signal,
       });
 
-      if (!res.body) {
-        throw new Error('No response body');
+      if (!res.ok) {
+        const data = await res.json();
+        throw new Error(data.error || 'Failed to start execution');
       }
 
-      for await (const frame of readServerEvents(res, streamObservation.signal)) {
+      for await (const frame of readServerEvents(res, read.signal)) {
         handleExecutionEvent(frame.event, JSON.parse(frame.data));
+        if (frame.event === 'complete') outcome = 'complete';
+        else if (frame.event === 'error') outcome = 'failed';
       }
 
-      await loadAll(true, true);
+      if (read.signal.aborted) return;
+      if (outcome === 'pending') throw new Error('Execution observation ended without a completed outcome. The result is unconfirmed.');
+      if (outcome === 'complete') await loadAll();
     } catch (e) {
-      error = (e as Error).message;
-      streamingPhase = `Error: ${error}`;
+      if (!read.signal.aborted) error = (e as Error).message;
+      if (!read.signal.aborted) streamingPhase = `Error: ${error}`;
     } finally {
-      stopLoadingMessages();
-      processingId = null;
-      agentProcessingId = null;
-      streamEventSource = null;
+      finishOperation(read);
     }
   }
 
@@ -1279,11 +997,7 @@
   }
 
   async function handleOutcomeReview(id: string) {
-    agentProcessingId = id;
-    processingId = id;
-    streamingOutput = '';  // Clear any previous output
-    streamingPhase = 'Starting review...';
-    currentLoadingMessage = 'Starting outcome review...';
+    const read = beginOperation(id, 'reviewing', 'Requesting outcome review…');
 
     try {
       // Use streaming endpoint to show progress
@@ -1291,6 +1005,7 @@
       streamEventSource = eventSource;
 
       eventSource.onmessage = async (event) => {
+        if (read.signal.aborted) return;
         try {
           const data = JSON.parse(event.data);
 
@@ -1317,32 +1032,27 @@
 
             case 'done':
               // Close stream and overlay when done
-              eventSource.close();
-              streamEventSource = null;
-              stopLoadingMessages();
-              processingId = null;
+              finishOperation(read);
               // Refresh list after completion
-              await loadAll(true, true);
+              await loadAll();
               break;
           }
         } catch (e) {
-          console.error('[AgencyDashboard] Error parsing SSE:', e);
+          error = (e as Error).message;
+          finishOperation(read);
         }
       };
 
       eventSource.onerror = (err) => {
+        if (read.signal.aborted) return;
         console.error('[AgencyDashboard] SSE error:', err);
-        eventSource.close();
-        streamEventSource = null;
-        stopLoadingMessages();
-        processingId = null;
+        finishOperation(read);
         error = 'Connection lost during outcome review';
       };
 
     } catch (e) {
-      error = (e as Error).message;
-      stopLoadingMessages();
-      processingId = null;
+      if (!read.signal.aborted) error = (e as Error).message;
+      finishOperation(read);
     }
   }
 
@@ -1365,9 +1075,11 @@
         throw new Error(data.error || 'Failed to request revision');
       }
       // Clear the critique text after successful submission
-      critiqueText[id] = '';
-      expandedCardId = null;
-      await loadAll(true, true);
+      if (critiqueText[id] === critique) {
+        critiqueText[id] = '';
+        if (expandedCardId === id) expandedCardId = null;
+      }
+      await loadAll();
     } catch (e) {
       error = (e as Error).message;
     } finally {
@@ -1377,6 +1089,7 @@
 
   // Toggle card expansion (collapsed/expanded view)
   function toggleCardExpand(id: string) {
+    closeScratchpadView();
     expandedCardId = expandedCardId === id ? null : id;
     // Reset sub-expansions when collapsing
     if (expandedCardId !== id) {
@@ -1384,11 +1097,12 @@
       showHistoryFor = null;
       showScratchpadFor = null;
     } else {
+      void loadExecutionData(id);
       const desire = desires.find(item => item.id === id);
       if (desire?.clarifyingQuestions) {
         questionAnswers = {
           ...questionAnswers,
-          [id]: Object.fromEntries(desire.clarifyingQuestions.questions.map(question => [
+          [id]: questionAnswers[id] || Object.fromEntries(desire.clarifyingQuestions.questions.map(question => [
             question.id,
             desire.clarifyingQuestions?.answers.find(answer => answer.questionId === question.id)?.answer || '',
           ])),
@@ -1411,6 +1125,7 @@
       return;
     }
 
+    const submitted = JSON.stringify(newDesire);
     try {
       // Convert tags string to array
       const tagsArray = newDesire.tags
@@ -1430,36 +1145,53 @@
         const data = await res.json();
         throw new Error(data.error || 'Failed to create desire');
       }
-      newDesire = {
-        title: '',
-        description: '',
-        reason: '',
-        risk: 'low',
-        goalType: 'one_time',
-        strength: 0.8,
-        status: 'pending',
-        decayRate: 0.03,
-        tags: '',
-      };
-      showNewDesire = false;
-      showAdvancedOptions = false;
-      await loadAll(true, true); // Force reload after action
+      if (JSON.stringify(newDesire) === submitted) {
+        newDesire = {
+          title: '',
+          description: '',
+          reason: '',
+          risk: 'low',
+          goalType: 'one_time',
+          strength: 0.8,
+          status: 'pending',
+          decayRate: 0.03,
+          tags: '',
+        };
+        showNewDesire = false;
+        showAdvancedOptions = false;
+      }
+      await loadAll();
     } catch (e) {
       error = (e as Error).message;
     }
   }
 
   onMount(() => {
-    loadAll(); // Load once when tab is opened
-
-    // Listen for visibility changes to reload when user returns
-    document.addEventListener('visibilitychange', handleVisibilityChange);
+    if (!$isOwner) { loading = false; return; }
+    void loadAll();
+    let revision = $coordinatorSnapshot?.agencyChange?.revision;
+    let reconnecting = false;
+    const unsubscribe = coordinatorSnapshot.subscribe(snapshot => {
+      const change = snapshot?.agencyChange;
+      if (change && change.revision !== revision) {
+        revision = change.revision;
+        void loadAll(false);
+      }
+    });
+    const unsubscribeConnection = coordinatorConnection.subscribe(state => {
+      if (state === 'reconnecting') reconnecting = true;
+      else if (state === 'live' && reconnecting) { reconnecting = false; void loadAll(false); }
+    });
+    const release = useWorkCoordinator();
+    return () => { unsubscribe(); unsubscribeConnection(); release(); };
   });
 
   onDestroy(() => {
+    listRead?.abort();
+    executionRead?.abort();
     streamObservation.abort();
-    document.removeEventListener('visibilitychange', handleVisibilityChange);
-    stopLoadingMessages(); // Clean up interval on destroy
+    closeScratchpadView();
+    finishOperation();
   });
 </script>
 
@@ -1531,7 +1263,7 @@
     {/if}
 
     {#if agencyConfig}
-      <details class="panel p-4 mt-4">
+      <details class="panel p-4 mt-4" on:input={() => agencyConfigDirty = true} on:change={() => agencyConfigDirty = true}>
         <summary class="cursor-pointer font-semibold">Agency lifecycle settings</summary>
         <p class="text-xs muted mt-2">These profile settings control desire admission, strength, approval, and execution. YOLO bypasses approval gates only after the plan has passed alignment and safety review.</p>
         <div class="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4 mt-4 text-sm">
@@ -1682,22 +1414,25 @@
     {/if}
 
     <!-- Error Display -->
-    {#if error}
+    {#if error || dataError || $coordinatorError}
       <div class="banner banner-error mt-4">
-        {error}
-        <button class="ml-2 underline" on:click={() => error = ''}>Dismiss</button>
+        {error || dataError || $coordinatorError}
+        {#if error}<button class="ml-2 underline" on:click={() => error = ''}>Dismiss</button>{/if}
       </div>
+    {/if}
+    {#if $coordinatorConnection === 'reconnecting'}
+      <p class="mt-4 muted">Reconnecting to Agency updates. Displayed data may be out of date.</p>
     {/if}
 
     <!-- Controls -->
     <div class="flex justify-between items-center flex-wrap gap-2 mt-4">
       <div class="flex items-center gap-2">
-        <select bind:value={statusFilter} on:change={loadDesires} class="select-field">
+        <select bind:value={statusFilter} on:change={() => loadAll(false)} class="select-field">
           {#each statusFilters as filter}
             <option value={filter.value}>{filter.icon}{filter.icon ? ' ' : ''}{filter.label}</option>
           {/each}
         </select>
-        <button class="btn-secondary btn-sm" on:click={() => loadAll(true, true)}>Refresh</button>
+        <button class="btn-secondary btn-sm" on:click={() => loadAll()}>Refresh</button>
       </div>
       <button class="btn-primary btn-sm" on:click={() => showNewDesire = !showNewDesire}>
         {showNewDesire ? 'Cancel' : '+ New Desire'}
@@ -1768,7 +1503,7 @@
                   class="w-full accent-blue-500"
                 />
                 <span class="text-xs text-gray-500">
-                  {newDesire.strength >= 0.7 ? '✓ Above threshold (0.7)' : '○ Below threshold - needs reinforcement'}
+                  {activationThreshold === null ? 'Saved activation threshold unavailable' : newDesire.strength >= activationThreshold ? `✓ Above saved activation threshold (${activationThreshold.toFixed(2)})` : `○ Below saved activation threshold (${activationThreshold.toFixed(2)}) - needs reinforcement`}
                 </span>
               </label>
               <label class="text-sm flex flex-col gap-1">
@@ -1816,7 +1551,9 @@
 
     <!-- Consolidated Desire List - All desires in one place -->
     <div class="flex flex-col gap-3 mt-4">
-      {#if desires.length === 0}
+      {#if desires.length === 0 && dataError}
+        <p class="text-red-600" role="alert">The desire list is unavailable. Use Refresh to retry.</p>
+      {:else if desires.length === 0}
         <div class="text-center py-8">
           <p class="muted">No desires match the “{statusFilterLabel}” filter.</p>
           {#if statusFilter !== 'all'}
@@ -1824,7 +1561,7 @@
           {/if}
         </div>
       {:else}
-        {#each desires.sort((a, b) => (b.strength || 0) - (a.strength || 0)) as desire}
+        {#each sortedDesires as desire (desire.id)}
           <!-- svelte-ignore a11y-no-static-element-interactions -->
           <div
             class="panel p-4 cursor-pointer transition-all hover:bg-gray-50 dark:hover:bg-gray-800/50"
@@ -1866,7 +1603,7 @@
                   <div class="w-10 h-1 bg-gray-200 dark:bg-gray-700 rounded-full overflow-hidden">
                     <div
                       class="h-full rounded-full transition-all duration-300"
-                      style="width: {(desire.strength || 0) * 100}%; background: {(desire.strength || 0) >= 0.7 ? '#22c55e' : '#f59e0b'};"
+                      style="width: {(desire.strength || 0) * 100}%; background: {activationThreshold === null ? '#94a3b8' : (desire.strength || 0) >= activationThreshold ? '#22c55e' : '#f59e0b'};"
                     ></div>
                   </div>
                   <span class="font-semibold text-xs min-w-[35px]">
@@ -1983,7 +1720,7 @@
                 <!-- Nature explanation (compact) -->
                 <div class="flex items-center gap-2 p-2 bg-gray-50 dark:bg-gray-800/50 rounded-md mb-3 flex-wrap">
                   <span class="inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-white text-xs font-semibold flex-shrink-0" style="background: {getNatureColor(desire.metrics)};">
-                    {getNatureIcon(desire.metrics)} {getNatureLabel(desire.metrics)}
+                    {getNatureIcon(desire.metrics)} Inferred pattern: {getNatureLabel(desire.metrics)}
                   </span>
                   <span class="text-xs text-gray-600 dark:text-gray-400 flex-1">{getNatureExplanation(desire.metrics)}</span>
                 </div>
@@ -2085,7 +1822,7 @@
                               milestone.status === 'completed' ? 'border-green-200 dark:border-green-800' :
                               milestone.status === 'in_progress' ? 'border-blue-200 dark:border-blue-800' :
                               'border-gray-200 dark:border-gray-700'
-                            }" use:loadExecutionOnMount={desire.id}>
+                            }">
                               {#if milestone.status === 'completed'}
                                 <!-- Completed milestone: show what was accomplished -->
                                 <div class="text-xs">
@@ -2093,6 +1830,8 @@
 
                                   {#if executionLoading[desire.id]}
                                     <p class="text-gray-500 dark:text-gray-400 italic">Loading execution details...</p>
+                                  {:else if executionErrors[desire.id]}
+                                    <p class="text-red-600" role="alert">{executionErrors[desire.id]} <button class="underline" on:click={() => loadExecutionData(desire.id)}>Retry execution details</button></p>
                                   {:else if executionData[desire.id]?.length > 0}
                                     <!-- Show execution results from loaded data -->
                                     {@const latestExecution = executionData[desire.id][0]}
@@ -2464,14 +2203,17 @@
                       </div>
 
                       <!-- Plan Version Browser -->
-                      {#if planVersions.length > 0 || (desire.planHistory && desire.planHistory.length > 0)}
+                      {#if planVersions.length > 0 || planListError || planError || planRead || (desire.planHistory && desire.planHistory.length > 0)}
                         <div class="pt-3 border-t border-gray-200 dark:border-gray-700 mt-3">
                           <h6 class="text-xs font-semibold text-gray-700 dark:text-gray-300 mb-2">📋 Plan Versions</h6>
+                          {#if planListError}<p class="text-red-600" role="alert">{planListError} <button class="underline" on:click={() => loadPlanVersions(desire.id)}>Retry plan versions</button></p>{/if}
+                          {#if planError && selectedPlanVersion !== null}<p class="text-red-600" role="alert">{planError} <button class="underline" on:click={() => selectedPlanVersion !== null && loadPlanVersion(desire.id, selectedPlanVersion)}>Retry selected plan</button></p>{/if}
+                          {#if planRead}<p class="text-xs muted">Loading selected plan...</p>{/if}
                           <div class="flex flex-wrap gap-2 mb-2">
                             {#if desire.plan}
                               <button
                                 class="px-2 py-1 text-xs rounded border transition-all {!selectedPlanVersion ? 'bg-blue-600 border-blue-700 text-white' : 'bg-gray-100 dark:bg-gray-700 border-gray-200 dark:border-gray-600'}"
-                                on:click={() => { viewingPlan = desire.plan || null; selectedPlanVersion = null; }}
+                                on:click={() => showCurrentPlan(desire.plan)}
                               >
                                 Current (v{desire.plan.version || 1})
                               </button>
@@ -2504,6 +2246,7 @@
                       <!-- Scratchpad File Browser -->
                       <div class="pt-3 border-t border-gray-200 dark:border-gray-700 mt-3">
                         <h6 class="text-xs font-semibold text-gray-700 dark:text-gray-300 mb-2">📜 Journey Events</h6>
+                        {#if scratchpadError}<p class="text-red-600" role="alert">{scratchpadError} <button class="underline" on:click={() => loadScratchpadEntries(desire.id, scratchpadOffset)}>Retry journey events</button></p>{/if}
 
                         {#if scratchpadLoading}
                           <p class="text-xs muted">Loading events...</p>
@@ -2562,7 +2305,7 @@
                               </button>
                             </div>
                           {/if}
-                        {:else}
+                        {:else if !scratchpadError}
                           <p class="text-xs muted">No journey events logged yet</p>
                         {/if}
 
@@ -2579,7 +2322,7 @@
                                       ? 'bg-violet-100 dark:bg-violet-900/30 text-violet-700 dark:text-violet-300 border border-violet-300 dark:border-violet-700'
                                       : 'bg-gray-100 dark:bg-gray-800 hover:bg-gray-200 dark:hover:bg-gray-700 text-gray-700 dark:text-gray-300'
                                   }"
-                                  on:click={() => loadScratchpadFile(desire.id, file)}
+                                  on:click={() => toggleScratchpadFile(desire.id, file)}
                                 >
                                   <span class="flex-shrink-0">
                                     {#if file.includes('plan')}📋
@@ -2601,10 +2344,9 @@
                                   <div class="ml-4 p-3 bg-gray-50 dark:bg-gray-900 border-l-2 border-violet-500 rounded-r text-xs">
                                     {#if fileViewLoading}
                                       <p class="text-gray-500">Loading...</p>
+                                    {:else if fileError}
+                                      <p class="text-red-600" role="alert">{fileError} <button class="underline" on:click={() => loadScratchpadFile(desire.id, file)}>Retry file</button></p>
                                     {:else if selectedFileContent}
-                                      {#if selectedFileContent.error}
-                                        <p class="text-red-500">{selectedFileContent.error}</p>
-                                      {:else}
                                         <!-- File metadata -->
                                         <div class="flex flex-wrap gap-3 mb-2 pb-2 border-b border-gray-200 dark:border-gray-700">
                                           {#if selectedFileContent.type}
@@ -2630,7 +2372,6 @@
                                             <pre class="mt-1 p-2 bg-gray-100 dark:bg-gray-800 rounded text-[0.65rem] overflow-x-auto max-h-40">{JSON.stringify(selectedFileContent.data, null, 2)}</pre>
                                           </details>
                                         {/if}
-                                      {/if}
                                     {:else}
                                       <p class="text-gray-500">No content</p>
                                     {/if}
@@ -2832,7 +2573,7 @@
     </div>
   {/if}
 
-  <!-- Cheeky loading overlay with streaming LLM output -->
+  <!-- Progress received from the active workflow -->
   {#if agentProcessingId && currentLoadingMessage}
     <div class="fixed inset-0 bg-black/75 flex items-center justify-center z-[9999] backdrop-blur-sm">
       <div
@@ -2877,7 +2618,7 @@
         <!-- Close button -->
         <button
           class="mt-4 px-6 py-2 bg-white/15 border border-white/30 rounded-md text-white/90 text-sm cursor-pointer transition-all hover:bg-white/25 hover:border-white/50 hover:text-white"
-          on:click={() => stopLoadingMessages()}
+          on:click={() => finishOperation()}
           title="Close overlay"
         >
           ✕ Close
@@ -2888,8 +2629,17 @@
 </div>
 
 <style>
+  .btn-xs {
+    @apply px-2 py-1 text-xs;
+  }
+
   @keyframes loading-progress {
-    0% { transform: translateX(-100%); }
-    100% { transform: translateX(400%); }
+    0% {
+      transform: translateX(-100%);
+    }
+
+    100% {
+      transform: translateX(400%);
+    }
   }
 </style>

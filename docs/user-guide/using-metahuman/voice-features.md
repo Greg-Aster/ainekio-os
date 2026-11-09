@@ -1,13 +1,10 @@
 # Voice Features
 
-MetaHuman OS supports microphone transcription, conversational speech synthesis, voice-asset collection, and selected voice-cloning workflows. These are separate stages with separate owners.
+Ainekio OS supports microphone transcription and conversational speech synthesis.
 
 ## Open Voice
 
-Select **Voice** in the left sidebar. The page has:
-
-- **Voice Settings** for speech-to-text, text-to-speech, provider, device, voice, speed, and voice-activity settings.
-- **Voice Clone Training** for supported dataset, reference, export, and training workflows.
+Select **Voice** in the left sidebar to configure speech-to-text, text-to-speech, provider, device, voice, speed, and voice-activity settings.
 
 Save settings before testing a provider.
 
@@ -23,11 +20,16 @@ device settings remain in `etc/voice-servers.json`.
   Native shell may use device-native speech recognition instead.
 - **Piper** synthesizes speech from an installed ONNX voice.
 - **Kokoro** synthesizes speech with installed or imported voicepacks.
-- **RVC** converts Piper-generated speech with a trained profile model.
 
-Whisper and Kokoro use the shared voice-service lifecycle. RVC conversion runs on demand and does not have a second MetaHuman RVC server.
+Whisper and Kokoro use the shared voice-service lifecycle.
 
 ## Start and Check Shared Voice Services
+
+In the Site, use the **Server Status** link in Voice Settings to open the shared
+Kokoro and Whisper controls. The pane shows readiness, PID, service address and
+errors, with Start, Stop and Refresh controls. Opening the pane, returning to a
+visible page or pressing Refresh reads current status; each successful command
+refreshes its service. Voice Settings does not poll these services separately.
 
 ```bash
 ./bin/mh voice-server status --all
@@ -65,7 +67,7 @@ that platform-specific transcription step.
 
 ### Piper
 
-Piper requires its executable, an `.onnx` model, and the matching model configuration. It is also the base synthesizer used by the RVC conversion path.
+Piper requires its executable, an `.onnx` model, and the matching model configuration.
 
 ### Kokoro
 
@@ -75,7 +77,7 @@ Piper requires its executable, an `.onnx` model, and the matching model configur
 ./bin/mh kokoro test --text "Hello"
 ```
 
-MetaHuman OS supports Kokoro synthesis and voice selection. It does not provide a maintained custom Kokoro voicepack trainer.
+Ainekio OS supports Kokoro synthesis and voice selection. It does not provide a maintained custom Kokoro voicepack trainer.
 
 Chat and the Kokoro voice preview play the first short phrase as soon as it is
 generated. Later phrases buffer on the same browser audio timeline while the
@@ -107,33 +109,11 @@ spinning while idle. Override the thread count through the existing local, ignor
 OMP_NUM_THREADS=2
 ```
 
-Restart MetaHuman to apply this to its managed process. This is an installation
+Restart Ainekio OS to apply this to its managed process. This is an installation
 setting, not a profile preference or a guarantee of faster speech. Cooling, core
 layout, and other workloads affect latency. The language selector chooses the
 pronunciation language explicitly; `a` means American English, not auto-detection.
 Missing or malformed imported voicepacks fail instead of selecting another voice.
-
-### RVC
-
-```bash
-./bin/mh rvc status --name MODEL_NAME
-./bin/mh rvc train --name MODEL_NAME --device cuda
-```
-
-RVC requires Applio, Piper, an exported dataset, and enough local compute and storage for training. Choose the appropriate device for the installation.
-
-## Voice Samples and Exports
-
-The profile-owned sample commands are:
-
-```bash
-./bin/mh voice status
-./bin/mh voice list
-./bin/mh voice delete SAMPLE_ID
-./bin/mh voice export
-```
-
-`voice export` prepares a dataset; it is not proof that a model was trained. Use the maintained RVC workflow described in [Voice Training](/user-guide#voice-training).
 
 ## Diagnose Failures
 
@@ -149,10 +129,6 @@ Check the selected TTS provider, its required artifacts, Queue state, browser au
 
 Confirm the active profile, selected provider, selected voice or model, and whether a provider-specific fallback is enabled. Fallbacks should be visible in configuration; do not assume the requested provider produced the audio.
 
-### Training does not start
-
-Confirm that the selected training path is supported, its addon is installed, the dataset exists, and the device has sufficient resources. Kokoro and Piper synthesis support must not be read as built-in custom training support.
-
 ## Runtime Data
 
 Recordings, transcripts, datasets, reference audio, model weights, caches, logs, and generated audio are private runtime data. Keep them outside maintained source and do not commit them.
@@ -160,6 +136,5 @@ Recordings, transcripts, datasets, reference audio, model weights, caches, logs,
 ## Related Guides
 
 - [Chat](/user-guide#chat-interface)
-- [Voice Training](/user-guide#voice-training)
 - [AI Training and Audio Data](/user-guide#ai-training)
 - [Troubleshooting](/user-guide#troubleshooting)

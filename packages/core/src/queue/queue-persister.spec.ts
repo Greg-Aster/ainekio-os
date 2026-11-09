@@ -9,7 +9,7 @@ import type { PersistedQueueState } from './types.js';
 
 const root = fs.mkdtempSync(path.join(os.tmpdir(), 'metahuman-ledger-'));
 process.env.METAHUMAN_ROOT = root;
-const { saveQueueState, loadQueueState, readActiveQueueItems, readPendingSpeechArtifacts, clearQueueState, getQueueStateDir } = await import('./queue-persister.js');
+const { saveQueueState, loadQueueState, readActiveQueueItems, readPendingSpeechArtifacts, clearQueueState, getQueueStateDir, readAgentWorkStats, persistQueueState } = await import('./queue-persister.js');
 const { UnifiedQueueManager } = await import('./unified-queue-manager.js');
 const { eventBus } = await import('../infrastructure/event-bus/client.js');
 after(() => { clearQueueState(); eventBus.disconnect(); fs.rmSync(root, { recursive: true, force: true }); });
@@ -283,4 +283,46 @@ test('readers retain a consistent snapshot while another connection commits', ()
     assert.equal(committed, true);
     assert.equal(loadQueueState()!.items![0]!.state, 'leased');
   } finally { intercept.mock.restore(); writer.close(); }
+});
+
+
+test('agent statistics count retained execution identities and actual outcomes, independent of audit files', () => {
+  clearQueueState();
+  assert.equal(readAgentWorkStats('reflector').totalRuns, 0);
+  const queue = new UnifiedQueueManager();
+  const make = () => queue.enqueue({ type: 'generic', handler: 'agent.reflector', username: 'fixture', input: {} });
+  const queued = make();
+  const completed = make();
+  assert.ok(queue.claim(completed.id));
+  queue.complete(completed.id, true, { saved: true });
+  const failed = make();
+  assert.ok(queue.claim(failed.id));
+  queue.complete(failed.id, false, 'fixture failure');
+  const cancelled = make();
+  assert.ok(queue.claim(cancelled.id));
+  queue.cancel(cancelled.id);
+  queue.acknowledgeCancellation(cancelled.id);
+  const leased = make();
+  assert.ok(queue.claim(leased.id));
+  persistQueueState(queue.exportState());
+  const result = readAgentWorkStats('reflector');
+  assert.deepEqual(result, { scope: 'retained-coordinator-work', totalRuns: 4,
+    successfulRuns: 1, failedRuns: 1, cancelledRuns: 1, lastRun: leased.startedAt });
+  assert.equal(readAgentWorkStats('other').totalRuns, 0);
+  assert.equal(queue.getTask(queued.id)?.startedAt, undefined);
+  const env = { ...process.env };
+  delete env.NODE_TEST_CONTEXT;
+  const child = spawnSync(process.execPath, ['--import', 'tsx', '--input-type=module', '-e',
+    `import {readAgentWorkStats} from ${JSON.stringify(new URL('./queue-persister.ts', import.meta.url).href)};
+     console.log('STATS:'+JSON.stringify(readAgentWorkStats('reflector')))`], { encoding: 'utf8', env });
+  assert.ifError(child.error);
+  assert.equal(child.status, 0, child.stderr);
+  assert.deepEqual(JSON.parse(child.stdout.split('STATS:')[1].trim()), result);
+  const retained = loadQueueState()!;
+  const last = retained.history!.find(task => task.id === cancelled.id)!;
+  last.metadata = { monitorAgentId: 'public-owner' };
+  saveQueueState(retained);
+  assert.equal(readAgentWorkStats('public-owner').cancelledRuns, 1);
+  assert.equal(readAgentWorkStats('reflector').totalRuns, 3);
+  clearQueueState();
 });

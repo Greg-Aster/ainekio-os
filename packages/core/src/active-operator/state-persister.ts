@@ -11,7 +11,7 @@ import { systemPaths } from '../paths.js';
 import type { ActiveOperatorConfig } from './types.js';
 import { DEFAULT_CONFIG } from './types.js';
 
-const CONFIG_FILE = path.join(systemPaths.etc, 'active-operator.json');
+export const ACTIVE_OPERATOR_CONFIG_FILE = path.join(systemPaths.etc, 'active-operator.json');
 
 function normalizeConfig(loaded: Partial<ActiveOperatorConfig> & { semiInactivityMinutes?: number }): ActiveOperatorConfig {
   const interval = loaded.semiAssessmentMinutes ?? loaded.semiInactivityMinutes;
@@ -27,8 +27,8 @@ function normalizeConfig(loaded: Partial<ActiveOperatorConfig> & { semiInactivit
 
 export function loadConfig(): ActiveOperatorConfig {
   try {
-    if (!fs.existsSync(CONFIG_FILE)) return { ...DEFAULT_CONFIG };
-    return normalizeConfig(JSON.parse(fs.readFileSync(CONFIG_FILE, 'utf8')));
+    if (!fs.existsSync(ACTIVE_OPERATOR_CONFIG_FILE)) return { ...DEFAULT_CONFIG };
+    return normalizeConfig(JSON.parse(fs.readFileSync(ACTIVE_OPERATOR_CONFIG_FILE, 'utf8')));
   } catch (error) {
     console.error('[active-operator] Failed to load config:', error);
     return { ...DEFAULT_CONFIG };
@@ -36,8 +36,8 @@ export function loadConfig(): ActiveOperatorConfig {
 }
 
 export function saveConfig(config: ActiveOperatorConfig): void {
-  fs.mkdirSync(path.dirname(CONFIG_FILE), { recursive: true });
-  fs.writeFileSync(CONFIG_FILE, JSON.stringify(config, null, 2));
+  fs.mkdirSync(path.dirname(ACTIVE_OPERATOR_CONFIG_FILE), { recursive: true });
+  fs.writeFileSync(ACTIVE_OPERATOR_CONFIG_FILE, JSON.stringify(config, null, 2));
 }
 
 export function updateConfig(updates: Partial<ActiveOperatorConfig>): ActiveOperatorConfig {

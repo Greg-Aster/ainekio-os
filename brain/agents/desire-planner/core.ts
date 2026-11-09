@@ -131,7 +131,7 @@ export function parsePlannerConfig(value: unknown): PlannerConfig {
 // Config Loading
 // ============================================================================
 
-export async function loadPlannerConfig(): Promise<PlannerConfig> {
+async function loadPlannerConfig(): Promise<PlannerConfig> {
   const content = await fs.readFile(CONFIG_PATH, 'utf-8');
   let parsed: unknown;
   try {
@@ -146,7 +146,7 @@ export async function loadPlannerConfig(): Promise<PlannerConfig> {
 // Graph Loading
 // ============================================================================
 
-export async function loadGraph(filename: string): Promise<SvelteFlowGraph> {
+async function loadGraph(filename: string): Promise<SvelteFlowGraph> {
   const loaded = await loadGraphFile(cognitiveGraphPath(filename), {
     cacheKey: `desire-planner:${filename}`,
     logPrefix: LOG_PREFIX,
@@ -580,7 +580,7 @@ async function processDesire(
  * Pending desires have crossed the activation threshold and are ready for plan generation.
  * This moves them to 'planning' status so they can be picked up by processPlanningDesires.
  */
-export async function promotePendingDesires(
+async function promotePendingDesires(
   username: string,
   maxToPromote: number = 3
 ): Promise<number> {
@@ -814,7 +814,7 @@ export async function processPlanningDesires(
 // Agent Runtime Entry Points
 // ============================================================================
 
-export async function prepareTargetDesire(username: string, desireId: string): Promise<Desire> {
+async function prepareTargetDesire(username: string, desireId: string): Promise<Desire> {
   const desire = await loadDesire(desireId, username);
   if (!desire) throw new Error(`Target desire not found: ${desireId}`);
   if (desire.status === 'planning' || isReviewResumeCandidate(desire)) return desire;

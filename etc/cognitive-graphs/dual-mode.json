@@ -195,34 +195,6 @@
       }
     },
     {
-      "id": "19",
-      "type": "safetyNode",
-      "position": {
-        "x": 2190,
-        "y": 40
-      },
-      "data": {
-        "label": "Safety Validator",
-        "nodeType": "safety_validator",
-        "properties": {
-          "threshold": 0.9
-        }
-      }
-    },
-    {
-      "id": "20",
-      "type": "safetyNode",
-      "position": {
-        "x": 2450,
-        "y": 40
-      },
-      "data": {
-        "label": "Response Refiner",
-        "nodeType": "response_refiner",
-        "properties": {}
-      }
-    },
-    {
       "id": "34",
       "type": "routerNode",
       "position": {
@@ -530,29 +502,8 @@
       "targetHandle": "persona"
     },
     {
-      "id": "e23",
-      "source": "33",
-      "target": "19",
-      "sourceHandle": "response",
-      "targetHandle": "response"
-    },
-    {
-      "id": "e24",
-      "source": "19",
-      "target": "20",
-      "sourceHandle": "response",
-      "targetHandle": "response"
-    },
-    {
-      "id": "e25",
-      "source": "19",
-      "target": "20",
-      "sourceHandle": "safetyResult",
-      "targetHandle": "safetyResult"
-    },
-    {
       "id": "e26",
-      "source": "20",
+      "source": "33",
       "target": "34",
       "sourceHandle": "response",
       "targetHandle": "response"
@@ -563,13 +514,6 @@
       "target": "34",
       "sourceHandle": "qualityResult",
       "targetHandle": "qualityResult"
-    },
-    {
-      "id": "e28",
-      "source": "19",
-      "target": "34",
-      "sourceHandle": "safetyResult",
-      "targetHandle": "safetyResult"
     },
     {
       "id": "e29",

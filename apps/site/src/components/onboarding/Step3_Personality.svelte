@@ -1,4 +1,5 @@
 <script lang="ts">
+  import { onDestroy, tick } from 'svelte';
   import { apiFetch } from '../../lib/client/api-config';
 
   export let onNext: () => void;
@@ -13,7 +14,7 @@
   let messages: Message[] = [
     {
       role: 'assistant',
-      content: "Hi! I'm going to ask you a few questions to understand your personality and communication style. This helps your MetaHuman speak and think more like you. Just answer naturally - there are no right or wrong answers!",
+      content: "Hi! I'm going to ask you a few questions to understand your personality and communication style. This helps your Ainekio OS speak and think more like you. Just answer naturally - there are no right or wrong answers!",
     },
   ];
 
@@ -22,6 +23,12 @@
   let processing = false;
   let extracting = false;
   let error = '';
+  let personalitySaved = false;
+  let progressSaved = false;
+  let active = true;
+  let messagesContainer: HTMLDivElement;
+
+  onDestroy(() => { active = false; });
 
   const questions = [
     "Let's start simple: How would your closest friends describe your personality?",
@@ -33,8 +40,10 @@
     "What are you currently most excited or curious about?",
   ];
 
+  messages = [...messages, { role: 'assistant', content: questions[0] }];
+
   async function handleSendResponse() {
-    if (!userResponse.trim()) return;
+    if (!active || !userResponse.trim()) return;
 
     processing = true;
     error = '';
@@ -45,13 +54,11 @@
       { role: 'user', content: userResponse.trim() },
     ];
 
-    const userMessage = userResponse.trim();
     userResponse = '';
 
     // Move to next question or finish
-    if (currentQuestion < questions.length - 1) {
-      currentQuestion++;
-
+    currentQuestion++;
+    if (currentQuestion < questions.length) {
       // Add next question
       messages = [
         ...messages,
@@ -76,46 +83,42 @@
 
     processing = false;
 
-    // Scroll to bottom
-    setTimeout(() => {
-      const container = document.querySelector('.conversation-container');
-      if (container) {
-        container.scrollTop = container.scrollHeight;
-      }
-    }, 100);
+    await tick();
+    if (active && messagesContainer) messagesContainer.scrollTop = messagesContainer.scrollHeight;
   }
 
   async function extractPersonality() {
+    if (!active) return;
     extracting = true;
     error = '';
 
     try {
-      const response = await apiFetch('/api/onboarding/extract-persona', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          messages: messages.map(m => ({ role: m.role, content: m.content })),
-        }),
-      });
+      if (!personalitySaved) {
+        const response = await apiFetch('/api/onboarding/extract-persona', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            messages: messages.map(m => ({ role: m.role, content: m.content })),
+          }),
+        });
 
-      if (!response.ok) {
         const data = await response.json();
-        throw new Error(data.error || 'Failed to extract personality');
+        if (!response.ok || !data.success) throw new Error(data.error || 'Failed to extract personality');
+        personalitySaved = true;
+
+        // Show success message
+        messages = [
+          ...messages,
+          {
+            role: 'assistant',
+            content: `Great! I've extracted your personality profile:\n\n✓ Big Five personality traits\n✓ Core values and priorities\n✓ Communication style preferences\n✓ Interests and goals\n\nAll saved to your persona profile. Ready to continue?`,
+          },
+        ];
       }
-
-      const data = await response.json();
-
-      // Show success message
-      messages = [
-        ...messages,
-        {
-          role: 'assistant',
-          content: `Great! I've extracted your personality profile:\n\n✓ Big Five personality traits\n✓ Core values and priorities\n✓ Communication style preferences\n✓ Interests and goals\n\nAll saved to your persona profile. Ready to continue?`,
-        },
-      ];
+      if (!active) return;
 
       // Increment personality questions counter
-      await apiFetch('/api/onboarding/state', {
+      const progress = await apiFetch('/api/onboarding/state', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
@@ -126,16 +129,12 @@
           },
         }),
       });
+      const data = await progress.json();
+      if (!progress.ok || !data.state) throw new Error(data.error || 'Failed to save survey progress');
+      progressSaved = true;
 
     } catch (err) {
       error = (err as Error).message;
-      messages = [
-        ...messages,
-        {
-          role: 'assistant',
-          content: `Hmm, I encountered an error while processing your responses: ${(err as Error).message}\n\nYou can continue to the next step and we'll use the raw conversation data for now.`,
-        },
-      ];
     } finally {
       extracting = false;
     }
@@ -159,12 +158,12 @@
   <div>
     <h2 class="text-3xl font-semibold m-0 mb-2 text-gray-900 dark:text-gray-50">Let's Talk About You</h2>
     <p class="text-base leading-relaxed text-gray-500 dark:text-gray-400 m-0">
-      Answer a few conversational questions so your MetaHuman can understand your personality,
+      Answer a few conversational questions so your Ainekio OS can understand your personality,
       values, and communication style. This takes about 5 minutes.
     </p>
   </div>
 
-  <div class="conversation-container flex-1 overflow-y-auto p-4 bg-gray-50 dark:bg-gray-800 border border-gray-200 dark:border-gray-700 rounded-lg min-h-[400px] max-h-[500px]">
+  <div bind:this={messagesContainer} class="conversation-container flex-1 overflow-y-auto p-4 bg-gray-50 dark:bg-gray-800 border border-gray-200 dark:border-gray-700 rounded-lg min-h-[400px] max-h-[500px]">
     <div class="flex flex-col gap-4">
       {#each messages as message, i}
         <div class="flex gap-3 items-start {message.role === 'user' ? 'flex-row-reverse' : ''}">
@@ -199,7 +198,7 @@
     </div>
   </div>
 
-  {#if currentQuestion < questions.length || extracting}
+  {#if currentQuestion < questions.length}
     <div class="flex gap-4 items-end md:flex-col md:items-stretch">
       <textarea
         bind:value={userResponse}
@@ -236,6 +235,10 @@
     </div>
   </div>
 
+  {#if error && currentQuestion === questions.length}
+    <button class="btn-secondary" on:click={extractPersonality} disabled={extracting}>Retry saving personality</button>
+  {/if}
+
   <div class="flex justify-between gap-4 pt-4 border-t border-gray-200 dark:border-gray-700 md:flex-col">
     <button class="px-6 py-3 text-base font-semibold rounded-lg cursor-pointer transition-all bg-gray-100 dark:bg-gray-700 text-gray-700 dark:text-gray-300 border border-gray-300 dark:border-gray-600 hover:enabled:bg-gray-200 dark:hover:enabled:bg-gray-600 disabled:opacity-50 disabled:cursor-not-allowed" on:click={onBack} disabled={processing || extracting}>
       ← Back
@@ -246,7 +249,7 @@
     <button
       class="px-6 py-3 text-base font-semibold rounded-lg cursor-pointer transition-all bg-gradient-to-br from-indigo-500 to-purple-600 text-white border-none hover:enabled:-translate-y-0.5 hover:enabled:shadow-lg hover:enabled:shadow-indigo-500/40 disabled:opacity-50 disabled:cursor-not-allowed"
       on:click={onNext}
-      disabled={currentQuestion < questions.length || extracting}
+      disabled={!progressSaved || extracting}
     >
       {extracting ? 'Processing...' : 'Continue →'}
     </button>

@@ -83,10 +83,11 @@ export const executionContextNode = defineNode({
     if (!context.graphExecution) throw new Error('Current Execution requires the durable graph runtime')
     const task = context.graphExecution.task()
     const events = context.graphExecution.events()
-    const hasActiveTask = Boolean(task && !task.decision.objectiveComplete && !['abandon', 'cancel', 'complete', 'failed'].includes(task.decision.outcome))
+    const finishedReport = task?.decision.outcome === 'report' && task.decision.continuationPolicy === 'none'
+    const hasActiveTask = Boolean(task && !task.decision.objectiveComplete && !finishedReport && !['abandon', 'cancel', 'complete', 'failed'].includes(task.decision.outcome))
     const awaitingInput = (
       ['wait', 'request_user'].includes(task?.decision.outcome ?? '')
-      || task?.decision.continuationPolicy === 'none' && task.decision.requiredCompletionBasis === 'user_input'
+      || !finishedReport && task?.decision.continuationPolicy === 'none' && task.decision.requiredCompletionBasis === 'user_input'
     )
     const hasReviewableGoal = hasActiveTask && !task?.desireId
     const responseEntry = inputs.responseEntry ?? context.environmentResponseEntry

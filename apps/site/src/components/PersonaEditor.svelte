@@ -98,18 +98,15 @@
   // Archive management state
   type Archive = {
     filename: string;
-    timestamp: string;
     createdAt: string;
     version: string;
-    lastUpdated: string | null;
     identity: { name: string; role: string };
     size: number;
   };
   let archives: Archive[] = [];
   let loadingArchives = false;
   let archivesLoaded = false;
-  let selectedArchive: any = null;
-  let viewingArchive = false;
+  let selectedArchive: PersonaCore | null = null;
 
   // Insights state
   type InsightEntry = {
@@ -132,6 +129,11 @@
   let insights: InsightsData | null = null;
   let loadingInsights = false;
   let insightsLoaded = false;
+  const insightPresentation = {
+    addition: { icon: '+', background: 'bg-emerald-500', text: 'text-emerald-500' },
+    removal: { icon: '−', background: 'bg-red-500', text: 'text-red-500' },
+    update: { icon: '↻', background: 'bg-amber-500', text: 'text-amber-500' },
+  };
 
   onMount(() => {
     loadPersonaData();
@@ -140,17 +142,13 @@
   async function loadPersonaData() {
     loading = true;
     error = null;
-    facetsConfig = null;
     try {
       const coreRes = await apiFetch('/api/persona-core-manage');
       const coreData = await coreRes.json();
       if (!coreRes.ok || !coreData.success) throw new Error(coreData.error || 'Failed to load persona core');
       personaCore = coreData.persona;
 
-      const facetsRes = await apiFetch('/api/persona-facets-manage');
-      const facetsData = await facetsRes.json();
-      if (!facetsRes.ok || !facetsData.success) throw new Error(facetsData.error || 'Failed to load facets');
-      facetsConfig = facetsData.facets;
+      if (!facetsConfig) await reloadFacets();
     } catch (e) {
       console.error('Failed to load persona data:', e);
       error = (e as Error).message;
@@ -185,7 +183,6 @@
   async function reloadFacets() {
     loading = true;
     error = null;
-    facetsConfig = null;
     try {
       const facetsRes = await apiFetch('/api/persona-facets-manage');
       const facetsData = await facetsRes.json();
@@ -324,7 +321,7 @@
     }
   }
 
-  function formatInsightDate(timestamp: string): string {
+  function formatDate(timestamp: string): string {
     const date = new Date(timestamp);
     return date.toLocaleDateString('en-US', {
       month: 'short',
@@ -333,33 +330,6 @@
       hour: '2-digit',
       minute: '2-digit',
     });
-  }
-
-  function getInsightIcon(type: 'addition' | 'removal' | 'update'): string {
-    switch (type) {
-      case 'addition': return '+';
-      case 'removal': return '−';
-      case 'update': return '↻';
-      default: return '•';
-    }
-  }
-
-  function getInsightColor(type: 'addition' | 'removal' | 'update'): string {
-    switch (type) {
-      case 'addition': return 'bg-emerald-500';
-      case 'removal': return 'bg-red-500';
-      case 'update': return 'bg-amber-500';
-      default: return 'bg-gray-500';
-    }
-  }
-
-  function getInsightTextColor(type: 'addition' | 'removal' | 'update'): string {
-    switch (type) {
-      case 'addition': return 'text-emerald-500';
-      case 'removal': return 'text-red-500';
-      case 'update': return 'text-amber-500';
-      default: return 'text-gray-500';
-    }
   }
 
   async function loadArchives() {
@@ -396,7 +366,6 @@
       const data = await res.json();
       if (!data.success) throw new Error(data.error || 'Failed to view archive');
       selectedArchive = data.persona;
-      viewingArchive = true;
     } catch (e) {
       console.error('Failed to view archive:', e);
       error = (e as Error).message;
@@ -461,17 +430,7 @@
   }
 
   function closeArchiveViewer() {
-    viewingArchive = false;
     selectedArchive = null;
-  }
-
-  function formatTimestamp(timestamp: string): string {
-    const match = timestamp.match(/(\d{4})-(\d{2})-(\d{2})-(\d{2})(\d{2})(\d{2})/);
-    if (match) {
-      const [_, year, month, day, hour, min, sec] = match;
-      return `${year}-${month}-${day} ${hour}:${min}:${sec}`;
-    }
-    return timestamp;
   }
 
   function formatFileSize(bytes: number): string {
@@ -512,7 +471,7 @@
         <button
           class="px-4 py-2 rounded-lg font-medium border transition-all
                  {editorTab === 'facets' ? 'bg-purple-600 text-white border-purple-600' : 'bg-transparent border-gray-300 dark:border-gray-600 dark:text-gray-300'}"
-          on:click={() => { editorTab = 'facets'; void reloadFacets(); }}
+          on:click={() => editorTab = 'facets'}
         >
           Facets
         </button>
@@ -978,13 +937,13 @@
           <div class="flex flex-col gap-4">
             {#each insights.entries as entry}
               <div class="flex gap-4 p-4 bg-gray-50 dark:bg-gray-800 rounded-lg border border-gray-200 dark:border-gray-700">
-                <div class="flex items-center justify-center w-8 h-8 rounded-full flex-shrink-0 {getInsightColor(entry.type)}">
-                  <span class="text-white font-bold">{getInsightIcon(entry.type)}</span>
+                <div class="flex items-center justify-center w-8 h-8 rounded-full flex-shrink-0 {insightPresentation[entry.type].background}">
+                  <span class="text-white font-bold">{insightPresentation[entry.type].icon}</span>
                 </div>
                 <div class="flex-1">
                   <div class="flex items-center gap-3 mb-2">
                     <span class="font-semibold capitalize">{entry.category}</span>
-                    <span class="text-xs uppercase font-medium {getInsightTextColor(entry.type)}">{entry.type}</span>
+                    <span class="text-xs uppercase font-medium {insightPresentation[entry.type].text}">{entry.type}</span>
                   </div>
                   <div class="flex flex-wrap gap-2 mb-3">
                     {#each entry.items as item}
@@ -998,7 +957,7 @@
                     </div>
                   {/if}
                   <div class="flex items-center gap-4 text-xs text-gray-500 dark:text-gray-400">
-                    <span>{formatInsightDate(entry.timestamp)}</span>
+                    <span>{formatDate(entry.timestamp)}</span>
                     <span>{entry.memoriesAnalyzed} memories · {Math.round(entry.confidence * 100)}% confidence
                       {#if entry.sessionId}
                         · Session: {entry.sessionId.slice(-8)}
@@ -1011,7 +970,7 @@
           </div>
           {#if insights.lastUpdated}
             <div class="mt-6 pt-4 border-t border-gray-200 dark:border-gray-700 text-xs text-gray-500 dark:text-gray-400 text-center">
-              Last updated: {formatInsightDate(insights.lastUpdated)}
+              Last updated: {formatDate(insights.lastUpdated)}
             </div>
           {/if}
         {/if}
@@ -1031,15 +990,9 @@
           </button>
         </div>
 
-        {#if error}
-          <div class="flex flex-col items-center justify-center p-12 gap-4">
-            <div class="text-xl font-semibold text-red-600">Failed to load archives</div>
-            <div class="text-red-800 dark:text-red-400">{error}</div>
-            <button class="btn-danger" on:click={loadArchives}>Retry</button>
-          </div>
-        {:else if loadingArchives && archives.length === 0}
+        {#if loadingArchives && archives.length === 0}
           <div class="text-center py-12">Loading archives...</div>
-        {:else if archives.length === 0}
+        {:else if archives.length === 0 && !error}
           <div class="text-center py-12 text-gray-500 dark:text-gray-400">
             <p>No archives found. Archives are created automatically when the Psychotherapist agent updates your persona.</p>
           </div>
@@ -1050,7 +1003,7 @@
                 <div class="flex justify-between items-start mb-3">
                   <div>
                     <h4 class="m-0 mb-1 text-lg font-semibold">{archive.identity.name}</h4>
-                    <span class="text-sm text-gray-500 dark:text-gray-400 font-mono">{formatTimestamp(archive.timestamp)}</span>
+                    <span class="text-sm text-gray-500 dark:text-gray-400 font-mono">{formatDate(archive.createdAt)}</span>
                   </div>
                   <div class="flex gap-2">
                     <button class="btn-secondary btn-sm" on:click={() => viewArchive(archive.filename)}>View</button>
@@ -1068,7 +1021,7 @@
           </div>
         {/if}
 
-        {#if viewingArchive && selectedArchive}
+        {#if selectedArchive}
           <div class="fixed inset-0 bg-black/60 flex items-center justify-center z-[1000]">
             <div class="bg-white dark:bg-gray-800 rounded-lg w-[90%] max-w-4xl max-h-[85vh] flex flex-col shadow-2xl" on:keydown={(e) => e.key === 'Escape' && closeArchiveViewer()} role="dialog" aria-modal="true" aria-labelledby="archive-viewer-title" tabindex="-1">
               <div class="flex justify-between items-center p-5 border-b border-gray-200 dark:border-gray-700">

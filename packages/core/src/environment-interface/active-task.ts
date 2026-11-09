@@ -79,13 +79,14 @@ export function evaluateLocomotionGoal(goal: EnvironmentLocomotionGoal, measurem
   }
   if (goal.kind === 'visual') return { reached: false, progress: { measurement } }
   const t = measurement.target
-  if (!valid(t) || !t || (goal.target.trackId ? t.trackId !== goal.target.trackId : t.frameId !== goal.target.frameId)
+  if (!valid(t) || !t || (goal.target.trackId ? t.trackId !== goal.target.trackId : (t.frameId !== goal.target.frameId && t.referenceFrameId !== goal.target.frameId))
     || goal.target.queryId && t.queryId !== goal.target.queryId)
     return unavailable(t?.reason ?? 'Selected target evidence unavailable')
   const actual = goal.proximity.kind === 'metric' ? t.rangeMetres : t.boxHeight
   if (typeof actual !== 'number' || !Number.isFinite(actual)) return unavailable('Selected target proximity is unavailable')
-  if (goal.proximity.kind === 'metric' && (!t.groundContact || !goal.target.groundContact
-    || t.groundContact.x !== goal.target.groundContact.x || t.groundContact.y !== goal.target.groundContact.y))
+  const contact = t.referencePoint ?? t.groundContact
+  if (goal.proximity.kind === 'metric' && (!contact || !goal.target.groundContact
+    || contact.x !== goal.target.groundContact.x || contact.y !== goal.target.groundContact.y))
     return unavailable('Selected ground-contact evidence is unavailable')
   const error = goal.proximity.kind === 'metric' ? actual - goal.proximity.metres : goal.proximity.boxHeight - actual
   const satisfied = Math.abs(error) <= goal.proximity.tolerance

@@ -1,10 +1,10 @@
 # Chat
 
-Chat is the main conversational surface in MetaHuman OS. It combines profile-scoped conversation, optional inner and system feeds, voice input, queued work, and explicit operator controls without treating those different channels as one history.
+Chat is the main conversational surface in Ainekio OS. It combines profile-scoped conversation, optional inner and system feeds, voice input, queued work, and explicit operator controls without treating those different channels as one history.
 
 ## Open Chat
 
-Start MetaHuman OS, sign in, and select **Chat** in the left sidebar. If the page reports that no model backend is available, check the configured backend before troubleshooting the conversation itself:
+Start Ainekio OS, sign in, and select **Chat** in the left sidebar. If the page reports that no model backend is available, check the configured backend before troubleshooting the conversation itself:
 
 ```bash
 ./bin/mh status
@@ -85,7 +85,7 @@ Terminal messages use the configured Codex command, arguments, permissions,
 model and reasoning settings. The first turn includes the root `agents_big_brother` orientation file and
 resolved workspace/profile/conversation-buffer locations, followed by the complete
 message. Later turns send only the new message to the same thread. Terminal input
-does not run the MetaHuman conversation workflow or become a diagnostic report.
+does not run the Ainekio OS conversation workflow or become a diagnostic report.
 Big Brother diagnostic and tool sessions remain separate.
 
 Completed chat turns enter the editable **Big Brother Response** workflow in

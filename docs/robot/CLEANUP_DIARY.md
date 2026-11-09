@@ -53,12 +53,12 @@ exit calls its `--services-only` mode. Full stop asks the launcher to cancel its
 unfinished starts and release its web child **without dispatching service stop
 again**, then stops the installation services once. The internal `USR2` handoff
 uses the launcher's existing application-only cleanup. `--app-only` still leaves
-services running. [`bin/stop-pm2`](../../bin/stop-pm2) delegates to the same full
-stop instead of separately deleting PM2 first.
+services running. The then-present `bin/stop-pm2` wrapper delegated to the same
+full stop instead of separately deleting PM2 first.
 
 | Stop target | Why it remains / surviving owner |
 | --- | --- |
-| Application and optional PM2 registration | Existing production/dev entrypoints and PM2 wrapper remain supported. Only the application's own matching processes are handled here; arbitrary port listeners are not killed. |
+| Application and optional PM2 registration | At this review, production/dev entrypoints and the PM2 wrapper were supported. Only the application's own matching processes were handled here; arbitrary port listeners were not killed. |
 | Terminal sessions | [Terminal client](../../packages/core/src/terminal/client.ts) asks the terminal service to close its shell/provider children and release ownership before the generic agent stop. |
 | Registered agents | [Agent registry owner](../../packages/core/src/agent-monitor-registry.ts) now confirms process termination and removes only the matching registration. CLI, API, restart and bulk-stop consumers await that same operation. Graceful stop retains a non-exiting process and reports failure; `--force` remains explicit. Removed the duplicate API/CLI exit-wait implementations. |
 | llama.cpp | [Existing systemd owner](../../bin/llama-cpp-services) stops this installation's managed units, including manually started ones. Model selection limits startup, not installation-wide shutdown. |

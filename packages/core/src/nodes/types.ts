@@ -54,7 +54,6 @@ export type SlotType =
   | 'cognitiveMode'
   | 'user'
   | 'memory'
-  | 'skill_result'
   | 'llm_response'
   | 'decision'
   | 'any';

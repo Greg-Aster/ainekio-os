@@ -1,12 +1,11 @@
 <script lang="ts">
-  import PersonaGeneratorEmbed from './PersonaGeneratorEmbed.svelte';
+  import PersonaGenerator from '../PersonaGenerator.svelte';
   import Step3Personality from './Step3_Personality.svelte';
 
   export let onNext: () => void;
   export let onBack: () => void;
 
-  let choice: 'pending' | 'full-interview' | 'quick-survey' | 'skip' = 'pending';
-  let showSkipNotification = false;
+  let choice: 'pending' | 'full-interview' | 'quick-survey' = 'pending';
 
   function handleStartFullInterview() {
     choice = 'full-interview';
@@ -14,24 +13,6 @@
 
   function handleStartQuickSurvey() {
     choice = 'quick-survey';
-  }
-
-  function handleSkipBoth() {
-    showSkipNotification = true;
-    // Auto-continue after showing notification
-    setTimeout(() => {
-      onNext();
-    }, 3000);
-  }
-
-  function handleInterviewComplete() {
-    // Persona generator completed and applied
-    onNext();
-  }
-
-  function handleSurveyComplete() {
-    // Quick survey completed
-    onNext();
   }
 
   function handleBackToChoice() {
@@ -84,15 +65,15 @@
           <div class="choice-badge">Fastest</div>
         </button>
 
-        <button class="choice-card" on:click={handleSkipBoth}>
+        <button class="choice-card" on:click={onNext}>
           <div class="text-5xl mb-4">⏭️</div>
           <h3 class="text-xl font-semibold mb-3 text-white dark:text-white">Skip for Now</h3>
           <p class="text-sm leading-relaxed text-white/70 dark:text-white/70 mb-4">
-            Complete the personality interview later from the System menu.
+            Complete the personality interview later from the Persona view.
           </p>
           <ul class="list-none p-0 mb-6 text-left w-full">
             <li class="text-sm text-white/80 dark:text-white/80 mb-2 pl-2">• Get started immediately</li>
-            <li class="text-sm text-white/80 dark:text-white/80 mb-2 pl-2">• Access from System → Generator</li>
+            <li class="text-sm text-white/80 dark:text-white/80 mb-2 pl-2">• Access from Persona → Generator</li>
             <li class="text-sm text-white/80 dark:text-white/80 mb-2 pl-2">• All sessions saved and resumable</li>
             <li class="text-sm text-white/80 dark:text-white/80 mb-2 pl-2">• Manually edit persona files anytime</li>
           </ul>
@@ -106,26 +87,15 @@
       </div>
     </div>
   {:else if choice === 'full-interview'}
-    <PersonaGeneratorEmbed onComplete={handleInterviewComplete} onBack={handleBackToChoice} />
+    <PersonaGenerator copyToTraining={false} onComplete={onNext} onBack={handleBackToChoice} />
   {:else if choice === 'quick-survey'}
     <Step3Personality
-      onNext={handleSurveyComplete}
+      onNext={onNext}
       onBack={handleBackToChoice}
-      onSkip={handleSkipBoth}
+      onSkip={onNext}
     />
   {/if}
 
-  {#if showSkipNotification}
-    <div class="skip-notification">
-      <div class="flex gap-4 items-start max-w-[400px] p-4 px-6 rounded-xl border border-blue-400/30 bg-slate-900 shadow-xl">
-        <div class="text-2xl flex-shrink-0">ℹ️</div>
-        <div>
-          <strong class="block text-white mb-1 text-[0.9375rem]">Personality interview skipped</strong>
-          <p class="m-0 text-sm text-white/70 leading-relaxed">You can complete it anytime from <strong class="text-blue-400">System → Generator</strong></p>
-        </div>
-      </div>
-    </div>
-  {/if}
 </div>
 
 <style>
@@ -151,13 +121,4 @@
     @apply bg-violet-400/20 text-violet-400 border-violet-400/30;
   }
 
-  /* Skip notification - slide in from right */
-  .skip-notification {
-    @apply fixed top-8 right-8 z-[12000];
-    animation: slideInRight 0.3s ease-out;
-  }
-  @keyframes slideInRight {
-    from { transform: translateX(100%); opacity: 0; }
-    to { transform: translateX(0); opacity: 1; }
-  }
 </style>

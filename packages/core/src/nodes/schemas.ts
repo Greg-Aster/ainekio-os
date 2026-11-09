@@ -2571,76 +2571,11 @@ export const nodeSchemas: NodeSchema[] = [
 
   // OPERATOR NODES
   defineSchema({
-    id: 'react_planner',
-    name: 'ReAct Planner',
-    category: 'operator',
-    inputs: [
-      { name: 'goal', type: 'string', description: 'User goal/request' },
-      { name: 'context', type: 'object' },
-      { name: 'scratchpad', type: 'array', optional: true },
-    ],
-    outputs: [
-      { name: 'thought', type: 'string', description: 'Reasoning about next step' },
-      { name: 'action', type: 'object', description: 'Skill to execute' },
-    ],
-    properties: { enableThinking: false, role: 'planner', temperature: 0.2 },
-    propertySchemas: {
-      enableThinking: reasoningProperty,
-      role: { ...modelRouterDefinition.propertySchemas.role, default: 'planner' },
-      temperature: { type: 'slider', default: 0.2, label: 'Temperature', min: 0, max: 1, step: 0.1 },
-    },
-    size: [240, 180],
-    description: 'Plans next action in ReAct loop',
-  }),
-  defineSchema({
-    id: 'skill_executor',
-    name: 'Skill Executor',
-    category: 'operator',
-    inputs: [
-      { name: 'skillName', type: 'string' },
-      { name: 'arguments', type: 'object' },
-    ],
-    outputs: [
-      { name: 'result', type: 'object', description: 'Skill execution result' },
-      { name: 'success', type: 'boolean' },
-      { name: 'error', type: 'object', optional: true },
-    ],
-    description: 'Executes a skill with arguments',
-  }),
-  defineSchema({
-    id: 'observation_formatter',
-    name: 'Observation Formatter',
-    category: 'operator',
-    inputs: [
-      { name: 'result', type: 'object' },
-      { name: 'mode', type: 'string', optional: true },
-    ],
-    outputs: [{ name: 'observation', type: 'string', description: 'Formatted observation text' }],
-    properties: { mode: 'narrative' },
-    propertySchemas: { mode: { type: 'select', default: 'narrative', label: 'Format Mode', options: ['narrative', 'structured', 'verbatim'] } },
-    size: [240, 140],
-    description: 'Formats skill results for LLM',
-  }),
-  defineSchema({
-    id: 'completion_checker',
-    name: 'Completion Checker',
-    category: 'operator',
-    inputs: [
-      { name: 'goal', type: 'string' },
-      { name: 'scratchpad', type: 'array' },
-    ],
-    outputs: [
-      { name: 'isComplete', type: 'boolean' },
-      { name: 'reason', type: 'string', optional: true },
-    ],
-    description: 'Checks if goal is achieved',
-  }),
-  defineSchema({
     id: 'response_synthesizer',
     name: 'Response Synthesizer',
     category: 'operator',
     inputs: [
-      { name: 'goal', type: 'string' },
+      { name: 'goal', type: 'any' },
       { name: 'scratchpad', type: 'array' },
       { name: 'context', type: 'object' },
       { name: 'persona', type: 'object', optional: true, description: 'Raw persona object (values, personality, identity)' },
@@ -2714,36 +2649,6 @@ export const nodeSchemas: NodeSchema[] = [
     description: 'Manages ReAct scratchpad state',
   }),
   defineSchema({
-    id: 'error_recovery',
-    name: 'Error Recovery',
-    category: 'operator',
-    inputs: [
-      { name: 'error', type: 'string' },
-      { name: 'skillId', type: 'string', optional: true },
-    ],
-    outputs: [
-      { name: 'errorType', type: 'string', description: 'Categorized error type' },
-      { name: 'suggestions', type: 'array', description: 'Recovery suggestions' },
-      { name: 'shouldRetry', type: 'boolean' },
-    ],
-    properties: { maxRetries: 3 },
-    description: 'Provides smart retry suggestions',
-  }),
-  defineSchema({
-    id: 'stuck_detector',
-    name: 'Stuck Detector',
-    category: 'operator',
-    inputs: [{ name: 'scratchpad', type: 'array' }],
-    outputs: [
-      { name: 'isStuck', type: 'boolean' },
-      { name: 'consecutiveFailures', type: 'number' },
-      { name: 'diagnosis', type: 'string' },
-      { name: 'suggestion', type: 'string' },
-    ],
-    properties: { threshold: 3 },
-    description: 'Detects failure loops',
-  }),
-  defineSchema({
     id: 'big_brother',
     name: 'Big Brother',
     category: 'operator',
@@ -2790,47 +2695,6 @@ export const nodeSchemas: NodeSchema[] = [
     outputs: [{ name: 'result', type: 'object', description: 'Execution result' }],
     properties: { timeout: 120000 },
     description: 'Delegates entire task to Claude Code',
-  }),
-
-  // SAFETY NODES
-  defineSchema({
-    id: 'cot_stripper',
-    name: 'Chain-of-Thought Stripper',
-    category: 'safety',
-    inputs: [{ name: 'response', type: 'string' }],
-    outputs: [
-      { name: 'cleaned', type: 'string', description: 'Response with <think> blocks removed' },
-      { name: 'response', type: 'string', description: 'Alias for cleaned output', optional: true },
-    ],
-    description: 'Removes internal reasoning blocks',
-  }),
-  defineSchema({
-    id: 'safety_validator',
-    name: 'Safety Validator',
-    category: 'safety',
-    inputs: [{ name: 'response', type: 'string' }],
-    outputs: [
-      { name: 'response', type: 'string' },
-      { name: 'isSafe', type: 'boolean' },
-      { name: 'issues', type: 'array', optional: true },
-      { name: 'safetyResult', type: 'object', optional: true },
-    ],
-    properties: { threshold: 0.7 },
-    description: 'Validates response safety',
-  }),
-  defineSchema({
-    id: 'response_refiner',
-    name: 'Response Refiner',
-    category: 'safety',
-    inputs: [
-      { name: 'response', type: 'string' },
-      { name: 'safetyResult', type: 'object', optional: true },
-    ],
-    outputs: [
-      { name: 'response', type: 'string' },
-      { name: 'refined', type: 'boolean', optional: true },
-    ],
-    description: 'Refines response to address safety issues',
   }),
 
   // OUTPUT NODES
@@ -3027,102 +2891,6 @@ export const nodeSchemas: NodeSchema[] = [
     description: 'Extracts <think> blocks for UI display, provides stripped content for memory/TTS',
   }),
 
-  // SKILL NODES
-  defineSchema({
-    id: 'skill_fs_read',
-    name: 'Read File',
-    category: 'skill',
-    inputs: [{ name: 'filePath', type: 'string' }],
-    outputs: [
-      { name: 'content', type: 'string' },
-      { name: 'success', type: 'boolean' },
-    ],
-    description: 'Reads file contents',
-  }),
-  defineSchema({
-    id: 'skill_fs_write',
-    name: 'Write File',
-    category: 'skill',
-    inputs: [
-      { name: 'filePath', type: 'string' },
-      { name: 'content', type: 'string' },
-    ],
-    outputs: [{ name: 'success', type: 'boolean' }],
-    description: 'Writes file contents',
-  }),
-  defineSchema({
-    id: 'skill_fs_list',
-    name: 'List Files',
-    category: 'skill',
-    inputs: [{ name: 'directory', type: 'string' }],
-    outputs: [{ name: 'files', type: 'array' }],
-    description: 'Lists directory contents',
-  }),
-  defineSchema({
-    id: 'skill_task_create',
-    name: 'Create Task',
-    category: 'skill',
-    inputs: [
-      { name: 'title', type: 'string' },
-      { name: 'description', type: 'string', optional: true },
-    ],
-    outputs: [{ name: 'taskId', type: 'string' }],
-    description: 'Creates a new task',
-  }),
-  defineSchema({
-    id: 'skill_task_list',
-    name: 'List Tasks',
-    category: 'skill',
-    inputs: [],
-    outputs: [{ name: 'tasks', type: 'array' }],
-    description: 'Lists active tasks',
-  }),
-  defineSchema({
-    id: 'skill_task_update',
-    name: 'Update Task',
-    category: 'skill',
-    inputs: [
-      { name: 'taskId', type: 'string' },
-      { name: 'status', type: 'string' },
-    ],
-    outputs: [{ name: 'success', type: 'boolean' }],
-    description: 'Updates task status',
-  }),
-  defineSchema({
-    id: 'skill_search_index',
-    name: 'Search Index',
-    category: 'skill',
-    inputs: [
-      { name: 'query', type: 'string' },
-      { name: 'maxResults', type: 'number', optional: true },
-    ],
-    outputs: [{ name: 'results', type: 'array' }],
-    description: 'Semantic memory search',
-  }),
-  defineSchema({
-    id: 'skill_web_search',
-    name: 'Web Search',
-    category: 'skill',
-    inputs: [{ name: 'query', type: 'string' }],
-    outputs: [{ name: 'results', type: 'array' }],
-    description: 'Searches the web',
-  }),
-  defineSchema({
-    id: 'skill_conversational_response',
-    name: 'Conversational Response',
-    category: 'skill',
-    inputs: [
-      { name: 'message', type: 'string' },
-      { name: 'context', type: 'object', optional: true },
-      { name: 'style', type: 'string', optional: true },
-    ],
-    outputs: [{ name: 'response', type: 'string' }],
-    properties: { style: 'default' },
-    propertySchemas: { style: { type: 'select', default: 'default', label: 'Response Style', options: ['default', 'strict', 'summary'] } },
-    size: [260, 160],
-    description: 'Generates conversational response',
-  }),
-
   // COGNITIVE NODES
   defineSchema({
     id: 'quality_scorer',
@@ -3164,7 +2932,6 @@ export const nodeSchemas: NodeSchema[] = [
     inputs: [
       { name: 'response', type: 'string', description: 'Generated response' },
       { name: 'qualityResult', type: 'object', description: 'Quality evaluation result' },
-      { name: 'safetyResult', type: 'object', optional: true, description: 'Safety validation result' },
       { name: 'currentIteration', type: 'number', optional: true, description: 'Current loop iteration (default: 1)' },
       { name: 'previousFeedback', type: 'object', optional: true, description: 'Feedback from previous iteration' },
     ],
@@ -3183,7 +2950,7 @@ export const nodeSchemas: NodeSchema[] = [
       allowPartialSuccess: { type: 'toggle', default: true, label: 'Allow Partial Success' },
     },
     size: [240, 160],
-    description: 'Routes responses based on quality/safety, enabling iterative refinement loops',
+    description: 'Routes responses based on quality evaluation, enabling iterative refinement loops',
   }),
   defineSchema({
     id: 'gateway',
@@ -3211,19 +2978,6 @@ export const nodeSchemas: NodeSchema[] = [
     description: 'Conditional pass-through gate - data only flows when condition is true (like a transistor)',
     color: '#818cf8',
     bgColor: '#4338ca',
-  }),
-  defineSchema({
-    id: 'loop_controller',
-    name: 'Loop Controller',
-    category: 'control_flow',
-    inputs: [{ name: 'input', type: 'any' }],
-    outputs: [
-      { name: 'iterations', type: 'array', description: 'Array of iteration results' },
-      { name: 'finalOutput', type: 'any', description: 'Final output after loop completes' },
-      { name: 'completed', type: 'boolean' },
-    ],
-    properties: { maxIterations: 10, completionCheck: 'completed' },
-    description: 'Iterative execution with max iterations',
   }),
   defineSchema({
     id: 'conditional_branch',

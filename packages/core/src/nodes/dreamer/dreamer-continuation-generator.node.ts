@@ -21,7 +21,7 @@ function markBackgroundActivity() {
   }
 }
 
-export interface DreamContinuation {
+interface DreamContinuation {
   dream: string;
   thinking?: string;
   index: number;
@@ -97,22 +97,6 @@ export function resolveContinuationRoll(
   return digest.readUInt32BE(0) / 0x1_0000_0000;
 }
 
-async function waitForDelay(milliseconds: number, signal?: AbortSignal): Promise<void> {
-  if (milliseconds <= 0) return;
-  throwIfAborted(signal);
-  await new Promise<void>((resolve, reject) => {
-    const timeout = setTimeout(() => {
-      signal?.removeEventListener('abort', abort);
-      resolve();
-    }, milliseconds);
-    const abort = () => {
-      clearTimeout(timeout);
-      reject(new DOMException('Dream continuation cancelled', 'AbortError'));
-    };
-    signal?.addEventListener('abort', abort, { once: true });
-  });
-}
-
 const DEFAULT_SYSTEM_PROMPT = `You are continuing a surreal dream sequence. You only see the previous dream fragment - use it as inspiration,
 but feel free to drift, fracture, merge, or completely transform. No coherence required.
 Let the symbols mutate, emotions shift unexpectedly, logic dissolve. Dreams don't follow rules.
@@ -137,13 +121,6 @@ const execute: NodeExecutor = async (inputs, context, properties) => {
     1,
   );
   const maxContinuations = resolveContinuationLimit(properties?.maxContinuations, context.maxDreams);
-  const delaySeconds = numberProperty(
-    properties?.delaySeconds,
-    60,
-    'Dreamer delaySeconds',
-    0,
-    MAX_DELAY_SECONDS,
-  );
   const maxTokens = integerProperty(
     properties?.maxTokens,
     800,
@@ -172,7 +149,6 @@ const execute: NodeExecutor = async (inputs, context, properties) => {
 
     if (roll >= continuationChance) break;
 
-    await waitForDelay(delaySeconds * 1000, context.signal);
     markBackgroundActivity();
 
     const userPrompt = renderPromptTemplate(userPromptTemplate, { lastDream });

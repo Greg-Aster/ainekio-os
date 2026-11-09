@@ -502,5 +502,3 @@ export const DesireOutcomeReviewerNode: NodeDefinition = defineNode({
   },
   execute,
 });
-
-export default DesireOutcomeReviewerNode;

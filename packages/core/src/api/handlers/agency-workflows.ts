@@ -6,7 +6,7 @@
  */
 
 import type { UnifiedRequest, UnifiedResponse } from '../types.js';
-import { successResponse, streamResponse } from '../types.js';
+import { streamResponse } from '../types.js';
 import {
   loadDesire,
   type Desire,
@@ -20,25 +20,14 @@ import {
   submitDesireAgent,
   type QueueEvent,
 } from '../../queue/index.js';
-
-const PLAN_LOG_PREFIX = '[API:agency/generate-plan]';
 const PLAN_STREAM_LOG_PREFIX = '[API:agency/generate-plan-stream]';
-const RUN_LOG_PREFIX = '[API:agency/run]';
 const RUN_STREAM_LOG_PREFIX = '[API:agency/run-stream]';
-const OUTCOME_LOG_PREFIX = '[API:agency/outcome-review]';
 const OUTCOME_STREAM_LOG_PREFIX = '[API:agency/outcome-review-stream]';
 
 class WorkflowError extends Error {
   constructor(message: string, readonly status = 500) {
     super(message);
   }
-}
-
-function workflowErrorResponse(error: unknown): UnifiedResponse {
-  if (error instanceof WorkflowError) {
-    return { status: error.status, error: error.message };
-  }
-  return { status: 500, error: (error as Error).message };
 }
 
 function requireOwner(req: UnifiedRequest, action: string): UnifiedResponse | undefined {
@@ -87,35 +76,6 @@ function rejectInlineCritique(req: UnifiedRequest): void {
       'Submit plan feedback through the revise endpoint before generating the replacement plan.',
       400,
     );
-  }
-}
-
-export async function handleGenerateDesirePlan(req: UnifiedRequest): Promise<UnifiedResponse> {
-  const auth = requireOwner(req, 'generate plans');
-  if (auth) return auth;
-  const id = req.params?.id;
-  if (!id) return { status: 400, error: 'Desire ID is required' };
-
-  try {
-    rejectInlineCritique(req);
-    const desire = await loadPlannableDesire(req.user.username, id);
-    const task = await submitDesireAgent({
-      operation: 'plan',
-      username: req.user.username,
-      desireId: id,
-      source: 'user',
-      metadata: { producer: 'agency-plan-api' },
-    });
-    return successResponse({
-      success: true,
-      planningQueued: true,
-      taskId: task.id,
-      desire,
-      message: `Plan generation queued for "${desire.title}".`,
-    }, 202);
-  } catch (error) {
-    console.error(`${PLAN_LOG_PREFIX} Error:`, error);
-    return workflowErrorResponse(error);
   }
 }
 
@@ -252,40 +212,6 @@ async function loadExecutableDesire(username: string, id: string): Promise<Execu
   return desire;
 }
 
-export async function handleRunDesire(req: UnifiedRequest): Promise<UnifiedResponse> {
-  const auth = requireOwner(req, 'execute desires');
-  if (auth) return auth;
-  const id = req.params?.id;
-  if (!id) return { status: 400, error: 'Desire ID is required' };
-
-  try {
-    console.log(`${RUN_LOG_PREFIX} 🚀 Run requested for: ${id}`);
-    const desire = await loadExecutableDesire(req.user.username, id);
-    const task = await submitDesireAgent({
-      operation: 'execute',
-      username: req.user.username,
-      desireId: id,
-      source: 'user',
-      metadata: { producer: 'agency-run-api' },
-    });
-    return successResponse({
-      success: true,
-      executionQueued: true,
-      taskId: task.id,
-      desire,
-      message: `Execution queued for "${desire.title}".`,
-    }, 202);
-  } catch (error) {
-    console.error(`${RUN_LOG_PREFIX} ❌ Error:`, error);
-    const response = workflowErrorResponse(error);
-    if (error instanceof WorkflowError && error.message === 'Cannot run desire without a plan. Generate a plan first.') {
-      response.data = { error: error.message, suggestion: 'Use the "Generate Plan" button first.' };
-      response.error = undefined;
-    }
-    return response;
-  }
-}
-
 export async function handleRunDesireStream(req: UnifiedRequest): Promise<UnifiedResponse> {
   return streamResponse(runDesireStream(req));
 }
@@ -408,34 +334,6 @@ async function loadReviewableDesire(username: string, id: string): Promise<Desir
     throw new WorkflowError('This desire already has a durable outcome review.', 409);
   }
   return desire;
-}
-
-export async function handleOutcomeReview(req: UnifiedRequest): Promise<UnifiedResponse> {
-  const auth = requireOwner(req, 'review outcomes');
-  if (auth) return auth;
-  const id = req.params?.id;
-  if (!id) return { status: 400, error: 'Desire ID is required' };
-
-  try {
-    const desire = await loadReviewableDesire(req.user.username, id);
-    const task = await submitDesireAgent({
-      operation: 'review',
-      username: req.user.username,
-      desireId: id,
-      source: 'user',
-      metadata: { producer: 'agency-outcome-review-api' },
-    });
-    return successResponse({
-      success: true,
-      reviewQueued: true,
-      taskId: task.id,
-      desire,
-      message: `Outcome review queued for "${desire.title}".`,
-    }, 202);
-  } catch (error) {
-    console.error(`${OUTCOME_LOG_PREFIX} Error:`, error);
-    return workflowErrorResponse(error);
-  }
 }
 
 export async function handleOutcomeReviewStream(req: UnifiedRequest): Promise<UnifiedResponse> {

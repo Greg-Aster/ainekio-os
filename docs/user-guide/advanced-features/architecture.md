@@ -1,6 +1,6 @@
 # Architecture
 
-MetaHuman OS is a pnpm monorepo with interface shells above one engine and a set
+Ainekio OS is a pnpm monorepo with interface shells above one engine and a set
 of finite workers above that engine.
 
 ```text

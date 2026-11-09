@@ -1,7 +1,5 @@
-import fs from 'node:fs';
 import type { UnifiedHandler } from '../types.js';
 import { badRequestResponse, errorResponse, streamResponse } from '../types.js';
-import { getProfilePaths } from '../../path-builder.js';
 import { createKokoroTTSService, generateSpeech } from '../../tts.js';
 import { splitSpeechText } from '../../tts/speech-chunks.js';
 import type { KokoroStreamChunk } from '../../tts/providers/kokoro-service.js';
@@ -19,7 +17,6 @@ export const handleTtsStream: UnifiedHandler = async (req) => {
       voice,
       voiceId,
       speed,
-      pitchShift,
       langCode,
       requestId,
     } = req.body ?? {};
@@ -54,7 +51,6 @@ export const handleTtsStream: UnifiedHandler = async (req) => {
       signal: req.signal,
       voice: voiceId || voice,
       speed,
-      pitchShift,
     }));
 
     return {
@@ -135,34 +131,7 @@ async function* streamGeneratedSpeech(params: {
   signal: AbortSignal | undefined;
   voice?: string;
   speed?: number;
-  pitchShift?: number;
 }): AsyncGenerator<string> {
-  const rvcConfig: { pitchShift?: number; voice?: string; speed?: number } = {
-    pitchShift: params.pitchShift,
-    voice: params.voice,
-    speed: params.speed,
-  };
-
-  console.log(`[TTS Stream] ${params.selectedProvider.toUpperCase()} streaming: ${params.paragraphs.length} paragraphs`);
-
-  if (params.selectedProvider === 'rvc') {
-    const profilePaths = getProfilePaths(params.username);
-    if (fs.existsSync(profilePaths.voiceConfig)) {
-      try {
-        const voiceConfig = JSON.parse(fs.readFileSync(profilePaths.voiceConfig, 'utf-8'));
-        if (voiceConfig.tts?.rvc) {
-          const rConfig = voiceConfig.tts.rvc;
-          rvcConfig.pitchShift = params.pitchShift ?? rConfig.pitchShift ?? 0;
-          rvcConfig.voice = params.voice || rConfig.speakerId;
-          rvcConfig.speed = params.speed ?? rConfig.speed ?? 1.0;
-          console.log(`[TTS Stream] Loaded RVC config: pitch=${rvcConfig.pitchShift}, voice=${rvcConfig.voice}`);
-        }
-      } catch (error) {
-        console.warn('[TTS Stream] Failed to load RVC user config:', error);
-      }
-    }
-  }
-
   const lookahead = 1;
   const controller = new AbortController();
   const signal = params.signal ? AbortSignal.any([params.signal, controller.signal]) : controller.signal;
@@ -178,9 +147,8 @@ async function* streamGeneratedSpeech(params: {
 
     const promise = generateSpeech(paragraph, {
       provider: params.selectedProvider as TTSConfig['provider'],
-      voice: rvcConfig.voice,
-      speakingRate: rvcConfig.speed,
-      pitchShift: rvcConfig.pitchShift,
+      voice: params.voice,
+      speakingRate: params.speed,
       username: params.username,
       signal,
     }).then(audio => ({ audio }), error => ({ error }));

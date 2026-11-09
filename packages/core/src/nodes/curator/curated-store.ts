@@ -9,7 +9,7 @@ import { CURATOR_POLICY_VERSION, parseStoredCuratedMemory, type CuratedMemory, t
 const SUBCATEGORY = 'curated/conversations'
 class InvalidCuratedRecordError extends Error {}
 
-export function curatedMemoryDirectory(username: string): string {
+function curatedMemoryDirectory(username: string): string {
   const result = storage.resolvePath({ username, category: 'memory', subcategory: SUBCATEGORY })
   if (!result.success || !result.path) throw new Error(result.error || 'Cannot resolve curated memory storage')
   return result.path

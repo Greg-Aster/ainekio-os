@@ -22,7 +22,7 @@ export interface SleepWorkflowStage extends SleepStageDefinition {
 
 export type SleepStageEnabled = (stage: SleepWorkflowStage) => boolean
 
-export interface SleepWorkflowMarker {
+interface SleepWorkflowMarker {
   sessionId: string
   parentTaskId: string
   stageId: string

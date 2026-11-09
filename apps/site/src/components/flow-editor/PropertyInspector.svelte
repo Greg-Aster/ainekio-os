@@ -169,10 +169,6 @@
     return outgoingEdges.some((edge) => edge.sourceHandle === name);
   }
 
-  function propertyIsOverridden(key: string): boolean {
-    return inputIsConnected(key);
-  }
-
   function formatOutputPreview(value: unknown): string {
     return safeOutputPreview(value, 8_000);
   }
@@ -334,13 +330,13 @@
 
     <section class="p-4 border-b border-slate-700">
       <h4 class="section-title">Settings</h4>
-      {#each standardPropertyEntries as [key, schema]}
+      {#each standardPropertyEntries as [key, schema] (`${selectedNode.id}:${key}`)}
         <NodePropertyField
           contextId={`inspector-${selectedNode.id}`}
           propertyKey={key}
           {schema}
           value={properties[key]}
-          overridden={propertyIsOverridden(key)}
+          overridden={inputIsConnected(key)}
           onValueChange={(value) => updateProperty(key, value)}
         />
       {/each}
@@ -349,13 +345,13 @@
         <details class="rounded border border-slate-700 bg-slate-900/40">
           <summary class="cursor-pointer select-none px-3 py-2.5 text-xs font-semibold text-slate-300">Advanced settings · {advancedPropertyEntries.length}</summary>
           <div class="border-t border-slate-700 px-3 pt-3">
-            {#each advancedPropertyEntries as [key, schema]}
+            {#each advancedPropertyEntries as [key, schema] (`${selectedNode.id}:${key}`)}
               <NodePropertyField
                 contextId={`inspector-${selectedNode.id}`}
                 propertyKey={key}
                 {schema}
                 value={properties[key]}
-                overridden={propertyIsOverridden(key)}
+                overridden={inputIsConnected(key)}
                 onValueChange={(value) => updateProperty(key, value)}
               />
             {/each}

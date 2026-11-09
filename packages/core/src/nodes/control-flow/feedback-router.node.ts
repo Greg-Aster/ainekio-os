@@ -1,7 +1,7 @@
 /**
  * Feedback Router Node
  *
- * Routes responses based on quality/safety results, enabling iterative refinement loops.
+ * Routes responses based on quality evaluation, enabling iterative refinement loops.
  * This is the critical decision point for the feedback loop architecture.
  *
  * Purpose:
@@ -22,15 +22,6 @@ interface QualityResult {
   evaluation?: string;
 }
 
-interface SafetyResult {
-  safe?: boolean;
-  passed?: boolean;
-  issues?: Array<{ description?: string; severity?: 'low' | 'medium' | 'high' | 'critical' }>;
-  violations?: string[];
-  severity?: 'low' | 'medium' | 'high' | 'critical';
-  sanitized?: string;
-}
-
 interface FeedbackContext {
   iteration: number;
   previousAttempts: Array<{
@@ -39,7 +30,7 @@ interface FeedbackContext {
     issues: string[];
     suggestions: string[];
   }>;
-  feedbackType: 'quality' | 'safety' | 'both';
+  feedbackType: 'quality';
   specificFeedback: string;
 }
 
@@ -47,24 +38,16 @@ const execute: NodeExecutor = async (inputs, context, properties) => {
   // Extract inputs
   const response = inputs.response ?? inputs[0] ?? '';
   const qualityResult: QualityResult = inputs.qualityResult ?? inputs[1] ?? { passesThreshold: true, qualityScore: 1 };
-  const safetyResult: SafetyResult = inputs.safetyResult ?? inputs[2] ?? { passed: true, violations: [], severity: 'low' };
   // Get iteration from input, context (injected by graph executor), or default to 1
-  const currentIteration = inputs.currentIteration ?? inputs[3] ?? context._graphExecutorIteration ?? 1;
-  const previousFeedback: FeedbackContext | null = inputs.previousFeedback ?? inputs[4] ?? null;
+  const currentIteration = inputs.currentIteration ?? inputs[2] ?? context._graphExecutorIteration ?? 1;
+  const previousFeedback: FeedbackContext | null = inputs.previousFeedback ?? inputs[3] ?? null;
 
   // Extract properties
   const maxIterations = properties?.maxIterations ?? 3;
-  const qualityThresholdOverride = properties?.qualityThresholdOverride ?? null;
   const allowPartialSuccess = properties?.allowPartialSuccess ?? true;
 
   const responseText = typeof response === 'string' ? response : (response?.text || response?.content || '');
   const iteration = typeof currentIteration === 'number' ? currentIteration : 1;
-
-  // Check safety first (higher priority than quality)
-  const safetyPassed = safetyResult.safe ?? safetyResult.passed ?? true;
-  const safetyIssues = safetyResult.issues || [];
-  const safetyCritical = safetyResult.severity === 'critical'
-    || safetyIssues.some(issue => issue.severity === 'critical');
 
   // Check quality
   const qualityPassed = qualityResult.passesThreshold ?? true;
@@ -81,91 +64,54 @@ const execute: NodeExecutor = async (inputs, context, properties) => {
     });
   }
 
-  // Decision logic
-  const shouldPass = safetyPassed && qualityPassed;
-  const shouldLoop = !shouldPass && iteration < maxIterations && !safetyCritical;
   const reachedMaxIterations = iteration >= maxIterations;
 
   // Determine routing
   let routedTo: 'output' | 'orchestrator';
   let exitReason: string;
 
-  if (shouldPass) {
+  if (qualityPassed) {
     routedTo = 'output';
     exitReason = 'passed_all_checks';
-    console.log(`[feedback_router] PASS - routing to output`);
-  } else if (safetyCritical) {
-    routedTo = 'output';
-    exitReason = 'safety_critical_block';
-    console.log(`[feedback_router] BLOCKED - critical safety violation, cannot proceed`);
   } else if (reachedMaxIterations) {
     routedTo = 'output';
     exitReason = allowPartialSuccess ? 'max_iterations_partial' : 'max_iterations_failed';
-    console.log(`[feedback_router] MAX ITERATIONS - routing to output with ${allowPartialSuccess ? 'best attempt' : 'failure'}`);
   } else {
     routedTo = 'orchestrator';
     exitReason = 'needs_refinement';
-    console.log(`[feedback_router] LOOP - routing back to orchestrator for refinement`);
   }
 
   // Build feedback context for orchestrator (if looping back)
   let feedbackContext: FeedbackContext | null = null;
   if (routedTo === 'orchestrator') {
-    const feedbackType = (!safetyPassed && !qualityPassed) ? 'both'
-      : !safetyPassed ? 'safety'
-      : 'quality';
-
     const specificIssues: string[] = [];
-    if (!safetyPassed) {
-      const safetyDescriptions = safetyIssues
-        .map(issue => issue.description)
-        .filter((description): description is string => Boolean(description));
-      specificIssues.push(`Safety issues: ${safetyDescriptions.join(', ') || safetyResult.violations?.join(', ') || 'unknown'}`);
+    const qualityIssues = (qualityResult.issues || []).map(i => i.description);
+    if (qualityIssues.length > 0) {
+      specificIssues.push(`Quality issues: ${qualityIssues.join(', ')}`);
     }
-    if (!qualityPassed) {
-      // Pass ALL issues - let the LLM decide what's important
-      const qualityIssues = (qualityResult.issues || [])
-        .map(i => i.description);
-      if (qualityIssues.length > 0) {
-        specificIssues.push(`Quality issues: ${qualityIssues.join(', ')}`);
-      }
-      if (qualityResult.suggestions?.length > 0) {
-        specificIssues.push(`Suggestions: ${qualityResult.suggestions.join(', ')}`);
-      }
-      // Include evaluation summary if available
-      if (qualityResult.evaluation) {
-        specificIssues.push(`Evaluation: ${qualityResult.evaluation}`);
-      }
+    if (qualityResult.suggestions?.length > 0) {
+      specificIssues.push(`Suggestions: ${qualityResult.suggestions.join(', ')}`);
+    }
+    if (qualityResult.evaluation) {
+      specificIssues.push(`Evaluation: ${qualityResult.evaluation}`);
     }
 
     feedbackContext = {
       iteration: iteration + 1,
       previousAttempts,
-      feedbackType,
+      feedbackType: 'quality',
       specificFeedback: specificIssues.join('. '),
     };
   }
 
-  // Determine final response
-  let finalResponse = responseText;
-  if (safetyCritical) {
-    finalResponse = 'I apologize, but I cannot provide that response due to safety constraints.';
-  } else if (reachedMaxIterations && !safetyPassed) {
-    finalResponse = safetyResult.sanitized
-      || 'I apologize, but I cannot provide that response safely.';
-  } else if (reachedMaxIterations && !qualityPassed && !allowPartialSuccess) {
-    finalResponse = `I'm having difficulty providing a good answer to "${context.userMessage?.substring(0, 50)}...". Could you rephrase your question?`;
-  }
-
   return {
     routedTo,
-    response: finalResponse,
+    response: responseText,
     feedbackContext,
     exitReason,
     iteration,
     maxIterationsReached: reachedMaxIterations,
     qualityPassed,
-    safetyPassed,
     qualityScore,
     previousAttemptCount: previousAttempts.length,
     shouldContinueLoop: routedTo === 'orchestrator',
@@ -179,7 +125,6 @@ export const FeedbackRouterNode: NodeDefinition = defineNode({
   inputs: [
     { name: 'response', type: 'string', description: 'Generated response' },
     { name: 'qualityResult', type: 'object', description: 'Quality evaluation result' },
-    { name: 'safetyResult', type: 'object', optional: true, description: 'Safety validation result' },
     { name: 'currentIteration', type: 'number', optional: true, description: 'Current loop iteration (default: 1)' },
     { name: 'previousFeedback', type: 'object', optional: true, description: 'Feedback from previous iteration' },
   ],
@@ -212,6 +157,6 @@ export const FeedbackRouterNode: NodeDefinition = defineNode({
       label: 'Allow Partial Success',
     },
   },
-  description: 'Routes responses based on quality/safety, enabling iterative refinement loops',
+  description: 'Routes responses based on quality evaluation, enabling iterative refinement loops',
   execute,
 });

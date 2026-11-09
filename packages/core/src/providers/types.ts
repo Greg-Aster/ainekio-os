@@ -210,6 +210,8 @@ export interface ProviderOptions {
   endpointTier?: string;
   // Big Brother hybrid mode - request Big Brother for this specific call
   useBigBrother?: boolean;
+  cliProvider?: 'claude-code' | 'codex' | 'gemini';
+  reasoningEffort?: string;
 }
 
 export interface ProviderResponse {

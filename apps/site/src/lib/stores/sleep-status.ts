@@ -1,8 +1,8 @@
 import { readable } from 'svelte/store'
 import { apiFetch } from '../client/api-config'
 
-export type SleepState = 'awake' | 'sleeping' | 'dreaming'
-export type SleepPhase = 'awake' | 'sleeping' | 'waking'
+type SleepState = 'awake' | 'sleeping' | 'dreaming'
+type SleepPhase = 'awake' | 'sleeping' | 'waking'
 
 export interface SleepStageStatus {
   id: string
@@ -30,7 +30,7 @@ export interface SleepSessionStatus {
   stages: SleepStageStatus[]
 }
 
-export interface SleepStatus {
+interface SleepStatus {
   status: SleepState
   phase: SleepPhase
   config: {
@@ -44,30 +44,41 @@ export interface SleepStatus {
   lastChecked: string
 }
 
-export const sleepStatus = readable<SleepStatus | null>(null, (set) => {
-  if (typeof window === 'undefined') {
-    // Avoid running fetch logic during SSR
-    return () => {}
-  }
+export interface SleepStatusSnapshot {
+  data: SleepStatus | null
+  error: string
+}
+
+export const sleepStatus = readable<SleepStatusSnapshot>({ data: null, error: '' }, (set, update) => {
+  if (typeof window === 'undefined') return () => {}
 
   let disposed = false
 
+  let requestId = 0
+  let publishedRequest = 0
   const fetchStatus = async () => {
+    const request = ++requestId
+    let next: SleepStatusSnapshot | Pick<SleepStatusSnapshot, 'error'>
     try {
       const res = await apiFetch('/api/sleep-status', { cache: 'no-store' })
-      if (!res.ok) return
-      const data = (await res.json()) as SleepStatus
-      if (!disposed) set(data)
+      const data = await res.json()
+      if (!res.ok) throw new Error(data.error || `Sleep status request failed: ${res.status}`)
+      next = { data: data as SleepStatus, error: '' }
     } catch (error) {
-      console.error('[sleep-status] Failed to fetch status:', error)
+      next = { error: (error as Error).message }
+    }
+    if (!disposed && request > publishedRequest) {
+      publishedRequest = request
+      update(state => ({ ...state, ...next }))
     }
   }
 
-  fetchStatus()
+  void fetchStatus()
   const interval = window.setInterval(fetchStatus, 10_000)
 
   return () => {
     disposed = true
     window.clearInterval(interval)
+    set({ data: null, error: '' })
   }
 })

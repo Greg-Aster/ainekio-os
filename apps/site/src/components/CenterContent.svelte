@@ -2,26 +2,10 @@
   import { activeView, dashboardSection, systemSection, agencySection } from '../stores/navigation';
   import { onDestroy, onMount } from 'svelte';
   import type { SvelteComponent } from 'svelte';
-  import { apiFetch, isMobileApp } from '../lib/client/api-config';
+  import { apiFetch } from '../lib/client/api-config';
   import { isOwner } from '../stores/security-policy';
   
-  // Safe wrapper for isMobileApp to prevent runtime errors
-  let isMobileAppSafe = false;
-  
-  // Check if we're in a browser environment and isMobileApp is available
-  $: if (typeof window !== 'undefined' && typeof isMobileApp === 'function') {
-    try {
-      isMobileAppSafe = isMobileApp();
-    } catch (e) {
-      console.error('[CenterContent] Error calling isMobileApp:', e);
-      isMobileAppSafe = false;
-    }
-  } else {
-    isMobileAppSafe = false;
-  }
-
-  // PERFORMANCE OPTIMIZATION: Lazy load components
-  // Only load ChatInterface eagerly (it's the default view and most common)
+  // Chat and speech delivery are mounted with the application.
   import ChatInterface from './ChatInterface.svelte';
   import TTSQueueConsumer from './TTSQueueConsumer.svelte';
 
@@ -38,144 +22,99 @@
     systemSection.set('chat');
   }
 
-  // All other components are loaded dynamically when needed
-  // This reduces initial bundle size from ~33 components to just 1
-
-  // Cache for loaded components to avoid re-importing
-  const componentCache = new Map<string, typeof SvelteComponent>();
-
-  function handleComponentLoadError(name: string, error: unknown) {
-    const message = error instanceof Error ? error.message : String(error);
-    console.error(`[CenterContent] Failed to load ${name}:`, error);
-
-    if (typeof window === 'undefined') return;
-    if (!/Failed to fetch dynamically imported module|Importing a module script failed|error loading dynamically imported module/i.test(message)) {
-      return;
-    }
-
-    const reloadKey = `mh-component-reload-${name}`;
-    if (window.sessionStorage.getItem(reloadKey) === '1') return;
-
-    window.sessionStorage.setItem(reloadKey, '1');
-    window.location.reload();
-  }
-
-  // Dynamic component loader
+  // Load the selected view through the module loader.
   async function loadComponent(name: string): Promise<typeof SvelteComponent> {
-    if (componentCache.has(name)) {
-      return componentCache.get(name)!;
-    }
-
     let module;
-    try {
-      switch (name) {
-        case 'Dashboard':
-          module = await import('./Dashboard.svelte');
-          break;
-        case 'TaskManager':
-          module = await import('./TaskManager.svelte');
-          break;
-        case 'ProjectDashboard':
-          module = await import('./ProjectDashboard.svelte');
-          break;
-        case 'ApprovalQueue':
-          module = await import('./ApprovalQueue.svelte');
-          break;
-        case 'MemoryControls':
-          module = await import('./MemoryControls.svelte');
-          break;
-        case 'VoiceTrainingWidget':
-          module = await import('./VoiceTrainingWidget.svelte');
-          break;
-        case 'VoiceSettings':
-          module = await import('./VoiceSettings.svelte');
-          break;
-        case 'TrainingMonitor':
-          module = await import('./TrainingMonitor.svelte');
-          break;
-        case 'OnboardingWizard':
-          module = await import('./OnboardingWizard.svelte');
-          break;
-        case 'TrainingWizard':
-          module = await import('./TrainingWizard.svelte');
-          break;
-        case 'TrainingHistory':
-          module = await import('./TrainingHistory.svelte');
-          break;
-        case 'AutomaticTraining':
-          module = await import('./AutomaticTraining.svelte');
-          break;
-        case 'SystemSettings':
-          module = await import('./SystemSettings.svelte');
-          break;
-        case 'BackendSettings':
-          module = await import('./BackendSettings.svelte');
-          break;
-        case 'SecuritySettings':
-          module = await import('./SecuritySettings.svelte');
-          break;
-        case 'NetworkServerSettings':
-          module = await import('./NetworkServerSettings.svelte');
-          break;
-        case 'ChatSettings':
-          module = await import('./ChatSettings.svelte');
-          break;
-        case 'MemoryEditor':
-          module = await import('./MemoryEditor.svelte');
-          break;
-        case 'EnvironmentTrainingMemory':
-          module = await import('./EnvironmentTrainingMemory.svelte');
-          break;
-        case 'PersonaGenerator':
-          module = await import('./PersonaGenerator.svelte');
-          break;
-        case 'PersonaEditor':
-          module = await import('./PersonaEditor.svelte');
-          break;
-        case 'AddonsManager':
-          module = await import('./AddonsManager.svelte');
-          break;
-        case 'TriggerManagerSettings':
-          module = await import('./TriggerManagerSettings.svelte');
-          break;
-        case 'AgentCatalogSettings':
-          module = await import('./AgentCatalogSettings.svelte');
-          break;
-        case 'ProfileLocation':
-          module = await import('./ProfileLocation.svelte');
-          break;
-        case 'AgencyDashboard':
-          module = await import('./AgencyDashboard.svelte');
-          break;
-        case 'ActiveOperatorDashboard':
-          module = await import('./ActiveOperatorDashboard.svelte');
-          break;
-        case 'SleepDashboard':
-          module = await import('./SleepDashboard.svelte');
-          break;
-        case 'TriggerManagerDashboard':
-          module = await import('./TriggerManagerDashboard.svelte');
-          break;
-        case 'AgentCatalogDashboard':
-          module = await import('./AgentCatalogDashboard.svelte');
-          break;
-        default:
-          throw new Error(`Unknown component: ${name}`);
-      }
-    } catch (error) {
-      handleComponentLoadError(name, error);
-      throw error;
+    switch (name) {
+      case 'Dashboard':
+        module = await import('./Dashboard.svelte');
+        break;
+      case 'TaskManager':
+        module = await import('./TaskManager.svelte');
+        break;
+      case 'ProjectDashboard':
+        module = await import('./ProjectDashboard.svelte');
+        break;
+      case 'MemoryControls':
+        module = await import('./MemoryControls.svelte');
+        break;
+      case 'VoiceSettings':
+        module = await import('./VoiceSettings.svelte');
+        break;
+      case 'TrainingMonitor':
+        module = await import('./TrainingMonitor.svelte');
+        break;
+      case 'TrainingWizard':
+        module = await import('./TrainingWizard.svelte');
+        break;
+      case 'TrainingHistory':
+        module = await import('./TrainingHistory.svelte');
+        break;
+      case 'AutomaticTraining':
+        module = await import('./AutomaticTraining.svelte');
+        break;
+      case 'SystemSettings':
+        module = await import('./SystemSettings.svelte');
+        break;
+      case 'BackendSettings':
+        module = await import('./BackendSettings.svelte');
+        break;
+      case 'SecuritySettings':
+        module = await import('./SecuritySettings.svelte');
+        break;
+      case 'NetworkServerSettings':
+        module = await import('./NetworkServerSettings.svelte');
+        break;
+      case 'ChatSettings':
+        module = await import('./ChatSettings.svelte');
+        break;
+      case 'MemoryEditor':
+        module = await import('./MemoryEditor.svelte');
+        break;
+      case 'EnvironmentTrainingMemory':
+        module = await import('./EnvironmentTrainingMemory.svelte');
+        break;
+      case 'PersonaGenerator':
+        module = await import('./PersonaGenerator.svelte');
+        break;
+      case 'PersonaEditor':
+        module = await import('./PersonaEditor.svelte');
+        break;
+      case 'AddonsManager':
+        module = await import('./AddonsManager.svelte');
+        break;
+      case 'TriggerManagerSettings':
+        module = await import('./TriggerManagerSettings.svelte');
+        break;
+      case 'AgentCatalogSettings':
+        module = await import('./AgentCatalogSettings.svelte');
+        break;
+      case 'ProfileLocation':
+        module = await import('./ProfileLocation.svelte');
+        break;
+      case 'AgencyDashboard':
+        module = await import('./AgencyDashboard.svelte');
+        break;
+      case 'ActiveOperatorDashboard':
+        module = await import('./ActiveOperatorDashboard.svelte');
+        break;
+      case 'SleepDashboard':
+        module = await import('./SleepDashboard.svelte');
+        break;
+      case 'TriggerManagerDashboard':
+        module = await import('./TriggerManagerDashboard.svelte');
+        break;
+      case 'AgentCatalogDashboard':
+        module = await import('./AgentCatalogDashboard.svelte');
+        break;
+      default:
+        throw new Error(`Unknown component: ${name}`);
     }
 
-    const component = module.default as unknown as typeof SvelteComponent;
-    componentCache.set(name, component);
-    if (typeof window !== 'undefined') {
-      window.sessionStorage.removeItem(`mh-component-reload-${name}`);
-    }
-    return component;
+    return module.default as unknown as typeof SvelteComponent;
   }
 
-  // Memory/Events (loaded from /api/memories)
+  // Memory/Events (loaded from /api/memories_all)
   type EventItem = {
     id: string
     timestamp: string
@@ -197,16 +136,7 @@ let audioTranscriptMemories: EventItem[] = []
 let dreamMemories: EventItem[] = [];
 let reflectionMemories: EventItem[] = [];
 let curiosityQuestionsTab: Array<{ id: string; question: string; status: string; askedAt: string; relPath: string; seedMemories?: string[]; resolvedAt?: string; answeredAt?: string; skippedAt?: string }> = []
-let functionMemories: Array<{
-  id: string
-  title: string
-  summary: string
-  trustLevel: 'draft' | 'verified'
-  usageCount: number
-  qualityScore?: number
-  createdAt: string
-  skillsUsed: string[]
-}> = []
+let eventsRead: AbortController | undefined;
 let loadingEvents = false
 let eventsError: string | null = null
 
@@ -216,35 +146,19 @@ let currentPage = 1
 const itemsPerPage = 50
 
 let personaTab: 'editor' | 'memory' | 'generator' = 'editor'
-let memoryTab: 'episodic' | 'reflections' | 'tasks' | 'curated' | 'ai-ingestor' | 'audio' | 'dreams' | 'curiosity' | 'functions' | 'environment-training' = 'episodic'
-let voiceTab: 'training' | 'settings' = 'training'
+let memoryTab: 'episodic' | 'reflections' | 'tasks' | 'curated' | 'ai-ingestor' | 'audio' | 'dreams' | 'curiosity' | 'environment-training' = 'episodic'
 let trainingTab: 'wizard' | 'automatic' | 'datasets' | 'monitor' = 'wizard'
-let currentVoiceProvider: 'piper' | 'rvc' = 'rvc'
 
 
 // Expansion and lazily loaded memory-content state
 let expanded: Record<string, boolean> = {}
-type MemoryContentState = { status: 'idle' | 'loading' | 'ready' | 'error'; content?: string; error?: string }
+type MemoryContentState = { status: 'loading' | 'ready' | 'error'; content?: string; error?: string }
 let memoryContent: Record<string, MemoryContentState> = {}
 
 // Memory Editor state
 let editorOpen = false
 let editorRelPath = ''
 let editorMemoryType = 'Memory'
-
-// Persona form removed - now using PersonaEditor component
-
-async function loadVoiceProvider() {
-  try {
-    const res = await apiFetch('/api/voice-settings');
-    if (res.ok) {
-      const data = await res.json();
-      currentVoiceProvider = data.provider || 'rvc';
-    }
-  } catch (e) {
-    console.error('[CenterContent] Error loading voice provider:', e);
-  }
-}
 
 function handleOpenSystemTab(event: Event) {
   const tab = (event as CustomEvent<{ tab?: string }>).detail?.tab;
@@ -256,23 +170,32 @@ function handleOpenSystemTab(event: Event) {
 
 onMount(() => {
   window.addEventListener('mh-open-system-tab', handleOpenSystemTab as EventListener);
+  return () => window.removeEventListener('mh-open-system-tab', handleOpenSystemTab as EventListener);
 });
 
-onDestroy(() => {
-  window.removeEventListener('mh-open-system-tab', handleOpenSystemTab as EventListener);
-});
 
+function cancelEventsRead() {
+  eventsRead?.abort();
+  eventsRead = undefined;
+  loadingEvents = false;
+}
+
+onDestroy(cancelEventsRead);
 
 async function loadEvents() {
   if ($activeView !== 'persona' || personaTab !== 'memory') return;
 
+  cancelEventsRead();
+  const current = new AbortController();
+  eventsRead = current;
   loadingEvents = true;
   eventsError = null;
     try {
       // Load all memories (limit=0 means no limit, client-side pagination handles display)
-      const res = await apiFetch('/api/memories_all?limit=0');
+      const res = await apiFetch('/api/memories_all?limit=0', { signal: current.signal });
       if (!res.ok) throw new Error(`HTTP ${res.status}`);
       const data = await res.json();
+      if (current.signal.aborted) return;
       const episodicEvents = Array.isArray(data.episodic) ? data.episodic : [];
       const reflections = Array.isArray(data.reflections) ? data.reflections : [];
       const dreams = Array.isArray(data.dreams) ? data.dreams : [];
@@ -293,6 +216,8 @@ async function loadEvents() {
         ...aiIngestorMemories,
         ...audioTranscriptMemories,
         ...dreamMemories,
+        ...tasksTab,
+        ...curatedTab,
       ];
       const validKeys = new Set(
         visibleItems
@@ -307,43 +232,28 @@ async function loadEvents() {
       );
       
     } catch (err) {
-      console.error('Failed to load events:', err);
-      eventsError = (err as Error).message;
+      if (!current.signal.aborted) eventsError = (err as Error).message;
     } finally {
-      loadingEvents = false;
-  }
-}
-
-async function loadFunctions() {
-  try {
-    const res = await apiFetch('/api/functions?sortBy=qualityScore&sortOrder=desc');
-    if (!res.ok) throw new Error(`HTTP ${res.status}`);
-    const data = await res.json();
-    functionMemories = Array.isArray(data.functions) ? data.functions : [];
-  } catch (err) {
-    console.error('Failed to load functions:', err);
-    eventsError = (err as Error).message;
+      if (eventsRead === current) {
+        eventsRead = undefined;
+        loadingEvents = false;
+      }
   }
 }
 
 $: if ($activeView === 'persona' && personaTab === 'memory') {
   loadEvents();
-  loadFunctions();
+} else {
+  cancelEventsRead();
 }
 
 
-$: if ($activeView === 'voice' && voiceTab === 'training') {
-  loadVoiceProvider();
-}
 
 // Reset sub-tabs when navigating away from parent views
 $: if ($activeView !== 'persona') {
   personaTab = 'editor';
 }
 
-$: if ($activeView !== 'voice') {
-  voiceTab = 'training';
-}
 
 $: if ($activeView !== 'training') {
   trainingTab = 'datasets';
@@ -419,8 +329,6 @@ $: currentTotalItems = (() => {
   }
 })();
 
-// loadPersonaCore and savePersonaCore removed - now using PersonaEditor component
-
 function getEventKey(item: { relPath?: string; id?: string; name?: string }): string | null {
   if (item.relPath) return item.relPath;
   if (item.id) return item.id;
@@ -463,9 +371,14 @@ function openMemoryEditor(relPath: string, type: string = 'Memory') {
   editorOpen = true
 }
 
-function handleEditorSaved() {
-  // Reload memories to reflect changes
-  loadEvents()
+async function handleEditorSaved(event: CustomEvent<{ relPath: string }>) {
+  const { relPath } = event.detail;
+  delete memoryContent[relPath];
+  memoryContent = { ...memoryContent };
+  await Promise.all([
+    loadEvents(),
+    expanded[relPath] ? loadMemoryContent(relPath) : undefined,
+  ]);
 }
 
 async function loadMemoryContent(relPath: string) {
@@ -500,8 +413,6 @@ async function loadMemoryContent(relPath: string) {
   }
 }
 
-// Removed reactive persona loading - now handled by PersonaEditor component
-
   // Memory validation
   let saving: Record<string, boolean> = {}
   let deleting: Record<string, boolean> = {}
@@ -516,13 +427,20 @@ async function loadMemoryContent(relPath: string) {
       })
       const data = await res.json()
       if (!res.ok || !data.success) throw new Error(data.error || 'Failed to set validation')
-      // update local state
-      item.validation = { status }
+      cancelEventsRead()
+      const validated = (memory: EventItem) => memory.relPath === item.relPath
+        ? { ...memory, validation: { status } } : memory
+      events = events.map(validated)
+      reflectionMemories = reflectionMemories.map(validated)
+      dreamMemories = dreamMemories.map(validated)
+      aiIngestorMemories = aiIngestorMemories.map(validated)
+      audioTranscriptMemories = audioTranscriptMemories.map(validated)
     } catch (e) {
       console.error(e)
       alert((e as Error).message)
     } finally {
-      saving = { ...saving, [item.relPath]: false }
+      delete saving[item.relPath]
+      saving = { ...saving }
     }
   }
 
@@ -537,12 +455,22 @@ async function loadMemoryContent(relPath: string) {
       })
       const data = await res.json()
       if (!res.ok || !data.success) throw new Error(data.error || 'Failed to delete memory')
+      cancelEventsRead()
       events = events.filter(e => e.relPath !== item.relPath)
+      reflectionMemories = reflectionMemories.filter(e => e.relPath !== item.relPath)
+      dreamMemories = dreamMemories.filter(e => e.relPath !== item.relPath)
+      aiIngestorMemories = aiIngestorMemories.filter(e => e.relPath !== item.relPath)
+      audioTranscriptMemories = audioTranscriptMemories.filter(e => e.relPath !== item.relPath)
+      delete expanded[item.relPath]
+      expanded = { ...expanded }
+      delete memoryContent[item.relPath]
+      memoryContent = { ...memoryContent }
     } catch (e) {
       console.error(e)
       alert((e as Error).message)
     } finally {
-      deleting = { ...deleting, [item.relPath]: false }
+      delete deleting[item.relPath]
+      deleting = { ...deleting }
     }
   }
 
@@ -551,65 +479,7 @@ async function loadMemoryContent(relPath: string) {
     void deleteMemory(item)
   }
 
-  // Lazy component loading helper
-  type LoadedComponent = { component: typeof SvelteComponent; props?: any } | null;
-  let loadedComponents: Record<string, LoadedComponent> = {};
-
-  // Reactive loader for current view's components
-  $: if ($activeView && $activeView !== 'chat') {
-    // Pre-load components for the active view to avoid flash
-    switch ($activeView) {
-      case 'dashboard':
-        void loadComponent('Dashboard');
-        void loadComponent('TaskManager');
-        void loadComponent('ApprovalQueue');
-        break;
-      case 'voice':
-        void loadComponent('VoiceTrainingWidget');
-        void loadComponent('VoiceSettings');
-        break;
-      case 'training':
-        void loadComponent('TrainingWizard');
-        void loadComponent('AutomaticTraining');
-        void loadComponent('TrainingHistory');
-        void loadComponent('TrainingMonitor');
-        break;
-      case 'persona':
-        void loadComponent('PersonaEditor');
-        void loadComponent('MemoryControls');
-        void loadComponent('PersonaGenerator');
-        break;
-      case 'system':
-        void loadComponent('ChatSettings');
-        void loadComponent('SecuritySettings');
-        void loadComponent('ProfileLocation');
-        if ($isOwner) {
-          void loadComponent('SystemSettings');
-          void loadComponent('NetworkServerSettings');
-          void loadComponent('AddonsManager');
-          void loadComponent('TriggerManagerSettings');
-        }
-        break;
-      case 'projects':
-        void loadComponent('ProjectDashboard');
-        break;
-    }
-  }
-
-  // Helper to render a lazy-loaded component
-  async function getLazyComponent(name: string, props?: any): Promise<LoadedComponent> {
-    const key = `${name}-${JSON.stringify(props || {})}`;
-    if (loadedComponents[key]) {
-      return loadedComponents[key];
-    }
-
-    const component = await loadComponent(name);
-    const loaded = { component, props };
-    loadedComponents = { ...loadedComponents, [key]: loaded };
-    return loaded;
-  }
-
-  </script>
+</script>
 
 <div class="flex flex-col h-full w-full overflow-hidden">
   <TTSQueueConsumer />
@@ -619,13 +489,12 @@ async function loadMemoryContent(relPath: string) {
     <div class="view-container">
       <div class="view-header">
         <h2 class="view-title">📊 Dashboard</h2>
-        <p class="view-subtitle">Overview, tasks & approvals</p>
+        <p class="view-subtitle">Overview and tasks</p>
       </div>
       <div class="view-content">
         <div class="tab-group">
           <button class="tab-button {$dashboardSection === 'overview' ? 'active' : ''}" on:click={() => dashboardSection.set('overview')}>Overview</button>
           <button class="tab-button {$dashboardSection === 'tasks' ? 'active' : ''}" on:click={() => dashboardSection.set('tasks')}>Tasks</button>
-          <button class="tab-button {$dashboardSection === 'approvals' ? 'active' : ''}" on:click={() => dashboardSection.set('approvals')}>Approvals</button>
           <button class="tab-button {$dashboardSection === 'sleep' ? 'active' : ''}" on:click={() => dashboardSection.set('sleep')}>Sleep</button>
           <button class="tab-button {$dashboardSection === 'agent-catalog' ? 'active' : ''}" on:click={() => dashboardSection.set('agent-catalog')}>Agent Catalog</button>
           <button class="tab-button {$dashboardSection === 'trigger-manager' ? 'active' : ''}" on:click={() => dashboardSection.set('trigger-manager')}>Trigger Manager</button>
@@ -635,36 +504,40 @@ async function loadMemoryContent(relPath: string) {
             <div class="flex items-center justify-center p-8 text-gray-400 dark:text-gray-500 text-sm animate-pulse">Loading dashboard...</div>
           {:then Component}
             <svelte:component this={Component} />
+          {:catch error}
+            <p class="view-error" role="alert">Could not load this view: {error.message}</p>
           {/await}
         {:else if $dashboardSection === 'tasks'}
           {#await loadComponent('TaskManager')}
             <div class="flex items-center justify-center p-8 text-gray-400 dark:text-gray-500 text-sm animate-pulse">Loading tasks...</div>
           {:then Component}
             <svelte:component this={Component} />
-          {/await}
-        {:else if $dashboardSection === 'approvals'}
-          {#await loadComponent('ApprovalQueue')}
-            <div class="flex items-center justify-center p-8 text-gray-400 dark:text-gray-500 text-sm animate-pulse">Loading approvals...</div>
-          {:then Component}
-            <svelte:component this={Component} />
+          {:catch error}
+            <p class="view-error" role="alert">Could not load this view: {error.message}</p>
           {/await}
         {:else if $dashboardSection === 'sleep'}
           {#await loadComponent('SleepDashboard')}
             <div class="flex items-center justify-center p-8 text-gray-400 dark:text-gray-500 text-sm animate-pulse">Loading Sleep…</div>
           {:then Component}
             <svelte:component this={Component} />
+          {:catch error}
+            <p class="view-error" role="alert">Could not load this view: {error.message}</p>
           {/await}
         {:else if $dashboardSection === 'agent-catalog'}
           {#await loadComponent('AgentCatalogDashboard')}
             <div class="flex items-center justify-center p-8 text-gray-400 dark:text-gray-500 text-sm animate-pulse">Loading Agent Catalog…</div>
           {:then Component}
             <svelte:component this={Component} />
+          {:catch error}
+            <p class="view-error" role="alert">Could not load this view: {error.message}</p>
           {/await}
         {:else if $dashboardSection === 'trigger-manager'}
           {#await loadComponent('TriggerManagerDashboard')}
             <div class="flex items-center justify-center p-8 text-gray-400 dark:text-gray-500 text-sm animate-pulse">Loading Trigger Manager…</div>
           {:then Component}
             <svelte:component this={Component} />
+          {:catch error}
+            <p class="view-error" role="alert">Could not load this view: {error.message}</p>
           {/await}
         {/if}
       </div>
@@ -673,26 +546,16 @@ async function loadMemoryContent(relPath: string) {
     <div class="view-container">
       <div class="view-header">
         <h2 class="view-title">🎤 Voice</h2>
-        <p class="view-subtitle">Voice training and speech settings</p>
+        <p class="view-subtitle">Speech settings</p>
       </div>
       <div class="view-content">
-        <div class="tab-group">
-          <button class="tab-button {voiceTab === 'training' ? 'active' : ''}" on:click={() => { voiceTab = 'training'; loadVoiceProvider(); }}>Voice Clone Training</button>
-          <button class="tab-button {voiceTab === 'settings' ? 'active' : ''}" on:click={() => voiceTab = 'settings'}>Voice Settings</button>
-        </div>
-        {#if voiceTab === 'training'}
-          {#await loadComponent('VoiceTrainingWidget')}
-            <div class="flex items-center justify-center p-8 text-gray-400 dark:text-gray-500 text-sm animate-pulse">Loading voice training...</div>
-          {:then Component}
-            <svelte:component this={Component} provider={currentVoiceProvider} />
-          {/await}
-        {:else if voiceTab === 'settings'}
           {#await loadComponent('VoiceSettings')}
             <div class="flex items-center justify-center p-8 text-gray-400 dark:text-gray-500 text-sm animate-pulse">Loading settings...</div>
           {:then Component}
             <svelte:component this={Component} />
+          {:catch error}
+            <p class="view-error" role="alert">Could not load this view: {error.message}</p>
           {/await}
-        {/if}
       </div>
     </div>
   {:else if $activeView === 'training'}
@@ -713,24 +576,32 @@ async function loadMemoryContent(relPath: string) {
             <div class="flex items-center justify-center p-8 text-gray-400 dark:text-gray-500 text-sm animate-pulse">Loading training wizard...</div>
           {:then Component}
             <svelte:component this={Component} on:history={() => trainingTab = 'datasets'} />
+          {:catch error}
+            <p class="view-error" role="alert">Could not load this view: {error.message}</p>
           {/await}
         {:else if trainingTab === 'automatic'}
           {#await loadComponent('AutomaticTraining')}
             <div class="flex items-center justify-center p-8 text-gray-400 dark:text-gray-500 text-sm animate-pulse">Loading automatic training settings...</div>
           {:then Component}
             <svelte:component this={Component} />
+          {:catch error}
+            <p class="view-error" role="alert">Could not load this view: {error.message}</p>
           {/await}
         {:else if trainingTab === 'datasets'}
           {#await loadComponent('TrainingHistory')}
             <div class="flex items-center justify-center p-8 text-gray-400 dark:text-gray-500 text-sm animate-pulse">Loading training history...</div>
           {:then Component}
             <svelte:component this={Component} />
+          {:catch error}
+            <p class="view-error" role="alert">Could not load this view: {error.message}</p>
           {/await}
         {:else if trainingTab === 'monitor'}
           {#await loadComponent('TrainingMonitor')}
             <div class="flex items-center justify-center p-8 text-gray-400 dark:text-gray-500 text-sm animate-pulse">Loading training monitor...</div>
           {:then Component}
             <svelte:component this={Component} />
+          {:catch error}
+            <p class="view-error" role="alert">Could not load this view: {error.message}</p>
           {/await}
         {/if}
       </div>
@@ -753,6 +624,8 @@ async function loadMemoryContent(relPath: string) {
               <div class="flex items-center justify-center p-8 text-gray-400 dark:text-gray-500 text-sm animate-pulse">Loading persona editor...</div>
             {:then Component}
               <svelte:component this={Component} />
+            {:catch error}
+              <p class="view-error" role="alert">Could not load this view: {error.message}</p>
             {/await}
           </div>
         {:else if personaTab === 'memory'}
@@ -761,6 +634,8 @@ async function loadMemoryContent(relPath: string) {
               <div class="flex items-center justify-center p-8 text-gray-400 dark:text-gray-500 text-sm animate-pulse">Loading memory controls...</div>
             {:then Component}
               <svelte:component this={Component} />
+            {:catch error}
+              <p class="view-error" role="alert">Could not load this view: {error.message}</p>
             {/await}
           </div>
           <div class="tab-group">
@@ -772,12 +647,11 @@ async function loadMemoryContent(relPath: string) {
             <button class="tab-button {memoryTab==='audio' ? 'active' : ''}" on:click={() => memoryTab='audio'}>Audio</button>
             <button class="tab-button {memoryTab==='dreams' ? 'active' : ''}" on:click={() => memoryTab='dreams'}>Dreams 💭</button>
             <button class="tab-button {memoryTab==='curiosity' ? 'active' : ''}" on:click={() => memoryTab='curiosity'}>Curiosity ❓</button>
-            <button class="tab-button {memoryTab==='functions' ? 'active' : ''}" on:click={() => memoryTab='functions'}>Functions 🔧</button>
             <button class="tab-button {memoryTab==='environment-training' ? 'active' : ''}" on:click={() => memoryTab='environment-training'}>Environment Training</button>
           </div>
 
           <!-- Search and Pagination Controls -->
-          {#if !['tasks', 'curated', 'curiosity', 'functions', 'environment-training'].includes(memoryTab)}
+          {#if !['tasks', 'curated', 'curiosity', 'environment-training'].includes(memoryTab)}
             <div class="flex justify-between items-center gap-4 mb-4 p-3 bg-black/[0.02] dark:bg-white/[0.03] rounded-lg border border-black/[0.06] dark:border-white/[0.08]">
               <div class="relative flex-1 max-w-[400px]">
                 <svg class="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-gray-400 pointer-events-none" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
@@ -844,6 +718,8 @@ async function loadMemoryContent(relPath: string) {
               <div class="loading-state">Loading environment decisions...</div>
             {:then Component}
               <svelte:component this={Component} />
+            {:catch error}
+              <p class="view-error" role="alert">Could not load this view: {error.message}</p>
             {/await}
           {:else if loadingEvents}
           <div class="loading-state">Loading memories...</div>
@@ -852,6 +728,7 @@ async function loadMemoryContent(relPath: string) {
             <div class="empty-icon">⚠️</div>
             <div class="empty-title">Failed to load memories</div>
             <div class="empty-description">{eventsError}</div>
+            <button class="tab-button" on:click={loadEvents}>Retry loading memories</button>
           </div>
         {:else if memoryTab==='episodic' && events.length === 0}
           <div class="empty-state">
@@ -923,7 +800,7 @@ async function loadMemoryContent(relPath: string) {
                 <div class="empty-icon">🪞</div>
                 <div class="empty-title">No reflections yet</div>
                 <div class="empty-description">
-                  Reflections are generated by the boredom service and reflector agent. Trigger the reflector to populate this section.
+                  Reflections are generated by Mind Wandering and other inner-dialogue agents. Manage Mind Wandering in System → Agent Catalog.
                 </div>
               </div>
             {:else}
@@ -1284,7 +1161,7 @@ async function loadMemoryContent(relPath: string) {
               </div>
             {/each}
           {:else}
-            <p class="empty-state">No dreams recorded recently. Dreams are generated during the nightly sleep cycle based on recent memories.</p>
+            <p class="empty-state">No dreams recorded recently. Dreamer creates dreams in Sleep Workflow; Daydreamer creates idle daydreams. Manage these agents in System → Agent Catalog.</p>
           {/if}
         </div>
         {:else if memoryTab === 'curiosity'}
@@ -1326,70 +1203,20 @@ async function loadMemoryContent(relPath: string) {
               <div class="empty-icon">❓</div>
               <div class="empty-title">No curiosity records yet</div>
               <div class="empty-description">
-                The curiosity system asks thoughtful questions during idle periods.
-                Adjust settings in System → Settings to enable.
+                Curiosity generates questions after conversation inactivity.
+                Manage Curiosity in System → Agent Catalog.
               </div>
             </div>
           {/if}
         </div>
-        {:else if memoryTab === 'functions'}
-          <div class="flex flex-col gap-4">
-            {#if functionMemories.length > 0}
-              {#each functionMemories as func}
-                <div class="event-card border-l-[3px] border-l-indigo-500 dark:border-l-indigo-400">
-                  <div class="event-card-header">
-                    <div class="w-full">
-                      <div class="flex items-center gap-3 mb-2">
-                        <span class="text-xl flex-shrink-0">{func.trustLevel === 'verified' ? '✓' : '📝'}</span>
-                        <span class="text-base font-semibold text-gray-900 dark:text-gray-100 flex-1">{func.title}</span>
-                        <span class="px-3 py-1 rounded-full text-xs font-medium uppercase {func.trustLevel === 'verified' ? 'bg-emerald-500/10 text-emerald-600 dark:bg-emerald-400/15 dark:text-emerald-400' : 'bg-amber-400/10 text-amber-600 dark:bg-amber-400/15 dark:text-amber-400'}">{func.trustLevel}</span>
-                      </div>
-                      <div class="text-sm text-gray-500 dark:text-gray-400 leading-relaxed">{func.summary}</div>
-                    </div>
-                  </div>
-                  <div class="mt-3 pt-3 border-t border-gray-200 dark:border-gray-700">
-                    <div class="flex gap-6 mb-3">
-                      <div class="flex items-center gap-2">
-                        <span class="text-xs text-gray-500 dark:text-gray-400 font-medium">Uses:</span>
-                        <span class="text-sm font-semibold text-gray-900 dark:text-gray-100">{func.usageCount}</span>
-                      </div>
-                      <div class="flex items-center gap-2">
-                        <span class="text-xs text-gray-500 dark:text-gray-400 font-medium">Quality:</span>
-                        <span class="text-sm font-semibold text-gray-900 dark:text-gray-100">{func.qualityScore ? (func.qualityScore * 100).toFixed(0) + '%' : 'N/A'}</span>
-                      </div>
-                      <div class="flex items-center gap-2">
-                        <span class="text-xs text-gray-500 dark:text-gray-400 font-medium">Skills:</span>
-                        <span class="text-sm font-semibold text-gray-900 dark:text-gray-100">{func.skillsUsed.length}</span>
-                      </div>
-                    </div>
-                    <div class="flex flex-wrap gap-2">
-                      {#each func.skillsUsed as skill}
-                        <span class="px-2.5 py-1 bg-gray-100 dark:bg-gray-700 rounded-md text-xs text-gray-600 dark:text-gray-300 font-mono">{skill}</span>
-                      {/each}
-                    </div>
-                  </div>
-                  <div class="event-card-meta">
-                    <div class="event-card-time">{new Date(func.createdAt).toLocaleString()}</div>
-                  </div>
-                </div>
-              {/each}
-            {:else}
-              <div class="empty-state">
-                <div class="empty-icon">🔧</div>
-                <div class="empty-title">No Functions Yet</div>
-                <div class="empty-description">
-                  Functions are automatically learned from successful operator executions.
-                  The system will create draft functions as it discovers multi-step patterns.
-                </div>
-              </div>
-            {/if}
-          </div>
         {/if}
         {:else if personaTab === 'generator'}
           {#await loadComponent('PersonaGenerator')}
             <div class="loading-placeholder">Loading persona generator...</div>
           {:then Component}
             <svelte:component this={Component} />
+          {:catch error}
+            <p class="view-error" role="alert">Could not load this view: {error.message}</p>
           {/await}
         {/if}
       </div>
@@ -1421,54 +1248,72 @@ async function loadMemoryContent(relPath: string) {
             <div class="loading-placeholder">Loading chat settings...</div>
           {:then Component}
             <svelte:component this={Component} />
+          {:catch error}
+            <p class="view-error" role="alert">Could not load this view: {error.message}</p>
           {/await}
         {:else if $systemSection === 'settings'}
           {#await loadComponent('SystemSettings')}
             <div class="loading-placeholder">Loading system settings...</div>
           {:then Component}
             <svelte:component this={Component} />
+          {:catch error}
+            <p class="view-error" role="alert">Could not load this view: {error.message}</p>
           {/await}
         {:else if $systemSection === 'backend'}
           {#await loadComponent('BackendSettings')}
             <div class="loading-placeholder">Loading backend settings...</div>
           {:then Component}
             <svelte:component this={Component} />
+          {:catch error}
+            <p class="view-error" role="alert">Could not load this view: {error.message}</p>
           {/await}
         {:else if $systemSection === 'security'}
           {#await loadComponent('SecuritySettings')}
             <div class="loading-placeholder">Loading security settings...</div>
           {:then Component}
             <svelte:component this={Component} />
+          {:catch error}
+            <p class="view-error" role="alert">Could not load this view: {error.message}</p>
           {/await}
         {:else if $systemSection === 'storage'}
           {#await loadComponent('ProfileLocation')}
             <div class="loading-placeholder">Loading storage settings...</div>
           {:then Component}
             <svelte:component this={Component} />
+          {:catch error}
+            <p class="view-error" role="alert">Could not load this view: {error.message}</p>
           {/await}
         {:else if $systemSection === 'network'}
           {#await loadComponent('NetworkServerSettings')}
             <div class="loading-placeholder">Loading network settings...</div>
           {:then Component}
             <svelte:component this={Component} />
+          {:catch error}
+            <p class="view-error" role="alert">Could not load this view: {error.message}</p>
           {/await}
         {:else if $systemSection === 'addons'}
           {#await loadComponent('AddonsManager')}
             <div class="loading-placeholder">Loading addons manager...</div>
           {:then Component}
             <svelte:component this={Component} />
+          {:catch error}
+            <p class="view-error" role="alert">Could not load this view: {error.message}</p>
           {/await}
         {:else if $systemSection === 'agent-catalog'}
           {#await loadComponent('AgentCatalogSettings')}
             <div class="loading-placeholder">Loading Agent Catalog…</div>
           {:then Component}
             <svelte:component this={Component} />
+          {:catch error}
+            <p class="view-error" role="alert">Could not load this view: {error.message}</p>
           {/await}
         {:else if $systemSection === 'trigger-manager'}
           {#await loadComponent('TriggerManagerSettings')}
             <div class="loading-placeholder">Loading Trigger Manager settings…</div>
           {:then Component}
             <svelte:component this={Component} />
+          {:catch error}
+            <p class="view-error" role="alert">Could not load this view: {error.message}</p>
           {/await}
         {/if}
       </div>
@@ -1479,6 +1324,8 @@ async function loadMemoryContent(relPath: string) {
         <div class="loading-placeholder">Loading projects...</div>
       {:then Component}
         <svelte:component this={Component} />
+      {:catch error}
+        <p class="view-error" role="alert">Could not load this view: {error.message}</p>
       {/await}
     </div>
   {:else if $activeView === 'agency'}
@@ -1497,12 +1344,16 @@ async function loadMemoryContent(relPath: string) {
             <div class="loading-placeholder">Loading Active Operator...</div>
           {:then Component}
             <svelte:component this={Component} />
+          {:catch error}
+            <p class="view-error" role="alert">Could not load this view: {error.message}</p>
           {/await}
         {:else}
           {#await loadComponent('AgencyDashboard')}
             <div class="loading-placeholder">Loading desires...</div>
           {:then Component}
             <svelte:component this={Component} />
+          {:catch error}
+            <p class="view-error" role="alert">Could not load this view: {error.message}</p>
           {/await}
         {/if}
       </div>
@@ -1511,12 +1362,134 @@ async function loadMemoryContent(relPath: string) {
 </div>
 
 <style>
+  .view-error {
+    @apply text-red-600 dark:text-red-400;
+  }
+
+  .view-container {
+    @apply flex flex-col h-full overflow-hidden;
+  }
+
+  .view-header {
+    @apply px-8 pt-6 pb-4 border-b border-black/10 flex-shrink-0;
+  }
+
+  :global(.dark) .view-header {
+    @apply border-white/10;
+  }
+
+  .view-title {
+    @apply text-2xl font-bold text-gray-900 m-0 mb-1;
+  }
+
+  :global(.dark) .view-title {
+    @apply text-gray-100;
+  }
+
+  .view-subtitle {
+    @apply text-sm text-gray-500 m-0;
+  }
+
+  :global(.dark) .view-subtitle {
+    @apply text-gray-400;
+  }
+
+  .view-content {
+    @apply flex-1 overflow-y-auto overflow-x-hidden p-8;
+  }
+
+  .tab-group {
+    @apply flex flex-wrap gap-2 mb-3;
+  }
+
+  .tab-button {
+    @apply px-3 py-1.5 rounded-full border border-black/15 bg-white text-gray-700 cursor-pointer font-semibold
+           text-sm transition-all hover:bg-gray-50;
+  }
+
+  :global(.dark) .tab-button {
+    @apply border-white/20 bg-white/5 text-gray-300 hover:bg-white/10;
+  }
+
+  .tab-button.active {
+    @apply bg-violet-600 text-white border-transparent;
+  }
+
+  :global(.dark) .tab-button.active {
+    @apply bg-violet-400 text-gray-900;
+  }
+
+  .event-card {
+    @apply p-4 rounded-lg border border-black/10 bg-white;
+  }
+
+  :global(.dark) .event-card {
+    @apply border-white/10 bg-white/5;
+  }
+
+  .event-card-header {
+    @apply flex items-center justify-between gap-3;
+  }
+
+  .event-card-title {
+    @apply font-semibold text-gray-900 m-0;
+  }
+
+  :global(.dark) .event-card-title {
+    @apply text-gray-100;
+  }
+
+  .event-card-meta {
+    @apply flex items-center justify-between gap-2 mt-1;
+  }
+
+  .event-card-time {
+    @apply text-sm text-gray-500;
+  }
+
+  :global(.dark) .event-card-time {
+    @apply text-gray-400;
+  }
+
+  .event-card-content {
+    @apply mt-3 text-gray-700 whitespace-pre-wrap break-words;
+  }
+
+  :global(.dark) .event-card-content {
+    @apply text-gray-300;
+  }
+
+  .empty-icon {
+    @apply text-6xl mb-4 opacity-50;
+  }
+
+  .empty-title {
+    @apply text-xl font-semibold mb-2 text-gray-900;
+  }
+
+  :global(.dark) .empty-title {
+    @apply text-gray-100;
+  }
+
+  .empty-description {
+    @apply text-sm text-center max-w-md;
+  }
+
+  .empty-description code {
+    @apply px-1.5 py-0.5 rounded bg-black/10 font-mono text-sm;
+  }
+
+  :global(.dark) .empty-description code {
+    @apply bg-white/10;
+  }
+
   /* Minimal custom styles for CenterContent - essential styles only */
 
   /* Event body content */
+
   .event-body {
-    @apply mt-3 text-base leading-relaxed text-gray-700 dark:text-gray-300
-           border-t border-black/10 dark:border-white/10 pt-3;
+    @apply mt-3 text-base leading-relaxed text-gray-700 dark:text-gray-300 border-t border-black/10
+           dark:border-white/10 pt-3;
   }
 
   .event-body pre {
@@ -1533,6 +1506,7 @@ async function loadMemoryContent(relPath: string) {
   }
 
   /* Event status badges */
+
   .event-valid {
     @apply text-xs uppercase tracking-wide px-1.5 py-0.5 rounded;
   }
@@ -1546,9 +1520,6 @@ async function loadMemoryContent(relPath: string) {
   }
 
   /* Card type indicators */
-  .ai-ingestor-card {
-    @apply border-l-4 border-l-violet-600 dark:border-l-violet-400;
-  }
 
   .audio-transcript-card {
     @apply border-l-4 border-l-blue-500 dark:border-l-blue-400;
@@ -1559,22 +1530,24 @@ async function loadMemoryContent(relPath: string) {
   }
 
   /* Tags and links */
+
   .event-tags,
   .event-links {
     @apply flex flex-wrap gap-1 mt-1;
   }
 
   .event-tag {
-    @apply text-xs px-1.5 py-0.5 rounded bg-violet-600/10 dark:bg-violet-400/20
-           text-violet-700 dark:text-violet-300 font-medium;
+    @apply text-xs px-1.5 py-0.5 rounded bg-violet-600/10 dark:bg-violet-400/20 text-violet-700
+           dark:text-violet-300 font-medium;
   }
 
   .event-link {
-    @apply text-xs px-1.5 py-0.5 rounded bg-blue-500/10 dark:bg-blue-400/20
-           text-blue-600 dark:text-blue-400 font-medium;
+    @apply text-xs px-1.5 py-0.5 rounded bg-blue-500/10 dark:bg-blue-400/20 text-blue-600 dark:text-blue-400
+           font-medium;
   }
 
   /* Curiosity questions */
+
   .curiosity-question {
     @apply border-l-[3px] border-l-violet-600;
   }
@@ -1596,26 +1569,26 @@ async function loadMemoryContent(relPath: string) {
   }
 
   .btn-view {
-    @apply bg-gray-100 hover:bg-gray-200 text-gray-700
-           dark:bg-gray-700 dark:hover:bg-gray-600 dark:text-gray-200;
+    @apply bg-gray-100 hover:bg-gray-200 text-gray-700 dark:bg-gray-700 dark:hover:bg-gray-600
+           dark:text-gray-200;
   }
 
   .btn-reply {
-    @apply bg-purple-600 hover:bg-purple-700 text-white
-           dark:bg-purple-700 dark:hover:bg-purple-600;
+    @apply bg-purple-600 hover:bg-purple-700 text-white dark:bg-purple-700 dark:hover:bg-purple-600;
   }
 
   .answered-badge {
-    @apply text-xs px-2 py-1 rounded-full bg-green-100 text-green-700
-           dark:bg-green-900/30 dark:text-green-400;
+    @apply text-xs px-2 py-1 rounded-full bg-green-100 text-green-700 dark:bg-green-900/30 dark:text-green-400;
   }
 
   /* Dialogue source badge */
+
   .dialogue-source-badge {
     @apply text-xs px-2 py-0.5 rounded-full font-medium mr-2 text-white lowercase flex-shrink-0 bg-gray-500;
   }
 
   /* Scrollbar styling - can't be done with Tailwind */
+
   .view-content::-webkit-scrollbar {
     width: 8px;
   }
@@ -1631,7 +1604,6 @@ async function loadMemoryContent(relPath: string) {
   .view-content::-webkit-scrollbar-thumb:hover {
     @apply bg-black/30 dark:bg-white/30;
   }
-
 </style>
 
 <!-- Memory Editor Modal (lazy-loaded when opened) -->
@@ -1647,5 +1619,7 @@ async function loadMemoryContent(relPath: string) {
       on:saved={handleEditorSaved}
       on:close={() => editorOpen = false}
     />
+  {:catch error}
+    <p class="view-error fixed bottom-4 left-4 z-50" role="alert">Could not load this view: {error.message}</p>
   {/await}
 {/if}

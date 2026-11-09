@@ -33,16 +33,18 @@ function cleanupSpool(now = Date.now()): void {
   fs.mkdirSync(dir, { recursive: true, mode: 0o700 });
   // Preserve audio referenced by active Coordinator work; completed receipts
   // and browsing history do not own pending audio files.
-  const pending = readPendingSpeechArtifacts();
-  const artifacts = fs.readdirSync(dir)
+  const expired = fs.readdirSync(dir)
     .filter(name => /^speech-[a-zA-Z0-9-]{1,96}\.(?:pcm|claim-\d+)$/.test(name))
     .map(name => {
       const file = path.join(dir, name);
       return { file, id: name.replace(/\.(?:pcm|claim-\d+)$/, ''), mtimeMs: fs.statSync(file).mtimeMs };
-    });
+    })
+    .filter(artifact => now - artifact.mtimeMs > ARTIFACT_TTL_MS);
 
-  for (const artifact of artifacts) {
-    if (!pending.has(artifact.id) && now - artifact.mtimeMs > ARTIFACT_TTL_MS) {
+  if (expired.length === 0) return;
+  const pending = readPendingSpeechArtifacts();
+  for (const artifact of expired) {
+    if (!pending.has(artifact.id)) {
       try { fs.unlinkSync(artifact.file); } catch {}
     }
   }

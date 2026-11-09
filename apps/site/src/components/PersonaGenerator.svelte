@@ -1,7 +1,11 @@
 <script lang="ts">
-  import { onMount, onDestroy } from 'svelte';
+  import { onMount, onDestroy, tick } from 'svelte';
   import ReviewApplyDialog from './ReviewApplyDialog.svelte';
   import { apiFetch } from '../lib/client/api-config';
+
+  export let copyToTraining = true;
+  export let onComplete: (() => void) | undefined = undefined;
+  export let onBack: (() => void) | undefined = undefined;
 
   interface Question {
     id: string;
@@ -26,6 +30,7 @@
   }
 
   let currentSession: Session | null = null;
+  let active = true;
   let currentAnswer = '';
   let loading = false;
   let error = '';
@@ -91,13 +96,14 @@
     await loadSessionHistory();
     // Check for active session to resume
     const savedSessionId = localStorage.getItem('persona-generator-session');
-    if (savedSessionId && sessions.some(s => s.sessionId === savedSessionId && s.status === 'active')) {
+    if (savedSessionId && sessions.some(s => s.sessionId === savedSessionId && s.status !== 'aborted')) {
       showResumeNotification = true;
       resumableSessionId = savedSessionId;
     }
   });
 
   onDestroy(() => {
+    active = false;
     if (loadingInterval) {
       clearInterval(loadingInterval);
     }
@@ -118,18 +124,19 @@
   }
 
   async function loadSessionHistory() {
+    if (!active) return;
     try {
       const response = await apiFetch('/api/persona/generator/load');
-      if (response.ok) {
-        const data = await response.json();
-        sessions = data.sessions || [];
-      }
+      const data = await response.json();
+      if (!response.ok) throw new Error(data.error || 'Failed to load session history');
+      sessions = data.sessions;
     } catch (err) {
-      console.error('Failed to load session history:', err);
+      error = (err as Error).message;
     }
   }
 
   async function startNewSession() {
+    if (!active) return;
     loading = true;
     error = '';
 
@@ -150,7 +157,7 @@
         status: 'active',
         questions: [data.question],
         answers: [],
-        categoryCoverage: data.categoryCoverage,
+        categoryCoverage: data.progress,
       };
       editingAnswerId = null;
       editedAnswerText = '';
@@ -164,6 +171,7 @@
   }
 
   async function resumeSession(sessionId: string, options?: { persist?: boolean }) {
+    if (!active) return;
     loading = true;
     error = '';
     const shouldPersist = options?.persist ?? true;
@@ -178,19 +186,28 @@
 
       const data = await response.json();
       currentSession = data.session;
+      reviewData = data.reviewData ?? null;
+      showReviewDialog = currentSession?.status === 'finalized' && !!reviewData;
       editingAnswerId = null;
       editedAnswerText = '';
-      if (shouldPersist) {
+      if (currentSession?.status === 'applied') {
+        if (localStorage.getItem('persona-generator-session') === sessionId) localStorage.removeItem('persona-generator-session');
+      } else if (shouldPersist) {
         localStorage.setItem('persona-generator-session', sessionId);
       }
+      return true;
     } catch (err: any) {
       error = err.message;
-      if (shouldPersist) {
-        localStorage.removeItem('persona-generator-session');
-      }
+      return false;
     } finally {
       loading = false;
     }
+  }
+
+  async function retryFinalize() {
+    if (!active || !currentSession) return;
+    const loaded = await resumeSession(currentSession.sessionId);
+    if (active && loaded && currentSession.status === 'completed') await finalizeSession();
   }
 
   function reviewSession(sessionId: string) {
@@ -208,12 +225,14 @@
   }
 
   async function saveEditedAnswer(questionId: string) {
+    if (!active) return;
     if (!currentSession) return;
     if (!editedAnswerText.trim()) {
       error = 'Answer cannot be empty';
       return;
     }
 
+    const session = currentSession;
     editLoading = true;
     error = '';
 
@@ -222,7 +241,7 @@
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
-          sessionId: currentSession.sessionId,
+          sessionId: session.sessionId,
           questionId,
           content: editedAnswerText.trim(),
         }),
@@ -235,10 +254,10 @@
 
       const data = await response.json();
       const updatedAnswer = data.answer;
-      const updatedAnswers = currentSession.answers.map((answer) =>
+      const updatedAnswers = session.answers.map((answer) =>
         answer.questionId === questionId ? updatedAnswer : answer
       );
-      currentSession = { ...currentSession, answers: updatedAnswers };
+      if (currentSession === session) currentSession = { ...session, answers: updatedAnswers };
       editingAnswerId = null;
       editedAnswerText = '';
     } catch (err: any) {
@@ -249,6 +268,7 @@
   }
 
   async function submitAnswer() {
+    if (!active) return;
     if (!currentAnswer.trim() || !currentSession) return;
 
     loading = true;
@@ -256,6 +276,7 @@
     startLoadingMessages();
 
     const lastQuestion = currentSession.questions[currentSession.questions.length - 1];
+    const answer = currentAnswer;
 
     try {
       const response = await apiFetch('/api/persona/generator/answer', {
@@ -264,7 +285,7 @@
         body: JSON.stringify({
           sessionId: currentSession.sessionId,
           questionId: lastQuestion.id,
-          answer: currentAnswer,
+          answer,
         }),
       });
 
@@ -279,13 +300,14 @@
         ...currentSession.answers,
         {
           questionId: lastQuestion.id,
-          content: currentAnswer,
+          content: answer,
           answeredAt: new Date().toISOString(),
         },
       ];
 
       currentAnswer = '';
 
+      if (!active) return;
       if (data.isComplete) {
         currentSession.status = 'completed';
         await finalizeSession();
@@ -294,11 +316,8 @@
         currentSession.categoryCoverage = data.progress;
       }
 
-      setTimeout(() => {
-        if (messagesContainer) {
-          messagesContainer.scrollTop = messagesContainer.scrollHeight;
-        }
-      }, 100);
+      await tick();
+      if (active && messagesContainer) messagesContainer.scrollTop = messagesContainer.scrollHeight;
     } catch (err: any) {
       error = err.message;
     } finally {
@@ -308,6 +327,7 @@
   }
 
   async function finalizeSession() {
+    if (!active) return;
     if (!currentSession) return;
 
     loading = true;
@@ -320,7 +340,7 @@
         body: JSON.stringify({
           sessionId: currentSession.sessionId,
           strategy: 'merge',
-          copyToTraining: true,
+          copyToTraining,
         }),
       });
 
@@ -341,8 +361,11 @@
   }
 
   async function handleApply(strategy: 'replace' | 'merge' | 'append') {
+    if (!active) return;
     if (!currentSession) return;
 
+    loading = true;
+    error = '';
     try {
       const response = await apiFetch('/api/persona/generator/apply', {
         method: 'POST',
@@ -358,18 +381,15 @@
         throw new Error(data.error || 'Failed to apply persona');
       }
 
+      await response.json();
       localStorage.removeItem('persona-generator-session');
       currentSession.status = 'applied';
       showReviewDialog = false;
-      await loadSessionHistory();
-
-      alert('Persona updated successfully! Your changes have been applied.');
-
-      setTimeout(() => {
-        currentSession = null;
-      }, 2000);
+      if (active) await loadSessionHistory();
     } catch (err: any) {
-      alert('Failed to apply persona: ' + err.message);
+      error = 'Failed to apply persona: ' + err.message;
+    } finally {
+      loading = false;
     }
   }
 
@@ -380,22 +400,28 @@
   }
 
   async function discardSession() {
+    if (!active) return;
     if (!currentSession) return;
     if (!confirm('Are you sure you want to discard this interview session?')) return;
 
+    loading = true;
+    error = '';
     try {
-      await apiFetch('/api/persona/generator/discard', {
+      const response = await apiFetch('/api/persona/generator/discard', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ sessionId: currentSession.sessionId }),
       });
+      const data = await response.json();
+      if (!response.ok) throw new Error(data.error || 'Failed to discard session');
+      localStorage.removeItem('persona-generator-session');
+      currentSession = null;
+      if (active) await loadSessionHistory();
     } catch (err) {
-      console.error('Failed to discard session:', err);
+      error = (err as Error).message;
+    } finally {
+      loading = false;
     }
-
-    localStorage.removeItem('persona-generator-session');
-    currentSession = null;
-    await loadSessionHistory();
   }
 
   function pauseSession() {
@@ -409,6 +435,7 @@
   }
 
   async function handleQuickNotes() {
+    if (!active) return;
     if (!quickNotesText.trim()) {
       quickNotesError = 'Please enter some notes or observations';
       return;
@@ -430,14 +457,10 @@
         throw new Error(data.error || 'Failed to add notes');
       }
 
-      const data = await response.json();
+      await response.json();
       quickNotesSuccess = 'Notes processed and merged with your persona!';
       quickNotesText = '';
 
-      setTimeout(() => {
-        quickNotesSuccess = '';
-        showQuickNotes = false;
-      }, 3000);
     } catch (err: any) {
       quickNotesError = err.message;
     } finally {
@@ -446,6 +469,7 @@
   }
 
   async function handlePurgeSessions() {
+    if (!active) return;
     ownerActionLoading = true;
     ownerActionError = '';
 
@@ -462,7 +486,7 @@
       const data = await response.json();
       showPurgeConfirm = false;
       localStorage.removeItem('persona-generator-session');
-      await loadSessionHistory();
+      if (active) await loadSessionHistory();
       alert(`Successfully purged ${data.deletedCount} session(s)`);
     } catch (err: any) {
       ownerActionError = err.message;
@@ -472,6 +496,7 @@
   }
 
   async function handleResetPersona() {
+    if (!active) return;
     if (resetConfirmText !== 'RESET') {
       ownerActionError = 'Please type "RESET" to confirm';
       return;
@@ -504,6 +529,9 @@
 
 <div class="h-full flex flex-col p-6 text-gray-200">
   <div class="mb-6">
+    {#if onBack}
+      <button class="btn-secondary mb-4" on:click={onBack}>← Back to options</button>
+    {/if}
     <h2 class="m-0 mb-2 text-gray-50">Persona Generator</h2>
     <p class="m-0 text-gray-400 text-sm">
       Interactive personality interview to build your digital persona
@@ -569,7 +597,7 @@
         </div>
 
         {#if !showQuickNotes}
-          <button class="btn-secondary" on:click={() => showQuickNotes = true}>
+          <button class="btn-secondary" on:click={() => { showQuickNotes = true; quickNotesSuccess = ''; }}>
             Add Notes to Persona
           </button>
         {:else}
@@ -597,6 +625,7 @@
                   showQuickNotes = false;
                   quickNotesText = '';
                   quickNotesError = '';
+                  quickNotesSuccess = '';
                 }}
                 disabled={quickNotesLoading}
               >
@@ -740,12 +769,14 @@
                         Edited {new Date(answer.editedAt).toLocaleString()}
                       </span>
                     {/if}
+                    {#if currentSession.status === 'active' || currentSession.status === 'completed'}
                     <button
                       class="bg-transparent border-none text-blue-300 p-0 text-sm underline cursor-pointer hover:text-blue-200"
                       on:click={() => startEditAnswer(question.id, answer.content)}
                     >
                       Edit Response
                     </button>
+                    {/if}
                   </div>
                 {/if}
               </div>
@@ -800,7 +831,7 @@
             <p class="m-0 text-gray-400">Finalizing your persona data...</p>
           {:else}
             <p class="m-0 text-gray-400">You can finalize again if the previous attempt failed.</p>
-            <button class="btn-primary mt-4" on:click={finalizeSession}>
+            <button class="btn-primary mt-4" on:click={retryFinalize}>
               Retry Finalize
             </button>
           {/if}
@@ -811,6 +842,11 @@
         <div class="bg-gray-800 rounded-lg p-8 text-center">
           <h3 class="m-0 mb-2 text-emerald-500">✓ Persona Applied Successfully</h3>
           <p class="m-0 text-gray-400">Your personality profile has been updated.</p>
+          {#if onComplete}
+            <button class="btn-primary mt-4" on:click={onComplete}>Continue →</button>
+          {:else}
+            <button class="btn-secondary mt-4" on:click={pauseSession}>Back to Generator</button>
+          {/if}
         </div>
       {/if}
     </div>
@@ -820,6 +856,9 @@
 {#if showReviewDialog && reviewData}
   <ReviewApplyDialog
     {reviewData}
+    pending={loading}
+    {error}
+    onReload={() => { if (currentSession) void resumeSession(currentSession.sessionId); }}
     onApply={handleApply}
     onDiscard={handleDiscard}
   />

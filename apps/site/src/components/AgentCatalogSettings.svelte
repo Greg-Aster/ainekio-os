@@ -1,12 +1,11 @@
 <script lang="ts">
   import ActiveOperatorSettings from './ActiveOperatorSettings.svelte';
-  import { onDestroy, onMount } from 'svelte';
+  import { onMount } from 'svelte';
   import { apiFetch } from '../lib/client/api-config';
   import {
     agentCatalogConnection,
     agentCatalogError,
     agentCatalogSnapshot,
-    refreshAgentCatalog,
     registerCatalogAgent,
     unregisterCatalogAgent,
     useAgentCatalog,
@@ -18,7 +17,6 @@
 
   type Filter = 'all' | 'registered' | 'available' | 'services' | 'workflow' | 'problems';
 
-  let release: (() => void) | undefined;
   let filter: Filter = 'all';
   let search = '';
   let busy = '';
@@ -27,12 +25,13 @@
   let psychoanalyzerConfigLoading = false;
   let psychoanalyzerConfigError = '';
   let preserveManualPersonaEdits = false;
+  let psychoanalyzerRead: AbortController | undefined;
 
   onMount(() => {
-    release = useAgentCatalog();
+    const release = useAgentCatalog();
     void loadPsychoanalyzerConfig();
+    return () => { psychoanalyzerRead?.abort(); release(); };
   });
-  onDestroy(() => release?.());
 
   $: normalizedSearch = search.trim().toLowerCase();
   $: agents = ($agentCatalogSnapshot?.agents || []).filter(agent => {
@@ -98,9 +97,9 @@
   async function toggleEnabled(agent: AgentCatalogItem, enabled: boolean) {
     busy = agent.id;
     localError = '';
+    feedback = '';
     try {
       await patchTriggerConfig({ agents: { [agent.id]: { enabled } } });
-      await refreshAgentCatalog();
       feedback = `${agent.displayName} ${enabled ? 'enabled' : 'disabled'}.`;
     } catch (error) {
       localError = error instanceof Error ? error.message : String(error);
@@ -112,6 +111,7 @@
   async function runNow(agent: AgentCatalogItem) {
     busy = agent.id;
     localError = '';
+    feedback = '';
     try {
       const response = await apiFetch('/api/agents/run', {
         method: 'POST',
@@ -131,25 +131,30 @@
   }
 
   async function loadPsychoanalyzerConfig() {
+    psychoanalyzerRead?.abort();
+    const current = new AbortController();
+    psychoanalyzerRead = current;
     psychoanalyzerConfigLoading = true;
     psychoanalyzerConfigError = '';
     try {
-      const response = await apiFetch('/api/psychoanalyzer-config');
+      const response = await apiFetch('/api/psychoanalyzer-config', { signal: current.signal });
       const data = await response.json().catch(() => ({}));
+      if (current.signal.aborted) return;
       if (!response.ok || data.success === false || !data.config) {
         throw new Error(data.error || 'Psychotherapist settings could not be loaded');
       }
       preserveManualPersonaEdits = data.config.updateStrategy?.preserveUserEdits === true;
     } catch (error) {
-      psychoanalyzerConfigError = error instanceof Error ? error.message : String(error);
+      if (!current.signal.aborted) psychoanalyzerConfigError = error instanceof Error ? error.message : String(error);
     } finally {
-      psychoanalyzerConfigLoading = false;
+      if (psychoanalyzerRead === current) { psychoanalyzerRead = undefined; psychoanalyzerConfigLoading = false; }
     }
   }
 
   async function updateManualEditProtection(enabled: boolean) {
     psychoanalyzerConfigLoading = true;
     psychoanalyzerConfigError = '';
+    feedback = '';
     try {
       const response = await apiFetch('/api/psychoanalyzer-config', {
         method: 'POST',
@@ -185,7 +190,7 @@
   <MoodAgentSettings />
 
   {#if !$agentCatalogSnapshot}
-    <div class="py-12 text-center text-gray-500">Loading Agent Catalog…</div>
+    {#if !$agentCatalogError}<div class="py-12 text-center text-gray-500">Loading Agent Catalog…</div>{/if}
   {:else}
     <section class="mb-5 grid gap-3 sm:grid-cols-3 lg:grid-cols-6">
       <div class="rounded border p-3 dark:border-gray-800"><div class="text-xs text-gray-500">Catalog</div><div class="text-xl font-semibold">{$agentCatalogSnapshot.counts.total}</div></div>
@@ -229,7 +234,7 @@
                       type="checkbox"
                       checked={preserveManualPersonaEdits}
                       disabled={psychoanalyzerConfigLoading || !!psychoanalyzerConfigError}
-                      on:change={event => updateManualEditProtection(event.currentTarget.checked)}
+                      on:click|preventDefault={() => updateManualEditProtection(!preserveManualPersonaEdits)}
                     />
                     <span>
                       <span class="font-medium">Preserve manual persona edits</span>
@@ -250,7 +255,7 @@
             </div>
             <div class="flex flex-wrap items-center justify-end gap-2">
               {#if agent.triggerRegistered}
-                <label class="flex items-center gap-2 rounded border px-3 py-2 text-xs dark:border-gray-700"><input type="checkbox" checked={agent.enabled} disabled={!!busy} on:change={event => toggleEnabled(agent, event.currentTarget.checked)} /> Enabled</label>
+                <label class="flex items-center gap-2 rounded border px-3 py-2 text-xs dark:border-gray-700"><input type="checkbox" checked={agent.enabled} disabled={!!busy} on:click|preventDefault={() => toggleEnabled(agent, !agent.enabled)} /> Enabled</label>
               {/if}
               {#if agent.canRun}<button class="rounded border px-3 py-2 text-xs disabled:opacity-50 dark:border-gray-700" disabled={!!busy || agent.triggerRegistered && !agent.enabled} on:click={() => runNow(agent)}>Run now</button>{/if}
               {#if agent.canRegister}<button class="rounded border border-violet-500 px-3 py-2 text-xs text-violet-700 disabled:opacity-50 dark:text-violet-300" disabled={!!busy} on:click={() => register(agent)}>Register</button>{/if}

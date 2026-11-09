@@ -7,13 +7,11 @@
 // Default servers for explicit profile sync.
 // Local web/API calls remain same-origin; remote sync requires user input.
 const DEFAULT_SERVERS = {
-  local: '',
-  cloud: ''
+  local: ''
 };
 
 // Cache for server URL (avoid async calls on every request)
 let cachedServerUrl: string | null = null;
-let cacheInitialized = false;
 
 declare const __METAHUMAN_STATIC_UI__: boolean | undefined;
 const BACKEND_STORAGE_KEY = 'mh_backend_url';
@@ -52,27 +50,6 @@ export function isMobileApp(): boolean {
 }
 
 /**
- * Check if running in web browser (not native)
- */
-export function isWeb(): boolean {
-  return !isMobileApp();
-}
-
-/**
- * Initialize the server URL cache
- * Called once at app startup
- */
-export async function initServerUrl(): Promise<void> {
-  if (cacheInitialized) {
-    return;
-  }
-
-  cachedServerUrl = DEFAULT_SERVERS.local;
-  cacheInitialized = true;
-  console.log('[api-config] Initialized sync server URL:', cachedServerUrl || '(not configured)');
-}
-
-/**
  * Get the selected API destination synchronously.
  *
  * The hosted UI stores its backend address in the browser. This never changes
@@ -103,72 +80,12 @@ export async function getApiBaseUrlAsync(): Promise<string> {
 }
 
 /**
- * Get the sync server URL (async version)
- * Use this for EXPLICIT sync operations ONLY
- */
-export async function getSyncServerUrlAsync(): Promise<string> {
-  return cachedServerUrl || DEFAULT_SERVERS.local;
-}
-
-/**
  * Set the server URL
  * @param url - The server URL to use
  */
 export async function setServerUrl(url: string): Promise<void> {
   cachedServerUrl = url;
   console.log('[api-config] Server URL updated:', url);
-}
-
-/**
- * Test connection to a server
- * @param url - Server URL to test
- * @returns Object with success status and latency
- */
-export async function testServerConnection(url: string): Promise<{
-  success: boolean;
-  latencyMs: number;
-  error?: string;
-  version?: string;
-}> {
-  const start = Date.now();
-
-  try {
-    const response = await fetch(`${url}/api/app-info`, {
-      method: 'GET',
-      credentials: 'include',
-      signal: AbortSignal.timeout(5000)  // 5 second timeout
-    });
-
-    const latencyMs = Date.now() - start;
-
-    if (!response.ok) {
-      return {
-        success: false,
-        latencyMs,
-        error: `Server returned ${response.status}`
-      };
-    }
-
-    const data = await response.json();
-    return {
-      success: true,
-      latencyMs,
-      version: data.version
-    };
-  } catch (e) {
-    return {
-      success: false,
-      latencyMs: Date.now() - start,
-      error: e instanceof Error ? e.message : 'Connection failed'
-    };
-  }
-}
-
-/**
- * Get list of default servers
- */
-export function getDefaultServers(): typeof DEFAULT_SERVERS {
-  return { ...DEFAULT_SERVERS };
 }
 
 /**
@@ -226,6 +143,7 @@ function shouldReportAction(path: string, method: string): boolean {
     '/api/semantic-turn',
     '/api/llm-proxy',
     '/api/profile-sync/import',
+    '/api/addons/install-stream',
   ].some(prefix => path.startsWith(prefix));
 }
 

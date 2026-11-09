@@ -1,4 +1,5 @@
 <script lang="ts">
+  import { onMount } from 'svelte';
   import { apiFetch } from '../lib/client/api-config';
   import { runTriggerNow } from '../lib/stores/trigger-manager';
 
@@ -30,8 +31,9 @@
     loadingIndex = true; indexError = null; indexNotice = null
     try {
       const res = await apiFetch('/api/index')
-      if (!res.ok) throw new Error(`HTTP ${res.status}`)
-      indexStatus = await res.json()
+      const data = await res.json()
+      if (!res.ok) throw new Error(data.error || `HTTP ${res.status}`)
+      indexStatus = data
     } catch (e) {
       indexError = (e as Error).message
       indexStatus = null
@@ -60,30 +62,11 @@
   }
 
   // ============================================================================
-  // Generic Agent Runner with Options
-  // ============================================================================
-  function agentOptionArgs(options: Record<string, any>): string[] {
-    const args: string[] = []
-    if (options.temperature !== undefined) args.push('--temperature', String(options.temperature))
-    return args
-  }
-
-  async function runAgent(name: string, options: Record<string, any> = {}): Promise<boolean> {
-    try {
-      await runTriggerNow(name, agentOptionArgs(options))
-      return true
-    } catch (e) {
-      console.error(`Failed to run agent ${name}:`, e)
-      return false
-    }
-  }
-
-  // ============================================================================
   // Curator State & Settings
   // ============================================================================
   let curatorRunning = false
   let curatorError: string | null = null
-  let curatorSuccess = false
+  let curatorTaskId: string | null = null
   let curatorShowSettings = false
 
   // Curator settings
@@ -92,17 +75,10 @@
   async function runCurator() {
     curatorRunning = true
     curatorError = null
-    curatorSuccess = false
+    curatorTaskId = null
 
     try {
-      const success = await runAgent('curator', {
-        temperature: curatorTemperature,
-      })
-      if (success) {
-        curatorSuccess = true
-      } else {
-        curatorError = 'Failed to start curator'
-      }
+      curatorTaskId = await runTriggerNow('curator', ['--temperature', String(curatorTemperature)])
     } catch (e) {
       curatorError = (e as Error).message
     } finally {
@@ -115,20 +91,15 @@
   // ============================================================================
   let organizerRunning = false
   let organizerError: string | null = null
-  let organizerSuccess = false
+  let organizerTaskId: string | null = null
 
   async function runOrganizer() {
     organizerRunning = true
     organizerError = null
-    organizerSuccess = false
+    organizerTaskId = null
 
     try {
-      const success = await runAgent('organizer')
-      if (success) {
-        organizerSuccess = true
-      } else {
-        organizerError = 'Failed to start organizer'
-      }
+      organizerTaskId = await runTriggerNow('organizer')
     } catch (e) {
       organizerError = (e as Error).message
     } finally {
@@ -136,8 +107,7 @@
     }
   }
 
-  // Load initial status on mount
-  loadIndexStatus()
+  onMount(loadIndexStatus)
 </script>
 
 <div class="relative">
@@ -160,7 +130,7 @@
         </div>
         <div class="flex items-center gap-2">
           <button class="btn-secondary text-sm py-1.5 px-3" on:click={() => curatorShowSettings = !curatorShowSettings}>⚙️</button>
-          <button class="btn-primary text-sm py-1.5 px-3" on:click={runCurator} disabled={curatorRunning}>{curatorRunning ? 'Running…' : 'Run Curator'}</button>
+          <button class="btn-primary text-sm py-1.5 px-3" on:click={runCurator} disabled={curatorRunning}>{curatorRunning ? 'Queuing…' : 'Run Curator'}</button>
         </div>
       </div>
       <div class="p-3.5">
@@ -195,8 +165,8 @@
 
         {#if curatorError}
           <div class="banner banner-error mt-2 text-sm">⚠️ {curatorError}</div>
-        {:else if curatorSuccess}
-          <div class="banner banner-success mt-2 text-sm">✓ Curator started. Check Agent Monitor for progress.</div>
+        {:else if curatorTaskId}
+          <div class="banner banner-success mt-2 text-sm">✓ Curator queued as {curatorTaskId}. Check Queue for progress.</div>
         {/if}
       </div>
     </div>
@@ -209,7 +179,7 @@
           <h3 class="m-0 text-[0.95rem] font-semibold">Memory Organizer</h3>
         </div>
         <div class="flex items-center gap-2">
-          <button class="btn-primary text-sm py-1.5 px-3" on:click={runOrganizer} disabled={organizerRunning}>{organizerRunning ? 'Running…' : 'Run Organizer'}</button>
+          <button class="btn-primary text-sm py-1.5 px-3" on:click={runOrganizer} disabled={organizerRunning}>{organizerRunning ? 'Queuing…' : 'Run Organizer'}</button>
         </div>
       </div>
       <div class="p-3.5">
@@ -219,8 +189,8 @@
         </p>
         {#if organizerError}
           <div class="banner banner-error mt-2 text-sm">⚠️ {organizerError}</div>
-        {:else if organizerSuccess}
-          <div class="banner banner-success mt-2 text-sm">✓ Organizer started in background. Check Agent Monitor for progress.</div>
+        {:else if organizerTaskId}
+          <div class="banner banner-success mt-2 text-sm">✓ Organizer queued as {organizerTaskId}. Check Queue for progress.</div>
         {/if}
       </div>
     </div>

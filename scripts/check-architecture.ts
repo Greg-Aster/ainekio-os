@@ -239,6 +239,8 @@ function isAllowedClientCoreImport(specifier: string, typeOnly: boolean): boolea
   if (specifier === '@metahuman/core/nodes/types') return true;
   if (!typeOnly) return false;
   return specifier === '@metahuman/core/nodes/schemas'
+    || specifier === '@metahuman/core/agency/types'
+    || specifier === '@metahuman/core/onboarding/types'
     || specifier === '@metahuman/core/terminal/types';
 }
 

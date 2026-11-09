@@ -147,38 +147,6 @@
       "height": 80
     },
     {
-      "id": "12",
-      "type": "safetyNode",
-      "position": {
-        "x": 1540,
-        "y": 200
-      },
-      "data": {
-        "label": "Safety Validator",
-        "nodeType": "safety_validator",
-        "properties": {
-          "threshold": 0.75
-        }
-      },
-      "width": 200,
-      "height": 80
-    },
-    {
-      "id": "13",
-      "type": "safetyNode",
-      "position": {
-        "x": 1800,
-        "y": 200
-      },
-      "data": {
-        "label": "Response Refiner",
-        "nodeType": "response_refiner",
-        "properties": {}
-      },
-      "width": 200,
-      "height": 80
-    },
-    {
       "id": "14",
       "type": "outputNode",
       "position": {
@@ -387,47 +355,14 @@
       }
     },
     {
-      "id": "e-10-response-12-response",
+      "id": "e-10-response-17-response",
       "source": "10",
-      "target": "12",
-      "sourceHandle": "response",
-      "targetHandle": "response",
-      "data": {
-        "type": "llm_response",
-        "comment": "LLM response → Safety Validator (bypassing CoT Stripper - thinking preserved for UI)"
-      }
-    },
-    {
-      "id": "e-12-response-13-response",
-      "source": "12",
-      "target": "13",
-      "sourceHandle": "response",
-      "targetHandle": "response",
-      "data": {
-        "type": "string",
-        "comment": "Validated response → Response Refiner"
-      }
-    },
-    {
-      "id": "e-12-safetyResult-13-safetyResult",
-      "source": "12",
-      "target": "13",
-      "sourceHandle": "safetyResult",
-      "targetHandle": "safetyResult",
-      "data": {
-        "type": "object",
-        "comment": "Safety metadata → Response Refiner"
-      }
-    },
-    {
-      "id": "e-13-response-17-response",
-      "source": "13",
       "target": "17",
       "sourceHandle": "response",
       "targetHandle": "response",
       "data": {
-        "type": "string",
-        "comment": "Refined response → Thinking Stripper"
+        "type": "llm_response",
+        "comment": "LLM response → Thinking Stripper"
       }
     },
     {
@@ -442,14 +377,14 @@
       }
     },
     {
-      "id": "e-13-response-16-response",
-      "source": "13",
+      "id": "e-10-response-16-response",
+      "source": "10",
       "target": "16",
       "sourceHandle": "response",
       "targetHandle": "response",
       "data": {
-        "type": "string",
-        "comment": "Refined response → Stream Writer"
+        "type": "llm_response",
+        "comment": "LLM response → Stream Writer"
       }
     },
     {

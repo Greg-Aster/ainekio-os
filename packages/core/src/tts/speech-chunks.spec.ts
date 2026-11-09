@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
-import { splitSpeechText } from './speech-chunks.js';
+import { ROBOT_SPEECH_CHUNK_POLICY, splitSpeechText } from './speech-chunks.js';
 
 test('short speech remains one chunk', () => {
   assert.deepEqual(splitSpeechText('Please stand up.'), ['Please stand up.']);
@@ -72,9 +72,25 @@ test('a typical response yields a playable first phrase before the full response
     'I will let you know if I find anything useful nearby.',
   ].join(' ');
   const chunks = splitSpeechText(text);
+  assert.equal(chunks[0], 'I understand that you are disappointed about the cat situation.');
   assert.ok(chunks.length >= 2);
   assert.ok(chunks[0]!.length < text.length);
   assert.equal(chunks.join(' '), text);
+});
+
+test('robot speech chunk policy keeps short multi-sentence replies in one utterance', () => {
+  const shortReply = "I'm doing really well today, Greg! All of my systems are online and ready for your next instruction.";
+  assert.deepEqual(splitSpeechText(shortReply, ROBOT_SPEECH_CHUNK_POLICY), [shortReply]);
+
+  const longReply = [
+    "I'm doing well today, Greg, and my sensors are online.",
+    'The battery is charged and the servos are holding a stable idle posture.',
+    'Let me know if you want to test walking, run a diagnostic, or try another voice command.',
+  ].join(' ');
+  const chunks = splitSpeechText(longReply, ROBOT_SPEECH_CHUNK_POLICY);
+  assert.equal(chunks.length, 2);
+  assert.equal(chunks[0], "I'm doing well today, Greg, and my sensors are online.");
+  assert.equal(chunks.join(' '), longReply);
 });
 
 test('long unpunctuated speech remains bounded', () => {

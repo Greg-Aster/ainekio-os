@@ -1,11 +1,23 @@
-import { getApprovalRequirement, getUserTrustLevel } from '../active-operator/operator-proposals.js';
+import fs from 'node:fs';
+import path from 'node:path';
+import { getProfilePaths } from '../paths.js';
+import type { TrustLevel } from '../skills.js';
 import { loadBufferForUser } from '../conversation-buffer.js';
 import { getPendingTechnicalTickets, recordSystemError } from './index.js';
 
 /** The status widget's YOLO step retains adaptive_auto as its server trust level. */
 export function systemCodeReviewAuthorization(username: string) {
-  const trustLevel = getUserTrustLevel(username);
-  const approval = getApprovalRequirement(username, 'custom');
+  let trustLevel: TrustLevel = 'suggest';
+  try {
+    const rulesPath = path.join(getProfilePaths(username).persona, 'decision-rules.json');
+    if (fs.existsSync(rulesPath)) {
+      trustLevel = JSON.parse(fs.readFileSync(rulesPath, 'utf-8')).trustLevel as TrustLevel;
+    }
+  } catch {
+    // Preserve the existing policy when the profile rules cannot be read.
+  }
+  const approval = trustLevel === 'observe' ? 'observe_only'
+    : trustLevel === 'adaptive_auto' ? 'auto_approve' : 'require_approval';
   return { trustLevel, approval, canRepair: approval === 'auto_approve',
     access: approval === 'auto_approve' ? 'repair' as const : 'read-only' as const };
 }

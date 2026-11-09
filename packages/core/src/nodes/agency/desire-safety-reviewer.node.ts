@@ -210,5 +210,3 @@ export const DesireSafetyReviewerNode: NodeDefinition = defineNode({
   },
   execute,
 });
-
-export default DesireSafetyReviewerNode;

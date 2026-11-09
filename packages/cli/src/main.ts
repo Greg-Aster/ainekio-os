@@ -35,11 +35,6 @@ import {
   queryIndex,
   getIndexStatus,
   buildRagContext,
-  // Voice training utilities
-  getTrainingProgress,
-  listVoiceSamples,
-  deleteVoiceSample,
-  exportTrainingDataset,
   getBigBrotherSessionState,
   stopBigBrotherSession,
   // Multi-user support
@@ -63,7 +58,6 @@ import {
   submitMemoryIndexRefresh,
 } from '@metahuman/core/queue';
 import { personaCommand } from './commands/persona.js';
-import { rvcCommand } from './commands/rvc.js';
 import { kokoroCommand } from './commands/kokoro.js';
 import { voiceServerCommand } from './commands/voice-server.js';
 import { profileCommand } from './commands/profile.js';
@@ -187,7 +181,6 @@ function init(): void {
     { template: profilePaths.persona + '/routines.json.template', target: profilePaths.persona + '/routines.json' },
     { template: profilePaths.persona + '/decision-rules.json.template', target: profilePaths.persona + '/decision-rules.json' },
     // etc/ config templates (system-level)
-    { template: systemPaths.etc + '/boredom.json.template', target: systemPaths.etc + '/boredom.json' },
     { template: systemPaths.etc + '/audio.json.template', target: systemPaths.etc + '/audio.json' },
     { template: systemPaths.etc + '/sleep.json.template', target: systemPaths.etc + '/sleep.json' },
     { template: systemPaths.etc + '/voice.json.template', target: systemPaths.etc + '/voice.json' },
@@ -281,7 +274,7 @@ async function startServices(options: { restart?: boolean; force?: boolean } = {
 
   if (isHeadless()) {
     console.log('⚠️  Headless mode active - no boot-managed agents started');
-    console.log('   Boot-managed agents will resume when headless mode is disabled');
+    console.log('   Clear headless mode before the next start to include boot-managed agents');
   }
 
   if (restart) {
@@ -712,7 +705,7 @@ async function chat(): Promise<void> {
 
       if (!agentName) {
         const agents = listAvailableAgents();
-        console.log('Agent Status Summary:\n');
+        console.log('Agent Status Summary (retained Coordinator work):\n');
         agents.forEach(name => {
           const stats = getAgentStats(name);
           console.log(`  ${name}:`);
@@ -726,7 +719,7 @@ async function chat(): Promise<void> {
         });
       } else {
         const stats = getAgentStats(agentName);
-        console.log(`Agent: ${agentName}\n`);
+        console.log(`Agent: ${agentName} (retained Coordinator work)\n`);
         console.log(`Total runs: ${stats.totalRuns}`);
         console.log(`Successful: ${stats.successfulRuns}`);
         console.log(`Failed: ${stats.failedRuns}`);
@@ -912,111 +905,6 @@ async function indexCmd(args: string[]): Promise<void> {
     }
     default:
       console.error(`Unknown subcommand: ${sub}`);
-      process.exit(1);
-  }
-}
-
-function voiceCmd(args: string[]): void {
-  ensureInitialized();
-  const subcommand = args[0];
-
-  if (!subcommand) {
-    console.error('Usage: mh voice <subcommand> [args]');
-    console.error('\nSubcommands:');
-    console.error('  status              Show voice training progress');
-    console.error('  list                List collected voice samples');
-    console.error('  delete <id>         Delete a voice sample');
-    console.error('  export              Export dataset for training');
-    process.exit(1);
-  }
-
-
-  switch (subcommand) {
-    case 'status': {
-      const progress = getTrainingProgress();
-
-      console.log('Voice Training Progress');
-      console.log('======================\n');
-      console.log(`Samples collected: ${progress.samplesCollected}`);
-
-      const hours = Math.floor(progress.totalDuration / 3600);
-      const minutes = Math.floor((progress.totalDuration % 3600) / 60);
-      const seconds = Math.floor(progress.totalDuration % 60);
-      const targetHours = Math.floor(progress.targetDuration / 3600);
-
-      console.log(`Total duration: ${hours}h ${minutes}m ${seconds}s / ${targetHours}h 0m 0s`);
-      console.log(`Progress: ${progress.percentComplete.toFixed(1)}%`);
-      console.log(`Estimated quality: ${(progress.estimatedQuality * 100).toFixed(0)}%`);
-
-      if (progress.readyForTraining) {
-        console.log(`\n✓ Ready for training! Run: mh voice export`);
-      } else {
-        const needed = progress.targetDuration - progress.totalDuration;
-        const neededHours = Math.floor(needed / 3600);
-        const neededMinutes = Math.floor((needed % 3600) / 60);
-        console.log(`\nStatus: Collecting... (need ${neededHours}h ${neededMinutes}m more)`);
-      }
-      break;
-    }
-
-    case 'list': {
-      const samples = listVoiceSamples();
-
-      if (samples.length === 0) {
-        console.log('No voice samples collected yet.');
-        console.log('\nStart having voice conversations to collect samples!');
-        break;
-      }
-
-      console.log(`Voice Training Samples (${samples.length} total)`);
-      console.log('='.repeat(50) + '\n');
-
-      const displayCount = Math.min(samples.length, 20);
-      for (let i = 0; i < displayCount; i++) {
-        const sample = samples[i];
-        const transcript = fs.readFileSync(sample.transcriptPath, 'utf-8');
-
-        console.log(`${i + 1}. ${sample.id}`);
-        console.log(`   Duration: ${sample.duration.toFixed(1)}s | Quality: ${(sample.quality * 100).toFixed(0)}%`);
-        console.log(`   "${transcript.slice(0, 60)}${transcript.length > 60 ? '...' : ''}"`);
-        console.log('');
-      }
-
-      if (samples.length > displayCount) {
-        console.log(`... and ${samples.length - displayCount} more`);
-      }
-      break;
-    }
-
-    case 'delete': {
-      const sampleId = args[1];
-      if (!sampleId) {
-        console.error('Usage: mh voice delete <sample-id>');
-        process.exit(1);
-      }
-
-      if (deleteVoiceSample(sampleId)) {
-        console.log(`✓ Deleted sample: ${sampleId}`);
-      } else {
-        console.error(`✗ Failed to delete sample: ${sampleId}`);
-        process.exit(1);
-      }
-      break;
-    }
-
-    case 'export': {
-      const exportDir = exportTrainingDataset();
-      console.log(`✓ Training dataset exported to: ${exportDir}`);
-      console.log('\nNext steps:');
-      console.log('  1. Train using Piper training tools');
-      console.log('  2. Or upload to Google Colab for cloud training');
-      console.log('\nSee docs/VOICE_CLONING_PASSIVE.md for training instructions');
-      break;
-    }
-
-    default:
-      console.error(`Unknown subcommand: ${subcommand}`);
-      console.error('Run: mh voice (without args) for help');
       process.exit(1);
   }
 }
@@ -1478,14 +1366,8 @@ async function main() {
       case 'persona':
         await personaCommand(args);
         break;
-      case 'rvc':
-        await rvcCommand(args);
-        break;
       case 'kokoro':
         await kokoroCommand(args);
-        break;
-      case 'voice':
-        voiceCmd(args);
         break;
       case 'voice-server':
         await voiceServerCommand(args);

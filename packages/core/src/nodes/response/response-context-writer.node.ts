@@ -78,5 +78,3 @@ export const ResponseContextWriterNode: NodeDefinition = defineNode({
     };
   },
 });
-
-export default ResponseContextWriterNode;

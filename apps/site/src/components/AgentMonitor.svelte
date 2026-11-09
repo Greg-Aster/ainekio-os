@@ -1,8 +1,9 @@
 <script lang="ts">
-  import { onMount, onDestroy } from 'svelte';
+  import { onMount } from 'svelte';
   import { apiEventSource, apiFetch } from '../lib/client/api-config';
   import { get } from 'svelte/store';
   import { isOwner } from '../stores/security-policy';
+  import { rightSidebarSection } from '../stores/navigation';
   import BodyConnectionSelector from './BodyConnectionSelector.svelte';
   import EnvironmentBridgeDiagnostics from './EnvironmentBridgeDiagnostics.svelte';
   import type { EnvironmentBridgeDiagnosticsSnapshot } from '../lib/client/environment-bridge-diagnostics-types';
@@ -74,28 +75,29 @@
   }
 
   let connected = false;
-  let eventSourceHandle: EventSource | null = null;
+  let streamError = '';
+  let snapshotRead: AbortController | undefined;
+  let hasSnapshot = false;
   let runningAgents: AgentCard[] = [];
   let recentFailures: AgentCard[] = [];
   let startableAgents: AgentDescriptor[] = [];
   let agentData: Record<string, AgentDataPanel> = {};
+  let registeredServices = new Set<string>();
   let selectedAgentName = '';
   let selectedStartAgent = '';
   let startingAgent = '';
   let controllingAgent = '';
   let refreshing = false;
-  let savingField = '';
+  let savingFields = new Set<string>();
   let connectingBody = false;
   let fieldDrafts: Record<string, string | number | boolean | string[] | null> = {};
-  let bulkAction: 'stop' | 'restart' | null = null;
+  let restartingBootAgents = false;
   let feedback: { type: 'success' | 'error' | 'info'; text: string } | null = null;
-  let feedbackTimeout: ReturnType<typeof setTimeout> | null = null;
 
-  $: visibleAgents = runningAgents;
   $: selectedAgent = selectedAgentName ? agentData[selectedAgentName] : undefined;
   $: selectedAgentStartable = Boolean(selectedAgent && startableAgents.some(agent => agent.id === selectedAgent.agentId));
   $: if (!selectedAgentName) {
-    selectedAgentName = visibleAgents[0]?.name || recentFailures[0]?.name || startableAgents[0]?.id || '';
+    selectedAgentName = runningAgents[0]?.name || recentFailures[0]?.name || startableAgents[0]?.id || '';
   }
   $: if (!selectedStartAgent || !startableAgents.some(agent => agent.id === selectedStartAgent)) {
     selectedStartAgent = startableAgents[0]?.id || '';
@@ -103,23 +105,6 @@
 
   function showFeedback(type: 'success' | 'error' | 'info', text: string) {
     feedback = { type, text };
-    if (feedbackTimeout) clearTimeout(feedbackTimeout);
-    feedbackTimeout = setTimeout(() => {
-      feedback = null;
-    }, 4500);
-  }
-
-  function formatTimestamp(ts?: string): string {
-    if (!ts) return 'Never';
-    const date = new Date(ts);
-    const now = new Date();
-    const diffMs = now.getTime() - date.getTime();
-    const diffMins = Math.floor(diffMs / 60000);
-
-    if (diffMins < 1) return 'Just now';
-    if (diffMins < 60) return `${diffMins}m ago`;
-    if (diffMins < 1440) return `${Math.floor(diffMins / 60)}h ago`;
-    return `${Math.floor(diffMins / 1440)}d ago`;
   }
 
   function formatUptime(seconds?: number): string {
@@ -153,10 +138,6 @@
     return 'Read only';
   }
 
-  function liveLabelClass(): string {
-    return connected ? 'text-green-500 dark:text-green-300' : 'text-gray-500 dark:text-gray-400';
-  }
-
   function feedbackClass(): string {
     if (!feedback) return '';
     if (feedback.type === 'success') return 'bg-green-600 text-white border-green-600';
@@ -183,53 +164,35 @@
     if (readiness === 'not-ready') return 'bg-amber-500';
     return 'bg-gray-400';
   }
-
-
-  function errorSourceLabel(error: AgentError): string {
-    const parts = [
-      error.source,
-      error.exitCode !== undefined && error.exitCode !== null ? `exit ${error.exitCode}` : undefined,
-      error.pid ? `pid ${error.pid}` : undefined,
-    ].filter(Boolean);
-    return parts.length > 0 ? parts.join(' / ') : 'error';
-  }
-
-  function initializeDrafts(data: Record<string, AgentDataPanel>) {
-    const next = { ...fieldDrafts };
-    for (const panel of Object.values(data)) {
-      for (const variable of panel.variables) {
-        const key = fieldKey(panel.agentId, variable.key);
-        if (next[key] === undefined) {
-          next[key] = variable.value;
-        }
-      }
-    }
-    fieldDrafts = next;
-  }
-
-  function applyPayload(data: any) {
-    runningAgents = data.runningAgents || data.agents || [];
-    recentFailures = data.recentFailures || [];
-    startableAgents = data.startableAgents || [];
-    agentData = data.agentData || {};
-    initializeDrafts(agentData);
-  }
-
-  async function refreshSnapshot() {
-    const res = await apiFetch('/api/monitor');
-    const data = await res.json().catch(() => ({}));
-    if (!res.ok) throw new Error(data.error || 'Failed to refresh Agent Monitor');
-    applyPayload(data);
+  function applyPayload(data: {
+    runningAgents: AgentCard[];
+    recentFailures: AgentCard[];
+    startableAgents: AgentDescriptor[];
+    agentData: Record<string, AgentDataPanel>;
+    catalog: { agents: Array<{ id: string; serviceRegistered: boolean }> };
+  }) {
+    runningAgents = data.runningAgents;
+    recentFailures = data.recentFailures;
+    startableAgents = data.startableAgents;
+    agentData = data.agentData;
+    registeredServices = new Set(data.catalog.agents.filter(agent => agent.serviceRegistered).map(agent => agent.id));
+    hasSnapshot = true;
   }
 
   async function refreshNow() {
+    snapshotRead?.abort();
+    const current = new AbortController();
+    snapshotRead = current;
     refreshing = true;
     try {
-      await refreshSnapshot();
+      const response = await apiFetch('/api/monitor', { signal: current.signal });
+      const data = await response.json();
+      if (!response.ok) throw new Error(data.error || 'Failed to refresh Agent Monitor');
+      if (!current.signal.aborted) applyPayload(data);
     } catch (err) {
-      showFeedback('error', err instanceof Error ? err.message : 'Monitor refresh failed');
+      if (!current.signal.aborted) showFeedback('error', err instanceof Error ? err.message : 'Monitor refresh failed');
     } finally {
-      refreshing = false;
+      if (snapshotRead === current) { snapshotRead = undefined; refreshing = false; }
     }
   }
 
@@ -237,55 +200,45 @@
     if (!agentName) return;
     startingAgent = agentName;
     showFeedback('info', `Starting ${agentName}...`);
-    const controller = new AbortController();
-    const requestTimeout = setTimeout(() => controller.abort(), 15000);
     try {
       const res = await apiFetch('/api/agents/run', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ agent: agentName }),
-        signal: controller.signal,
       });
-      const data = await res.json().catch(() => ({}));
+      const data = await res.json();
       if (!res.ok || data.success === false) {
         throw new Error(data.error || data.message || 'Failed to run agent');
       }
       selectedAgentName = agentName;
-      await refreshSnapshot();
       showFeedback('success', data.taskId
         ? `${agentName} queued as ${data.taskId}`
         : data.pid
           ? `${agentName} started with PID ${data.pid}`
           : `${agentName} start requested`);
     } catch (err) {
-      const message = err instanceof DOMException && err.name === 'AbortError'
-        ? 'Start request timed out. Monitor refresh will continue; retry when the process state settles.'
-        : err instanceof Error ? err.message : 'Agent start failed';
-      showFeedback('error', message);
-      await refreshSnapshot().catch(() => {});
+      showFeedback('error', err instanceof Error ? err.message : 'Agent start failed');
     } finally {
-      clearTimeout(requestTimeout);
       startingAgent = '';
     }
   }
 
   async function controlAgent(action: 'stop' | 'restart' | 'clear-failure', agentName: string) {
     controllingAgent = agentName;
+    feedback = null;
     try {
       const res = await apiFetch('/api/agents/control', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ action, agent: agentName }),
       });
-      const data = await res.json().catch(() => ({}));
+      const data = await res.json();
       if (!res.ok || data.success === false) {
         throw new Error(data.message || data.error || `Failed to ${action} ${agentName}`);
       }
-      await refreshSnapshot();
       showFeedback('success', data.message || `${agentName} ${action} complete`);
     } catch (err) {
       showFeedback('error', err instanceof Error ? err.message : `Failed to ${action} agent`);
-      await refreshSnapshot().catch(() => {});
     } finally {
       controllingAgent = '';
     }
@@ -293,13 +246,14 @@
 
   async function connectBody(agent: string, settings: Record<string, string | number | boolean>) {
     connectingBody = true;
+    feedback = null;
     try {
       for (const [key, value] of Object.entries(settings)) {
         const res = await apiFetch('/api/monitor/agent-variable', {
           method: 'POST', headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify({ agent, key, value }),
         });
-        const data = await res.json().catch(() => ({}));
+        const data = await res.json();
         if (!res.ok || data.success === false) throw new Error(data.error || `Could not save ${key}`);
       }
       selectedAgentName = agent;
@@ -310,7 +264,6 @@
       }
     } catch (err) {
       showFeedback('error', `Connection settings were not fully saved; no connection switch requested. ${err instanceof Error ? err.message : err}`);
-      await refreshSnapshot().catch(() => {});
     } finally {
       connectingBody = false;
     }
@@ -319,7 +272,9 @@
   async function saveVariable(panel: AgentDataPanel, variable: AgentVariable) {
     if (!variable.writable) return;
     const key = fieldKey(panel.agentId, variable.key);
-    savingField = key;
+    savingFields = new Set(savingFields).add(key);
+    const value = draftValue(panel.agentId, variable);
+    feedback = null;
 
     try {
       const res = await apiFetch('/api/monitor/agent-variable', {
@@ -328,88 +283,80 @@
         body: JSON.stringify({
           agent: panel.agentId,
           key: variable.key,
-          value: draftValue(panel.agentId, variable),
+          value,
         }),
       });
-      const data = await res.json().catch(() => ({}));
+      const data = await res.json();
       if (!res.ok || data.success === false) {
         throw new Error(data.error || 'Failed to save variable');
       }
-      if (data.agentData) {
+      if (data.agentData && agentData[panel.agentId] === panel) {
         agentData = {
           ...agentData,
           [panel.agentId]: data.agentData,
         };
-        initializeDrafts(agentData);
+      }
+      if (JSON.stringify(fieldDrafts[key]) === JSON.stringify(value)) {
+        const { [key]: committed, ...remaining } = fieldDrafts;
+        fieldDrafts = remaining;
       }
       showFeedback('success', `${variable.label} saved (${applyModeLabel(variable.applyMode)})`);
     } catch (err) {
       showFeedback('error', err instanceof Error ? err.message : 'Variable save failed');
     } finally {
-      savingField = '';
+      const remaining = new Set(savingFields);
+      remaining.delete(key);
+      savingFields = remaining;
     }
   }
 
-  async function handleBulkAction(action: 'stop-all' | 'restart-core') {
-    bulkAction = action === 'stop-all' ? 'stop' : 'restart';
+  async function restartBootAgents() {
+    restartingBootAgents = true;
+    feedback = null;
 
     try {
       const res = await apiFetch('/api/agents/control', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ action }),
+        body: JSON.stringify({ action: 'restart-core' }),
       });
-      const result = await res.json().catch(() => ({}));
+      const result = await res.json();
       if (!res.ok || result.success === false) throw new Error(result.message || 'Bulk action failed');
-      await refreshSnapshot();
-      showFeedback('success', result.message || `${action === 'stop-all' ? 'Stopped' : 'Restarted'} successfully`);
+      showFeedback('success', result.message || 'Boot agent restart requested');
     } catch (err) {
       showFeedback('error', err instanceof Error ? err.message : 'Action failed');
-      await refreshSnapshot().catch(() => {});
     } finally {
-      bulkAction = null;
+      restartingBootAgents = false;
     }
   }
 
-  onMount(async () => {
+  onMount(() => {
     if (!get(isOwner)) return;
-
-    eventSourceHandle = apiEventSource('/api/monitor/stream');
-    eventSourceHandle.onopen = () => {
-      connected = true;
-    };
-    eventSourceHandle.onmessage = (event) => {
+    const source = apiEventSource('/api/monitor/stream');
+    source.onopen = () => { connected = true; };
+    source.onmessage = event => {
       try {
         const data = JSON.parse(event.data);
         if (data.type === 'error') {
-          showFeedback('error', data.error);
-        } else if (data.type === 'connected') {
-          connected = true;
+          streamError = data.error;
         } else if (data.type === 'snapshot') {
+          snapshotRead?.abort();
           applyPayload(data);
+          streamError = '';
         }
       } catch (err) {
-        console.error('[AgentMonitor] Failed to parse SSE event:', err, 'Event data:', event.data);
+        streamError = err instanceof Error ? err.message : 'Monitor update could not be read';
       }
     };
-    eventSourceHandle.onerror = () => {
+    source.onerror = () => {
       connected = false;
-      void refreshSnapshot().catch(() => {});
+      streamError = 'Agent Monitor connection interrupted. Reconnecting…';
     };
-
-    try {
-      await refreshSnapshot();
-    } catch {
-      // The SSE connection will surface live state when available.
-    }
-  });
-
-  onDestroy(() => {
-    eventSourceHandle?.close();
-    eventSourceHandle = null;
-    if (feedbackTimeout) {
-      clearTimeout(feedbackTimeout);
-    }
+    return () => {
+      snapshotRead?.abort();
+      source.onopen = source.onmessage = source.onerror = null;
+      source.close();
+    };
   });
 </script>
 
@@ -423,7 +370,7 @@
               <span class={`h-2 w-2 rounded-full ${connected ? 'bg-green-500' : 'bg-gray-400'}`}></span>
               {connected ? 'Live stream' : 'Connecting'}
             </span>
-            <span>{visibleAgents.length} active</span>
+            {#if hasSnapshot}<span>{runningAgents.length} active</span>{/if}
             {#if recentFailures.length > 0}
               <span class="text-red-600 dark:text-red-300">{recentFailures.length} failed</span>
             {/if}
@@ -440,11 +387,11 @@
           </button>
           <button
             class="rounded border border-gray-300 px-2 py-1 text-[0.68rem] font-semibold text-gray-700 hover:bg-gray-50 disabled:opacity-60 dark:border-gray-700 dark:text-gray-200 dark:hover:bg-gray-900"
-            disabled={bulkAction === 'restart'}
-            on:click={() => handleBulkAction('restart-core')}
+            disabled={restartingBootAgents}
+            on:click={restartBootAgents}
             title="Restart configured startup agents"
           >
-            {bulkAction === 'restart' ? 'Restarting' : 'Restart Boot Agents'}
+            {restartingBootAgents ? 'Restarting' : 'Restart Boot Agents'}
           </button>
         </div>
       </div>
@@ -476,6 +423,7 @@
         </div>
       </div>
 
+      {#if streamError}<div class="mt-2 rounded border border-red-500 p-2 text-xs text-red-600 dark:text-red-300">{streamError}</div>{/if}
       {#if feedback}
         <div class={`mt-2 rounded border px-2 py-1.5 text-xs ${feedbackClass()}`}>
           {feedback.text}
@@ -485,19 +433,22 @@
 
     <div class="min-h-0 flex-1 overflow-y-auto pr-1">
       <BodyConnectionSelector
+        reveal={$rightSidebarSection === 'body-connection'}
         agents={Object.values(agentData).map(panel => ({ id: panel.agentId, variables: panel.variables }))}
         connections={agentData['environment-bridge']?.diagnostics?.connections || []}
-        busy={connectingBody || Boolean(startingAgent) || Boolean(controllingAgent) || Boolean(savingField)}
+        busy={connectingBody || Boolean(startingAgent) || Boolean(controllingAgent) || savingFields.size > 0}
         onConnect={connectBody}
       />
 
       <section class="space-y-2">
         <div class="flex items-center justify-between">
           <h3 class="m-0 text-[0.68rem] font-semibold uppercase text-gray-500 dark:text-gray-400">Active Services & Agents</h3>
-          <span class="text-[0.68rem] text-gray-500 dark:text-gray-400">{visibleAgents.length}</span>
+          <span class="text-[0.68rem] text-gray-500 dark:text-gray-400">{runningAgents.length}</span>
         </div>
 
-        {#if visibleAgents.length === 0}
+        {#if !hasSnapshot}
+          <p class="text-sm text-gray-500">{streamError ? 'Agent state is unavailable.' : 'Loading agent state…'}</p>
+        {:else if runningAgents.length === 0}
           <button
             class="w-full rounded border border-dashed border-gray-300 px-3 py-4 text-left text-sm text-gray-500 dark:border-gray-700 dark:text-gray-400"
             on:click={() => selectedAgentName = selectedStartAgent}
@@ -506,7 +457,7 @@
           </button>
         {:else}
           <div class="space-y-1.5">
-            {#each visibleAgents as agent}
+            {#each runningAgents as agent}
               {@const readiness = agentData[agent.name]?.readiness}
               <button
                 class={`w-full rounded border px-2.5 py-2 text-left transition ${selectedAgentName === agent.name ? 'border-gray-900 bg-gray-100 dark:border-gray-100 dark:bg-gray-900' : 'border-gray-200 bg-white hover:bg-gray-50 dark:border-gray-800 dark:bg-gray-950 dark:hover:bg-gray-900'}`}
@@ -581,7 +532,7 @@
             </div>
 
             <div class="flex flex-wrap gap-2">
-              {#if selectedAgent.lifecycle === 'running' && selectedAgentStartable}
+              {#if selectedAgent.lifecycle === 'running' && registeredServices.has(selectedAgent.agentId)}
                 <button
                   class="rounded border border-gray-300 px-2 py-1 text-xs font-semibold disabled:cursor-not-allowed disabled:opacity-50 dark:border-gray-700"
                   disabled={Boolean(controllingAgent) || Boolean(startingAgent)}
@@ -675,10 +626,10 @@
                       </label>
                       <button
                         class="rounded border border-gray-300 px-2 py-1.5 text-xs font-semibold disabled:cursor-not-allowed disabled:opacity-50 dark:border-gray-700"
-                        disabled={savingField === key}
+                        disabled={savingFields.has(key)}
                         on:click={() => selectedAgent && saveVariable(selectedAgent, variable)}
                       >
-                        {savingField === key ? 'Saving' : 'Save'}
+                        {savingFields.has(key) ? 'Saving' : 'Save'}
                       </button>
                     </div>
                   {:else}

@@ -349,51 +349,6 @@ export async function handleGetMe(req: UnifiedRequest): Promise<UnifiedResponse>
 }
 
 /**
- * GET /api/profile-sync/user - Get current user data for offline sync
- *
- * Returns full user object including password hash so mobile can
- * authenticate offline. ONLY returns data for the authenticated user.
- *
- * SECURITY: This endpoint requires authentication. The password hash
- * is bcrypt-hashed, so even if intercepted it cannot be reversed.
- * The mobile app stores this locally and uses bcryptjs to verify passwords.
- */
-export async function handleSyncUser(req: UnifiedRequest): Promise<UnifiedResponse> {
-  const { user } = req;
-
-  if (!user.isAuthenticated) {
-    return {
-      status: 401,
-      error: 'Authentication required',
-    };
-  }
-
-  // Get user data
-  const fullUser = getUser(user.userId);
-
-  if (!fullUser) {
-    return {
-      status: 404,
-      error: 'User not found',
-    };
-  }
-
-  console.log(`[auth-handler] Syncing user data for ${fullUser.username}`);
-
-  return successResponse({
-    success: true,
-    user: {
-      id: fullUser.id,
-      username: fullUser.username,
-      role: fullUser.role,
-      lastLogin: fullUser.lastLogin,
-      metadata: fullUser.metadata,
-    },
-    syncedAt: new Date().toISOString(),
-  });
-}
-
-/**
  * POST /api/auth/register - Create new user account
  *
  * IDENTICAL for web and mobile - same code path.

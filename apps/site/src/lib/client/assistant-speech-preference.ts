@@ -1,4 +1,4 @@
-export const CHAT_PREFS_STORAGE_KEY = 'chatPrefs';
+const CHAT_PREFS_STORAGE_KEY = 'chatPrefs';
 
 export function assistantSpeechEnabledFromPrefs(prefs: unknown): boolean {
   return !(

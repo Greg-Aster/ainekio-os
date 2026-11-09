@@ -1,16 +1,17 @@
 # Headless Runtime Mode
 
-Headless mode is currently a machine-wide state flag for installations that
-want to record whether the browser interface is expected to be unattended. The
-maintained web control and `/api/runtime/mode` route persist this state and write
-an audit event. They do not currently stop or restart managed agents.
+Headless mode is a machine-wide startup flag. When set, `mh start` skips
+boot-managed agents. The maintained web control and `/api/runtime/mode` route
+persist this state and write an audit event. Changing the flag does not stop or
+restart running agents.
 
 ## What the control does
 
 An owner can change the mode under **System → Network**. The routed handler
 writes `etc/runtime.json` through Core's runtime-mode owner and reports the new
-state. A remote claim can also identify which remote controller claimed the
-installation.
+state. Clear the flag before a subsequent system start to include configured
+boot-managed agents. The banner links to this same control; it does not claim
+resources or restart agents.
 
 The current maintained UI/API path does not:
 
@@ -18,10 +19,6 @@ The current maintained UI/API path does not:
 - restart `startOnSystemBoot` services when active mode is restored;
 - stop the web server, tunnel, inference backend, or voice services; or
 - prove that resources were reclaimed.
-
-Core contains direct lifecycle helpers for agent stop/start transitions, but the
-maintained routed UI/API does not call them. Do not rely on those internal
-helpers as a user-facing contract or add a second watcher to compensate.
 
 ## State
 

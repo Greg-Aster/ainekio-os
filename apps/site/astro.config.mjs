@@ -10,10 +10,10 @@ import { compiledAgents } from './compiled-agents.mjs';
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const repoRoot = path.resolve(__dirname, '../..');
 const staticUi = process.env.MH_SITE_OUTPUT === 'static';
-const staticPages = ['index', 'debug', 'audit', 'monitor', 'tasks', 'guide', 'user-guide'];
+const staticPages = ['index', 'audit', 'user-guide'];
 
-// Publish UI shells only. API routes, middleware, and the filesystem-backed
-// events page belong to the local server and must never be prerendered here.
+// Publish UI shells only. API routes and middleware belong to the local server
+// and must never be prerendered here.
 function staticUiRoutes() {
   return {
     name: 'metahuman-static-ui',

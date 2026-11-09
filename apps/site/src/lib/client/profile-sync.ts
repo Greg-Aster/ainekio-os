@@ -47,8 +47,8 @@ export async function configureRemoteSyncServer(
   return { success: true }
 }
 
-export async function getRemoteSyncConfig(): Promise<RemoteSyncConfig> {
-  const response = await apiFetch('/api/profile-sync/config')
+export async function getRemoteSyncConfig(options: { signal?: AbortSignal } = {}): Promise<RemoteSyncConfig> {
+  const response = await apiFetch('/api/profile-sync/config', options)
   const data = await responseData(response)
   if (!response.ok) throw new Error(data.error || `Could not load sync configuration (${response.status})`)
   return data as RemoteSyncConfig

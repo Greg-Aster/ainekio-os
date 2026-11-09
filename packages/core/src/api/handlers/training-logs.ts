@@ -7,72 +7,7 @@
 
 import type { UnifiedRequest, UnifiedResponse } from '../types.js';
 import { successResponse } from '../types.js';
-import { existsSync, readFileSync } from 'node:fs';
-import path from 'node:path';
-import { systemPaths } from '../../paths.js';
-
-interface AuditLog {
-  timestamp: string;
-  level: string;
-  category: string;
-  event: string;
-  actor?: string;
-  details?: any;
-}
-
-/**
- * Read recent audit logs and filter for training-related events
- */
-function getRecentTrainingLogs(username: string, maxLines: number): AuditLog[] {
-  const logs: AuditLog[] = [];
-  const auditDir = path.join(systemPaths.logs, 'audit');
-
-  if (!existsSync(auditDir)) {
-    return logs;
-  }
-
-  // Get today's and yesterday's audit files
-  const today = new Date().toISOString().slice(0, 10);
-  const yesterday = new Date(Date.now() - 86400000).toISOString().slice(0, 10);
-
-  const filesToCheck = [
-    path.join(auditDir, `${today}.ndjson`),
-    path.join(auditDir, `${yesterday}.ndjson`),
-  ];
-
-  for (const filePath of filesToCheck) {
-    if (existsSync(filePath)) {
-      const content = readFileSync(filePath, 'utf-8');
-      const lines = content.trim().split('\n').filter(Boolean);
-
-      // Read from end (most recent first)
-      for (let i = lines.length - 1; i >= 0 && logs.length < maxLines; i--) {
-        try {
-          const log = JSON.parse(lines[i]) as AuditLog;
-          if (log.details?.username !== username && log.actor !== username) continue;
-
-          // Filter for training-related events
-          if (
-            log.event?.startsWith('full_cycle_') ||
-            log.event?.startsWith('adapter_') ||
-            log.event?.startsWith('curator_') ||
-            log.event?.startsWith('builder_') ||
-            log.event?.startsWith('training_') ||
-            log.event === 'dataset_prepared' ||
-            log.event === 'samples_collected'
-          ) {
-            logs.push(log);
-          }
-        } catch {
-          // Skip malformed lines
-        }
-      }
-    }
-  }
-
-  // Return in chronological order (oldest first)
-  return logs.reverse();
-}
+import { queryAuditLog, type AuditEntry } from '../../audit.js';
 
 /**
  * GET /api/training/logs - Get recent training audit logs
@@ -84,7 +19,17 @@ export async function handleGetTrainingLogs(req: UnifiedRequest): Promise<Unifie
     const maxLines = Number(query?.maxLines ?? 100);
     if (!Number.isInteger(maxLines) || maxLines < 1 || maxLines > 5000) return { status: 400, error: 'maxLines must be from 1 to 5000' };
 
-    const logs = getRecentTrainingLogs(req.user.username, maxLines);
+    const logs: AuditEntry[] = [];
+    const today = new Date().toISOString().slice(0, 10);
+    const yesterday = new Date(Date.now() - 86400000).toISOString().slice(0, 10);
+    for (const date of [today, yesterday]) {
+      if (logs.length === maxLines) break;
+      logs.push(...queryAuditLog({ date, limit: maxLines - logs.length, signal: req.signal, match: entry =>
+        (entry.details?.username === req.user.username || entry.actor === req.user.username)
+        && /^(full_cycle_|adapter_|curator_|builder_|training_)|^(dataset_prepared|samples_collected)$/.test(entry.event || '')
+      }).entries);
+    }
+    logs.reverse();
 
     return successResponse({
       success: true,

@@ -16,7 +16,7 @@ const RUNPOD_JOB_STATUSES = new Set([
   'TIMED_OUT',
 ] as const);
 
-export type RunPodJobStatusValue =
+type RunPodJobStatusValue =
   | 'IN_QUEUE'
   | 'IN_PROGRESS'
   | 'COMPLETED'

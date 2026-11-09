@@ -1,5 +1,5 @@
 <script lang="ts">
-  import { onMount } from 'svelte';
+  import { onDestroy } from 'svelte';
   import { apiFetch } from '../../lib/client/api-config';
 
   export let onNext: () => void;
@@ -12,25 +12,12 @@
   let uploadStatus = '';
   let error = '';
   let dragActive = false;
+  let active = true;
 
   let fileInput: HTMLInputElement;
-
-  function handleDragEnter(e: DragEvent) {
-    e.preventDefault();
-    dragActive = true;
-  }
-
-  function handleDragLeave(e: DragEvent) {
-    e.preventDefault();
-    dragActive = false;
-  }
-
-  function handleDragOver(e: DragEvent) {
-    e.preventDefault();
-  }
+  onDestroy(() => { active = false; });
 
   function handleDrop(e: DragEvent) {
-    e.preventDefault();
     dragActive = false;
 
     const files = Array.from(e.dataTransfer?.files || []);
@@ -41,6 +28,7 @@
     const target = e.target as HTMLInputElement;
     const files = Array.from(target.files || []);
     addFiles(files);
+    target.value = '';
   }
 
   function addFiles(files: File[]) {
@@ -62,9 +50,9 @@
              f.name.endsWith('.csv');
     });
 
-    if (validFiles.length < files.length) {
-      error = 'Some files were skipped (unsupported type). Supported: .txt, .md, .pdf, .json, .csv';
-    }
+    error = validFiles.length < files.length
+      ? 'Some files were skipped (unsupported type). Supported: .txt, .md, .pdf, .json, .csv'
+      : '';
 
     uploadedFiles = [...uploadedFiles, ...validFiles];
   }
@@ -74,6 +62,7 @@
   }
 
   async function handleUpload() {
+    if (!active) return;
     if (uploadedFiles.length === 0) {
       // Skip is OK - user might not have documents to import
       onNext();
@@ -84,12 +73,12 @@
     uploadProgress = 0;
     uploadStatus = '';
     error = '';
+    const totalFiles = uploadedFiles.length;
+    let storedFiles = 0;
 
     try {
-      const totalFiles = uploadedFiles.length;
-      let processedFiles = 0;
-
-      for (const file of uploadedFiles) {
+      while (storedFiles < totalFiles) {
+        const file = uploadedFiles[0];
         uploadStatus = `Uploading ${file.name}...`;
 
         const formData = new FormData();
@@ -100,36 +89,21 @@
           body: formData,
         });
 
-        if (!response.ok) {
-          throw new Error(`Failed to upload ${file.name}`);
-        }
+        const data = await response.json();
+        if (!response.ok || !data.success) throw new Error(`${file.name}: ${data.error || 'Failed to store file in inbox'}`);
 
-        processedFiles++;
-        uploadProgress = (processedFiles / totalFiles) * 100;
+        removeFile(0);
+        storedFiles++;
+        uploadProgress = (storedFiles / totalFiles) * 100;
+        if (!active) return;
       }
 
-      // Increment files ingested counter
-      await apiFetch('/api/onboarding/state', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          updates: {
-            dataCollected: {
-              filesIngested: uploadedFiles.length,
-            },
-          },
-        }),
-      });
-
-      uploadStatus = `✓ Successfully uploaded ${totalFiles} file${totalFiles > 1 ? 's' : ''}`;
-
-      // Continue to next step after brief delay
-      setTimeout(() => {
-        onNext();
-      }, 1500);
-
+      uploadStatus = `✓ Stored ${storedFiles} file${storedFiles > 1 ? 's' : ''} in your inbox`;
+      if (uploadedFiles.length === 0) onNext();
     } catch (err) {
-      error = (err as Error).message;
+      uploadStatus = `${storedFiles} of ${totalFiles} uploads acknowledged`;
+      error = err instanceof Error ? err.message : 'Upload completion was not confirmed';
+    } finally {
       uploading = false;
     }
   }
@@ -146,19 +120,17 @@
     <h2 class="text-3xl font-semibold mb-2 text-gray-900 dark:text-gray-50">Import Your Context</h2>
     <p class="text-base leading-relaxed text-gray-500 dark:text-gray-400">
       Upload documents, journals, notes, or any text files that provide context about your life,
-      work, or interests. Your MetaHuman will process these to better understand you.
+      work, or interests. Uploads are stored in your selected profile's inbox for later processing.
     </p>
   </div>
 
   <div class="flex flex-col gap-6">
     <div
-      class="flex flex-col items-center justify-center gap-4 py-12 px-8 md:py-8 md:px-4 border-2 border-dashed rounded-xl cursor-pointer transition-all {dragActive ? 'border-indigo-500 bg-blue-50 dark:bg-blue-900 scale-[1.02]' : 'border-gray-300 dark:border-gray-600 bg-gray-50 dark:bg-gray-800'}"
-      on:dragenter={handleDragEnter}
-      on:dragleave={handleDragLeave}
-      on:dragover={handleDragOver}
-      on:drop={handleDrop}
-      role="button"
-      tabindex="0"
+      class="flex flex-col items-center justify-center gap-4 py-12 px-8 md:py-8 md:px-4 border-2 border-dashed rounded-xl transition-all {dragActive ? 'border-indigo-500 bg-blue-50 dark:bg-blue-900 scale-[1.02]' : 'border-gray-300 dark:border-gray-600 bg-gray-50 dark:bg-gray-800'}"
+      on:dragenter|preventDefault={() => dragActive = true}
+      on:dragleave|preventDefault={() => dragActive = false}
+      on:dragover|preventDefault
+      on:drop|preventDefault={handleDrop}
     >
       <div class="text-6xl">📁</div>
       <h3 class="text-xl font-semibold text-gray-900 dark:text-gray-50">Drag & Drop Files Here</h3>
@@ -179,13 +151,19 @@
         style="display: none"
       />
       <p class="text-sm text-gray-400">
-        Supported: Text (.txt), Markdown (.md), PDF (.pdf), JSON (.json), CSV (.csv)
+        Upload types: Text (.txt), Markdown (.md), PDF (.pdf), JSON (.json), CSV (.csv)
+      </p>
+      <p class="text-sm text-gray-500 dark:text-gray-400">
+        Inbox Ingestor currently processes .txt, .md and .json. PDF and CSV files can be stored here, but the current ingestor does not process them.
       </p>
     </div>
 
     {#if uploadedFiles.length > 0}
       <div class="flex flex-col gap-4">
-        <h3 class="text-lg font-semibold text-gray-900 dark:text-gray-50">Files to Upload ({uploadedFiles.length})</h3>
+        <h3 class="text-lg font-semibold text-gray-900 dark:text-gray-50">Pending Uploads ({uploadedFiles.length})</h3>
+        <p class="text-sm text-gray-500 dark:text-gray-400">
+          Files leave this list after storage is acknowledged. If the connection is interrupted, check Inbox Imports before retrying.
+        </p>
         <div class="flex flex-col gap-2">
           {#each uploadedFiles as file, i}
             <div class="flex items-center gap-4 px-4 py-3 bg-white dark:bg-gray-700 border border-gray-200 dark:border-gray-600 rounded-lg transition-all hover:shadow-md">
@@ -225,12 +203,15 @@
         <div class="h-3 bg-gray-200 dark:bg-gray-700 rounded-md overflow-hidden">
           <div class="h-full bg-gradient-to-r from-indigo-500 to-purple-600 transition-all duration-300" style="width: {uploadProgress}%"></div>
         </div>
-        <p class="text-sm text-gray-500 dark:text-gray-400 text-center">{uploadStatus}</p>
       </div>
     {/if}
 
+    {#if uploadStatus}
+      <p role="status" class="text-sm text-gray-500 dark:text-gray-400 text-center">{uploadStatus}</p>
+    {/if}
+
     {#if error}
-      <div class="flex items-center gap-2 px-4 py-3 bg-red-100 dark:bg-red-900 border border-red-500 rounded-md text-red-800 dark:text-red-200 text-sm">
+      <div role="alert" class="flex items-center gap-2 px-4 py-3 bg-red-100 dark:bg-red-900 border border-red-500 rounded-md text-red-800 dark:text-red-200 text-sm">
         <span>⚠️</span>
         {error}
       </div>
@@ -249,8 +230,7 @@
         <li>Any text that represents your thoughts, interests, or experiences</li>
       </ul>
       <p class="mt-2">
-        <strong class="text-blue-900 dark:text-blue-200">Privacy:</strong> All files are processed locally on your machine.
-        Nothing is uploaded to external servers.
+        <strong class="text-blue-900 dark:text-blue-200">Privacy:</strong> Files are stored in the inbox of your selected Ainekio OS server for the Inbox Ingestor. Uploading does not mean they have been processed into memories.
       </p>
     </div>
   </div>

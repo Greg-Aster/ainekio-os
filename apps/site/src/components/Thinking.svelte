@@ -2,10 +2,12 @@
   export let steps = '';
   export let label = '🤔 Thinking...';
   export let initiallyOpen = true;
+
+  let open = initiallyOpen;
 </script>
 
 <div class="flex justify-start w-full py-3">
-  <details open={initiallyOpen} class="w-full max-w-[85%] bg-black/[0.03] dark:bg-white/[0.03] border border-black/10 dark:border-white/10 rounded-xl font-mono overflow-hidden">
+  <details bind:open class="w-full max-w-[85%] bg-black/[0.03] dark:bg-white/[0.03] border border-black/10 dark:border-white/10 rounded-xl font-mono overflow-hidden">
     <summary class="px-4 py-2 font-medium cursor-pointer text-gray-500 dark:text-gray-400 text-sm">
       {label}
     </summary>

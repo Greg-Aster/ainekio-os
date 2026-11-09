@@ -31,13 +31,11 @@ assert.ok(settings.includes('never deletes agent source or history'), 'removal s
 const moodSettings = read('apps/site/src/components/MoodAgentSettings.svelte');
 assert.ok(moodSettings.includes('Enable automatic Mood reviews'), 'Mood settings must expose an explicit opt-in trigger control');
 
-for (const route of [
-  'apps/site/src/pages/api/agent-catalog/index.ts',
-  'apps/site/src/pages/api/agent-catalog/control.ts',
-]) {
-  const source = read(route);
-  assert.ok(source.includes('astroHandler'), `${route} must remain thin transport`);
-  assert.ok(!source.includes('node:fs'), `${route} must not own catalog persistence`);
+for (const endpoint of ['/api/agent-catalog', '/api/agent-catalog/control']) {
+  assert.ok(read('packages/core/src/api/router.ts').includes(`pattern: '${endpoint}'`), `Core must register ${endpoint}`);
 }
+const transport = read('apps/site/src/pages/api/[...path].ts');
+assert.match(transport, /export const ALL = astroHandler/);
+assert.ok(!transport.includes('node:fs'), 'Site transport must not own catalog persistence');
 
 console.log('agent-catalog-ui-architecture.spec.ts passed');

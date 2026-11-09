@@ -28,7 +28,10 @@ import {
 import {
   isModelRole,
   BIG_BROTHER_MODEL_ID,
+  BIG_BROTHER_MODEL_IDS,
+  bigBrotherModelDefinition,
   configuredBigBrotherModel,
+  isBigBrotherModelId,
   resolveModelById,
   resolveModelForCognitiveMode,
   invalidateModelCache,
@@ -143,7 +146,14 @@ export function collapseModelInventory(models: AvailableRegistryModel[]): Availa
   const inventory = new Map<string, AvailableRegistryModel>()
 
   for (const model of models) {
-    const key = JSON.stringify([model.provider, model.model, model.adapters || [], model.options?.endpoint || null, model.options?.lora ?? null])
+    const key = JSON.stringify([
+      model.provider,
+      model.model,
+      model.adapters || [],
+      model.options?.endpoint || null,
+      model.options?.lora ?? null,
+      model.provider === 'big-brother' ? model.id : null,
+    ])
     const existing = inventory.get(key)
     if (!existing) {
       inventory.set(key, {
@@ -382,7 +392,9 @@ export async function handleGetModelRegistry(req: UnifiedRequest): Promise<Unifi
       Object.entries(registry.models || {})
         .filter(([id]) => !isRetiredDevelopmentModelId(id))
         .map(([id, stored]) => {
-          const config = stored.provider === 'big-brother' ? { ...configuredBigBrotherModel(user.username), roles: stored.roles } : stored;
+          const config = isBigBrotherModelId(id) || stored.provider === 'big-brother'
+            ? { ...bigBrotherModelDefinition(id, user.username), roles: stored.roles }
+            : stored;
           return {
             id,
             provider: config.provider,
@@ -476,10 +488,18 @@ export async function handleGetModelRegistry(req: UnifiedRequest): Promise<Unifi
     // Registered llama.cpp deployments remain selectable independently of server state.
     const cloudProviderSet = new Set(['runpod_serverless', 'huggingface', 'openai', 'openrouter', 'remote-server']);
     const bigBrotherProviders = new Set(['big-brother']);
-    if (!availableModels.some(model => model.id === BIG_BROTHER_MODEL_ID)) {
-      const cli = configuredBigBrotherModel(user.username);
-      availableModels.push({ ...cli, id: BIG_BROTHER_MODEL_ID, capabilities: cli.capabilities ?? [],
-        baseModel: null, metadata: cli.metadata ?? {}, source: 'runtime-discovery' });
+    for (const bbId of BIG_BROTHER_MODEL_IDS) {
+      if (!availableModels.some(model => model.id === bbId)) {
+        const cli = bigBrotherModelDefinition(bbId, user.username);
+        availableModels.push({
+          ...cli,
+          id: bbId,
+          capabilities: cli.capabilities ?? [],
+          baseModel: cli.baseModel ?? null,
+          metadata: cli.metadata ?? {},
+          source: 'runtime-discovery',
+        });
+      }
     }
 
     const llamaConfig = loadBackendConfig().llamaCpp;
@@ -498,10 +518,13 @@ export async function handleGetModelRegistry(req: UnifiedRequest): Promise<Unifi
       localModel = { id: `llama-cpp.${llamaConfig.model}`, name: backendStatus.model!, provider: 'llama-cpp', locked: true };
     }
 
+    const bigBrotherOrder = new Map<string, number>(BIG_BROTHER_MODEL_IDS.map((id, idx) => [id, idx]));
     const modelCategories = {
       local: [...llamaModels, ...(activeBackend !== 'llama-cpp' && isOllamaRunning ? installedOllamaModels : [])],
       remote: availableModels.filter(m => cloudProviderSet.has(m.provider)),
-      bigBrother: availableModels.filter(m => bigBrotherProviders.has(m.provider))
+      bigBrother: availableModels
+        .filter(m => bigBrotherProviders.has(m.provider))
+        .sort((a, b) => (bigBrotherOrder.get(a.id) ?? 99) - (bigBrotherOrder.get(b.id) ?? 99)),
     };
 
     await audit({
@@ -588,8 +611,8 @@ export async function handleAssignModelRole(req: UnifiedRequest): Promise<Unifie
     // NO SYSTEM REGISTRY FALLBACK - only dynamic discovery types
     if (!registry.models[modelId]) {
 
-      if (modelId === BIG_BROTHER_MODEL_ID) {
-        registry.models[modelId] = configuredBigBrotherModel(user.username);
+      if (isBigBrotherModelId(modelId)) {
+        registry.models[modelId] = bigBrotherModelDefinition(modelId, user.username);
       } else if (modelId.startsWith('llama-cpp-lora.')) {
         const config = loadBackendConfig().llamaCpp;
         const adapters = await getLlamaCppAdapters(config);
@@ -650,6 +673,15 @@ export async function handleAssignModelRole(req: UnifiedRequest): Promise<Unifie
 
     // Ensure role list includes this role
     const entry = registry.models[modelId];
+    if (
+      role !== 'embedder'
+      && (modelId === 'default.embedder' || String(entry?.model || '').toLowerCase().includes('embedding'))
+    ) {
+      return {
+        status: 400,
+        error: `Embedding model ${modelId} can only be assigned to the embedder role`,
+      };
+    }
     const trainingCandidate = await assertTrainingModelApproved(user.username, entry.provider, entry.model,
       { endpoint: entry.options.endpoint, lora: entry.options.lora }, 'assignment');
     if (trainingCandidate) {
@@ -676,7 +708,7 @@ export async function handleAssignModelRole(req: UnifiedRequest): Promise<Unifie
     writeModelRegistry(user.username, registry);
 
 
-    if (isModelRole(role)) await startAssignedModelServices(user.username, [role]);
+    if (isModelRole(role)) await startAssignedModelServices(user.username, [role], cognitiveMode);
 
     await audit({
       category: 'data_change',

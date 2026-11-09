@@ -39,14 +39,14 @@ interface StreamingSpeechOptions {
 export interface PreparedSpeech {
   readonly requestId?: string;
   readonly text: string;
-  readonly result: Promise<{ native: boolean; streaming: boolean; provider?: string; response?: Response }>;
+  readonly result: Promise<{ streaming: boolean; provider?: string; response: Response }>;
   readonly finished: Promise<void>;
   readonly signal: AbortSignal;
   cancel(): void;
 }
 
-export type TTSPlaybackOutcome = 'completed' | 'interrupted' | 'suppressed' | 'failed';
-export type TTSStopReason = 'interrupted' | 'disabled' | 'superseded' | 'cleanup';
+type TTSPlaybackOutcome = 'completed' | 'interrupted' | 'suppressed' | 'failed';
+type TTSStopReason = 'interrupted' | 'disabled' | 'superseded' | 'cleanup';
 
 export interface TTSPlaybackRequestHandle {
   readonly requestId?: string;
@@ -109,40 +109,6 @@ export function createTTSPlaybackRequestTracker() {
 // Constants
 const VOICE_MODELS_CACHE_TTL = 60_000; // 1 minute
 const VOICE_PROVIDER_CACHE_TTL = 30_000; // 30 seconds
-
-/**
- * Report TTS speaking state to the server (for Active Operator pause management)
- * This is fire-and-forget - errors are logged but don't affect TTS playback
- */
-async function reportTTSState(speaking: boolean): Promise<void> {
-  try {
-    await apiFetch('/api/pause-state', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ action: 'setTTS', speaking }),
-    });
-    console.log(`[useTTS] Reported TTS state to server: speaking=${speaking}`);
-  } catch (e) {
-    // Non-critical - just log it
-    console.warn('[useTTS] Failed to report TTS state:', e);
-  }
-}
-
-/**
- * Check if native voice mode is enabled via localStorage
- */
-function isNativeVoiceModeEnabled(): boolean {
-  if (typeof window === 'undefined' || typeof localStorage === 'undefined') return false;
-  return localStorage.getItem('mh-native-voice-mode') === 'true';
-}
-
-/**
- * Check if native TTS (SpeechSynthesis) is available
- */
-function isNativeTTSAvailable(): boolean {
-  if (typeof window === 'undefined') return false;
-  return 'speechSynthesis' in window && 'SpeechSynthesisUtterance' in window;
-}
 
 /**
  * Normalize text for speech synthesis
@@ -246,8 +212,6 @@ function createTTS() {
    */
   function stopActiveAudio(reason: TTSStopReason = 'interrupted') {
     markPlaybackStopped(reason);
-    // Check if we were playing before stopping
-    const wasPlaying = get(isPlaying);
 
     // Stop batch Web Audio API source.
     if (webAudioSource) {
@@ -259,14 +223,8 @@ function createTTS() {
 
     isPlaying.set(false);
 
-    // Report to server if we were playing
-    if (wasPlaying) {
-      reportTTSState(false);
-    }
-
     // Also stop streaming if active
     stopStreaming();
-    stopNativeTTS(reason);
   }
 
   /**
@@ -289,9 +247,6 @@ function createTTS() {
     }
     streamSources.clear();
 
-    if (streamReportedSpeaking && get(isPlaying)) {
-      reportTTSState(false);
-    }
     streamReportedSpeaking = false;
     isPlaying.set(false);
 
@@ -428,13 +383,13 @@ function createTTS() {
     });
   }
 
-  /** Request batch audio using the current profile's voice configuration. */
-  async function requestBatchSpeech(speechText: string, signal: AbortSignal): Promise<Response> {
+  /** Explicit previews use their draft voice; other requests use the profile. */
+  async function requestBatchSpeech(speechText: string, signal: AbortSignal, options: StreamingSpeechOptions = {}): Promise<Response> {
     // Fetch voice metadata for current session/profile
     console.log('[useTTS] Fetching voice metadata...');
     const [{ multiVoice, models: voiceModels }, provider] = await Promise.all([
-      fetchVoiceModels(),
-      fetchVoiceProvider(),
+      options.voice ? Promise.resolve({ multiVoice: false } as VoiceModelsCache) : fetchVoiceModels(),
+      options.provider ?? fetchVoiceProvider(),
     ]);
     if (multiVoice && voiceModels) {
       console.log(`[useTTS] Multi-voice mode active with ${voiceModels.length} voices`);
@@ -442,17 +397,9 @@ function createTTS() {
 
     console.log('[useTTS] Fetching TTS from /api/tts...');
 
-    const ttsBody: any = { text: speechText };
-
-    // Include provider if available
-    if (provider) {
-      ttsBody.provider = provider;
-    }
-
-    // If multi-voice, use models array; otherwise use default single voice
-    if (multiVoice && voiceModels) {
-      ttsBody.models = voiceModels;
-    }
+    const ttsBody = { text: speechText, provider, voiceId: options.voice,
+      speakingRate: options.speed, pitchShift: options.pitchShift, langCode: options.langCode,
+      models: multiVoice ? voiceModels : undefined };
 
     return apiFetch('/api/tts', {
       method: 'POST',
@@ -493,24 +440,20 @@ function createTTS() {
       controller.signal.addEventListener('abort', abort, { once: true });
       try {
         controller.signal.throwIfAborted();
-        if (!options.provider && isNativeVoiceModeEnabled() && isNativeTTSAvailable()) {
-          resolve({ native: true, streaming: false });
-          return;
-        }
         const provider = options.provider ?? await fetchVoiceProvider();
         controller.signal.throwIfAborted();
-        const streaming = provider === 'rvc' || provider === 'kokoro';
+        const streaming = provider === 'kokoro';
         const speechText = normalizeTextForSpeech(text);
         const response = streaming
           ? await requestStreamingSpeech(speechText, { ...options, provider }, controller.signal)
-          : await requestBatchSpeech(speechText, controller.signal);
+          : await requestBatchSpeech(speechText, controller.signal, { ...options, provider });
         controller.signal.throwIfAborted();
         const reader = response.body?.getReader();
         const body = reader ? new ReadableStream<Uint8Array>({
           start(value) { sink = value; },
           cancel() { controller.abort(); },
         }) : null;
-        resolve({ native: false, streaming, provider, response: new Response(body, {
+        resolve({ streaming, provider, response: new Response(body, {
           status: response.status, statusText: response.statusText, headers: response.headers,
         }) });
         if (reader) {
@@ -535,13 +478,7 @@ function createTTS() {
       cancel: () => controller.abort() };
   }
 
-  async function speakText(text: string, prepared?: PreparedSpeech): Promise<TTSPlaybackOutcome> {
-    // Check if native voice mode is enabled - route to native TTS
-    if (isNativeVoiceModeEnabled() && isNativeTTSAvailable()) {
-      console.log('[useTTS] Native voice mode enabled - routing to native TTS');
-      return speakTextNative(text);
-    }
-
+  async function speakText(text: string, prepared?: PreparedSpeech, options: StreamingSpeechOptions = {}): Promise<TTSPlaybackOutcome> {
     console.log('[useTTS] 🔊 speakText called (WEB AUDIO API VERSION - no session steal)');
     console.log('[useTTS] speakText called with text length:', text.length);
     const speechText = normalizeTextForSpeech(text);
@@ -563,8 +500,8 @@ function createTTS() {
     try {
       if (prepared) controller.signal.addEventListener('abort', prepared.cancel, { once: true });
       const ttsRes = prepared
-        ? (await prepared.result).response!
-        : await requestBatchSpeech(speechText, controller.signal);
+        ? (await prepared.result).response
+        : await requestBatchSpeech(speechText, controller.signal, options);
 
       if (playbackWasStopped(token)) return finishPlayback(token, false);
       currentTtsAbort = null;
@@ -597,7 +534,6 @@ function createTTS() {
       source.connect(audioCtx.destination);
 
       isPlaying.set(true);
-      reportTTSState(true); // Tell server we're speaking
       console.log('[useTTS] Playing via Web Audio API (no media session steal)');
 
       await new Promise<void>((resolve) => {
@@ -605,7 +541,6 @@ function createTTS() {
           if (!playbackWasStopped(token)) {
             console.log('[useTTS] Web Audio playback ended');
             isPlaying.set(false);
-            reportTTSState(false); // Tell server we're done speaking
           }
           if (webAudioSource === source) webAudioSource = null;
           resolve();
@@ -672,7 +607,7 @@ function createTTS() {
     try {
       if (options?.prepared) controller.signal.addEventListener('abort', options.prepared.cancel, { once: true });
       const response = options?.prepared
-        ? (await options.prepared.result).response!
+        ? (await options.prepared.result).response
         : await requestStreamingSpeech(speechText, options ?? {}, controller.signal);
       if (playbackWasStopped(token)) return finishPlayback(token, false);
 
@@ -808,7 +743,6 @@ function createTTS() {
     const allPlayed = audioQueue.length === 0 || audioQueue.every(chunk => chunk.played);
     if (!streamComplete || !allPlayed || streamSources.size > 0) return;
     isPlaying.set(false);
-    if (streamReportedSpeaking) reportTTSState(false);
     streamReportedSpeaking = false;
     if (streamPlaybackCompletion?.token === token) {
       streamPlaybackCompletion.resolve(!streamPlaybackFailed);
@@ -851,7 +785,6 @@ function createTTS() {
         streamReportedSpeaking = true;
         isLoading.set(false);
         isPlaying.set(true);
-        reportTTSState(true);
         console.log(
           `[useTTS] First playback scheduled after ${Math.round(performance.now() - streamStartedAt)}ms`,
         );
@@ -866,7 +799,6 @@ function createTTS() {
     cancelInFlightTts('cleanup');
     stopActiveAudio('cleanup');
     stopStreaming();
-    stopNativeTTS('cleanup');
     if (audioCtx) {
       try { audioCtx.close(); } catch {}
       audioCtx = null;
@@ -874,109 +806,7 @@ function createTTS() {
     audioUnlocked = false;
   }
 
-  // Native TTS state
-  let nativeUtterance: SpeechSynthesisUtterance | null = null;
-  let finishNativePlayback: (() => void) | null = null;
-
-  /**
-   * Stop native TTS playback
-   */
-  function stopNativeTTS(reason: TTSStopReason = 'interrupted') {
-    markPlaybackStopped(reason);
-    if (typeof window !== 'undefined' && 'speechSynthesis' in window) {
-      window.speechSynthesis.cancel();
-    }
-    finishNativePlayback?.();
-    finishNativePlayback = null;
-    nativeUtterance = null;
-  }
-
-  /**
-   * Speak text using native device TTS (Web Speech API)
-   */
-  async function speakTextNative(text: string): Promise<TTSPlaybackOutcome> {
-    const speechText = normalizeTextForSpeech(text);
-    if (!speechText) {
-      console.log('[useTTS] No speech text after normalization, aborting');
-      return 'failed';
-    }
-
-    // Stop any existing playback
-    stopActiveAudio('superseded');
-    const token = ++ttsPlaybackToken;
-    livePlaybackTokens.add(token);
-
-    // Use Web Speech API
-    console.log('[useTTS] 🔊 Using Web Speech API');
-    return new Promise((resolve) => {
-      let settled = false;
-      const settle = (completed: boolean) => {
-        if (settled) return;
-        settled = true;
-        if (finishNativePlayback === interruptNativePlayback) finishNativePlayback = null;
-        resolve(finishPlayback(token, completed));
-      };
-      const interruptNativePlayback = () => settle(false);
-      finishNativePlayback = interruptNativePlayback;
-      try {
-        nativeUtterance = new SpeechSynthesisUtterance(speechText);
-
-        // Configure voice settings
-        nativeUtterance.rate = 1.0;
-        nativeUtterance.pitch = 1.0;
-        nativeUtterance.volume = 1.0;
-
-        // Try to get a good voice (prefer English voices)
-        const voices = window.speechSynthesis.getVoices();
-        if (voices.length > 0) {
-          const preferredVoice = voices.find(v =>
-            v.name.includes('Google') && v.lang.startsWith('en')
-          ) || voices.find(v =>
-            v.lang.startsWith('en')
-          ) || voices[0];
-
-          if (preferredVoice) {
-            nativeUtterance.voice = preferredVoice;
-            console.log('[useTTS] Using voice:', preferredVoice.name);
-          }
-        }
-
-        nativeUtterance.onstart = () => {
-          console.log('[useTTS] Native TTS started');
-          isPlaying.set(true);
-          reportTTSState(true); // Tell server we're speaking
-        };
-
-        nativeUtterance.onend = () => {
-          console.log('[useTTS] Native TTS ended');
-          isPlaying.set(false);
-          reportTTSState(false); // Tell server we're done speaking
-          nativeUtterance = null;
-          settle(true);
-        };
-
-        nativeUtterance.onerror = (event) => {
-          console.warn('[useTTS] Native TTS error:', event.error);
-          isPlaying.set(false);
-          reportTTSState(false); // Tell server we're done (error case)
-          nativeUtterance = null;
-          settle(false);
-        };
-
-        window.speechSynthesis.speak(nativeUtterance);
-
-      } catch (e) {
-        console.error('[useTTS] Native TTS failed:', e);
-        isPlaying.set(false);
-        settle(false);
-      }
-    });
-  }
-
-  /**
-   * Smart speak - uses native TTS if enabled, otherwise server TTS
-   * Auto-selects streaming mode for slow providers (RVC) to reduce latency
-   */
+  /** Select streaming or batch playback for the requested server provider. */
   async function speak(text: string, options?: StreamingSpeechOptions & {
     streaming?: boolean;
   }): Promise<TTSPlaybackOutcome> {
@@ -987,19 +817,9 @@ function createTTS() {
         const prepared = await options.prepared.result;
         options.prepared.signal.throwIfAborted();
         if (!playbackRequests.isActive(playbackRequest)) return 'interrupted';
-        if (prepared.native) return await speakTextNative(text);
         return prepared.streaming
           ? await speakTextStreaming(text, { ...options, provider: prepared.provider })
           : await speakText(text, options.prepared);
-      }
-
-      // Check if native voice mode is enabled
-      if (
-        !options?.provider && isNativeVoiceModeEnabled()
-        && isNativeTTSAvailable()
-      ) {
-        console.log('[useTTS] Native voice mode enabled - using device TTS');
-        return await speakTextNative(text);
       }
 
       // Use server TTS - auto-select streaming for slow providers
@@ -1008,9 +828,8 @@ function createTTS() {
       if (useStreaming === undefined) {
         const provider = options?.provider ?? await fetchVoiceProvider();
         if (!playbackRequests.isActive(playbackRequest)) return 'interrupted';
-        // RVC is slow (especially on CPU) - always use streaming for lower latency
         // KokoroService releases ordered phrases while later synthesis continues.
-        useStreaming = provider === 'rvc' || provider === 'kokoro';
+        useStreaming = provider === 'kokoro';
         if (useStreaming) {
           console.log(`[useTTS] Auto-selecting streaming mode for ${provider} provider`);
         }
@@ -1028,7 +847,7 @@ function createTTS() {
           requestId: options?.requestId,
         });
       }
-      return await speakText(text);
+      return await speakText(text, undefined, options);
     } finally {
       playbackRequests.finish(playbackRequest);
     }
@@ -1043,12 +862,10 @@ function createTTS() {
 
     // Methods
     prepareSpeech,      // Prepare without taking playback ownership
-    speak,              // Smart speak - auto-selects native vs server
+    speak,              // Select provider-appropriate playback
     speakText,          // Force server TTS (batch)
     speakTextStreaming, // Force server TTS (streaming)
-    speakTextNative,    // Force native device TTS
     stopActiveAudio,
-    stopNativeTTS,
     stopStreaming,
     cancelInFlightTts,
     interruptPlayback,

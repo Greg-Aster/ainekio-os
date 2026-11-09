@@ -2,10 +2,14 @@
   export let reviewData: any;
   export let onApply: (strategy: 'replace' | 'merge' | 'append') => void;
   export let onDiscard: () => void;
+  export let onReload: () => void;
+  export let pending = false;
+  export let error = '';
 
   let selectedStrategy: 'replace' | 'merge' | 'append' = 'merge';
-  let showTranscript = false;
+  let showExtractedData = false;
   let showFullDiff = false;
+  $: changes = reviewData.diff.changes.filter((change: { action: string }) => change.action !== 'no-change');
 
   const strategyDescriptions = {
     replace: 'Completely replace existing persona with new data',
@@ -24,34 +28,34 @@
   }
 </script>
 
-<div class="fixed inset-0 bg-black/75 flex items-center justify-center z-[1000] p-8">
+<div class="fixed inset-0 bg-black/75 flex items-center justify-center z-[1000] p-4 sm:p-8">
   <div class="bg-gray-800 rounded-lg max-w-[900px] w-full max-h-[90vh] flex flex-col text-gray-200" role="dialog" aria-modal="true" tabindex="-1">
-    <div class="p-6 border-b border-gray-700 flex justify-between items-center">
+    <div class="p-4 sm:p-6 border-b border-gray-700 flex justify-between items-center">
       <h2 class="m-0 text-gray-50">Review Persona Changes</h2>
-      <button class="bg-transparent border-none text-gray-400 text-[2rem] cursor-pointer p-0 w-8 h-8 flex items-center justify-center rounded hover:bg-gray-700 hover:text-gray-50" on:click={onDiscard}>×</button>
+      <button class="bg-transparent border-none text-gray-400 text-[2rem] cursor-pointer p-0 w-8 h-8 flex items-center justify-center rounded hover:bg-gray-700 hover:text-gray-50" on:click={onDiscard} disabled={pending}>×</button>
     </div>
 
-    <div class="p-6 overflow-y-auto flex-1">
+    <div class="p-4 sm:p-6 overflow-y-auto flex-1">
       <!-- Summary Stats -->
-      <div class="flex gap-4 mb-6">
-        <div class="flex-1 bg-gray-900 p-4 rounded-md text-center">
-          <span class="block text-xs text-gray-400 mb-2 uppercase tracking-wide">Additions</span>
+      <div class="grid grid-cols-3 gap-2 sm:gap-4 mb-6">
+        <div class="min-w-0 bg-gray-900 p-2 sm:p-4 rounded-md text-center">
+          <span class="block text-[10px] sm:text-xs text-gray-400 mb-2 uppercase tracking-wide break-words">Additions</span>
           <span class="block text-2xl font-bold text-emerald-500">{reviewData.diff.summary.additions}</span>
         </div>
-        <div class="flex-1 bg-gray-900 p-4 rounded-md text-center">
-          <span class="block text-xs text-gray-400 mb-2 uppercase tracking-wide">Updates</span>
+        <div class="min-w-0 bg-gray-900 p-2 sm:p-4 rounded-md text-center">
+          <span class="block text-[10px] sm:text-xs text-gray-400 mb-2 uppercase tracking-wide break-words">Updates</span>
           <span class="block text-2xl font-bold text-blue-500">{reviewData.diff.summary.updates}</span>
         </div>
-        <div class="flex-1 bg-gray-900 p-4 rounded-md text-center">
-          <span class="block text-xs text-gray-400 mb-2 uppercase tracking-wide">Confidence</span>
-          <span class="block text-2xl font-bold text-gray-50">{Math.round(reviewData.confidence * 100)}%</span>
+        <div class="min-w-0 bg-gray-900 p-2 sm:p-4 rounded-md text-center">
+          <span class="block text-[10px] sm:text-xs text-gray-400 mb-2 uppercase tracking-wide break-words">Confidence</span>
+          <span class="block text-2xl font-bold text-gray-50">{Math.round(reviewData.confidence.overall * 100)}%</span>
         </div>
       </div>
 
       <!-- Diff Preview -->
       <div class="mb-6">
         <div class="flex justify-between items-center mb-4">
-          <h3 class="m-0 text-gray-50 text-base">Changes Preview</h3>
+          <h3 class="m-0 text-gray-50 text-base">Merge Preview</h3>
           <button class="px-4 py-2 bg-gray-700 text-gray-200 border-none rounded-md cursor-pointer text-[0.85rem] hover:bg-gray-600" on:click={() => (showFullDiff = !showFullDiff)}>
             {showFullDiff ? 'Show Summary' : 'Show Full Diff'}
           </button>
@@ -63,32 +67,30 @@
           </div>
         {:else}
           <div class="flex flex-col gap-3">
-            {#each reviewData.diff.changes.slice(0, 5) as change}
-              {#if change.action !== 'no-change'}
-                <div class="bg-gray-900 border-l-[3px] p-4 rounded-md {change.action === 'add' ? 'border-l-emerald-500' : change.action === 'update' ? 'border-l-blue-500' : 'border-l-red-500'}">
-                  <div class="font-semibold text-gray-50 mb-2">{change.field}</div>
-                  <div class="inline-block px-2 py-1 bg-gray-700 rounded text-xs font-semibold mb-3">{change.action.toUpperCase()}</div>
-                  {#if change.action === 'add'}
-                    <div class="mb-2 text-[0.9rem]">
-                      <span class="text-gray-400 mr-2">New:</span>
-                      <span class="text-gray-200 font-mono">{formatValue(change.newValue)}</span>
-                    </div>
-                  {:else if change.action === 'update'}
-                    <div class="mb-2 text-[0.9rem]">
-                      <span class="text-gray-400 mr-2">Old:</span>
-                      <span class="text-gray-200 font-mono">{formatValue(change.oldValue)}</span>
-                    </div>
-                    <div class="mb-2 text-[0.9rem]">
-                      <span class="text-gray-400 mr-2">New:</span>
-                      <span class="text-gray-200 font-mono">{formatValue(change.newValue)}</span>
-                    </div>
-                  {/if}
-                </div>
-              {/if}
+            {#each changes.slice(0, 5) as change}
+              <div class="bg-gray-900 border-l-[3px] p-4 rounded-md {change.action === 'add' ? 'border-l-emerald-500' : change.action === 'update' ? 'border-l-blue-500' : 'border-l-red-500'}">
+                <div class="font-semibold text-gray-50 mb-2">{change.field}</div>
+                <div class="inline-block px-2 py-1 bg-gray-700 rounded text-xs font-semibold mb-3">{change.action.toUpperCase()}</div>
+                {#if change.action === 'add'}
+                  <div class="mb-2 text-[0.9rem]">
+                    <span class="text-gray-400 mr-2">New:</span>
+                    <span class="text-gray-200 font-mono">{formatValue(change.newValue)}</span>
+                  </div>
+                {:else if change.action === 'update'}
+                  <div class="mb-2 text-[0.9rem]">
+                    <span class="text-gray-400 mr-2">Old:</span>
+                    <span class="text-gray-200 font-mono">{formatValue(change.oldValue)}</span>
+                  </div>
+                  <div class="mb-2 text-[0.9rem]">
+                    <span class="text-gray-400 mr-2">New:</span>
+                    <span class="text-gray-200 font-mono">{formatValue(change.newValue)}</span>
+                  </div>
+                {/if}
+              </div>
             {/each}
-            {#if reviewData.diff.changes.length > 5}
+            {#if changes.length > 5}
               <div class="text-center text-gray-400 text-[0.85rem] italic p-2">
-                + {reviewData.diff.changes.length - 5} more changes
+                + {changes.length - 5} more changes
               </div>
             {/if}
           </div>
@@ -117,16 +119,16 @@
         </div>
       </div>
 
-      <!-- Optional: Transcript View -->
+      <!-- Extracted persona data -->
       <div class="mb-6">
-        <button class="px-4 py-2 bg-gray-700 text-gray-200 border-none rounded-md cursor-pointer text-[0.85rem] hover:bg-gray-600" on:click={() => (showTranscript = !showTranscript)}>
-          {showTranscript ? 'Hide' : 'View'} Full Transcript
+        <button class="px-4 py-2 bg-gray-700 text-gray-200 border-none rounded-md cursor-pointer text-[0.85rem] hover:bg-gray-600" on:click={() => (showExtractedData = !showExtractedData)}>
+          {showExtractedData ? 'Hide' : 'View'} Extracted Data
         </button>
 
-        {#if showTranscript}
+        {#if showExtractedData}
           <div class="mt-4">
             <p class="m-0 mb-3 text-gray-400 text-[0.85rem] italic">
-              Interview transcript (not included in persona data)
+              Structured data extracted from the interview
             </p>
             <div class="bg-gray-900 rounded-md p-4 max-h-[400px] overflow-y-auto">
               {#if reviewData.extracted}
@@ -138,12 +140,17 @@
       </div>
     </div>
 
-    <div class="p-6 border-t border-gray-700 flex gap-4 justify-end">
-      <button class="px-6 py-3 rounded-md border-none text-[0.95rem] cursor-pointer transition-all bg-gray-700 text-gray-200 hover:bg-gray-600" on:click={onDiscard}>
+    {#if error}
+      <p role="alert" class="px-6 text-red-300">{error}</p>
+      <button class="btn-secondary mx-6 mb-4" on:click={onReload} disabled={pending}>Reload saved session</button>
+    {/if}
+
+    <div class="p-4 sm:p-6 border-t border-gray-700 flex gap-4 justify-end">
+      <button class="px-6 py-3 rounded-md border-none text-[0.95rem] cursor-pointer transition-all bg-gray-700 text-gray-200 hover:bg-gray-600" on:click={onDiscard} disabled={pending}>
         Cancel
       </button>
-      <button class="px-6 py-3 rounded-md border-none text-[0.95rem] cursor-pointer transition-all bg-blue-500 text-white hover:bg-blue-600" on:click={() => onApply(selectedStrategy)}>
-        Apply Changes ({selectedStrategy})
+      <button class="px-6 py-3 rounded-md border-none text-[0.95rem] cursor-pointer transition-all bg-blue-500 text-white hover:bg-blue-600" on:click={() => onApply(selectedStrategy)} disabled={pending}>
+        {pending ? 'Applying...' : `Apply Changes (${selectedStrategy})`}
       </button>
     </div>
   </div>

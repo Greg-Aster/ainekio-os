@@ -102,7 +102,7 @@ export async function handleGetTrainingData(req: UnifiedRequest): Promise<Unifie
 export async function handleUpdateTrainingData(req: UnifiedRequest): Promise<UnifiedResponse> {
   if (!req.user.isAuthenticated) return { status: 401, error: 'Authentication required' };
   if (!req.body || typeof req.body !== 'object' || Array.isArray(req.body)) return { status: 400, error: 'Invalid training data settings' };
-  if (Object.keys(req.body).some(key => !['objective', 'includePersona', 'memoryTypes', 'maxSyntheticPercent', 'evaluationPercent', 'seed'].includes(key))) {
+  if (Object.keys(req.body).some(key => !['objective', 'objectivesByMode', 'includePersona', 'memoryTypes', 'maxSyntheticPercent', 'evaluationPercent', 'seed'].includes(key))) {
     return { status: 400, error: 'Unsupported training data setting' };
   }
   let validated;

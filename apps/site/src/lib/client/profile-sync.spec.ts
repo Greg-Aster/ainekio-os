@@ -1,7 +1,18 @@
 import assert from 'node:assert/strict'
 import test, { type TestContext } from 'node:test'
 import { normalizeUrl } from './api-config'
-import { configureRemoteSyncServer, runProfileSyncAgent } from './profile-sync'
+import { configureRemoteSyncServer, getRemoteSyncConfig, runProfileSyncAgent } from './profile-sync'
+
+test('remote configuration reads release their request when the observing view closes', async t => {
+  const controller = new AbortController()
+  t.mock.method(globalThis, 'fetch', async (_url: string, options?: RequestInit) => {
+    assert.equal(options?.signal, controller.signal)
+    return new Promise<Response>((_resolve, reject) => options?.signal?.addEventListener('abort', () => reject(new DOMException('View closed', 'AbortError'))))
+  })
+  const read = getRemoteSyncConfig({ signal: controller.signal })
+  controller.abort()
+  await assert.rejects(read, { name: 'AbortError' })
+})
 
 test('sync source URLs accept the tunnel hostname and preserve explicit LAN HTTP', () => {
   assert.equal(normalizeUrl('example.com'), 'https://example.com')

@@ -1,483 +1,200 @@
 <script lang="ts">
-  import { onMount, onDestroy } from 'svelte';
-  import { apiFetch, isReactNativeWebView } from '../lib/client/api-config';
-  import {
-    isMobileApp,
-    getApiBaseUrl,
-    getApiBaseUrlAsync,
-    setServerUrl,
-    testServerConnection,
-    getDefaultServers,
-    initServerUrl
-  } from '../lib/client/api-config';
-  import {
-    healthStatus,
-    forceHealthCheck,
-    getQualityColor,
-    getQualityLabel,
-    type HealthStatus
-  } from '../lib/client/server-health';
+  import { onMount } from 'svelte';
+  import { apiFetch, getApiBaseUrl, isMobileApp } from '../lib/client/api-config';
+  import { healthStatus, forceHealthCheck } from '../lib/client/server-health';
+  import { statusRefreshTrigger, statusStore } from '../stores/navigation';
   import SyncStatus from './SyncStatus.svelte';
   import UpdateManager from './UpdateManager.svelte';
 
-  // ============ Shared State ============
   let isMobile = false;
   let loading = true;
+  let testing = false;
   let error: string | null = null;
   let successMessage: string | null = null;
-
-  // ============ Server Connection State ============
-  interface ServerStatus {
-    url: string;
-    connected: boolean;
-    latencyMs: number;
-    version?: string;
-    error?: string;
-  }
-
   let currentServerUrl = '';
-  let customServerUrl = '';
-  let testing = false;
-  let saving = false;
-  let serverStatus: ServerStatus | null = null;
-  let showCustomInput = false;
-  let defaultServers: { local: string; cloud: string } = { local: '', cloud: '' };
+  let settingsRead: AbortController | undefined;
+  let tunnelRead: AbortController | undefined;
 
-  // Subscribe to health status for live updates
-  let liveHealthStatus: HealthStatus | null = null;
-  const unsubscribe = healthStatus.subscribe(s => {
-    liveHealthStatus = s;
-    if (s && serverStatus) {
-      serverStatus = {
-        ...serverStatus,
-        connected: s.connected,
-        latencyMs: s.latencyMs,
-        error: s.error
-      };
-    }
-  });
-
-  // ============ Local Server Info State (Web) ============
   interface ServerInfo {
     hostname: string;
     port: number;
     platform: string;
     arch: string;
     primaryIP: string | null;
-    urls: string[];
-    interfaces: Array<{
-      name: string;
-      address: string;
-      internal: boolean;
-      url: string;
-    }>;
+    interfaces: Array<{ name: string; address: string; internal: boolean; url: string }>;
   }
 
-  let localServerInfo: ServerInfo | null = null;
-  let loadingServerInfo = false;
-  let copiedUrl = '';
-
-  // ============ Network Info State (Mobile WiFi Broadcast) ============
-  interface NetworkInfo {
-    wifiBroadcastEnabled: boolean;
-    port: number;
-    addresses: Array<{ interface: string; address: string; url: string }>;
-    localUrl: string;
-    networkUrls: string[];
-  }
-
-  let networkInfo: NetworkInfo | null = null;
-
-  // ============ Cloudflare Tunnel State ============
   interface TunnelStatus {
     installed: boolean;
     running: boolean;
     enabled: boolean;
     hostname: string;
     pid?: number;
-    exposure?: {
-      mode: 'local' | 'shared';
-      source: string | null;
-    };
+    exposure?: { mode: 'local' | 'shared'; source: string | null };
   }
 
-  let tunnelStatus: TunnelStatus | null = null;
-
-  // ============ Headless Mode State ============
   interface RuntimeMode {
     headless: boolean;
     lastChangedBy: 'local' | 'remote';
     changedAt: string;
-    claimedBy: string | null;
   }
 
-  let runtimeMode: RuntimeMode | null = null;
-
-  // ============ Server Connection Functions ============
-  async function loadCurrentServer() {
-    try {
-      defaultServers = getDefaultServers();
-      currentServerUrl = await getApiBaseUrlAsync();
-      customServerUrl = currentServerUrl;
-      await testCurrentConnection();
-    } catch (err) {
-      console.error('Failed to load server config:', err);
-      error = err instanceof Error ? err.message : 'Failed to load configuration';
-    }
-  }
+  let localServerInfo: ServerInfo | null = null;
+  let loadingServerInfo = false;
+  let copiedUrl = '';
+  let copyNotice: ReturnType<typeof setTimeout> | undefined;
+  let tunnelStatus: TunnelStatus | null = null;
+  let runtimeMode: RuntimeMode | undefined;
+  $: runtimeMode = $statusStore?.data?.runtime;
+  $: healthChecked = $healthStatus.connected || $healthStatus.consecutiveFailures > 0 || $healthStatus.error !== undefined;
 
   async function testCurrentConnection() {
-    if (!currentServerUrl) {
-      // Web mode - test relative URL
-      serverStatus = {
-        url: window.location.origin,
-        connected: true,
-        latencyMs: 0,
-        version: 'local'
-      };
-      return;
-    }
-
     testing = true;
-    error = null;
-
     try {
-      const result = await testServerConnection(currentServerUrl);
-      serverStatus = {
-        url: currentServerUrl,
-        connected: result.success,
-        latencyMs: result.latencyMs,
-        version: result.version,
-        error: result.error
-      };
-    } catch (err) {
-      serverStatus = {
-        url: currentServerUrl,
-        connected: false,
-        latencyMs: 0,
-        error: err instanceof Error ? err.message : 'Connection failed'
-      };
+      await forceHealthCheck();
     } finally {
       testing = false;
     }
   }
 
-  async function testServer(url: string) {
-    testing = true;
-    error = null;
-    successMessage = null;
-
-    try {
-      const result = await testServerConnection(url);
-      if (result.success) {
-        successMessage = `Connected! Latency: ${result.latencyMs}ms${result.version ? `, Version: ${result.version}` : ''}`;
-        return true;
-      } else {
-        error = result.error || 'Connection failed';
-        return false;
-      }
-    } catch (err) {
-      error = err instanceof Error ? err.message : 'Connection test failed';
-      return false;
-    } finally {
-      testing = false;
-    }
-  }
-
-  async function saveServer(url: string) {
-    saving = true;
-    error = null;
-    successMessage = null;
-
-    try {
-      const testResult = await testServerConnection(url);
-      if (!testResult.success) {
-        error = `Cannot connect to server: ${testResult.error}`;
-        return;
-      }
-
-      await setServerUrl(url);
-      currentServerUrl = url;
-      customServerUrl = url;
-      showCustomInput = false;
-
-      successMessage = `Server updated to ${url}`;
-
-      serverStatus = {
-        url,
-        connected: true,
-        latencyMs: testResult.latencyMs,
-        version: testResult.version
-      };
-    } catch (err) {
-      error = err instanceof Error ? err.message : 'Failed to save server';
-    } finally {
-      saving = false;
-    }
-  }
-
-  function selectPresetServer(url: string) {
-    customServerUrl = url;
-    showCustomInput = false;
-    saveServer(url);
-  }
-
-  function enableCustomServer() {
-    showCustomInput = true;
-    customServerUrl = '';
-  }
-
-  function cancelCustom() {
-    showCustomInput = false;
-    customServerUrl = currentServerUrl;
-  }
-
-  // ============ Local Server Info Functions (Web) ============
-  async function loadLocalServerInfo() {
+  async function loadLocalServerInfo(signal: AbortSignal) {
     loadingServerInfo = true;
     try {
-      const response = await apiFetch('/api/server-info');
+      const response = await apiFetch('/api/server-info', { signal });
       const data = await response.json();
-      if (data.success) {
-        localServerInfo = data.server;
-      }
+      if (signal.aborted) return;
+      if (!response.ok || !data.success) throw new Error(data.error || 'Failed to load server info');
+      localServerInfo = data.server;
     } catch (err) {
-      console.error('Failed to load server info:', err);
+      if (!signal.aborted) error = err instanceof Error ? err.message : 'Failed to load server info';
     } finally {
-      loadingServerInfo = false;
+      if (!signal.aborted) loadingServerInfo = false;
     }
   }
 
   async function copyToClipboard(url: string) {
     try {
       await navigator.clipboard.writeText(url);
+      if (settingsRead?.signal.aborted) return;
       copiedUrl = url;
-      setTimeout(() => { copiedUrl = ''; }, 2000);
+      clearTimeout(copyNotice);
+      copyNotice = setTimeout(() => { copiedUrl = ''; }, 2000);
     } catch (err) {
-      console.error('Failed to copy:', err);
+      error = err instanceof Error ? err.message : 'Failed to copy address';
     }
   }
 
-  // ============ WiFi Broadcast Functions (Mobile) ============
-  async function loadNetworkInfo() {
-    if (!isMobile) return;
+  async function loadTunnelStatus(pageSignal: AbortSignal) {
+    tunnelRead?.abort();
+    tunnelRead = new AbortController();
+    const signal = AbortSignal.any([pageSignal, tunnelRead.signal]);
     try {
-      const res = await apiFetch('/api/network-info');
-      if (res.ok) {
-        networkInfo = await res.json();
-      }
+      const response = await apiFetch('/api/cloudflare/status', { signal });
+      const data = await response.json();
+      if (signal.aborted) return;
+      if (!response.ok) throw new Error(data.error || 'Failed to load tunnel status');
+      tunnelStatus = data;
     } catch (err) {
-      console.warn('Failed to load network info:', err);
+      if (!signal.aborted) error = err instanceof Error ? err.message : 'Failed to load tunnel status';
     }
   }
 
-  async function toggleWifiBroadcast(enable: boolean) {
+  async function refreshSettings() {
+    settingsRead?.abort();
+    const current = new AbortController();
+    settingsRead = current;
+    loading = true;
+    error = null;
+    await Promise.all([
+      loadTunnelStatus(current.signal),
+      isMobile ? Promise.resolve() : loadLocalServerInfo(current.signal),
+    ]);
+    if (!current.signal.aborted) loading = false;
+  }
+
+  async function changeTunnel(action: 'toggle' | 'start' | 'stop', enabled?: boolean) {
     error = null;
     successMessage = null;
     loading = true;
-
     try {
-      const res = await apiFetch('/api/network-settings', {
+      const response = await apiFetch(`/api/cloudflare/${action}`, {
+        method: 'POST',
+        ...(action === 'toggle' ? {
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ enabled }),
+        } : {}),
+      });
+      const data = await response.json();
+      if (!response.ok) throw new Error(data.error || 'Failed to change tunnel');
+      successMessage = action === 'toggle'
+        ? `Tunnel auto-start ${enabled ? 'enabled' : 'disabled'}.`
+        : action === 'start' ? 'Tunnel start requested.' : 'Tunnel stopped.';
+      if (settingsRead && !settingsRead.signal.aborted) await loadTunnelStatus(settingsRead.signal);
+    } catch (err) {
+      error = err instanceof Error ? err.message : 'Failed to change tunnel';
+    } finally {
+      loading = false;
+    }
+  }
+
+  async function toggleHeadlessMode(headless: boolean) {
+    error = null;
+    successMessage = null;
+    loading = true;
+    try {
+      const response = await apiFetch('/api/runtime/mode', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ wifiBroadcastEnabled: enable }),
+        body: JSON.stringify({ headless }),
       });
-
-      if (res.ok) {
-        const data = await res.json();
-        successMessage = data.message || (enable ? 'WiFi broadcast enabled!' : 'WiFi broadcast disabled!');
-        await loadNetworkInfo();
-      } else {
-        const data = await res.json();
-        error = data.error || 'Failed to toggle WiFi broadcast';
-      }
+      const data = await response.json();
+      if (!response.ok) throw new Error(data.error || 'Failed to change headless mode');
+      statusStore.update(snapshot => snapshot ? {
+        ...snapshot, data: { ...snapshot.data, runtime: data.mode },
+      } : snapshot);
+      statusRefreshTrigger.update(value => value + 1);
+      successMessage = data.mode.headless
+        ? 'Headless mode saved. Boot-managed agents will be skipped at the next system start.'
+        : 'Headless mode cleared. Boot-managed agents may start at the next system start.';
     } catch (err) {
-      error = err instanceof Error ? err.message : 'Failed to toggle WiFi broadcast';
+      error = err instanceof Error ? err.message : 'Failed to change headless mode';
     } finally {
       loading = false;
     }
   }
-
-  // ============ Cloudflare Tunnel Functions ============
-  async function loadTunnelStatus() {
-    try {
-      const res = await apiFetch('/api/cloudflare/status');
-      if (res.ok) {
-        tunnelStatus = await res.json();
-      }
-    } catch (err) {
-      console.error('Failed to load tunnel status:', err);
-    }
-  }
-
-  async function toggleTunnel(enable: boolean) {
-    error = null;
-    successMessage = null;
-    loading = true;
-
-    try {
-      const res = await apiFetch('/api/cloudflare/toggle', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ enabled: enable }),
-      });
-
-      if (res.ok) {
-        successMessage = enable
-          ? 'Tunnel auto-start enabled; remote request sharing is ready.'
-          : 'Tunnel auto-start disabled.';
-        await loadTunnelStatus();
-      } else {
-        const data = await res.json();
-        error = data.error || 'Failed to toggle tunnel';
-      }
-    } catch (err) {
-      error = err instanceof Error ? err.message : 'Failed to toggle tunnel';
-    } finally {
-      loading = false;
-    }
-  }
-
-  async function startTunnel() {
-    error = null;
-    successMessage = null;
-    loading = true;
-
-    try {
-      const res = await apiFetch('/api/cloudflare/start', { method: 'POST' });
-      if (res.ok) {
-        successMessage = 'Tunnel started; remote request sharing is enabled.';
-        await loadTunnelStatus();
-      } else {
-        const data = await res.json();
-        error = data.error || 'Failed to start tunnel';
-      }
-    } catch (err) {
-      error = err instanceof Error ? err.message : 'Failed to start tunnel';
-    } finally {
-      loading = false;
-    }
-  }
-
-  async function stopTunnel() {
-    error = null;
-    successMessage = null;
-    loading = true;
-
-    try {
-      const res = await apiFetch('/api/cloudflare/stop', { method: 'POST' });
-      if (res.ok) {
-        successMessage = 'Tunnel stopped; tunnel-managed sharing is disabled.';
-        await loadTunnelStatus();
-      } else {
-        const data = await res.json();
-        error = data.error || 'Failed to stop tunnel';
-      }
-    } catch (err) {
-      error = err instanceof Error ? err.message : 'Failed to stop tunnel';
-    } finally {
-      loading = false;
-    }
-  }
-
-  // ============ Headless Mode Functions ============
-  async function loadRuntimeMode() {
-    try {
-      const res = await apiFetch('/api/runtime/mode');
-      if (res.ok) {
-        runtimeMode = await res.json();
-      }
-    } catch (err) {
-      console.error('Failed to load runtime mode:', err);
-    }
-  }
-
-  async function toggleHeadlessMode(enable: boolean) {
-    error = null;
-    successMessage = null;
-    loading = true;
-
-    try {
-      const res = await apiFetch('/api/runtime/mode', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ headless: enable }),
-      });
-
-      if (res.ok) {
-        successMessage = enable
-          ? 'Headless mode enabled! Local agents will pause.'
-          : 'Headless mode disabled! Local agents will resume.';
-        await loadRuntimeMode();
-      } else {
-        const data = await res.json();
-        error = data.error || 'Failed to toggle headless mode';
-      }
-    } catch (err) {
-      error = err instanceof Error ? err.message : 'Failed to toggle headless mode';
-    } finally {
-      loading = false;
-    }
-  }
-
-  // ============ Lifecycle ============
-  let refreshInterval: ReturnType<typeof setInterval> | null = null;
 
   onMount(() => {
-    isMobile = isMobileApp() || isReactNativeWebView();
-    loading = true;
-
-    (async () => {
-      await initServerUrl();
-      await loadCurrentServer();
-      await loadTunnelStatus();
-      await loadRuntimeMode();
-
-      if (isMobile) {
-        await loadNetworkInfo();
-      } else {
-        await loadLocalServerInfo();
-      }
-
-      loading = false;
-    })();
-
-    // Periodic refresh
-    refreshInterval = setInterval(() => {
-      testCurrentConnection();
-      loadTunnelStatus();
-      loadRuntimeMode();
-      if (isMobile) {
-        loadNetworkInfo();
-      }
-    }, 30000);
-  });
-
-  onDestroy(() => {
-    unsubscribe();
-    if (refreshInterval) {
-      clearInterval(refreshInterval);
-    }
+    isMobile = isMobileApp();
+    currentServerUrl = getApiBaseUrl() || window.location.origin;
+    void refreshSettings();
+    window.addEventListener('focus', refreshSettings);
+    return () => {
+      window.removeEventListener('focus', refreshSettings);
+      settingsRead?.abort();
+      clearTimeout(copyNotice);
+    };
   });
 </script>
+
 
 <div class="p-8 max-w-[900px] mx-auto h-full overflow-y-auto overflow-x-hidden">
   <div class="mb-8">
     <h1 class="text-2xl font-semibold mb-2 text-gray-800 dark:text-gray-50">🌐 Network & Server</h1>
-    <p class="text-gray-500 dark:text-gray-400">Configure server connections, network access, and remote connectivity</p>
+    <p class="text-gray-500 dark:text-gray-400">Connection health, server addresses, and tunnel controls.</p>
+    <button class="btn-secondary mt-3" on:click={refreshSettings} disabled={loading}>Refresh network settings</button>
   </div>
 
-  {#if loading && !serverStatus && !tunnelStatus}
+  {#if loading && !tunnelStatus && !localServerInfo}
     <div class="text-center py-8 text-gray-500">Loading settings...</div>
   {:else}
     <!-- ============ CONNECTION STATUS (Always Shown) ============ -->
     <div class="panel mb-6">
       <h2 class="text-lg font-semibold mb-3 text-gray-900 dark:text-gray-50">📡 Connection Status</h2>
 
-      <div class="rounded-md p-4 mb-4 border-2 {serverStatus?.connected ? 'border-emerald-500 bg-emerald-50 dark:bg-emerald-900/50' : 'border-red-500 bg-red-50 dark:bg-red-900/50'}">
+      <div class="rounded-md p-4 mb-4 border-2 {!healthChecked ? 'border-gray-300 dark:border-gray-600' : $healthStatus.connected ? 'border-emerald-500 bg-emerald-50 dark:bg-emerald-900/50' : 'border-red-500 bg-red-50 dark:bg-red-900/50'}">
         <div class="flex items-center gap-2 mb-3">
-          <span class="w-3 h-3 rounded-full {serverStatus?.connected ? 'bg-emerald-500 shadow-[0_0_8px_theme(colors.emerald.500)]' : 'bg-red-500'}"></span>
-          <strong>{serverStatus?.connected ? '✅ Connected' : '❌ Disconnected'}</strong>
+          <span class="w-3 h-3 rounded-full {!healthChecked ? 'bg-gray-400' : $healthStatus.connected ? 'bg-emerald-500 shadow-[0_0_8px_theme(colors.emerald.500)]' : 'bg-red-500'}"></span>
+          <strong>{!healthChecked ? 'Not checked' : $healthStatus.connected ? '✅ Connected' : '❌ Disconnected'}</strong>
           {#if testing}
             <span class="text-xs bg-blue-500 text-white px-2 py-0.5 rounded ml-2">Testing...</span>
           {/if}
@@ -486,25 +203,25 @@
         <div class="mb-4">
           <div class="flex gap-2 mb-2 text-sm">
             <span class="text-gray-500 dark:text-gray-400 min-w-[80px]">Server:</span>
-            <span class="text-gray-900 dark:text-gray-100 break-all">{serverStatus?.url || 'Not configured'}</span>
+            <span class="text-gray-900 dark:text-gray-100 break-all">{currentServerUrl}</span>
           </div>
-          {#if serverStatus?.connected}
+          {#if $healthStatus.connected}
             <div class="flex gap-2 mb-2 text-sm">
               <span class="text-gray-500 dark:text-gray-400 min-w-[80px]">Latency:</span>
-              <span class="font-semibold {serverStatus.latencyMs < 200 ? 'text-emerald-500' : serverStatus.latencyMs < 500 ? 'text-amber-500' : 'text-red-500'}">
-                {serverStatus.latencyMs}ms
+              <span class="font-semibold {$healthStatus.latencyMs < 200 ? 'text-emerald-500' : $healthStatus.latencyMs < 500 ? 'text-amber-500' : 'text-red-500'}">
+                {$healthStatus.latencyMs}ms
               </span>
             </div>
-            {#if serverStatus.version}
+            {#if $healthStatus.serverVersion}
               <div class="flex gap-2 mb-2 text-sm">
                 <span class="text-gray-500 dark:text-gray-400 min-w-[80px]">Version:</span>
-                <span class="text-gray-900 dark:text-gray-100">{serverStatus.version}</span>
+                <span class="text-gray-900 dark:text-gray-100">{$healthStatus.serverVersion}</span>
               </div>
             {/if}
-          {:else if serverStatus?.error}
+          {:else if $healthStatus.error}
             <div class="flex gap-2 mb-2 text-sm">
               <span class="text-gray-500 dark:text-gray-400 min-w-[80px]">Error:</span>
-              <span class="text-red-600 dark:text-red-400">{serverStatus.error}</span>
+              <span class="text-red-600 dark:text-red-400">{$healthStatus.error}</span>
             </div>
           {/if}
         </div>
@@ -527,7 +244,7 @@
         {#if isMobile}
           This feature shows local network addresses for connecting from other devices. Available when running from desktop.
         {:else}
-          Your MetaHuman server is running locally. Other devices on the same WiFi network can connect using the addresses below.
+          These addresses belong to the connected Ainekio OS server. Other devices can use them when its bind address and network permit access.
         {/if}
       </p>
 
@@ -596,198 +313,12 @@
           </div>
         </details>
       {:else}
-        <!-- Placeholder for mobile or when no data -->
-        <div class="opacity-50">
-          <div class="bg-gradient-to-br from-emerald-500 to-emerald-600 rounded-lg p-5 mb-4">
-            <div class="text-sm text-white/90 mb-2">Connect from mobile devices:</div>
-            <div class="flex items-center gap-3 flex-wrap">
-              <code class="text-lg font-mono text-white bg-black/20 px-3 py-2 rounded-md flex-1 min-w-[200px]">{isMobile ? 'Run MetaHuman on desktop to see server address' : 'http://192.168.x.x:4321'}</code>
-            </div>
-          </div>
-          <div class="bg-gray-50 dark:bg-gray-900 border border-gray-200 dark:border-gray-700 rounded-md p-4">
-            <div class="flex justify-between py-1.5 border-b border-gray-200 dark:border-gray-700">
-              <span class="text-gray-500 dark:text-gray-400">Hostname:</span>
-              <span class="text-gray-900 dark:text-gray-100 font-medium">{isMobile ? '—' : 'Loading...'}</span>
-            </div>
-            <div class="flex justify-between py-1.5 border-b border-gray-200 dark:border-gray-700">
-              <span class="text-gray-500 dark:text-gray-400">Port:</span>
-              <span class="text-gray-900 dark:text-gray-100 font-medium">{isMobile ? '—' : '4321'}</span>
-            </div>
-            <div class="flex justify-between py-1.5">
-              <span class="text-gray-500 dark:text-gray-400">Platform:</span>
-              <span class="text-gray-900 dark:text-gray-100 font-medium">{isMobile ? '—' : 'Loading...'}</span>
-            </div>
-          </div>
-        </div>
-      {/if}
-    </div>
-
-    <!-- ============ WIFI BROADCAST (Mobile) ============ -->
-    <div class="panel mb-6 {!isMobile ? 'opacity-60 pointer-events-none' : ''}">
-      <div class="flex items-center gap-4 flex-wrap mb-3">
-        <h2 class="text-lg font-semibold m-0 text-gray-900 dark:text-gray-50">📡 WiFi Broadcasting</h2>
+        <p class="text-sm text-gray-500 dark:text-gray-400">
+          {isMobile ? 'Open the desktop server interface to inspect its network addresses.' : 'Server addresses are unavailable.'}
+        </p>
         {#if !isMobile}
-          <span class="text-xs px-3 py-1 bg-gray-100 dark:bg-gray-700 text-gray-500 dark:text-gray-400 rounded-full font-medium">Mobile Only</span>
+          <button class="btn-secondary" on:click={refreshSettings} disabled={loading}>Retry server addresses</button>
         {/if}
-      </div>
-      <p class="text-gray-500 dark:text-gray-400 mb-4 text-sm">
-        {#if isMobile}
-          Enable other devices on your local WiFi network to connect to this device.
-        {:else}
-          This feature allows the mobile app to broadcast its server to other devices on the same WiFi network.
-        {/if}
-      </p>
-
-      <div class="rounded-md p-4 mb-4 border-2 {isMobile && networkInfo?.wifiBroadcastEnabled ? 'border-emerald-500 bg-emerald-50 dark:bg-emerald-900/50' : 'border-gray-300 dark:border-gray-600 bg-gray-50 dark:bg-gray-900'}">
-        <div class="flex items-center gap-2 mb-3">
-          <span class="w-3 h-3 rounded-full {isMobile && networkInfo?.wifiBroadcastEnabled ? 'bg-emerald-500 shadow-[0_0_8px_theme(colors.emerald.500)]' : 'bg-red-500'}"></span>
-          <strong>{isMobile ? (networkInfo?.wifiBroadcastEnabled ? '✅ Broadcasting' : '⭕ Local Only') : '—'}</strong>
-        </div>
-
-        {#if isMobile && networkInfo?.wifiBroadcastEnabled && networkInfo?.networkUrls?.length}
-          <div class="mb-4 p-3 bg-white dark:bg-gray-800 rounded border border-gray-200 dark:border-gray-700">
-            <strong>Access from other devices:</strong>
-            {#each networkInfo.networkUrls as url}
-              <div class="mt-2">
-                <a href={url} target="_blank" rel="noopener noreferrer" class="text-blue-500 hover:underline break-all">{url}</a>
-              </div>
-            {/each}
-          </div>
-        {:else if !isMobile}
-          <div class="mb-4 p-3 bg-white dark:bg-gray-800 rounded border border-gray-200 dark:border-gray-700 opacity-50">
-            <strong>Access from other devices:</strong>
-            <div class="mt-2">
-              <span class="text-gray-500">Available on mobile app</span>
-            </div>
-          </div>
-        {/if}
-
-        <div class="flex flex-col gap-4">
-          <label class="flex items-center gap-2 cursor-pointer">
-            <input
-              type="checkbox"
-              checked={isMobile ? (networkInfo?.wifiBroadcastEnabled || false) : false}
-              on:change={(e) => toggleWifiBroadcast(e.currentTarget.checked)}
-              disabled={!isMobile || loading}
-            />
-            <span>Enable WiFi Broadcast</span>
-          </label>
-
-          {#if isMobile && networkInfo?.wifiBroadcastEnabled}
-            <div class="p-3 bg-green-100 dark:bg-green-900/50 border border-green-300 dark:border-green-700 rounded">
-              <p class="m-0 text-sm"><strong>⚠️ Restart Required:</strong> Changes take effect after restarting the app.</p>
-            </div>
-          {/if}
-        </div>
-      </div>
-    </div>
-
-    <!-- ============ SERVER SELECTION (Mobile) ============ -->
-    <div class="panel mb-6 {!isMobile ? 'opacity-60 pointer-events-none' : ''}">
-      <div class="flex items-center gap-4 flex-wrap mb-3">
-        <h2 class="text-lg font-semibold m-0 text-gray-900 dark:text-gray-50">🔧 Server Selection</h2>
-        {#if !isMobile}
-          <span class="text-xs px-3 py-1 bg-gray-100 dark:bg-gray-700 text-gray-500 dark:text-gray-400 rounded-full font-medium">Mobile Only</span>
-        {/if}
-      </div>
-      <p class="text-gray-500 dark:text-gray-400 mb-4 text-sm">
-        {#if isMobile}
-          Choose which server to connect to. Your app will remember this setting.
-        {:else}
-          Mobile app server configuration. Use the mobile app to select between Home Server, Cloud Server, or a custom URL.
-        {/if}
-      </p>
-
-      <div class="flex flex-col gap-3">
-        <!-- Local Server -->
-        <button
-          class="flex items-center gap-4 p-4 bg-gray-50 dark:bg-gray-900 border-2 rounded-lg text-left w-full transition-all {isMobile && currentServerUrl === defaultServers.local && !showCustomInput ? 'border-emerald-500 bg-emerald-50 dark:bg-emerald-900/50' : 'border-gray-200 dark:border-gray-700 hover:border-blue-500 hover:bg-blue-50 dark:hover:bg-blue-900/30'} disabled:opacity-50 disabled:cursor-not-allowed"
-          on:click={() => selectPresetServer(defaultServers.local)}
-          disabled={!isMobile || saving}
-        >
-          <div class="text-3xl flex-shrink-0">🏠</div>
-          <div class="flex-1 flex flex-col gap-1">
-            <strong class="text-gray-900 dark:text-gray-50">Home Server</strong>
-            <span class="font-mono text-xs text-blue-500 break-all">{defaultServers.local || 'http://192.168.x.x:4321'}</span>
-            <span class="text-xs text-gray-500 dark:text-gray-400">Local Ollama with full model access</span>
-          </div>
-          {#if isMobile && currentServerUrl === defaultServers.local && !showCustomInput}
-            <span class="bg-emerald-500 text-white text-xs px-3 py-1 rounded-full font-semibold">Active</span>
-          {/if}
-        </button>
-
-        <!-- Cloud Server -->
-        <button
-          class="flex items-center gap-4 p-4 bg-gray-50 dark:bg-gray-900 border-2 rounded-lg text-left w-full transition-all {isMobile && currentServerUrl === defaultServers.cloud && !showCustomInput ? 'border-emerald-500 bg-emerald-50 dark:bg-emerald-900/50' : 'border-gray-200 dark:border-gray-700 hover:border-blue-500 hover:bg-blue-50 dark:hover:bg-blue-900/30'} disabled:opacity-50 disabled:cursor-not-allowed"
-          on:click={() => selectPresetServer(defaultServers.cloud)}
-          disabled={!isMobile || saving}
-        >
-          <div class="text-3xl flex-shrink-0">☁️</div>
-          <div class="flex-1 flex flex-col gap-1">
-            <strong class="text-gray-900 dark:text-gray-50">Cloud Server</strong>
-            <span class="font-mono text-xs text-blue-500 break-all">{defaultServers.cloud || 'https://cloud.example.com'}</span>
-            <span class="text-xs text-gray-500 dark:text-gray-400">RunPod GPU with Qwen3-Coder-30B</span>
-          </div>
-          {#if isMobile && currentServerUrl === defaultServers.cloud && !showCustomInput}
-            <span class="bg-emerald-500 text-white text-xs px-3 py-1 rounded-full font-semibold">Active</span>
-          {/if}
-        </button>
-
-        <!-- Custom Server -->
-        <button
-          class="flex items-center gap-4 p-4 bg-gray-50 dark:bg-gray-900 border-2 rounded-lg text-left w-full transition-all {isMobile && (showCustomInput || (currentServerUrl !== defaultServers.local && currentServerUrl !== defaultServers.cloud)) ? 'border-emerald-500 bg-emerald-50 dark:bg-emerald-900/50' : 'border-gray-200 dark:border-gray-700 hover:border-blue-500 hover:bg-blue-50 dark:hover:bg-blue-900/30'} disabled:opacity-50 disabled:cursor-not-allowed"
-          on:click={enableCustomServer}
-          disabled={!isMobile || saving}
-        >
-          <div class="text-3xl flex-shrink-0">⚙️</div>
-          <div class="flex-1 flex flex-col gap-1">
-            <strong class="text-gray-900 dark:text-gray-50">Custom Server</strong>
-            {#if isMobile && !showCustomInput && currentServerUrl !== defaultServers.local && currentServerUrl !== defaultServers.cloud}
-              <span class="font-mono text-xs text-blue-500 break-all">{currentServerUrl}</span>
-            {:else}
-              <span class="text-xs text-gray-500 dark:text-gray-400">Enter a custom server URL</span>
-            {/if}
-          </div>
-          {#if isMobile && !showCustomInput && currentServerUrl !== defaultServers.local && currentServerUrl !== defaultServers.cloud}
-            <span class="bg-emerald-500 text-white text-xs px-3 py-1 rounded-full font-semibold">Active</span>
-          {/if}
-        </button>
-      </div>
-
-      <!-- Custom URL Input -->
-      {#if isMobile && showCustomInput}
-        <div class="mt-4 p-4 bg-gray-50 dark:bg-gray-900 border border-gray-200 dark:border-gray-700 rounded-md">
-          <label for="custom-url" class="block mb-2 font-medium text-gray-600 dark:text-gray-300">Custom Server URL:</label>
-          <div class="flex gap-2 mb-4">
-            <input
-              id="custom-url"
-              type="url"
-              bind:value={customServerUrl}
-              placeholder="https://your-server.example.com"
-              disabled={saving || testing}
-              class="input-field flex-1"
-            />
-            <button
-              class="btn-primary"
-              on:click={() => testServer(customServerUrl)}
-              disabled={saving || testing || !customServerUrl}
-            >
-              Test
-            </button>
-          </div>
-          <div class="flex gap-2">
-            <button
-              class="btn-success"
-              on:click={() => saveServer(customServerUrl)}
-              disabled={saving || testing || !customServerUrl}
-            >
-              {saving ? 'Saving...' : 'Save & Connect'}
-            </button>
-            <button class="btn-secondary" on:click={cancelCustom} disabled={saving}>
-              Cancel
-            </button>
-          </div>
-        </div>
       {/if}
     </div>
 
@@ -796,12 +327,12 @@
       <div class="panel mb-6">
         <div class="flex items-center gap-4 flex-wrap mb-3">
           <h2 class="text-lg font-semibold m-0 text-gray-900 dark:text-gray-50">🌐 Cloudflare Tunnel</h2>
-          <a href="https://github.com/Greg-Aster/metahuman-os/blob/main/docs/user-guide/configuration-admin/deployment.md" target="_blank" rel="noopener noreferrer" class="inline-flex items-center gap-2 px-3 py-1.5 bg-blue-500 text-white no-underline rounded-md font-medium text-xs hover:bg-blue-600 transition-colors">
+          <a href="https://github.com/Greg-Aster/ainekio-os/blob/main/docs/user-guide/configuration-admin/deployment.md" target="_blank" rel="noopener noreferrer" class="inline-flex items-center gap-2 px-3 py-1.5 bg-blue-500 text-white no-underline rounded-md font-medium text-xs hover:bg-blue-600 transition-colors">
             📖 Setup Guide
           </a>
         </div>
         <p class="text-gray-500 dark:text-gray-400 mb-4 text-sm">
-          Secure remote access to your MetaHuman server from anywhere without port forwarding.
+          Secure remote access to your Ainekio OS server from anywhere without port forwarding.
         </p>
 
         {#if !tunnelStatus.installed}
@@ -836,23 +367,27 @@
                 <input
                   type="checkbox"
                   checked={tunnelStatus.enabled}
-                  on:change={(e) => toggleTunnel(e.currentTarget.checked)}
+                  on:change={async (event) => {
+                    const input = event.currentTarget;
+                    await changeTunnel('toggle', input.checked);
+                    input.checked = tunnelStatus?.enabled ?? false;
+                  }}
                   disabled={loading}
                 />
-                <span>Auto-start with MetaHuman</span>
+                <span>Auto-start with Ainekio OS</span>
               </label>
 
               <div class="flex gap-2">
                 <button
                   class="btn-primary"
-                  on:click={startTunnel}
+                  on:click={() => changeTunnel('start')}
                   disabled={loading || tunnelStatus.running}
                 >
                   Start Tunnel
                 </button>
                 <button
                   class="btn-danger"
-                  on:click={stopTunnel}
+                  on:click={() => changeTunnel('stop')}
                   disabled={loading || !tunnelStatus.running}
                 >
                   Stop Tunnel
@@ -864,7 +399,7 @@
           <div class="p-4 rounded-md mt-4 bg-blue-50 dark:bg-blue-900/30 border border-blue-200 dark:border-blue-700">
             <h3 class="mb-2 text-gray-900 dark:text-gray-100">ℹ️ How It Works</h3>
             <ul class="mt-2 ml-6 list-disc">
-              <li class="mb-2 text-blue-800 dark:text-blue-200 text-sm"><strong>Auto-start:</strong> When enabled, the tunnel starts automatically when MetaHuman starts</li>
+              <li class="mb-2 text-blue-800 dark:text-blue-200 text-sm"><strong>Auto-start:</strong> When enabled, the tunnel starts automatically when Ainekio OS starts</li>
               <li class="mb-2 text-blue-800 dark:text-blue-200 text-sm"><strong>Automatic sharing:</strong> Starting the tunnel admits its configured HTTPS hostname while the server remains bound to localhost</li>
               <li class="mb-2 text-blue-800 dark:text-blue-200 text-sm"><strong>No port forwarding:</strong> Cloudflare tunnel creates a secure connection without opening router ports</li>
               <li class="mb-2 text-blue-800 dark:text-blue-200 text-sm"><strong>HTTPS included:</strong> Automatic SSL certificates from Cloudflare</li>
@@ -880,7 +415,7 @@
       <div class="panel mb-6">
         <h2 class="text-lg font-semibold mb-3 text-gray-900 dark:text-gray-50">🖥️ Headless Runtime Mode</h2>
         <p class="text-gray-500 dark:text-gray-400 mb-4 text-sm">
-          Pause local background agents when running remotely to prevent conflicts and save resources.
+          Skip boot-managed agents at system startup. This setting does not stop or resume running agents.
         </p>
 
         <div class="rounded-md p-4 mb-4 border-2 {runtimeMode.headless ? 'border-amber-500 bg-amber-50 dark:bg-amber-900/50' : 'border-gray-300 dark:border-gray-600 bg-gray-50 dark:bg-gray-900'}">
@@ -891,8 +426,8 @@
 
           {#if runtimeMode.headless}
             <div class="mb-4 p-3 bg-amber-100 dark:bg-amber-900/50 border border-amber-300 dark:border-amber-700 rounded">
-              <p class="m-0 text-sm"><strong>ℹ️ Local agents are paused.</strong></p>
-              <p class="m-1 text-sm">The tunnel and web server stay online, but background services (boredom, sleep, organizer, etc.) are stopped.</p>
+              <p class="m-0 text-sm"><strong>ℹ️ Boot-managed agents will be skipped at startup.</strong></p>
+              <p class="m-1 text-sm">Use Agent Monitor to inspect or change the state of running agents.</p>
             </div>
           {/if}
 
@@ -901,7 +436,11 @@
               <input
                 type="checkbox"
                 checked={runtimeMode.headless}
-                on:change={(e) => toggleHeadlessMode(e.currentTarget.checked)}
+                on:change={async (event) => {
+                  const input = event.currentTarget;
+                  await toggleHeadlessMode(input.checked);
+                  input.checked = runtimeMode?.headless ?? false;
+                }}
                 disabled={loading}
               />
               <span>Enable Headless Mode</span>
@@ -918,13 +457,13 @@
     <!-- Memory Sync -->
     <div class="panel mb-6 {!isMobile ? 'opacity-60 pointer-events-none' : ''}">
       <div class="flex items-center gap-4 flex-wrap mb-3">
-        <h2 class="text-lg font-semibold m-0 text-gray-900 dark:text-gray-50">🔄 Memory Sync</h2>
+        <h2 class="text-lg font-semibold m-0 text-gray-900 dark:text-gray-50">🔄 Profile Sync</h2>
         {#if !isMobile}
           <span class="text-xs px-3 py-1 bg-gray-100 dark:bg-gray-700 text-gray-500 dark:text-gray-400 rounded-full font-medium">Mobile Only</span>
         {/if}
       </div>
       <p class="text-gray-500 dark:text-gray-400 mb-4 text-sm">
-        Keep your memories synchronized between devices. Changes made offline will sync when reconnected.
+        Transfer an encrypted profile snapshot between this device and its configured remote installation. Open Profile Sync to configure or run a transfer.
       </p>
       {#if isMobile}
         <SyncStatus />
@@ -935,7 +474,7 @@
               <span class="w-3 h-3 rounded-full bg-red-500"></span>
               <strong>—</strong>
             </div>
-            <p class="text-sm text-gray-500">Use mobile app to sync memories</p>
+            <p class="text-sm text-gray-500">Use the mobile app to transfer a profile snapshot</p>
           </div>
         </div>
       {/if}
@@ -948,7 +487,7 @@
       </div>
       <p class="text-gray-500 dark:text-gray-400 mb-4 text-sm">
         {isMobile
-          ? 'Check for and download signed MetaHuman app releases from your connected server.'
+          ? 'Check for and download signed Ainekio OS app releases from your connected server.'
           : 'Check the configured Git upstream, validate a fast-forward update, and restart into the new build.'}
       </p>
       <UpdateManager />
@@ -964,10 +503,3 @@
     {/if}
   {/if}
 </div>
-
-<style>
-  .btn-success {
-    @apply px-4 py-2 rounded-md font-medium text-sm transition-colors;
-    @apply bg-emerald-500 text-white hover:bg-emerald-600 disabled:opacity-50 disabled:cursor-not-allowed;
-  }
-</style>

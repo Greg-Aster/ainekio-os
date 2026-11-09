@@ -16,7 +16,7 @@ interface AgentFailureRegistry {
   [agentName: string]: AgentFailureEntry;
 }
 
-export const getRegistryPath = () => path.join(systemPaths.logs, 'agents', 'running.json');
+const getRegistryPath = () => path.join(systemPaths.logs, 'agents', 'running.json');
 const getFailureRegistryPath = () => path.join(systemPaths.logs, 'agents', 'failures.json');
 
 export function readRegistry(): AgentRegistry {

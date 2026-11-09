@@ -120,7 +120,6 @@ const execute: NodeExecutor = async (inputs) => {
 
 export const ThinkingStripperNode: NodeDefinition = defineNode({
   id: 'thinking_stripper',
-  aliases: ['cot_stripper'],
   name: 'Thinking Stripper',
   category: 'output',
   inputs: [

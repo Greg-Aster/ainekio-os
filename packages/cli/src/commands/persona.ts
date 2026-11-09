@@ -43,7 +43,7 @@ function requirePersonaContext() {
   };
 }
 
-export function personaStatus() {
+function personaStatus() {
   const { paths } = requirePersonaContext();
   console.log('Persona Status\n');
 
@@ -81,7 +81,7 @@ export function personaStatus() {
 /**
  * Persona Generator: Start interactive interview session
  */
-export async function personaGenerate(options: { resume?: boolean } = {}) {
+async function personaGenerate(options: { resume?: boolean } = {}) {
   const { username, userId, paths } = requirePersonaContext();
 
   try {
@@ -267,7 +267,7 @@ export async function personaGenerate(options: { resume?: boolean } = {}) {
 /**
  * List all persona interview sessions
  */
-export async function personaSessions() {
+async function personaSessions() {
   const { username } = requirePersonaContext();
 
   try {
@@ -305,7 +305,7 @@ export async function personaSessions() {
 /**
  * View transcript of a specific session
  */
-export async function personaView(sessionId: string) {
+async function personaView(sessionId: string) {
   const { username } = requirePersonaContext();
 
   if (!sessionId) {
@@ -363,7 +363,7 @@ export async function personaView(sessionId: string) {
 /**
  * Apply persona changes from a finalized session
  */
-export async function personaApply(sessionId: string, strategy: MergeStrategy = 'merge') {
+async function personaApply(sessionId: string, strategy: MergeStrategy = 'merge') {
   const { username, paths } = requirePersonaContext();
 
   if (!sessionId) {
@@ -430,7 +430,7 @@ export async function personaApply(sessionId: string, strategy: MergeStrategy = 
 /**
  * Discard a persona interview session
  */
-export async function personaDiscard(sessionId: string) {
+async function personaDiscard(sessionId: string) {
   const { username } = requirePersonaContext();
 
   if (!sessionId) {
@@ -490,7 +490,7 @@ export async function personaDiscard(sessionId: string) {
 /**
  * Clean up old persona interview sessions
  */
-export async function personaCleanup(options: { dryRun?: boolean; maxAge?: number } = {}) {
+async function personaCleanup(options: { dryRun?: boolean; maxAge?: number } = {}) {
   const { username } = requirePersonaContext();
   const maxAge = options.maxAge || 30;
 

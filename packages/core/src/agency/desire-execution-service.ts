@@ -59,7 +59,7 @@ function throwIfAborted(signal?: AbortSignal): void {
   if (signal?.aborted) throw cancellationError(signal)
 }
 
-export async function calculateRemainingDailyExecutions(username: string): Promise<number> {
+async function calculateRemainingDailyExecutions(username: string): Promise<number> {
   const config = await loadConfig(username)
   const start = new Date()
   start.setHours(0, 0, 0, 0)

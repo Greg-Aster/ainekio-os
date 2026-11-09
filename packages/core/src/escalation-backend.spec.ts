@@ -9,6 +9,8 @@ import { once } from 'node:events';
 const root = fs.mkdtempSync(path.join(os.tmpdir(), 'mh-escalation-'));
 process.env.METAHUMAN_ROOT = root;
 fs.mkdirSync(path.join(root, 'etc'));
+fs.mkdirSync(path.join(root, 'bin'));
+fs.writeFileSync(path.join(root, 'bin', 'llama-cpp-services'), '#!/bin/sh\nexit 0\n', { mode: 0o755 });
 const configPath = path.join(root, 'etc', 'tool-executor.json');
 const { setAuditEnabled } = await import('./audit.js');
 setAuditEnabled(false);
@@ -21,7 +23,7 @@ test.after(() => fs.rmSync(root, { recursive: true, force: true }));
 test('concurrent initialization waits for all supported backends', async () => {
   await Promise.all(Array.from({ length: 8 }, () => registry.ensureBackendsInitialized()));
   assert.deepEqual(registry.listBackends().map(backend => backend.id).sort(), [
-    'aider', 'claude-code', 'codex', 'gemini-cli', 'qwen-code',
+    'claude-code', 'codex', 'gemini',
   ]);
 });
 
@@ -30,7 +32,7 @@ let receivedOptions: import('./escalation-backend.js').EscalationOptions | undef
 let receivedPrompt = '';
 function installFixtureBackends() {
   calls.length = 0;
-  for (const id of ['claude-code', 'codex']) {
+  for (const id of ['claude-code', 'codex', 'gemini']) {
     registry.registerBackend({
       id, name: id, description: 'test fixture', supportsStreaming: false,
       async isAvailable() { calls.push(`available:${id}`); return true; },
@@ -273,6 +275,8 @@ test('status-widget assignments route Persona to Big Brother and preserve indepe
       assert.equal(inventory.status, 200);
       const data = inventory.data as any;
       assert.equal(data.modelCategories.bigBrother[0].id, 'big-brother.configured');
+      assert.equal(data.modelCategories.bigBrother[1].id, 'big-brother.codex');
+      assert.equal(data.modelCategories.bigBrother[2].id, 'big-brother.gemini');
       assert.equal(data.roleAssignments.orchestrator, 'intent');
       assert.equal((await assign('persona', 'big-brother.configured')).status, 200);
       const selected = resolveModelForCognitiveMode('environment', 'persona', 'fixture');
@@ -294,6 +298,29 @@ test('status-widget assignments route Persona to Big Brother and preserve indepe
       saveUserConfig('operator.json', { bigBrotherMode: { provider: 'codex', model: 'fixture-updated' } }, 'fixture');
       assert.equal(resolveModelForCognitiveMode('environment', 'persona', 'fixture').model, 'fixture-updated',
         'Backend Settings changes are reflected without stale registry copies');
+      assert.equal((await assign('persona', 'big-brother.gemini')).status, 200);
+      const geminiSelected = resolveModelForCognitiveMode('environment', 'persona', 'fixture');
+      assert.equal(geminiSelected.provider, 'big-brother');
+      assert.equal(geminiSelected.model, 'gemini-3.8-flash-low');
+      assert.equal(geminiSelected.metadata?.cliProvider, 'gemini');
+      assert.deepEqual(geminiSelected.capabilities, ['text', 'image']);
+      const geminiResult = await callLLM({
+        role: 'persona',
+        cognitiveMode: 'environment',
+        userId: 'fixture',
+        messages: [{
+          role: 'user',
+          content: [
+            { type: 'text', text: 'What do you see?' },
+            { type: 'image_url', image_url: { url: 'data:image/jpeg;base64,/9j/2Q==' } },
+          ],
+        }],
+      });
+      assert.equal(geminiResult.provider, 'big-brother');
+      assert.equal(geminiResult.model, 'gemini-3.8-flash-low');
+      assert.equal(calls.at(-1), 'execute:gemini');
+      assert.deepEqual(receivedOptions?.images, [{ mimeType: 'image/jpeg', base64: '/9j/2Q==' }]);
+      assert.equal((await assign('persona', 'default.embedder')).status, 400);
     });
   } finally {
     server.closeAllConnections();

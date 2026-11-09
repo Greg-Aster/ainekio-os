@@ -75,15 +75,19 @@ export async function recoverDurableExecutions(manager: UnifiedQueueManager, ret
         await yieldToIO()
         dispatchReady()
       }
-      const retire = async (id: string) => {
+      const retireBatch = async (ids: readonly string[]) => {
         // Keep the existing receipt until its failure is visible in the System Buffer.
-        if (tasks.some(task => task.durable?.executionId === id
-          && manager.getTask(task.id)?.failureNoticePending)) return
+        const readyIds = ids.filter(id => !tasks.some(task => task.durable?.executionId === id
+          && manager.getTask(task.id)?.failureNoticePending))
+        if (!readyIds.length) return
         try {
-          manager.retireExecutionReceipts(id)
-          await retireBufferAdmissions(username, id)
-          store.acknowledgeRetirement(id)
-        } catch (error) { failures.push(new Error(`Execution retirement failed for ${username}/${id}`, { cause: error })) }
+          await retireBufferAdmissions(username, readyIds)
+          for (const id of readyIds) {
+            if (!stillActive()) break
+            manager.retireExecutionReceipts(id)
+            store.acknowledgeRetirement(id)
+          }
+        } catch (error) { failures.push(new Error(`Execution retirement failed for ${username}/${readyIds[0]}`, { cause: error })) }
       }
       const unfinishedWork = tasks.filter(task =>
         !['completed', 'failed', 'cancelled', 'expired'].includes(manager.getTask(task.id)?.state ?? task.state)
@@ -120,10 +124,7 @@ export async function recoverDurableExecutions(manager: UnifiedQueueManager, ret
       await saver.pruneTerminal(before, new Set(tasks.filter(task => task.durable
         && (!['completed', 'failed', 'cancelled', 'expired'].includes(task.state)
           || manager.getTask(task.id)?.failureNoticePending)).map(task => task.durable!.executionId)))
-      for (const id of store.retirements()) {
-        if (!stillActive()) break recovery
-        await retire(id)
-      }
+      if (stillActive()) await retireBatch(store.retirements())
     } finally { store.close() }
   } catch (error) { failures.push(new Error(`Execution recovery failed for ${username}`, { cause: error })) }
   if (failures.length) throw new AggregateError(failures, failures.map(error => `${error.message}: ${String(error.cause)}`).join('; '))

@@ -150,6 +150,8 @@ export class ExecutionStore {
       );
       CREATE INDEX IF NOT EXISTS execution_observation_history
         ON execution_observations(username, environment_id, adapter, robot_id, interpreted_at);
+      CREATE INDEX IF NOT EXISTS execution_blob_ref_hash ON execution_blob_refs(hash);
+      CREATE INDEX IF NOT EXISTS execution_observation_ref_id ON execution_observation_refs(observation_id);
     `)
     this.db.transaction(() => {
       const graphColumns = this.db.pragma('table_info(execution_graphs)') as { name: string }[]
@@ -272,6 +274,7 @@ export class ExecutionStore {
     const candidates = rows.map(record => ({ record,
       task: { ...this.decodeDocument(record.task) as import('./types.js').ExecutionObjective, executionStatus: record.status },
     })).filter(({ task }) => !task.decision.objectiveComplete
+      && !(task.decision.outcome === 'report' && task.decision.continuationPolicy === 'none')
       && !['abandon', 'cancel', 'complete', 'failed'].includes(task.decision.outcome))
     candidates.sort((a, b) => b.task.updatedAt.localeCompare(a.task.updatedAt))
     return {

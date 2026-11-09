@@ -7,6 +7,11 @@ import { after, test } from 'node:test'
 
 const root = fs.mkdtempSync(path.join(os.tmpdir(), 'metahuman-auth-sync-'))
 process.env.METAHUMAN_ROOT = root
+// Profile initialization copies the installation's registry; this isolated
+// HTTP/bootstrap fixture never assigns or invokes an inference model.
+fs.mkdirSync(path.join(root, 'etc'), { recursive: true })
+fs.writeFileSync(path.join(root, 'etc', 'models.json'), JSON.stringify({ version: '1.0.0', defaults: {}, models: {} }))
+fs.copyFileSync(new URL('../../../../../etc/training.json', import.meta.url), path.join(root, 'etc', 'training.json'))
 const { setAuditEnabled } = await import('../../audit.js')
 const { handleCreateSyncUser } = await import('./auth.js')
 const { getUserByUsername, createUser } = await import('../../users.js')

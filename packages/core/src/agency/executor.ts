@@ -21,7 +21,7 @@ import {
 // Progress Callback Types
 // ============================================================================
 
-export interface DesireExecutionProgress {
+interface DesireExecutionProgress {
   type: 'step_start' | 'step_complete' | 'step_error' | 'execution_start' | 'execution_complete' | 'execution_error' | 'claude_working';
   stepNumber?: number;
   totalSteps?: number;
@@ -44,7 +44,7 @@ const graphCache: Record<string, CachedGraphEntry | null> = {};
 /**
  * Load the desire-executor cognitive graph
  */
-export async function loadDesireExecutorGraph(): Promise<SvelteFlowGraph> {
+async function loadDesireExecutorGraph(): Promise<SvelteFlowGraph> {
   const loaded = await loadGraphFile(cognitiveGraphPath('desire-executor.json'), {
     cache: graphCache,
     cacheKey: 'desire-executor',
@@ -73,13 +73,6 @@ export async function loadDesireOutcomeReviewerGraph(): Promise<SvelteFlowGraph>
   }
 
   return loaded.graph;
-}
-
-/**
- * Clear cached graphs (useful for testing or hot-reloading)
- */
-export function clearGraphCache(): void {
-  Object.keys(graphCache).forEach(key => delete graphCache[key]);
 }
 
 // ============================================================================

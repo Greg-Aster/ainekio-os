@@ -43,14 +43,10 @@ for (const mutation of ['setTriggerAdmissionPaused', 'reloadTriggerConfig', 'run
   assert.ok(store.includes(`function ${mutation}`), `shared Trigger Manager store is missing ${mutation}`);
 }
 
-for (const route of [
-  'apps/site/src/pages/api/trigger-manager/index.ts',
-  'apps/site/src/pages/api/queue-stream.ts',
-  'apps/site/src/pages/api/trigger-manager/control.ts',
-  'apps/site/src/pages/api/trigger-manager/config.ts',
-]) {
-  assert.ok(exists(route), `thin Trigger Manager transport is missing: ${route}`);
-  assert.ok(read(route).includes('astroHandler'), `Trigger Manager transport must delegate to the core router: ${route}`);
+const router = read('packages/core/src/api/router.ts');
+for (const endpoint of ['/api/trigger-manager', '/api/queue-stream', '/api/trigger-manager/control', '/api/trigger-manager/config']) {
+  assert.ok(router.includes(`pattern: '${endpoint}'`), `Core must register ${endpoint}`);
 }
+assert.match(read('apps/site/src/pages/api/[...path].ts'), /export const ALL = astroHandler/);
 
 console.log('trigger manager UI architecture contract passed');

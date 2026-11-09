@@ -5,7 +5,6 @@
     getRemoteSyncConfig,
     clearRemoteSyncConfig,
     runProfileSyncAgent,
-    type RemoteSyncProgress,
     type RemoteSyncResult,
   } from '../lib/client/profile-sync';
   import {
@@ -17,8 +16,7 @@
   const dispatch = createEventDispatcher();
 
   export let isOpen = false;
-  export let isSyncing = false;
-  export let syncProgress: { current: number; total: number; category: string } | null = null;
+  let isSyncing = false;
 
   let serverUrl = '';
   let serverUsername = '';
@@ -28,8 +26,11 @@
   let isSavingConfig = false;
   let showServerConfig = false;
   let lastSyncAt: string | null = null;
+  let configError = '';
+  let settingsError = '';
+  let observation: AbortController | undefined;
+  let syncWait: AbortController | undefined;
 
-  let remoteSyncPhase: RemoteSyncProgress['phase'] | null = null;
   let remoteSyncMessage = '';
 
   let syncSettingsData: SyncSettings | null = null;
@@ -61,54 +62,58 @@
     label: string;
     description: string;
     enabled: boolean;
-    warning?: string;
-    estimatedSize?: string;
   }
 
   let syncOptions: SyncOption[] = [
-    { id: 'persona', label: 'Persona Files', description: 'Core identity, personality traits, relationships, and decision rules', enabled: false, estimatedSize: '~50 KB' },
-    { id: 'config', label: 'Configuration', description: 'Settings, preferences, model registry, and runtime config', enabled: false, estimatedSize: '~25 KB' },
-    { id: 'memories', label: 'Memories', description: 'Episodic memories, conversations, and inner dialogue', enabled: true, estimatedSize: 'Variable' },
+    { id: 'persona', label: 'Persona Files', description: 'Core identity, personality traits, relationships, and decision rules', enabled: false },
+    { id: 'config', label: 'Configuration', description: 'Settings, preferences, model registry, and runtime config', enabled: false },
+    { id: 'memories', label: 'Memories', description: 'Episodic memories, conversations, and inner dialogue', enabled: true },
   ];
 
-  onMount(async () => {
-    await loadServerConfig();
-    await loadSyncSettings();
+  onMount(() => {
+    const current = new AbortController();
+    observation = current;
+    void loadServerConfig();
+    void loadSyncSettings();
+    return () => { current.abort(); syncWait?.abort(); };
   });
 
   async function loadSyncSettings() {
+    settingsError = '';
     try {
-      syncSettingsData = await getSyncSettings();
+      const settings = await getSyncSettings();
+      if (!observation?.signal.aborted) syncSettingsData = settings;
     } catch (err) {
-      console.error('Failed to load sync settings:', err);
+      if (!observation?.signal.aborted) settingsError = (err as Error).message;
     }
   }
 
   async function handleSaveSyncSettings() {
     if (!syncSettingsData) return;
     isSavingSettings = true;
+    settingsError = '';
     try {
-      await updateSyncSettings(syncSettingsData);
+      syncSettingsData = await updateSyncSettings(syncSettingsData);
       showSyncSettings = false;
     } catch (err) {
-      console.error('Failed to save sync settings:', err);
+      settingsError = (err as Error).message;
     } finally {
       isSavingSettings = false;
     }
   }
 
   async function loadServerConfig() {
+    configError = '';
     try {
-      const config = await getRemoteSyncConfig();
+      const config = await getRemoteSyncConfig({ signal: observation?.signal });
+      if (observation?.signal.aborted) return;
       isServerConfigured = config.configured;
-      if (config.configured) {
-        serverUrl = config.serverUrl || '';
-        serverUsername = config.username || '';
-        lastSyncAt = config.lastSyncAt || null;
-        serverPassword = '';
-      }
+      serverUrl = config.serverUrl || '';
+      serverUsername = config.username || '';
+      lastSyncAt = config.lastSyncAt || null;
+      serverPassword = '';
     } catch (err) {
-      console.error('Failed to load server config:', err);
+      if (!observation?.signal.aborted) configError = (err as Error).message;
     }
   }
 
@@ -118,6 +123,7 @@
       return;
     }
     isSavingConfig = true;
+    connectionTestResult = null;
     try {
       const result = await configureRemoteSyncServer(serverUrl, serverUsername, serverPassword);
       if (result.success) {
@@ -136,6 +142,8 @@
   }
 
   async function handleClearConfig() {
+    isSavingConfig = true;
+    configError = '';
     try {
       await clearRemoteSyncConfig();
       serverUrl = '';
@@ -145,13 +153,16 @@
       lastSyncAt = null;
       connectionTestResult = null;
     } catch (err) {
-      console.error('Failed to clear config:', err);
+      configError = (err as Error).message;
+    } finally {
+      isSavingConfig = false;
     }
   }
 
   async function handleRemoteSync() {
+    const current = new AbortController();
+    syncWait = current;
     isSyncing = true;
-    remoteSyncPhase = 'authenticating';
     remoteSyncMessage = 'Starting sync via profile-sync agent...';
     syncResult = null;
 
@@ -175,41 +186,33 @@
       if (memoryDays > 0) agentArgs.push(`--days=${memoryDays}`);
 
       remoteSyncMessage = 'Triggering profile-sync agent...';
-      remoteSyncPhase = 'downloading';
 
       const agentResult = await runProfileSyncAgent(agentArgs, progress => {
-        remoteSyncPhase = progress.phase === 'complete' ? 'complete'
-          : progress.phase === 'error' ? 'error'
-          : 'downloading';
         remoteSyncMessage = progress.message;
-      });
+      }, { signal: current.signal });
 
       if (agentResult.success) {
-        remoteSyncPhase = 'complete';
         remoteSyncMessage = `Profile Sync completed as ${agentResult.taskId}.`;
         syncResult = agentResult;
       } else {
-        remoteSyncPhase = 'error';
         remoteSyncMessage = agentResult.error || 'Profile Sync failed';
         syncResult = agentResult;
       }
 
       await loadServerConfig();
-      showSyncComplete = true;
     } catch (err) {
-      remoteSyncPhase = 'error';
       remoteSyncMessage = `Error: ${err instanceof Error ? err.message : 'Unknown error'}`;
       syncResult = { success: false, error: err instanceof Error ? err.message : 'Unknown error' };
     } finally {
+      showSyncComplete = syncResult !== null;
       isSyncing = false;
-      syncProgress = null;
+      if (syncWait === current) syncWait = undefined;
     }
   }
 
   function handleCloseSyncComplete() {
     showSyncComplete = false;
     syncResult = null;
-    remoteSyncPhase = null;
   }
 
   function toggleOption(id: string) {
@@ -230,10 +233,7 @@
     }
   }
 
-  function getProgressPercent(): number {
-    if (!syncProgress) return 0;
-    return Math.round((syncProgress.current / syncProgress.total) * 100);
-  }
+
 </script>
 
 {#if isOpen}
@@ -250,6 +250,16 @@
         {/if}
       </div>
 
+      {#if configError}
+        <div class="p-3 text-sm text-red-400">{configError} <button class="underline" on:click={loadServerConfig}>Retry loading server configuration</button></div>
+      {/if}
+      {#if settingsError}
+        <div class="p-3 text-sm text-red-400">{settingsError}{#if !syncSettingsData} <button class="underline" on:click={loadSyncSettings}>Retry loading sync preferences</button>{/if}</div>
+      {/if}
+      {#if connectionTestResult}
+        <div class="p-3 text-sm {connectionTestResult.success ? 'text-emerald-400' : 'text-red-400'}">{connectionTestResult.message}</div>
+      {/if}
+
       {#if isSyncing}
         <!-- Syncing State -->
         <div class="p-8 flex flex-col items-center gap-6">
@@ -265,23 +275,11 @@
             <span class="animate-blink">_</span>
           </div>
 
-          {#if syncProgress}
-            <div class="w-full flex flex-col gap-2">
-              <div class="w-full h-1 bg-white/10 rounded overflow-hidden">
-                <div class="h-full bg-gradient-to-r from-emerald-500 to-emerald-600 rounded transition-all duration-300 shadow-[0_0_10px_rgba(0,255,136,0.5)]" style="width: {getProgressPercent()}%"></div>
-              </div>
-              <div class="flex justify-between text-xs">
-                <span class="text-white/60">{syncProgress.category}</span>
-                <span class="text-emerald-400 font-mono">{getProgressPercent()}%</span>
-              </div>
-            </div>
-          {:else}
-            <div class="w-full h-1 bg-white/10 rounded overflow-hidden">
-              <div class="w-[30%] h-full bg-gradient-to-r from-emerald-500 to-emerald-600 rounded animate-indeterminate shadow-[0_0_10px_rgba(0,255,136,0.5)]"></div>
-            </div>
-          {/if}
+          <div class="w-full h-1 bg-white/10 rounded overflow-hidden">
+            <div class="w-[30%] h-full bg-gradient-to-r from-emerald-500 to-emerald-600 rounded animate-indeterminate shadow-[0_0_10px_rgba(0,255,136,0.3)]"></div>
+          </div>
 
-          <p class="text-xs text-white/50 text-center">Do not close the app while syncing...</p>
+          <p class="text-xs text-white/50 text-center">Profile Sync runs in the Work Coordinator.</p>
         </div>
       {:else}
         <!-- Options State -->
@@ -292,7 +290,7 @@
               <div class="flex items-start gap-3">
                 <span class="text-xl mt-0.5">{isServerConfigured ? '🔗' : '⚙️'}</span>
                 <div class="flex flex-col gap-0.5">
-                  <span class="text-sm font-medium text-white">{isServerConfigured ? 'Remote Server Connected' : 'Configure Sync Server'}</span>
+                  <span class="text-sm font-medium text-white">{isServerConfigured ? 'Sync Server Configured' : 'Configure Sync Server'}</span>
                   {#if isServerConfigured}
                     <span class="text-xs text-emerald-400 font-mono">{serverUrl}</span>
                     {#if lastSyncAt}
@@ -323,19 +321,12 @@
                   <input type="password" id="serverPassword" class="px-3 py-2.5 bg-black/30 border border-white/10 rounded-md text-sm text-white placeholder:text-white/30 focus:outline-none focus:border-emerald-500/50 disabled:opacity-50 disabled:cursor-not-allowed" placeholder={isServerConfigured ? '••••••••' : 'your-password'} bind:value={serverPassword} disabled={isSavingConfig} />
                 </div>
 
-                {#if connectionTestResult}
-                  <div class="flex items-center gap-2 px-3 py-2.5 rounded-md text-[13px] {connectionTestResult.success ? 'bg-emerald-500/10 border border-emerald-500/30 text-emerald-400' : 'bg-red-400/10 border border-red-400/30 text-red-400'}">
-                    <span class="font-bold">{connectionTestResult.success ? '✓' : '✗'}</span>
-                    <span>{connectionTestResult.message}</span>
-                  </div>
-                {/if}
-
                 <div class="flex gap-2 mt-1">
                   <button class="flex-1 px-3 py-2.5 rounded-md text-[13px] font-medium cursor-pointer transition-all bg-gradient-to-br from-emerald-500 to-emerald-600 border-0 text-[#1a1a2e] hover:shadow-[0_0_15px_rgba(0,255,136,0.3)] disabled:opacity-50 disabled:cursor-not-allowed" on:click={handleSaveConfig} disabled={!serverUrl || !serverUsername || !serverPassword || isSavingConfig}>
                     {isSavingConfig ? 'Saving...' : 'Save Server'}
                   </button>
                   {#if isServerConfigured}
-                    <button class="flex-[0.5] px-3 py-2.5 rounded-md text-[13px] font-medium cursor-pointer transition-all bg-red-400/10 border border-red-400/30 text-red-400 hover:bg-red-400/20" on:click={handleClearConfig}>
+                    <button class="flex-[0.5] px-3 py-2.5 rounded-md text-[13px] font-medium cursor-pointer transition-all bg-red-400/10 border border-red-400/30 text-red-400 hover:bg-red-400/20" disabled={isSavingConfig} on:click={handleClearConfig}>
                       Disconnect
                     </button>
                   {/if}
@@ -435,19 +426,13 @@
 
             <div class="flex flex-col gap-2">
               {#each syncOptions as option}
-                <label class="flex items-start gap-3 p-3 bg-white/[0.02] border border-white/5 rounded-lg cursor-pointer transition-all hover:bg-emerald-500/5 hover:border-emerald-500/20 {option.warning ? 'border-orange-500/30' : ''}">
+                <label class="flex items-start gap-3 p-3 bg-white/[0.02] border border-white/5 rounded-lg cursor-pointer transition-all hover:bg-emerald-500/5 hover:border-emerald-500/20">
                   <input type="checkbox" class="mt-0.5 w-4 h-4 accent-emerald-500 cursor-pointer" checked={option.enabled} on:change={() => toggleOption(option.id)} />
                   <div class="flex flex-col gap-1 flex-1">
                     <div class="flex justify-between items-center">
                       <span class="text-sm font-medium text-white">{option.label}</span>
-                      {#if option.estimatedSize}
-                        <span class="text-[11px] text-white/40 font-mono">{option.estimatedSize}</span>
-                      {/if}
                     </div>
                     <span class="text-xs text-white/50 leading-relaxed">{option.description}</span>
-                    {#if option.warning}
-                      <span class="text-[11px] text-orange-500 mt-1">⚠️ {option.warning}</span>
-                    {/if}
                   </div>
                 </label>
               {/each}
@@ -482,46 +467,15 @@
         {/if}
       </div>
 
-      <h3 class="m-0 mb-6 text-xl font-semibold text-white">{syncResult.success ? 'Sync Complete!' : 'Sync Failed'}</h3>
+      <h3 class="m-0 mb-6 text-xl font-semibold text-white">{syncResult.success ? 'Profile Sync complete' : 'Profile Sync report'}</h3>
 
       {#if syncResult.success}
-        <div class="flex flex-col gap-3 mb-6">
-          {#if syncResult.profileFiles}
-            <div class="flex items-center gap-2 p-3 bg-emerald-500/5 border border-emerald-500/15 rounded-lg">
-              <span class="text-xl">📋</span>
-              <span class="text-lg font-bold font-mono text-emerald-400">{syncResult.profileFiles}</span>
-              <span class="flex-1 text-[13px] text-white/70 text-left">profile files imported</span>
-            </div>
-          {/if}
-          {#if syncResult.memoriesImported}
-            <div class="flex items-center gap-2 p-3 bg-emerald-500/5 border border-emerald-500/15 rounded-lg">
-              <span class="text-xl">🧠</span>
-              <span class="text-lg font-bold font-mono text-emerald-400">{syncResult.memoriesImported}</span>
-              <span class="flex-1 text-[13px] text-white/70 text-left">memories synced</span>
-            </div>
-          {/if}
-          {#if syncResult.credentialsSynced}
-            <div class="flex items-center gap-2 p-3 bg-emerald-500/5 border border-emerald-500/15 rounded-lg">
-              <span class="text-xl">🔑</span>
-              <span class="text-lg font-bold font-mono text-emerald-400">✓</span>
-              <span class="flex-1 text-[13px] text-white/70 text-left">credentials synced</span>
-            </div>
-          {/if}
-
-          {#if !syncResult.profileFiles && !syncResult.memoriesImported && !syncResult.credentialsSynced}
-            <div class="flex items-center gap-2 p-3 bg-emerald-500/5 border border-emerald-500/15 rounded-lg">
-              <span class="text-xl">📡</span>
-              <span class="flex-1 text-[13px] text-white/70 text-left">Connection verified - no new data to sync</span>
-            </div>
-          {/if}
-        </div>
-
-        <p class="text-[13px] text-white/60 m-0 mb-6">Your local profile is now synchronized with the configured server.</p>
+        <p class="text-sm text-white/70">Selected Profile Sync work completed.</p>
+        {#if syncResult.taskId}<p class="break-all font-mono text-xs text-emerald-400">Task {syncResult.taskId}</p>{/if}
       {:else}
         <div class="p-3 bg-red-400/10 border border-red-400/30 rounded-md mb-4">
           <span class="text-[13px] text-red-400">{syncResult.error || 'An unknown error occurred'}</span>
         </div>
-        <p class="text-[13px] text-white/60 m-0 mb-6">Please check your server connection and try again.</p>
       {/if}
 
       <button class="w-full px-4 py-3.5 bg-gradient-to-br from-emerald-500 to-emerald-600 border-0 rounded-lg text-[15px] font-semibold text-[#1a1a2e] cursor-pointer transition-all hover:shadow-[0_0_20px_rgba(0,255,136,0.3)]" on:click={handleCloseSyncComplete}>

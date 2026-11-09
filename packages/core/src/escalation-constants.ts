@@ -11,10 +11,8 @@
 
 export const BACKEND_IDS = {
   CLAUDE_CODE: 'claude-code',
-  AIDER: 'aider',
-  GEMINI_CLI: 'gemini-cli',
-  QWEN_CODE: 'qwen-code',
   CODEX: 'codex',
+  GEMINI: 'gemini',
 } as const;
 
 export type BackendId = (typeof BACKEND_IDS)[keyof typeof BACKEND_IDS];

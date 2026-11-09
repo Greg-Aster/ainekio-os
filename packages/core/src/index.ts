@@ -29,11 +29,8 @@ export * from './persona-learning';
 export * from './persona-insights';
 export * from './psychoanalyzer-config';
 export * from './goal-review';  // Phase 4: Weekly goal reviews
-export * from './system-operator';  // Phase 5: System operator maintenance skills
-export * from './voice';  // Phase 5: Live voice loop foundation
 // Note: memory-validation is an internal utility, not exported
 export * from './memory-metrics-cache';
-export * from './function-memory';
 export * from './curiosity-questions';
 export * from './audit';
 export {
@@ -82,60 +79,12 @@ export * from './training-config';
 export * from './training-launch';
 export { finalizeTrainingProcess } from './training-process.js';
 export type { TrainingProcessName } from './training-process.js';
-// Skills - exclude queueForApproval and getPendingApprovals (conflicts with policy)
-export type {
-  SkillCategory,
-  SkillRisk,
-  SkillCost,
-  TrustLevel,
-  InputType,
-  SkillInput,
-  SkillOutput,
-  SkillManifest,
-  SkillResult,
-  SkillExecution,
-  ApprovalQueueItem,
-} from './skills.js';
-export {
-  registerSkill,
-  getSkill,
-  listSkills,
-  getAvailableSkills,
-  getApprovalItem,
-  approveSkillExecution,
-  rejectSkillExecution,
-  isPathAllowed,
-  isWriteAllowed,
-  isCommandWhitelisted,
-  validateInputs,
-  executeSkill,
-  loadTrustLevel,
-  // Rename conflicting exports
-  queueForApproval as skillQueueForApproval,
-  getPendingApprovals as skillGetPendingApprovals,
-} from './skills.js';
+// Shared trust and policy contracts
+export type { SkillRisk, TrustLevel } from './skills.js';
+export { loadTrustLevel } from './skills.js';
 export * from './tool-catalog';
 
-// Policy - primary source for queueForApproval and getPendingApprovals
-export type {
-  PolicyDecision,
-  ActionContext,
-  PendingAction,
-} from './policy.js';
-export {
-  meetsMinimumTrust,
-  evaluatePolicy,
-  isReadAllowed,
-  isWriteAllowedPolicy,
-  isCommandAllowed,
-  queueForApproval,
-  getPendingApprovals,
-  approveAction,
-  rejectAction,
-  getAction,
-  canAutoExecute,
-  getAllowedSkills,
-} from './policy.js';
+export { meetsMinimumTrust } from './policy.js';
 export * from './tts';
 export * from './tts/robot-audio.js';
 export {
@@ -153,7 +102,6 @@ export {
 } from './tts/delivery-queue.js';
 export { parseThinkingBlocks } from './nodes/output/thinking-stripper.node.js';
 export * from './stt';
-export * from './voice-training';
 export * from './autonomy';
 export * from './environment-interface';
 export { collectSystemReviewIssues, systemCodeReviewAuthorization } from './help-tickets/code-review.js';
@@ -177,17 +125,10 @@ export {
 export type {
   UserRole,
   EventType,
-  MemoryPolicy,
 } from './memory-policy.js';
 export {
   canWriteMemory as memoryPolicyCanWriteMemory,
-  shouldCaptureTool,
-  conversationVisibility,
-  hasCapability,
-  redactSensitiveData,
-  filterToolOutputs,
-  canViewMemoryType,
-  getMaxMemoriesForRole,
+  MemoryPolicy,
 } from './memory-policy.js';
 export * from './trust-coupling';
 export * from './path-resolver';
@@ -395,10 +336,8 @@ export {
 export type { EncryptionStatus, UnlockResult, EncryptionCapabilities } from './encryption-manager.js';
 
 // Big Brother Mode - Escalation Backend Abstraction
-export * from './big-brother';
 export { getBigBrotherSessionState, stopBigBrotherSession, executeInBigBrotherSession } from './terminal/client.js';
 export { parseBigBrotherTerminalEvent } from './terminal/providers/cli.js';
-// Escalation backend - exclude isEscalationAvailable (conflicts with big-brother), rename getActiveBackend
 export {
   type EscalationOptions,
   type EscalationResult,
@@ -410,6 +349,7 @@ export {
   listBackends,
   getBackendStatuses,
   escalate,
+  isEscalationAvailable,
   isEscalationReady,
   BACKEND_IDS,
   type BackendId,
@@ -417,9 +357,6 @@ export {
 } from './escalation-backend';
 // Export backends (auto-register on import)
 export * from './backends/claude-code-backend';
-export * from './backends/aider-backend';
-export * from './backends/gemini-cli-backend';
-export * from './backends/qwen-code-backend';
 export * from './backends/codex-backend';
 
 // Node Editor - Graph Execution
@@ -498,89 +435,10 @@ export {
   ModeController,
   getModeController,
   getOperatorMode,
-  // Self-healing
-  type TSError,
-  type FixProposal,
-  parseTscOutput,
-  runTypeCheck,
-  analyzeError,
-  saveProposal,
-  loadPendingProposals,
-  updateProposalStatus,
-  runSelfHealing,
-  getErrorCount,
-  // Critic (Superego - review and approval)
-  type ProposedChange,
-  type CriticReview,
-  type ApprovalRequest as CriticApprovalRequest,
-  generateDiff,
-  formatDiffSummary,
-  assessRisk,
-  checkPolicies,
-  reviewProposal,
-  queueForApproval as criticQueueForApproval,
-  getPendingApprovals as criticGetPendingApprovals,
-  resolveApproval,
-  submitForReview,
-  proposeFileWrite,
-  proposeFileDelete,
-  // Operator Proposals (Human-in-the-Loop)
-  type TaskRisk,
-  type ProposalTaskType,
-  type ProposalResponse,
-  type OperatorProposal,
-  type ProposalFeedback,
-  type ProposalStats,
-  type PostExecutionFeedback,
-  type PostFeedbackRequest,
-  type ProposalTrustLevel,
-  TASK_RISK_LEVELS,
-  proposalEvents, // Event emitter for waking Active Operator
-  createProposal,
-  getOperatorPendingProposals,
-  getPendingProposalTaskTypes,
-  hasPendingProposalForTask,
-  getProposal,
-  respondToProposal,
-  getApprovalRequirement,
-  getUserTrustLevel,
-  getProposalFeedback,
-  getProposalStats,
-  getTaskApprovalRate,
-  exportProposalTrainingData,
-  getPendingPostFeedback,
-  submitPostFeedback,
-  getPostFeedbackStats,
-  exportAllTrainingData,
-  cleanupOldProposals,
-  // Big Brother execution review
-  type ExecutionReviewResult,
-  triggerBigBrotherExecutionReview,
 } from './active-operator/index.js';
 
 // Escalation backends (Big Brother mode - external LLM tool executors)
 export * from './tool-executor-config.js';
-export * from './cli-tool-adapters.js';
-
-// Phase 3 Connectors (data ingestion)
-export * from './connectors/photo-ingestor.js';
-export * from './connectors/document-ingestor.js';
-export * from './connectors/calendar-connector.js';
-// Chat ingestor - rename ChatMessage to avoid conflict with persona/extractor
-export {
-  type ChatPlatform,
-  type ChatMessage as ChatImportMessage,
-  type ChatAttachment,
-  type ChatConversation,
-  type ChatIngestionResult,
-  type ChatIngestionOptions,
-  detectPlatform,
-  parseChatExport,
-  ingestChatExport,
-  ingestChatsFromDirectory,
-  chatIngestor,
-} from './connectors/chat-ingestor.js';
-export * from './connectors/clip-tagger.js';
 
 // Maintained inference and training defaults
 export * from './model-defaults.js';

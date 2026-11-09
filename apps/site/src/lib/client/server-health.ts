@@ -6,7 +6,7 @@
  * Profile sync destinations remain independent.
  */
 
-import { writable, derived, type Readable, type Writable } from 'svelte/store';
+import { writable, type Writable } from 'svelte/store';
 import { apiUrl, getApiBaseUrl, isHostedUi, isReactNativeWebView } from './api-config';
 
 export interface HealthStatus {
@@ -19,12 +19,6 @@ export interface HealthStatus {
   error?: string;
 }
 
-export interface HealthConfig {
-  checkIntervalMs: number;      // How often to check (default: 30s)
-  timeoutMs: number;            // Connection timeout (default: 5s)
-  maxConsecutiveFailures: number; // Before marking offline (default: 3)
-}
-
 // Quality thresholds (in milliseconds)
 const QUALITY_THRESHOLDS = {
   excellent: 100,   // < 100ms
@@ -32,12 +26,7 @@ const QUALITY_THRESHOLDS = {
   fair: 500,        // < 500ms
 };
 
-// Default configuration
-const DEFAULT_CONFIG: HealthConfig = {
-  checkIntervalMs: 30000,  // 30 seconds
-  timeoutMs: 5000,         // 5 seconds
-  maxConsecutiveFailures: 3,
-};
+const CHECK_INTERVAL_MS = 30000;
 
 // Current health status store
 const healthStatus: Writable<HealthStatus> = writable({
@@ -47,9 +36,6 @@ const healthStatus: Writable<HealthStatus> = writable({
   lastCheck: new Date(),
   consecutiveFailures: 0,
 });
-
-// Configuration store
-const config: Writable<HealthConfig> = writable({ ...DEFAULT_CONFIG });
 
 // Health check interval reference
 let checkInterval: ReturnType<typeof setInterval> | null = null;
@@ -143,19 +129,10 @@ export async function checkHealth(): Promise<HealthStatus> {
 /**
  * Start periodic health monitoring
  */
-export function startHealthMonitor(customConfig?: Partial<HealthConfig>): void {
+function startHealthMonitor(): void {
   if (isHostedUi() && !getApiBaseUrl()) return;
   // Stop existing monitor if running
   stopHealthMonitor();
-
-  // Apply custom config
-  if (customConfig) {
-    config.update(c => ({ ...c, ...customConfig }));
-  }
-
-  // Get current config
-  let currentConfig: HealthConfig = DEFAULT_CONFIG;
-  config.subscribe(c => { currentConfig = c; })();
 
   // Perform initial check
   checkHealth();
@@ -163,15 +140,15 @@ export function startHealthMonitor(customConfig?: Partial<HealthConfig>): void {
   // Start periodic checks
   checkInterval = setInterval(() => {
     checkHealth();
-  }, currentConfig.checkIntervalMs);
+  }, CHECK_INTERVAL_MS);
 
-  console.log('[server-health] Monitor started with interval:', currentConfig.checkIntervalMs, 'ms');
+  console.log('[server-health] Monitor started with interval:', CHECK_INTERVAL_MS, 'ms');
 }
 
 /**
  * Stop health monitoring
  */
-export function stopHealthMonitor(): void {
+function stopHealthMonitor(): void {
   if (checkInterval) {
     clearInterval(checkInterval);
     checkInterval = null;
@@ -186,82 +163,8 @@ export async function forceHealthCheck(): Promise<HealthStatus> {
   return checkHealth();
 }
 
-/**
- * Update monitor configuration
- */
-export function updateHealthConfig(newConfig: Partial<HealthConfig>): void {
-  config.update(c => ({ ...c, ...newConfig }));
-
-  // Restart monitor with new config if running
-  if (checkInterval) {
-    let currentConfig: HealthConfig = DEFAULT_CONFIG;
-    config.subscribe(c => { currentConfig = c; })();
-
-    clearInterval(checkInterval);
-    checkInterval = setInterval(() => {
-      checkHealth();
-    }, currentConfig.checkIntervalMs);
-
-    console.log('[server-health] Monitor restarted with new config');
-  }
-}
-
-/**
- * Get quality color for UI display
- */
-export function getQualityColor(quality: HealthStatus['quality']): string {
-  switch (quality) {
-    case 'excellent': return '#10b981'; // green-500
-    case 'good': return '#22c55e';      // green-400
-    case 'fair': return '#eab308';      // yellow-500
-    case 'poor': return '#f97316';      // orange-500
-    case 'offline': return '#ef4444';   // red-500
-    default: return '#6b7280';          // gray-500
-  }
-}
-
-/**
- * Get quality label for UI display
- */
-export function getQualityLabel(quality: HealthStatus['quality']): string {
-  switch (quality) {
-    case 'excellent': return 'Excellent';
-    case 'good': return 'Good';
-    case 'fair': return 'Fair';
-    case 'poor': return 'Poor';
-    case 'offline': return 'Offline';
-    default: return 'Unknown';
-  }
-}
-
-/**
- * Get quality emoji for compact display
- */
-export function getQualityEmoji(quality: HealthStatus['quality']): string {
-  switch (quality) {
-    case 'excellent': return '🟢';
-    case 'good': return '🟢';
-    case 'fair': return '🟡';
-    case 'poor': return '🟠';
-    case 'offline': return '🔴';
-    default: return '⚪';
-  }
-}
-
-// Derived store for simplified connection state
-export const isConnected: Readable<boolean> = derived(
-  healthStatus,
-  $status => $status.connected
-);
-
-// Derived store for connection quality
-export const connectionQuality: Readable<HealthStatus['quality']> = derived(
-  healthStatus,
-  $status => $status.quality
-);
-
 // Export stores
-export { healthStatus, config };
+export { healthStatus };
 
 // Auto-start monitor when in browser context
 if (typeof window !== 'undefined') {

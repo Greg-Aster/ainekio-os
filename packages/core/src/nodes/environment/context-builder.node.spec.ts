@@ -768,3 +768,64 @@ test('conversation context retains the prose producer and acquisition evidence a
   assert.equal(status.recordedSituation.environmentDescription, 'An earlier scene')
   assert.equal(status.recordedSituation.updatedAt, undefined)
 })
+
+test('conversation context strips action catalogs, raw body status, and persona bookkeeping while retaining selected command descriptions and motor output', async () => {
+  const current = observation()
+  current.capabilities.expressionLibrary = [{ name: 'happy', label: 'Warm smile' }]
+  current.capabilities.locomotion = { commands: ['walk'], goalKinds: ['distance'] }
+  current.state = {
+    body: { robotId: 'selected', motionAvailable: true },
+    locomotionMeasurement: { position: { available: false }, yaw: { available: false } },
+    gateway: {
+      robots: {
+        selected: {
+          epoch: 2,
+          status: { output_ready: true, output_armed: true, output_fault: 0, status_received_at: '2026-10-26T17:19:25Z', servo_feedback: { signal_millivolts: [1000, 1001] } },
+        },
+      },
+    },
+  }
+  const conversation = await environmentContextBuilderNode.execute({
+    sourceObservation: current,
+    observationCurrent: true,
+    event: { kind: 'wake' },
+    persona: {
+      $schema: 'https://metahuman.local/schemas/persona-core.json',
+      version: '0.1.0',
+      lastUpdated: '2026-10-16T00:00:00Z',
+      identity: { name: 'Ainekio', role: 'Companion' },
+      personality: { summary: 'Playful and direct' },
+      notes: 'Internal note',
+    },
+    robotStatus: {
+      updatedAt: '2026-10-26T17:19:25Z',
+      situation: { currentGoal: '', currentIntent: '' },
+      parkedGoals: [{ executionId: 'exec-1', objectiveId: 'obj-1', objective: 'Earlier parked goal', instruction: 'Full verbose instruction', decision: { outcome: 'wait' }, updatedAt: '2026-10-26T17:10:00Z' }],
+    },
+    selectedTask: {
+      program: { steps: [{ kind: 'action', action: { type: 'robotCommand', command: 'stand' } }] },
+    },
+  }, {}, { purpose: 'conversation', systemPrompt: 'Fixture' })
+  const { parseContext } = await import('../../context-serialization.js')
+  const payload = parseContext(conversation.message)
+  assert.equal(payload.currentEnvironment.capabilities.expressionLibrary, undefined)
+  assert.equal(payload.currentEnvironment.capabilities.robotCommandCatalog, undefined)
+  assert.equal(payload.currentEnvironment.capabilities.locomotion.programSteps, undefined)
+  assert.equal(payload.currentEnvironment.state.gateway.selectedRobot.status, undefined)
+  assert.deepEqual(payload.currentEnvironment.state.gateway.selectedRobot.motorOutput, {
+    output_ready: true,
+    servoPwmOutputEnabled: true,
+    output_fault: 0,
+    timestamp: '2026-10-26T17:19:25Z',
+  })
+  assert.equal(payload.selectedTask.commandDescriptions.stand, 'Rise into the standard upright four-leg standing pose.')
+  assert.equal(payload.activePersona.identity.name, 'Ainekio')
+  assert.equal(payload.activePersona.$schema, undefined)
+  assert.equal(payload.activePersona.notes, undefined)
+  assert.deepEqual(payload.robotStatus.parkedGoals, [{
+    executionId: 'exec-1',
+    objectiveId: 'obj-1',
+    objective: 'Earlier parked goal',
+    updatedAt: '2026-10-26T17:10:00Z',
+  }])
+})

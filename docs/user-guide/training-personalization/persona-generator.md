@@ -37,7 +37,7 @@ When the interview reaches completion, the generator extracts a proposed persona
 - the extracted data;
 - the apply strategy.
 
-Review the actual field changes before applying them.
+The diff previews the merge result. Review the actual field changes and the selected strategy before applying them. A finalized session can reopen its saved review from session history without running extraction again. If an apply response is interrupted, **Reload saved session** retrieves the persisted session result before another apply. In onboarding, choose **Continue** after the apply acknowledgement to save navigation separately.
 
 ## Apply Strategies
 
@@ -45,7 +45,7 @@ Review the actual field changes before applying them.
 - **Append** adds new information alongside existing data without intentionally removing it.
 - **Replace** replaces the existing persona with the extracted result. Use it only when that destructive scope is intended.
 
-Applying a session updates the active profile and records the session as applied. The CLI path creates a timestamped backup before writing. In the web UI, confirm an archive exists rather than assuming one was made.
+Applying a session updates the active profile through the shared persona merger, creates a timestamped archive, and records the session as applied. The applied result stays visible until you choose **Continue** in onboarding or **Back to Generator** in the Persona view.
 
 ## CLI Interview Workflow
 

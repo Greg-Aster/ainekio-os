@@ -2,12 +2,20 @@ export interface SpeechChunkPolicy {
   preferredChars: number;
   maxChars: number;
   minTailChars: number;
+  openingChars?: number;
 }
 
-export const DEFAULT_SPEECH_CHUNK_POLICY: SpeechChunkPolicy = {
+const DEFAULT_SPEECH_CHUNK_POLICY: SpeechChunkPolicy = {
   preferredChars: 140,
   maxChars: 220,
   minTailChars: 48,
+};
+
+export const ROBOT_SPEECH_CHUNK_POLICY: SpeechChunkPolicy = {
+  openingChars: 160,
+  preferredChars: 260,
+  maxChars: 380,
+  minTailChars: 80,
 };
 
 function splitLongUnit(unit: string, preferredChars: number): string[] {
@@ -40,7 +48,11 @@ function splitLongUnit(unit: string, preferredChars: number): string[] {
   return chunks;
 }
 
-function sentenceUnits(paragraph: string, policy: SpeechChunkPolicy): string[] {
+function sentenceUnits(
+  paragraph: string,
+  policy: SpeechChunkPolicy,
+  clauseSplitChars = policy.maxChars,
+): string[] {
   const sentences = paragraph
     .match(/.+?(?:[.!?]+["')\]]*(?=\s|$)|$)/g)
     ?.map(sentence => sentence.trim())
@@ -48,7 +60,7 @@ function sentenceUnits(paragraph: string, policy: SpeechChunkPolicy): string[] {
   const units: string[] = [];
 
   for (const sentence of sentences) {
-    if (sentence.length <= policy.maxChars) {
+    if (sentence.length <= clauseSplitChars) {
       units.push(sentence);
       continue;
     }
@@ -130,15 +142,18 @@ export function splitSpeechText(
   // Release an opening phrase before grouping the remaining speech. Join very
   // short openings to the next phrase so a greeting does not finish playing
   // before the next chunk can be synthesized. Keep later tail merging separate.
-  const openingChars = Math.min(48, policy.preferredChars);
-  const openingUnits = sentenceUnits(paragraphs[0]!, {
-    ...policy,
-    preferredChars: openingChars,
-    maxChars: openingChars,
-  });
+  const openingChars = Math.min(policy.openingChars ?? 48, policy.preferredChars);
+  if (policy.openingChars !== undefined && paragraphs[0]!.length <= openingChars) {
+    return [
+      paragraphs[0]!,
+      ...paragraphs.slice(1).flatMap(paragraph => chunkParagraph(paragraph, policy)),
+    ];
+  }
+  const openingUnits = sentenceUnits(paragraphs[0]!, policy, openingChars);
   let opening = openingUnits[0]!;
   const nextPhrase = openingUnits[1];
-  if (opening.length < 20 && nextPhrase && opening.length + 1 + nextPhrase.length <= policy.maxChars) {
+  const minOpeningChars = policy.openingChars !== undefined ? Math.min(48, policy.minTailChars) : 20;
+  if (opening.length < minOpeningChars && nextPhrase && opening.length + 1 + nextPhrase.length <= policy.maxChars) {
     opening = `${opening} ${nextPhrase}`;
   }
   const remainder = paragraphs[0]!.slice(opening.length).trim();

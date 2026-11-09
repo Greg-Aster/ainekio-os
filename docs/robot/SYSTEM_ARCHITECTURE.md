@@ -345,53 +345,34 @@ flowchart TB
   classDef data fill:#263126,stroke:#86c995,color:#dcfce7
 ```
 
-The [Svelte Flow map](http://127.0.0.1:4321/architecture) remains available in the
-Site application; its [implementation notes](../../apps/site/src/components/architecture-map/README.md)
-describe that separate viewer.
+The [Svelte Flow map](http://127.0.0.1:4321/architecture) in the Site application
+is described in its [implementation notes](../../apps/site/src/components/architecture-map/README.md).
+The diagrams show configured paths, not live health or deployment status. See the
+[placement table](#shared-llamacpp-hosting) for the desktop/Q6A split and
+[listening and speaking](BODY_CAPABILITIES.md#listening-and-speaking) for audio
+destination selection.
 
-The diagrams show configured paths, not live health or deployment status. The
-[placement table](#shared-llamacpp-hosting) below explains the desktop/Q6A split.
-Desktop loopback addresses refer to the desktop; with Body Control on Q6A, its
-generator uses Q6A's own configured llama.cpp service.
-Core's speech functions own the Whisper/Kokoro clients. Audio destinations follow
-the existing [speech selection](BODY_CAPABILITIES.md#listening-and-speaking).
-
-Sources: the selected profile's `etc/models.json` and `etc/operator.json`, resolved
+Sources: the selected profile's `etc/models.json` and `etc/operator.json` resolved
 through the [profile registry](../../packages/core/src/model-resolver.ts);
 [backend configuration](../../etc/llm-backend.json),
 [voice service configuration](../../etc/voice-servers.json),
 the [embedding request owner](../../packages/core/src/embeddings.ts),
 the [native llama.cpp provider](../../packages/core/src/providers/llama-cpp.ts),
-and [deployment configuration](../../etc/deployment.json). Profile credentials and
-RunPod endpoint identifiers are not copied here. The
-[Freestyle service definition](../../../Ainekio/experiments/freestyle/ainekio-freestyle-api.service)
-owns the motion-model endpoint configuration.
+[deployment configuration](../../etc/deployment.json), and the
+[Freestyle service definition](../../../Ainekio/experiments/freestyle/ainekio-freestyle-api.service).
 
 **Body Control is a Python application.** Its [composition root](../../../Ainekio/Master/gateway/server/__main__.py)
 creates GatewayService, the environment adapter, camera processing, gait learning
-and the dashboard HTTP thread. These responsibilities run inside that
-application. Freestyle's generator is a separate HTTP service; its executor is
-loaded by the dashboard into the gateway application. The browser does not run
-the motion executor.
+and the dashboard HTTP thread. Freestyle's generator is a separate HTTP service;
+its executor is loaded by the dashboard into the gateway process.
 
-**MetaHuman OS is a software system, spanning multiple processes and clients.**
-Its boundary identifies software ownership, not a single process or computer.
-Core is a shared TypeScript library imported by the server, CLI and workers.
-Finite agent jobs run in worker subprocesses; persistent services have separate
-process lifecycles. The maintained Android app embeds its own Node.js HTTP server
-and shared Core API adapter. Configuration, stored state and explicitly launched
-training tools are also part of the system.
-
-The browser displays chat, controls,
-settings and status, with Svelte providing interactive components. It sends HTTP
-requests to the Astro web server running on Node.js, which calls the MetaHuman
-engine. The terminal program runs `mh` commands using Node.js and calls the same
-engine library in `packages/core/src/`. Hosting the web
-server on another computer changes its location, not its Node.js runtime.
-Brain supplies finite agent adapters and persistent service entrypoints.
-Environment Bridge is a persistent process supervised through the Agent Catalog
-and Agent Monitor. Model servers can run locally or remotely; assigning a model
-does not move the task's durable state to that server.
+**MetaHuman OS spans multiple processes and clients.** Core (`packages/core/src/`)
+is a shared TypeScript library imported by the Astro Node.js web server, the `mh`
+CLI, and worker subprocesses. Brain supplies finite agent adapters and persistent
+service entrypoints (including Environment Bridge, supervised through Agent Catalog
+and Agent Monitor). The Android app embeds its own local Node.js HTTP server and
+shared Core API adapter. Model servers can run locally or remotely; assigning a
+model does not move durable task state to that server.
 
 | Connection | Endpoint / owner |
 | --- | --- |
@@ -401,64 +382,49 @@ does not move the task's durable state to that server.
 | Bridge ↔ MetaHuman Core | Authenticated `/api/environment-bridge/*`: observation and result POSTs; `/stream` carries outbound work |
 | Freestyle executor → generator | Configured HTTP endpoint, default `127.0.0.1:8794`; generator calls its configured model backend |
 
-These are bidirectional information paths, not a mandatory execution sequence.
-Speech, sensing, motion and inference can overlap. For an existing installation,
-use the [startup guide](../../../Ainekio/docs/STARTUP.md); Ainekio's root simulator
-launcher is not the physical V2 startup path.
+These are bidirectional information paths, not a serial execution sequence.
+Speech, sensing, motion and inference can overlap. For physical V2 startup, use
+the [startup guide](../../../Ainekio/docs/STARTUP.md).
 
 ## Shared llama.cpp hosting
 
-Each computer needing local llama.cpp inference has one `llama-cpp.service` and
-one host-local native model preset, conventionally
-`~/.config/llama.cpp/models.ini`. Systemd owns the host service lifetime;
-[`bin/llama-cpp-services`](../../bin/llama-cpp-services) is its installation/start
-entrypoint. The installed unit executes the native `llama-server` binary directly,
-so neither MetaHuman nor Body Control must be running to serve inference. The
-binary may be installed anywhere on that computer; a path inside a checkout does
-not require that application to run.
+Each computer running local llama.cpp inference uses one `llama-cpp.service` and
+one host-local preset (conventionally `~/.config/llama.cpp/models.ini`). Systemd
+owns the host service lifetime; [`bin/llama-cpp-services`](../../bin/llama-cpp-services)
+is its installation and start entrypoint. The unit executes the native
+`llama-server` binary directly, independent of MetaHuman or Body Control.
 
-Model Resolver/Registry retain role assignments, capabilities, model aliases,
+Model Resolver/Registry own role assignments, capabilities, model aliases,
 endpoint placement and request-local LoRA selection. The provider bridge and
 [`providers/llama-cpp.ts`](../../packages/core/src/providers/llama-cpp.ts) transport
 MetaHuman requests. Freestyle's [generator](../../../Ainekio/experiments/freestyle/generator.py)
-retains motion input construction and result decoding and calls `/v1` directly.
-It remains distinct from its compiler, executor and durable recordings. There is
-no additional application-level model router, process supervisor or inference queue.
+builds motion inputs, decodes results and calls `/v1` directly, separate from its
+compiler, executor and recordings.
 
 | Arrangement | MetaHuman client | Freestyle generator client |
 | --- | --- | --- |
 | Both applications on desktop | Desktop service root, e.g. `http://127.0.0.1:8080` | Same desktop listener plus `/v1`; selects its motion alias |
 | MetaHuman on desktop, Body Control on Q6A | Configured desktop service | Q6A's own service plus `/v1`; Q6A loopback refers to Q6A, not the desktop |
 
-The host preset has one section per existing deployment, with absolute artifact
-paths, explicit original aliases, `load-on-startup = false`, and all of that
-model's existing context, mmproj, KV, GPU, parallelism, reasoning, sampling and
-LoRA initialization settings. These settings must not move to global router
-arguments where they would override another model. Preserve each model's idle
-policy; this installation's MetaHuman models retain native five-minute sleep.
-Native demand loading and idle sleep own weight residency. Inventory and health
-reads do not load weights; model-qualified properties/adapter reads can load the
-selected worker. The service uses `--models-max 0` so consolidation does not add
-a model-count eviction limit across previously independent deployments. Actual
-hardware memory and native per-model capacities still apply.
+The host preset defines one section per deployment with absolute artifact paths,
+explicit aliases, `load-on-startup = false`, and per-model context, mmproj, KV,
+GPU, parallelism, reasoning, sampling and LoRA initialization settings. Keep
+model-specific settings in their preset sections rather than global router
+arguments. Native demand loading and idle sleep (five minutes on this
+installation) own weight residency. Inventory and health reads do not load
+weights; model-qualified property or adapter reads can load the selected worker.
+The service runs with `--models-max 0` so router mode does not impose an
+artificial model-count eviction cap alongside actual hardware memory limits.
 
-One service/API owner does **not** mean one OS PID: native router mode starts
-native inference workers. Distinct model weights still consume their own memory;
-sharing a listener does not establish a weight-memory saving. The CPU/CUDA repair
-and regression for the installed adaptive-KV build are retained in
-[`shared-host-kv.patch`](../../external/llama.cpp/shared-host-kv.patch), alongside
-the existing native cancellation patch. CUDA demand allocation applies to CUDA
-buffers; CPU presets retain normal native CPU allocation.
+Native router mode spawns inference worker processes per loaded model. The
+adaptive-KV and cancellation patches live in
+[`shared-host-kv.patch`](../../external/llama.cpp/shared-host-kv.patch) (CUDA
+demand allocation applies to CUDA buffers; CPU presets use standard CPU
+allocation). The [number-sign schema patch](../../external/llama.cpp/json-schema-number-sign.patch)
+enforces nonzero signed numeric schema constraints used by Semi Auto activation
+adjustments.
 
-The native [number-sign schema patch](../../external/llama.cpp/json-schema-number-sign.patch)
-enforces positive and negative nonzero numeric schema constraints, including
-fractions and exponents. Semi uses these constraints to generate activation
-adjustments that can change the retained level; Core's parser applies the
-adjustment and checks the resulting transition.
-
-To install the same host service on either computer, prepare its native preset
-from that installation's actual model settings, then run the existing installer
-from the MetaHuman checkout (the installed service has no application dependency):
+Install the shared host service from the MetaHuman checkout:
 
 ```sh
 ./bin/llama-cpp-services install /absolute/path/to/llama-server \
@@ -467,50 +433,26 @@ from the MetaHuman checkout (the installed service has no application dependency
 systemctl --user start llama-cpp.service
 ```
 
-Before converting an older installation, transcribe effective unit/drop-in model
-settings into that preset. Disable and remove superseded model units and their
-launch overrides, then install the shared unit. The removed per-model `serve`
-operation is no longer accepted. App startup can idempotently start only the
-known host unit for a selected loopback deployment; it does not scan units,
-choose a model process or load weights. Remote endpoints are owned by their
-configured computer. Freestyle's generator unit uses `Wants=llama-cpp.service`
-without ordering, `PartOf` or `BindsTo`; requests follow native loading readiness.
-
-Stopping either application leaves the host service and the other client's
-inference intact. Host maintenance explicitly uses
-`systemctl --user stop|restart llama-cpp.service` and affects all its clients.
-Changing model presets or binary settings is host maintenance, separate from
-changing role assignments. Native inventory reload (`/models?reload=1`) can
-unload changed presets; do not mistake it for a read-only inventory operation.
-Adapter discovery includes `?model=...`; inference carries the selected model
-and per-request `lora` list. Clients do not mutate global adapter scales.
+App startup may idempotently start the local `llama-cpp.service` for a selected
+loopback deployment without scanning units or preloading weights. Freestyle's
+generator unit uses `Wants=llama-cpp.service` without `PartOf` or `BindsTo`.
+Stopping either client application leaves `llama-cpp.service` running; host
+maintenance uses `systemctl --user stop|restart llama-cpp.service`. Note that
+`/models?reload=1` reloads presets and can unload changed workers. Adapter
+discovery passes `?model=...`, and inference requests pass the selected model
+and per-request `lora` list without mutating global adapter scales.
 
 ### Native embeddings and indexes
 
-The Embedder role calls `/v1/embeddings` through the same native service as text,
-vision and motion. The two existing GGUF aliases remain: Qwen3 Embedding 0.6B
-(1024 dimensions, last-token pooling) and Nomic Embed Text v1.5 (768 dimensions,
-mean pooling). Their host-local presets use `device = none` and `gpu-layers = 0`;
-this preserves CPU placement for weights and operation workspaces. Both use
-native L2-normalized vectors and native model capacities: 32768 tokens for Qwen
-and 2048 for the installed Nomic artifact. There is no application character
-truncation or secondary service fallback on this path.
-
-The previous node-llama-cpp package, process manager, launchers, optional generation
-branch, management API and duplicate settings/status controls are retired.
-Its optional generator had no registered model consumer or installed default
-artifact; generation remains with the existing native provider. Mobile Core is
-also a client of its configured native endpoint rather than a launcher of that
-retired Node host. An actual native mobile deployment is a separate unverified
-boundary; no desktop dependency is substituted for a configured local host.
-
-Native vectors can differ numerically from the retired engine. Existing vector
-index compatibility checks remain intact. Rebuild affected indexes through
-`vector-index.ts`'s existing refresh owner from original memory content; do not
-relabel old vectors as new native output. The migration preserves memory files,
-model artifacts and unrelated provider indexes. The existing Model Registry
-Embedder selector is the configuration surface; native presets own installation
-and model serving.
+The Embedder role calls `/v1/embeddings` through the shared native service. The
+two GGUF aliases—Qwen3 Embedding 0.6B (1024 dimensions, last-token pooling,
+32768-token capacity) and Nomic Embed Text v1.5 (768 dimensions, mean pooling,
+2048-token capacity)—use `device = none` and `gpu-layers = 0` for CPU execution
+and return native L2-normalized vectors without application character truncation
+or secondary fallback services. Mobile Core also acts as a client of its
+configured native endpoint. `vector-index.ts` enforces vector compatibility and
+rebuilds affected indexes from original memory records when the embedding model
+changes.
 
 ## Follow an operation
 
@@ -547,14 +489,14 @@ and model serving.
    and achievement of a physical goal are different results.
 
 **Motion ownership:** Freestyle owns description-based motion, startup/wake and
-first-stall correction requests. Inactivity rest/release is body-local, as
-defined in [the motion contract](BODY_CAPABILITIES.md#motion-and-posture). The manual Motion Library selector affects
-explicit manual controls; it does not redirect MetaHuman requests. Native motion
-and low-level manual controls remain available through the same P4 owners.
-MetaHuman has no active joint-generation workflow. An unavailable generator is
-reported; a library movement is not silently substituted. See the
-[Freestyle contract](../../../Ainekio/experiments/freestyle/README.md) for its model,
-compiler, training and deployment dependencies.
+stall correction requests. Inactivity rest/release is body-local, as defined in
+[the motion contract](BODY_CAPABILITIES.md#motion-and-posture). The manual Motion
+Library selector affects explicit manual controls without redirecting MetaHuman
+requests. Native motion and low-level manual controls remain available through
+the same P4 owners. An unavailable generator is reported rather than silently
+substituting a library movement. See the
+[Freestyle contract](../../../Ainekio/experiments/freestyle/README.md) for model,
+compiler, training and deployment details.
 
 ### Contracts at the handoffs
 
@@ -566,20 +508,18 @@ compiler, training and deployment dependencies.
 | P4 → Core | Device and gateway evidence establishes progress and outcomes; Core correlates it to the originating work | Acceptance, termination, failure, unknown outcome and goal achievement remain distinguishable |
 | Core → UI / model context | UI projects state and models receive attributed evidence | Preserve source, speaker, time and uncertainty; displaying success cannot create a receipt |
 
-These boundaries keep body-specific execution out of cognition and task decisions
-out of transports. The executable schemas remain in the [protocol](../../../Ainekio/Slave/software/protocol/README.md)
+Executable schemas live in the [protocol](../../../Ainekio/Slave/software/protocol/README.md)
 and [Core environment types](../../packages/core/src/environment-interface/types.ts);
-do not copy their changing field inventories here. Model joint positions, physical
-socket mappings and electrical units come from the [V2 specifications](../../../Ainekio/docs/v2-12servo/SPECIFICATIONS.md#joints-units-and-calibration).
+joint positions, socket mappings and electrical units live in the
+[V2 specifications](../../../Ainekio/docs/v2-12servo/SPECIFICATIONS.md#joints-units-and-calibration).
 
-Core's durable execution/effect identity is associated with Coordinator work and
-the adapter action. The gateway then records the Freestyle job or robot session
-and sequence that actually received it. A reconnect resumes delivery by those
-identities; it is not a new movement request. Cancellation and manual takeover
-must address the original work even if selection has changed. A successful Stop
-command does not retroactively prove an earlier movement's outcome. The
-[paired qualification](QUALIFICATION.md#cancellation-and-reconnect) exercises this
-boundary with a simulated body.
+Core's durable execution/effect identity maps to Coordinator work and the adapter
+action; the gateway records the Freestyle job or robot session and sequence that
+received it. Reconnect resumes delivery by those identities without repeating
+the movement request. Cancellation and manual takeover address the original work
+even if selection has changed, and a Stop command does not retroactively prove an
+earlier movement's outcome. See
+[paired qualification](QUALIFICATION.md#cancellation-and-reconnect).
 
 ### Hearing, speaking, seeing and body events
 
@@ -619,11 +559,16 @@ Paths below are implementation owners, not proposed replacement services.
 | Model role resolution and transport | Core [`model-router.ts`](../../packages/core/src/model-router.ts), `model-roles.ts`, `llm-backend.ts`, [`providers/bridge.ts`](../../packages/core/src/providers/bridge.ts) |
 | Agent registration and process lifecycle | Core [`Agent Catalog`](../../packages/core/src/agent-catalog-definitions.ts), `agent-process-runner.ts`; [`brain/agents/`](../../brain/agents/README.md) supplies adapters |
 
-Site and CLI remain interfaces over Core. A UI fix does not belong in a second
-brain implementation. A gateway repair does not create another body connection,
-and a motion-model repair does not create a MetaHuman servo controller.
+Site and CLI remain interfaces over Core.
 
 ## State, memory and learning
+
+Core's [audit owner](../../packages/core/src/audit.ts) stores structured activity
+history separately from memories and execution receipts. Audit Viewer, training
+logs and explicit agent diagnostics share its paged reader; agent run statistics
+come from retained Coordinator receipts. The event bus transports audit events
+live without storing duplicate audit history. Machine `etc/logging.json` owns
+recording and retention; Maintenance and housekeeping use that policy.
 
 | State | Producer and consumer | Release / retention responsibility |
 | --- | --- | --- |
@@ -634,75 +579,50 @@ and a motion-model repair does not create a MetaHuman servo controller.
 | Conversation, persona and persistent experience | [Buffer admission](../../packages/core/src/buffer-admission.ts), [memory](../../packages/core/src/memory.ts) and profile owners → selected context and learning | Domain retention is independent of worker completion. Execution cleanup does not erase conversation or learned facts; attribution and deduplication belong to these owners |
 | Training examples, model artifacts and CAD | Existing Core/Brain training owners, Freestyle dataset/deployment owners and Ainekio hardware owners → evaluation, serving, rollback or manufacturing | A completed training job does not make its dataset, active weights or rollback artifact an orphan. Verify references and intended retention at that owner before removal |
 
-The table describes responsibility and current release paths, not permission to
-purge data. An inactive record can still be required delivery evidence. A stored
-goal can remain useful without occupying a worker. Missing release behavior must
-be repaired at its producing owner and tested through normal consumption; adding
-another cleanup process does not establish that the producer is correct. Exact
-retention settings remain with their executable owners.
+Missing release behavior must be repaired at its producing owner and verified
+through normal consumption rather than compensated for with a separate cleanup
+sweep.
 
-Autonomy, Desire, reflection and sleep initiate work through existing Coordinator
-and graph owners. Active Operator assesses which operations to request; Desire
-owns reviewed multi-step plans; Active Task executes body programs. Their
-[behavior contracts](COMPANION_BEHAVIOR.md) and graph definitions specify the
-differences. An agent, a graph, a model role and a persistent service are not
-interchangeable names for the same thing.
-
-Active Operator first reads the active persona through its existing Persona Loader
-and Persona Formatter. Both the configured Orchestrator and the autonomy activity
-model receive identity, background, personality, values and standing goals as
-standing context; optional source selection cannot remove or narrow them. The
-Orchestrator selects additional evidence through the graph’s visible branches,
-and the autonomy model selects activity from the assembled context. The Environment graph retains its own
-request routing and execution responsibilities, reusing attributed supplied
-context only when its source owners can satisfy the selected scope. Persona,
-buffer, memory and camera reads remain with those existing owners; there is no
-second autonomy context store. See the [assessment context contract](COMPANION_BEHAVIOR.md#active-operator-execution-contract).
-
-The [Full Auto contract](COMPANION_BEHAVIOR.md#full-auto-continuity--owner-contract)
-owns autonomy behavior and assessment requirements. [Models and learning](MODELS_AND_LEARNING.md)
-owns the learning workflow and activation contract.
+Autonomy, Desire, reflection and sleep initiate work through the Coordinator and
+graph owners. Active Operator assesses which operations to request, Desire owns
+reviewed multi-step plans, and Active Task executes body programs. Standing
+persona context, Orchestrator source selection, and context reuse across
+Active Operator and Environment Mode follow the
+[assessment context contract](COMPANION_BEHAVIOR.md#active-operator-execution-contract)
+and [Full Auto contract](COMPANION_BEHAVIOR.md#full-auto-continuity--owner-contract).
+[Models and learning](MODELS_AND_LEARNING.md) owns the learning and activation
+contracts.
 
 ## Intended boundaries and remaining distribution work
 
 P4 owns local physical execution; Body Control owns the selected body and learned
 motion execution; MetaHuman owns cognition and durable objectives. Model-backed
-behavior selection remains with the relevant models. Transport and UI layers
-report observations and outcomes rather than choosing replacement behavior.
+behavior selection remains with the relevant models, while transport and UI
+layers report observations and outcomes.
 
-One Environment Bridge owns the connection. With **Follow the same robot across
-saved hosts** enabled, it watches the configured local host and saved SSH or
-Cloudflare route concurrently, and keeps exactly one Body Control action stream.
-An authenticated host remains usable without a physical robot, including for
-Body Control computer speech. Robot connect/disconnect events update that same
-stream rather than replacing it. A host advertising the selected robot takes
-precedence over a host without a robot; an active host with that robot remains
-selected. When that body moves hosts, the same owner reconnects to its new host.
-Select the robot identity to retain that choice across process restarts. Without
-an explicit identity, automatic mode follows the first available body for that
-process lifetime. It does not switch to another robot when the selected body is
-unavailable. Manual mode connects only to the explicitly selected host; manual
-Local closes the remote forwarder. Separate Local/Remote bridge agents are retired.
-WireGuard remains an independently managed operating-system interface.
+One Environment Bridge owns the gateway connection. With **Follow the same robot
+across saved hosts** enabled, it watches the configured local host and saved SSH
+or Cloudflare route concurrently while maintaining a single Body Control action
+stream. An authenticated host remains usable without a physical robot (including
+for host computer speech). A host advertising the selected robot takes precedence
+over a host without one; when that body moves hosts, the bridge reconnects to the
+new host. Selecting an explicit robot identity persists across restarts; without
+one, automatic mode follows the first available body for that process lifetime
+and never switches to a different robot when unavailable. Manual mode connects
+only to the explicitly selected host (manual Local closes the remote forwarder).
+WireGuard remains an OS-managed interface.
 
-Authenticated Body Control availability, physical robot availability, and readiness
-of the Core observation/action stream are reported separately. Agent Monitor exposes Environment Bridge connection
-and transcription diagnostics. Chat does not subscribe to that monitoring stream
-or display a persistent disconnected-robot banner. Body Control reports its bridge
-transport and voice commands that could not be forwarded. A firmware listening
-indicator proves capture, not delivery. Already admitted work retains correlated
-receipts across reconnect; reconnect does not authorize repeating physical actions.
-New unsolicited input requires a connected recipient.
+Authenticated Body Control availability, physical robot availability, and Core
+stream readiness are reported separately. Agent Monitor exposes Environment
+Bridge connection and transcription diagnostics; Chat does not display a
+persistent disconnected-robot banner. A firmware listening indicator proves
+capture, not delivery. Admitted work retains correlated receipts across
+reconnect without replaying physical actions, and new unsolicited input requires
+a connected recipient.
 
-Q6A and larger remote hosts may share the compute workload. General migration of
-an active goal between MetaHuman installations, replicated durable state and
-cross-installation control handoff remain design work in the
-[distributed foundation proposal](../../../Ainekio/docs/DISTRIBUTED_ROBOT_FOUNDATION.md).
-Configured gateway switching does not implement that migration.
-
-For changes, follow the affected path above and update its owner and consumers.
-[Maintained Surface](../technical/MAINTAINED_SURFACE.md) owns detailed runtime
-constraints; [Repair Design](../technical/REFACTOR_BLUEPRINT.md) owns the repair
-method; [qualification](QUALIFICATION.md) owns observable acceptance. Keep this
-page as the wiring and configured API map; role assignments, artifact versions
-and repair histories remain with their existing configuration and evidence owners.
+Cross-installation migration of active goals, replicated durable state, and
+control handoff remain design proposals in
+[DISTRIBUTED_ROBOT_FOUNDATION.md](../../../Ainekio/docs/DISTRIBUTED_ROBOT_FOUNDATION.md).
+See [Maintained Surface](../technical/MAINTAINED_SURFACE.md) for runtime
+constraints, [Refactor Blueprint](../technical/REFACTOR_BLUEPRINT.md) for the
+repair method, and [qualification](QUALIFICATION.md) for acceptance checks.

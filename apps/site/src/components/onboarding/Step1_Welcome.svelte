@@ -6,17 +6,17 @@
 <div class="flex flex-col gap-8 max-w-[800px] mx-auto p-8 md:p-4">
   <div class="text-center mb-4">
     <div class="text-6xl mb-4 animate-pulse">🧠</div>
-    <h1 class="text-4xl md:text-3xl font-bold m-0 mb-2 bg-gradient-to-br from-indigo-500 to-purple-600 dark:from-indigo-400 dark:to-purple-400 bg-clip-text text-transparent">Welcome to MetaHuman OS</h1>
-    <p class="text-xl md:text-base text-gray-500 dark:text-gray-400 m-0">Your Dual Consciousness Extension</p>
+    <h1 class="text-4xl md:text-3xl font-bold m-0 mb-2 bg-gradient-to-br from-indigo-500 to-purple-600 dark:from-indigo-400 dark:to-purple-400 bg-clip-text text-transparent">Welcome to Ainekio OS</h1>
+    <p class="text-xl md:text-base text-gray-500 dark:text-gray-400 m-0">Set Up Your Companion</p>
   </div>
 
   <div class="flex flex-col gap-8">
     <div>
-      <h2 class="text-2xl font-semibold m-0 mb-4 text-gray-900 dark:text-gray-50">What is MetaHuman OS?</h2>
+      <h2 class="text-2xl font-semibold m-0 mb-4 text-gray-900 dark:text-gray-50">What is Ainekio OS?</h2>
       <p class="text-base leading-relaxed text-gray-600 dark:text-gray-300 m-0">
-        MetaHuman OS is not an assistant—it's a parallel intelligence that operates as a seamless extension of yourself.
-        By learning from your memories, goals, personality, and values, it creates a digital consciousness that thinks
-        and acts in alignment with who you are.
+        Ainekio OS supports a companion and assistant that can converse, remember experiences, learn,
+        and act through the capabilities configured for this installation. This setup collects personality,
+        context and goals for your profile.
       </p>
     </div>
 
@@ -37,7 +37,7 @@
           <div class="flex items-center justify-center w-10 h-10 bg-gradient-to-br from-indigo-500 to-purple-600 text-white font-bold text-xl rounded-full flex-shrink-0">1</div>
           <div class="flex flex-col gap-1">
             <strong class="text-base text-gray-900 dark:text-gray-50">Welcome</strong>
-            <span class="text-sm text-gray-500 dark:text-gray-400">Introduction to MetaHuman OS</span>
+            <span class="text-sm text-gray-500 dark:text-gray-400">Introduction to Ainekio OS</span>
           </div>
         </div>
 
@@ -87,7 +87,7 @@
           <div class="text-5xl">💭</div>
           <div>
             <strong class="block text-lg text-gray-900 dark:text-gray-50 mb-2">Learn</strong>
-            <p class="m-0 text-sm leading-relaxed text-gray-500 dark:text-gray-400">We capture your memories, goals, and personality traits</p>
+            <p class="m-0 text-sm leading-relaxed text-gray-500 dark:text-gray-400">You can add memories, goals and personality details to your profile</p>
           </div>
         </div>
 
@@ -95,7 +95,7 @@
           <div class="text-5xl">🧬</div>
           <div>
             <strong class="block text-lg text-gray-900 dark:text-gray-50 mb-2">Adapt</strong>
-            <p class="m-0 text-sm leading-relaxed text-gray-500 dark:text-gray-400">The system builds a model that reflects your thinking patterns</p>
+            <p class="m-0 text-sm leading-relaxed text-gray-500 dark:text-gray-400">Configured workflows use your profile and memories as context</p>
           </div>
         </div>
 
@@ -103,7 +103,7 @@
           <div class="text-5xl">⚡</div>
           <div>
             <strong class="block text-lg text-gray-900 dark:text-gray-50 mb-2">Act</strong>
-            <p class="m-0 text-sm leading-relaxed text-gray-500 dark:text-gray-400">Your digital consciousness operates autonomously in alignment with your values</p>
+            <p class="m-0 text-sm leading-relaxed text-gray-500 dark:text-gray-400">Enabled capabilities let your companion respond, pursue goals and act through the selected body</p>
           </div>
         </div>
       </div>
@@ -113,7 +113,7 @@
       <p class="m-0 text-sm leading-relaxed text-blue-800 dark:text-blue-200">
         <strong class="text-blue-900 dark:text-blue-100">Note:</strong> You can skip this wizard and add data manually later through various utilities
         (Memory Capture, File Ingestion, Chat, etc.). However, completing this setup now will give your
-        MetaHuman a strong foundation from the start.
+        Ainekio OS a strong foundation from the start.
       </p>
     </div>
   </div>

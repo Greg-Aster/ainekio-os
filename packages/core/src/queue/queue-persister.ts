@@ -102,6 +102,29 @@ export function readPendingSpeechArtifacts(): Set<string> {
   return artifacts;
 }
 
+/** Finite-agent statistics cover retained Coordinator work, never inferred log messages. */
+export function readAgentWorkStats(agentId: string): {
+  scope: 'retained-coordinator-work'; totalRuns: number; successfulRuns: number; failedRuns: number;
+  cancelledRuns: number; lastRun?: string;
+} {
+  const db = restoredDatabase();
+  const empty = { scope: 'retained-coordinator-work' as const, totalRuns: 0, successfulRuns: 0, failedRuns: 0, cancelledRuns: 0 };
+  if (!db) return empty;
+  const row = db.prepare(`SELECT
+    COUNT(*) AS totalRuns,
+    COUNT(CASE WHEN json_extract(document, '$.state') = 'completed' THEN 1 END) AS successfulRuns,
+    COUNT(CASE WHEN json_extract(document, '$.state') = 'failed' THEN 1 END) AS failedRuns,
+    COUNT(CASE WHEN json_extract(document, '$.state') = 'cancelled' THEN 1 END) AS cancelledRuns,
+    MAX(json_extract(document, '$.startedAt')) AS lastRun
+    FROM work_items WHERE COALESCE(json_extract(document, '$.metadata.monitorAgentId'),
+      json_extract(document, '$.input.agentId'), CASE WHEN json_extract(document, '$.handler') LIKE 'agent.%'
+        THEN SUBSTR(json_extract(document, '$.handler'), 7) END) = ?
+      AND json_extract(document, '$.startedAt') IS NOT NULL`).get(agentId) as {
+      totalRuns: number; successfulRuns: number; failedRuns: number; cancelledRuns: number; lastRun: string | null;
+    };
+  return { ...empty, ...row, lastRun: row.lastRun ?? undefined };
+}
+
 export function loadQueueState(): PersistedQueueState | null {
   const db = restoredDatabase();
   if (!db) return null;

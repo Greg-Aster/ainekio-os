@@ -15,7 +15,6 @@ import {
   getProfilePathsWithStatus,
   getDefaultProfilePath,
   getUserByUsername,
-  audit,
   getUserContext,
   listUsers,
 } from '@metahuman/core';
@@ -46,7 +45,7 @@ function resolveUsername(username?: string): string {
 /**
  * Show current profile path
  */
-export async function profilePath(username?: string): Promise<void> {
+async function profilePath(username?: string): Promise<void> {
   const user = resolveUsername(username);
 
   const { paths: profilePaths, resolution } = getProfilePathsWithStatus(user);
@@ -106,7 +105,7 @@ function printVoiceConfigPath(username?: string): never {
 /**
  * Set new profile path (with migration)
  */
-export async function profilePathSet(
+async function profilePathSet(
   newPath: string,
   username?: string,
   options: { keepSource?: boolean } = {}
@@ -197,7 +196,7 @@ export async function profilePathSet(
 /**
  * Reset profile to default location
  */
-export async function profilePathReset(username?: string): Promise<void> {
+async function profilePathReset(username?: string): Promise<void> {
   const user = resolveUsername(username);
 
   const userRecord = getUserByUsername(user);
@@ -224,7 +223,7 @@ export async function profilePathReset(username?: string): Promise<void> {
 /**
  * List available storage devices
  */
-export async function profileDevices(): Promise<void> {
+async function profileDevices(): Promise<void> {
   console.log('\nAvailable Storage Devices\n');
 
   const devices = await detectStorageDevices();
@@ -267,7 +266,7 @@ export async function profileDevices(): Promise<void> {
 /**
  * Validate a path for profile storage
  */
-export async function profileValidate(testPath: string): Promise<void> {
+async function profileValidate(testPath: string): Promise<void> {
   console.log('\nPath Validation\n');
   console.log(`  Path: ${testPath}`);
   console.log('');

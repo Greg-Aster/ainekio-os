@@ -130,14 +130,15 @@ test('a delayed initial state cannot detach a newly submitted terminal session',
   } finally { controller.dispose() }
 })
 
-test('every terminal browser request has an Astro transport route into the shared API router', async () => {
-  const { readFileSync, existsSync } = await import('node:fs')
+test('every terminal browser request is registered in Core behind the shared Astro transport', async () => {
+  const { readFileSync } = await import('node:fs')
+  const transport = readFileSync(new URL('../../pages/api/[...path].ts', import.meta.url), 'utf8')
+  assert.match(transport, /@metahuman\/core\/api\/adapters\/astro/)
+  assert.match(transport, /export const ALL = astroHandler/)
+  const router = readFileSync(new URL('../../../../../packages/core/src/api/router.ts', import.meta.url), 'utf8')
   for (const [name, method] of [['state', 'GET'], ['sessions', 'POST'], ['message', 'POST'], ['events', 'GET']]) {
-    const file = new URL(`../../pages/api/terminal/${name}.ts`, import.meta.url)
-    assert.equal(existsSync(file), true, `${method} /api/terminal/${name} must not fall through to an HTML 404`)
-    const source = readFileSync(file, 'utf8')
-    assert.match(source, /@metahuman\/core\/api\/adapters\/astro/)
-    assert.ok(source.includes(`export const ${method} = astroHandler`))
+    assert.ok(router.includes(`method: '${method}', pattern: '/api/terminal/${name}'`),
+      `${method} /api/terminal/${name} must not fall through to an HTML 404`)
   }
 })
 

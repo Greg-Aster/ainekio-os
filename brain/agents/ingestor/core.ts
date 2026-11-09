@@ -15,12 +15,12 @@ import {
 } from '@metahuman/core'
 import type { AgentContext, AgentInput, AgentResult } from '@metahuman/agent-runtime'
 
-export const DEFAULT_CHUNK_CHARS = 2_000
-export const MAX_CHUNK_CHARS = 50_000
+const DEFAULT_CHUNK_CHARS = 2_000
+const MAX_CHUNK_CHARS = 50_000
 export const MAX_CHUNKS_PER_FILE = 500
 export const MAX_FILE_BYTES = 1_000_000
-export const MAX_FILES_PER_RUN = 1_000
-export const SUPPORTED_INGESTOR_EXTENSIONS = ['.json', '.md', '.txt'] as const
+const MAX_FILES_PER_RUN = 1_000
+const SUPPORTED_INGESTOR_EXTENSIONS = ['.json', '.md', '.txt'] as const
 
 const SUPPORTED_EXTENSIONS = new Set<string>(SUPPORTED_INGESTOR_EXTENSIONS)
 
@@ -31,9 +31,9 @@ export interface IngestorOptions {
   signal?: AbortSignal
 }
 
-export type IngestedChunkStatus = 'created' | 'deduplicated' | 'failed'
+type IngestedChunkStatus = 'created' | 'deduplicated' | 'failed'
 
-export interface IngestedChunkOutcome {
+interface IngestedChunkOutcome {
   index: number
   total: number
   status: IngestedChunkStatus
@@ -43,7 +43,7 @@ export interface IngestedChunkOutcome {
   error?: string
 }
 
-export interface IngestedFileOutcome {
+interface IngestedFileOutcome {
   file: string
   status: 'processed' | 'failed'
   bytes: number
@@ -82,7 +82,7 @@ const DEFAULT_DEPENDENCIES: IngestorDependencies = {
   now: () => new Date(),
 }
 
-export interface InboxPaths {
+interface InboxPaths {
   inbox: string
   archive: string
 }
@@ -138,7 +138,7 @@ export function parseIngestorOptions(
   return parsed
 }
 
-export function resolveInboxPaths(): InboxPaths {
+function resolveInboxPaths(): InboxPaths {
   const inboxResult = storageClient.resolvePath({ category: 'memory', subcategory: 'inbox' })
   if (!inboxResult.success || !inboxResult.path) {
     throw new Error('Cannot resolve the profile memory inbox')
@@ -162,7 +162,7 @@ function decodeUtf8(buffer: Buffer, fileName: string): string {
   }
 }
 
-export function readInboxFile(filePath: string): InboxFile {
+function readInboxFile(filePath: string): InboxFile {
   const fileName = path.basename(filePath)
   const extension = path.extname(fileName).toLowerCase()
   if (!SUPPORTED_EXTENSIONS.has(extension)) {
@@ -260,7 +260,7 @@ function failedFile(file: string, error: unknown, partial: Partial<IngestedFileO
   }
 }
 
-export async function ingestFile(
+async function ingestFile(
   filePath: string,
   paths: InboxPaths,
   options: Pick<IngestorOptions, 'maxChars' | 'signal'> = {},

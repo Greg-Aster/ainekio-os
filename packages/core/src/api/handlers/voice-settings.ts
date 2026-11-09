@@ -113,57 +113,6 @@ function loadKokoroVoices(rootDir: string, profileRoot: string): Array<{id: stri
   return voices;
 }
 
-interface RvcSpeaker {
-  id: string;
-  name: string;
-  hasModel: boolean;
-  hasIndex: boolean;
-  modelPath?: string;
-}
-
-function loadRvcSpeakers(profileRoot: string): RvcSpeaker[] {
-  const speakers: RvcSpeaker[] = [];
-  const rvcModelsDir = path.join(profileRoot, 'out', 'voices', 'rvc-models');
-
-  if (!fs.existsSync(rvcModelsDir)) {
-    return speakers;
-  }
-
-  try {
-    const entries = fs.readdirSync(rvcModelsDir, { withFileTypes: true });
-
-    for (const entry of entries) {
-      if (!entry.isDirectory()) continue;
-
-      const speakerId = entry.name;
-      const speakerDir = path.join(rvcModelsDir, speakerId);
-
-      // Look for .pth model file
-      const modelFile = path.join(speakerDir, `${speakerId}.pth`);
-      const hasModel = fs.existsSync(modelFile);
-
-      // Look for .index file
-      const indexFile = path.join(speakerDir, `${speakerId}.index`);
-      const hasIndex = fs.existsSync(indexFile);
-
-      // Only include if has a model
-      if (hasModel) {
-        speakers.push({
-          id: speakerId,
-          name: speakerId.charAt(0).toUpperCase() + speakerId.slice(1).replace(/_/g, ' '),
-          hasModel,
-          hasIndex,
-          modelPath: modelFile,
-        });
-      }
-    }
-  } catch (error) {
-    console.warn('[voice-settings] Failed to scan RVC speakers:', error);
-  }
-
-  return speakers;
-}
-
 type VoiceConfig = {
   tts: {
     provider: string;
@@ -175,20 +124,6 @@ type VoiceConfig = {
       config: string;
       speakingRate: number;
       outputFormat: string;
-    };
-    rvc?: {
-      referenceAudioDir?: string;
-      modelsDir?: string;
-      speakerId: string;
-      pitchShift: number;
-      speed: number;
-      autoFallbackToPiper: boolean;
-      indexRate?: number;
-      volumeEnvelope?: number;
-      protect?: number;
-      f0Method?: string;
-      device?: 'cuda' | 'cpu';
-      outputFormat?: string;
     };
     kokoro?: {
       langCode: string;
@@ -203,7 +138,6 @@ type VoiceConfig = {
   };
   stt: Record<string, any>;
   cache: Record<string, any>;
-  training: Record<string, any>;
   [key: string]: any;
 };
 
@@ -216,8 +150,6 @@ function buildDefaultVoiceConfig(
   const defaultBinary = path.join(rootDir, 'bin', 'piper', 'piper');
   const defaultModel = defaultVoice?.modelPath ?? path.join(voicesDir, 'en_US-lessac-medium.onnx');
   const defaultConfig = defaultVoice?.configPath ?? `${defaultModel}.json`;
-  const defaultRvcSamplesDir = path.join(profileRoot, 'out', 'voices', 'rvc-samples');
-  const defaultRvcModelsDir = path.join(profileRoot, 'out', 'voices', 'rvc-models');
 
   return {
     tts: {
@@ -230,20 +162,6 @@ function buildDefaultVoiceConfig(
         config: defaultConfig,
         speakingRate: 1.0,
         outputFormat: 'wav',
-      },
-      rvc: {
-        referenceAudioDir: defaultRvcSamplesDir,
-        modelsDir: defaultRvcModelsDir,
-        speakerId: 'default',
-        pitchShift: 0,
-        speed: 1.0,
-        outputFormat: 'wav',
-        autoFallbackToPiper: true,
-        indexRate: 1.0,
-        volumeEnvelope: 0.0,
-        protect: 0.15,
-        f0Method: 'rmvpe',
-        device: 'cuda',
       },
       kokoro: {
         langCode: 'a',
@@ -268,13 +186,6 @@ function buildDefaultVoiceConfig(
       enabled: true,
       directory: path.join(profileRoot, 'out', 'voice-cache'),
       maxSizeMB: 500,
-    },
-    training: {
-      enabled: true,
-      minDuration: 2,
-      maxDuration: 120,
-      minQuality: 0.6,
-      targetHours: 3,
     },
   };
 }
@@ -358,68 +269,6 @@ function ensureVoiceConfig(
   if (!config.tts.piper.outputFormat) {
     config.tts.piper.outputFormat = 'wav';
     needsWrite = true;
-  }
-
-  if (!config.tts.rvc) {
-    config.tts.rvc = {
-      referenceAudioDir: path.join(profileRoot, 'out', 'voices', 'rvc-samples'),
-      modelsDir: path.join(profileRoot, 'out', 'voices', 'rvc-models'),
-      speakerId: 'default',
-      pitchShift: 0,
-      speed: 1.0,
-      outputFormat: 'wav',
-      autoFallbackToPiper: true,
-      indexRate: 1.0,
-      volumeEnvelope: 0.0,
-      protect: 0.15,
-      f0Method: 'rmvpe',
-      device: 'cuda',
-    };
-    needsWrite = true;
-  }
-
-  const rvcSamplesDir = path.join(profileRoot, 'out', 'voices', 'rvc-samples');
-  const rvcModelsDir = path.join(profileRoot, 'out', 'voices', 'rvc-models');
-
-  if (!config.tts.rvc.referenceAudioDir) {
-    config.tts.rvc.referenceAudioDir = rvcSamplesDir;
-    needsWrite = true;
-  }
-  if (!config.tts.rvc.modelsDir) {
-    config.tts.rvc.modelsDir = rvcModelsDir;
-    needsWrite = true;
-  }
-  if (!config.tts.rvc.outputFormat) {
-    config.tts.rvc.outputFormat = 'wav';
-    needsWrite = true;
-  }
-  if (!config.tts.rvc.speakerId) {
-    config.tts.rvc.speakerId = 'default';
-    needsWrite = true;
-  }
-  config.tts.rvc.pitchShift = typeof config.tts.rvc.pitchShift === 'number'
-    ? clamp(config.tts.rvc.pitchShift, -12, 12)
-    : 0;
-  config.tts.rvc.speed = typeof config.tts.rvc.speed === 'number'
-    ? clamp(config.tts.rvc.speed, 0.5, 2.0)
-    : 1.0;
-  config.tts.rvc.indexRate = typeof config.tts.rvc.indexRate === 'number'
-    ? clamp(config.tts.rvc.indexRate, 0, 1)
-    : 1.0;
-  config.tts.rvc.volumeEnvelope = typeof config.tts.rvc.volumeEnvelope === 'number'
-    ? clamp(config.tts.rvc.volumeEnvelope, 0, 1)
-    : 0.0;
-  config.tts.rvc.protect = typeof config.tts.rvc.protect === 'number'
-    ? clamp(config.tts.rvc.protect, 0, 0.5)
-    : 0.15;
-  config.tts.rvc.f0Method = config.tts.rvc.f0Method || 'rmvpe';
-  config.tts.rvc.device = config.tts.rvc.device === 'cpu' ? 'cpu' : 'cuda';
-
-  try {
-    fs.mkdirSync(config.tts.rvc.referenceAudioDir, { recursive: true });
-    fs.mkdirSync(config.tts.rvc.modelsDir, { recursive: true });
-  } catch (error) {
-    console.warn('[voice-settings] Unable to ensure RVC directories:', error);
   }
 
   // Ensure Kokoro config exists
@@ -511,17 +360,6 @@ function ensureVoiceConfig(
     needsWrite = true;
   }
 
-  config.training = config.training ?? {
-    enabled: true,
-    minDuration: 2,
-    maxDuration: 120,
-    minQuality: 0.6,
-    targetHours: 3,
-  };
-  if (!config.training) {
-    needsWrite = true;
-  }
-
   if (needsWrite) {
     try {
       fs.mkdirSync(path.dirname(voiceConfigPath), { recursive: true });
@@ -580,7 +418,6 @@ export async function handleGetVoiceSettings(req: UnifiedRequest): Promise<Unifi
 
     const providerForUI = config.tts.provider;
     const kokoroVoices = loadKokoroVoices(rootDir, profileRoot);
-    const rvcSpeakers = loadRvcSpeakers(profileRoot);
 
     // Settings reads are observational only. Persistent process lifecycle is
     // owned by the voice server manager and etc/voice-servers.json, never by a profile GET.
@@ -616,18 +453,6 @@ export async function handleGetVoiceSettings(req: UnifiedRequest): Promise<Unifi
           voices,
           currentVoice: currentVoiceFile,
           speakingRate: config.tts.piper.speakingRate || 1.0,
-        },
-        rvc: {
-          speakerId: config.tts.rvc?.speakerId || 'default',
-          pitchShift: config.tts.rvc?.pitchShift || 0,
-          speed: config.tts.rvc?.speed || 1.0,
-          autoFallbackToPiper: config.tts.rvc?.autoFallbackToPiper ?? true,
-          indexRate: config.tts.rvc?.indexRate ?? 1.0,
-          volumeEnvelope: config.tts.rvc?.volumeEnvelope ?? 0.0,
-          protect: config.tts.rvc?.protect ?? 0.15,
-          f0Method: config.tts.rvc?.f0Method || 'rmvpe',
-          device: config.tts.rvc?.device || 'cuda',
-          speakers: rvcSpeakers,
         },
         kokoro: {
           langCode: config.tts.kokoro?.langCode || 'a',
@@ -681,7 +506,7 @@ export async function handleSaveVoiceSettings(req: UnifiedRequest): Promise<Unif
   try {
 
     const body = (req.body ?? {}) as any;
-    const { provider, outputTarget, speechDisabled, piper, rvc, kokoro, stt } = body;
+    const { provider, outputTarget, speechDisabled, piper, kokoro, stt } = body;
 
     const requestedKokoroDevice = kokoro?.device;
     const requestedWhisperDevice = stt?.device;
@@ -706,7 +531,7 @@ export async function handleSaveVoiceSettings(req: UnifiedRequest): Promise<Unif
       return errorResponse('Whisper device is controlled by MH_WHISPER_DEVICE and cannot be changed here', 409);
     }
 
-    console.log('[voice-settings POST] Received body:', { provider, hasPiper: !!piper, hasRvc: !!rvc, hasKokoro: !!kokoro, hasStt: !!stt });
+    console.log('[voice-settings POST] Received body:', { provider, hasPiper: !!piper, hasKokoro: !!kokoro, hasStt: !!stt });
 
     // Get profile paths via storage router (handles external storage)
     const storageResult = storageClient.getProfileRoot(user.username);
@@ -747,42 +572,6 @@ export async function handleSaveVoiceSettings(req: UnifiedRequest): Promise<Unif
 
       if (typeof piper.speakingRate === 'number') {
         config.tts.piper.speakingRate = Math.max(0.5, Math.min(2.0, piper.speakingRate));
-      }
-    }
-
-    // Update RVC settings
-    if (rvc) {
-      config.tts.rvc = config.tts.rvc || {} as any;
-      const rvcConfig = config.tts.rvc!;
-      if (rvc.speakerId) rvcConfig.speakerId = rvc.speakerId;
-      const parsedPitch = Number(rvc.pitchShift);
-      if (Number.isFinite(parsedPitch)) {
-        rvcConfig.pitchShift = clamp(parsedPitch, -12, 12);
-      }
-      const parsedSpeed = Number(rvc.speed);
-      if (Number.isFinite(parsedSpeed)) {
-        rvcConfig.speed = clamp(parsedSpeed, 0.5, 2.0);
-      }
-      if (typeof rvc.autoFallbackToPiper === 'boolean') {
-        rvcConfig.autoFallbackToPiper = rvc.autoFallbackToPiper;
-      }
-      const parsedIndexRate = Number(rvc.indexRate);
-      if (Number.isFinite(parsedIndexRate)) {
-        rvcConfig.indexRate = clamp(parsedIndexRate, 0, 1);
-      }
-      const parsedVolumeEnvelope = Number(rvc.volumeEnvelope);
-      if (Number.isFinite(parsedVolumeEnvelope)) {
-        rvcConfig.volumeEnvelope = clamp(parsedVolumeEnvelope, 0, 1);
-      }
-      const parsedProtect = Number(rvc.protect);
-      if (Number.isFinite(parsedProtect)) {
-        rvcConfig.protect = clamp(parsedProtect, 0, 0.5);
-      }
-      if (typeof rvc.f0Method === 'string' && rvc.f0Method.trim()) {
-        rvcConfig.f0Method = rvc.f0Method.trim();
-      }
-      if (rvc.device === 'cuda' || rvc.device === 'cpu') {
-        rvcConfig.device = rvc.device;
       }
     }
 
