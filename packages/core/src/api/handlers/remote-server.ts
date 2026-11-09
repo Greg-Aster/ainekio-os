@@ -176,6 +176,15 @@ export async function fetchRemoteModels(
       const data = await response.json();
       const models: Array<{ id: string; model: string; provider: string; roles?: string[] }> = [];
 
+      // Extract currently loaded llama.cpp model if available
+      if (data.available?.llamaCpp?.running && data.available?.llamaCpp?.model) {
+        models.push({
+          id: `remote-llama-cpp-${data.available.llamaCpp.model}`,
+          model: data.available.llamaCpp.model,
+          provider: 'remote-llama-cpp',
+        });
+      }
+
       // Extract currently loaded Ollama model if available
       if (data.available?.ollama?.running && data.available?.ollama?.model) {
         models.push({
@@ -225,8 +234,8 @@ export async function fetchRemoteModels(
           const registryData = await registryResponse.json();
           if (registryData.availableModels) {
             for (const model of registryData.availableModels) {
-              // Only add local backend models (ollama) - not cloud providers
-              if (model.provider === 'ollama') {
+              // Add local backend models (ollama and llama-cpp) - not cloud providers
+              if (model.provider === 'ollama' || model.provider === 'llama-cpp') {
                 const existing = models.find(m => m.model === model.model);
                 if (!existing) {
                   models.push({

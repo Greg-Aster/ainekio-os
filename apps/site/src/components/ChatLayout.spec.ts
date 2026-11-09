@@ -171,13 +171,13 @@ test('sidebar keeps registered and status-discovered remote choices under their 
   const registered = { id: 'registered', provider: 'remote-server', model: 'Registered remote' };
   const discovered = { id: 'remote-server:discovered', provider: 'remote-server', model: 'Discovered remote' };
   const status = writable<any>({ data: { systemHealth: { cloudModels: [discovered] } } });
-  const screen = renderedComponent('./LeftSidebar.svelte', {
-    '../stores/navigation': { statusStore: status, activeView: writable('chat'), yoloModeStore: writable(false), navigationItems: [], graphEditorHref: () => '?workspace=graph-editor' },
+  const screen = renderedComponent('./ServerStatus.svelte', {
+    '../stores/navigation': { statusStore: status, activeView: writable('chat'), systemSection: writable('settings'), statusRefreshTrigger: writable(0), graphEditorHref: () => '?workspace=graph-editor' },
     '../stores/security-policy': { currentMode: writable('dual'), isOwner: writable(true) },
-    '../lib/client/api-config': {}, './SyncStatus.svelte': { default() {} },
+    '../lib/client/api-config': { apiFetch() { throw new Error('Rendering must not fetch'); } },
     '../lib/client/model-role-presentation': componentRequire('../lib/client/model-role-presentation.ts'),
   }, {}, {
-    loading: false, identity: { trustLevel: 'observe' }, hasModelRegistry: true,
+    loading: false, hasModelRegistry: true,
     modelRoles: { persona: { modelId: 'registered' } }, roleAssignments: { persona: 'registered' },
     availableModels: [registered], modelCategories: { local: [], remote: [registered], bigBrother: [] },
   });
@@ -266,42 +266,54 @@ test('sidebar reader replacement and unmount release facets, registry and remote
   const finishes: Array<(response: Response) => void> = [];
   const status = writable<any>(null);
   const refresh = writable(0);
-  const ui = editorFixture('LeftSidebar', () => new Promise(resolve => finishes.push(resolve)), {
-    MODEL_ROLE_OPTIONS: [], currentMode: writable('dual'), statusStore: status, $isOwner: false,
-    statusRefreshTrigger: refresh, modelRoleSections: [],
-    document: Object.assign(new EventTarget(), { hidden: false }),
+  const leftUi = editorFixture('LeftSidebar', () => new Promise(resolve => finishes.push(resolve)), {
+    currentMode: writable('dual'), statusStore: status, $isOwner: false,
+    statusRefreshTrigger: refresh,
   });
-  const firstFacet = ui.run('loadFacets()'); const lastFacet = ui.run('loadFacets()');
+  const firstFacet = leftUi.run('loadFacets()'); const lastFacet = leftUi.run('loadFacets()');
   finishes[1](Response.json({ activeFacet: 'current', facets: { current: { enabled: true } } })); await lastFacet;
   finishes[0](Response.json({ activeFacet: 'old', facets: { old: {} } })); await firstFacet;
-  assert.equal(ui.run('activeFacet'), 'current');
+  assert.equal(leftUi.run('activeFacet'), 'current');
+  leftUi.mount(); leftUi.unmount();
+  assert.equal(leftUi.requests.at(-1)?.options?.signal?.aborted, true);
+  const leftCount = leftUi.requests.length;
+  await leftUi.run('loadFacets()');
+  assert.equal(leftUi.requests.length, leftCount);
+
+  const serverFinishes: Array<(response: Response) => void> = [];
+  const ui = editorFixture('ServerStatus', () => new Promise(resolve => serverFinishes.push(resolve)), {
+    MODEL_ROLE_OPTIONS: [], currentMode: writable('dual'), statusStore: status, $isOwner: false,
+    statusRefreshTrigger: refresh, modelRoleSections: [], discoveredModels: [],
+    getRemoteSyncConfig: async () => ({ configured: false }),
+    document: Object.assign(new EventTarget(), { hidden: false }),
+  });
   const firstRegistry = ui.run('loadModelRegistry()'); const lastRegistry = ui.run('loadModelRegistry()');
-  finishes[3](Response.json({ success: true, availableModels: [], roleAssignments: { persona: 'current' } })); await lastRegistry;
-  finishes[2](Response.json({ success: true, availableModels: [], roleAssignments: { persona: 'old' } })); await firstRegistry;
+  serverFinishes[1](Response.json({ success: true, availableModels: [], roleAssignments: { persona: 'current' } })); await lastRegistry;
+  serverFinishes[0](Response.json({ success: true, availableModels: [], roleAssignments: { persona: 'old' } })); await firstRegistry;
   assert.equal(ui.run('roleAssignments.persona'), 'current');
   ui.run("backendAvailability.remoteServer = { configured: true, serverUrl: 'https://old.example' }");
   const firstHealth = ui.run('checkRemoteServerConnection()');
   ui.run("backendAvailability.remoteServer.serverUrl = 'https://current.example'");
   const lastHealth = ui.run('checkRemoteServerConnection()');
-  finishes[5](Response.json({ healthy: true })); await lastHealth;
-  finishes[4](Response.json({ healthy: false })); await firstHealth;
+  serverFinishes[3](Response.json({ healthy: true })); await lastHealth;
+  serverFinishes[2](Response.json({ healthy: false })); await firstHealth;
   assert.equal(ui.run('backendAvailability.remoteServer.connected'), true);
-  assert.match(ui.requests[5].url, /serverUrl=https%3A%2F%2Fcurrent.example/);
+  assert.match(ui.requests[3].url, /serverUrl=https%3A%2F%2Fcurrent.example/);
   const failedHealth = ui.run('checkRemoteServerConnection()');
-  finishes[6](Response.json({ error: 'Fixture health unavailable' }, { status: 503 })); await failedHealth;
+  serverFinishes[4](Response.json({ error: 'Fixture health unavailable' }, { status: 503 })); await failedHealth;
   assert.match(ui.run('getRemoteServerTooltip(backendAvailability.remoteServer, remoteHealthLoading, remoteHealthError, modelCategories.remote)'), /Unreachable.*Fixture health unavailable/);
   const writing = ui.run("assignModelToRole('persona', 'submitted')");
-  assert.equal(ui.requests[7].options?.signal, undefined, 'the already sent write is not tied to a view reader');
+  assert.equal(ui.requests[5].options?.signal, undefined, 'the already sent write is not tied to a view reader');
   ui.mount(); ui.unmount();
   assert.equal(ui.requests.at(-1)?.options?.signal?.aborted, true);
-  finishes[7](Response.json({ success: true })); await writing;
+  serverFinishes[5](Response.json({ success: true })); await writing;
   assert.equal(get(refresh), 1, 'the write acknowledgement still reaches the existing shared refresh owner');
   const count = ui.requests.length;
-  await ui.run('loadFacets(); loadModelRegistry(); checkRemoteServerConnection()');
+  await ui.run('loadModelRegistry(); checkRemoteServerConnection()');
   assert.equal(ui.requests.length, count);
-  for (const finish of finishes.slice(8)) finish(Response.json({ success: true, activeFacet: 'closed', facets: {}, availableModels: [] }));
+  for (const finish of serverFinishes.slice(6)) finish(Response.json({ success: true, availableModels: [] }));
   await new Promise(resolve => setImmediate(resolve));
-  assert.equal(ui.run('activeFacet'), 'current'); assert.equal(ui.run('roleAssignments.persona'), 'current');
+  assert.equal(leftUi.run('activeFacet'), 'current'); assert.equal(ui.run('roleAssignments.persona'), 'current');
 });
 
 test('Network settings use measured health, consolidate tunnel actions and acknowledge the saved boot flag', async () => {
@@ -1505,7 +1517,7 @@ test('Server Status renders independent services, unavailable reads and stale ba
 
 test('shared voice service controls preserve native readiness, errors and start/stop contracts', async () => {
   const source = ts.createSourceFile('servers.ts', read('./ServerStatus.svelte').match(/<script lang="ts">([\s\S]*?)<\/script>/)![1], ts.ScriptTarget.Latest, true);
-  const selected = ['normalizeServerState', 'fetchStatusEndpoint', 'reportStatusFetchFailure', 'fetchVoiceServiceStatus', 'fetchServerStatus', 'controlServer', 'getStatusIcon', 'getStatusText'];
+  const selected = ['normalizeServerState', 'fetchStatusEndpoint', 'reportStatusFetchFailure', 'fetchVoiceServiceStatus', 'fetchServerStatus', 'controlServer', 'setVoiceServiceTarget', 'getStatusIcon', 'getStatusText'];
   const code = source.statements.filter(statement =>
     (ts.isFunctionDeclaration(statement) && selected.includes(statement.name!.text))
     || (ts.isVariableStatement(statement) && statement.declarationList.declarations.some(declaration =>
@@ -1518,17 +1530,18 @@ test('shared voice service controls preserve native readiness, errors and start/
   let rejectAction = false;
   let deferActions = false;
   const completeActions: (() => void)[] = [];
-  const requests: { endpoint: string; method: string; action?: string }[] = [];
+  const requests: { endpoint: string; method: string; action?: string; target?: string; remoteUrl?: string }[] = [];
   const alerts: string[] = [];
-  const state = vm.createContext({ servers: [], astroServers: [], llmBackend: null, bigBrother: null, eventBus: null,
-    loading: true, statusFetchInProgress: false, voiceActions: {}, AbortController, DOMException, setTimeout, clearTimeout,
+  const state = vm.createContext({ servers: [], llmBackend: null, bigBrother: null, eventBus: null,
+    loading: true, statusFetchInProgress: false, voiceActions: {}, voiceRemoteUrlInputs: {}, AbortController, DOMException, setTimeout, clearTimeout,
     console: { log() {}, debug() {}, error() {} }, alert: (message: string) => alerts.push(message),
     apiFetch: async (endpoint: string, options?: RequestInit) => {
       const method = options?.method || 'GET';
-      const action = options?.body ? JSON.parse(String(options.body)).action : undefined;
-      requests.push({ endpoint, method, action });
+      const parsedBody = options?.body ? JSON.parse(String(options.body)) : undefined;
+      const action = parsedBody?.action;
+      requests.push({ endpoint, method, action, target: parsedBody?.target, remoteUrl: parsedBody?.remoteUrl });
       if (method === 'POST') {
-        assert.ok(action === 'start' || action === 'stop');
+        assert.ok(action === 'start' || action === 'stop' || action === 'set-target');
         if (deferActions) await new Promise<void>(resolve => completeActions.push(resolve));
         return Response.json(rejectAction ? { success: false, message: 'Stop denied' } : { success: true },
           { status: rejectAction ? 500 : 200 });
@@ -1541,7 +1554,6 @@ test('shared voice service controls preserve native readiness, errors and start/
           llamaCpp: { endpoint: 'http://inference.example.test' }, ollama: { endpoint: 'http://ollama.example.test' } },
           available: { llamaCpp: { configured: true, running: true }, ollama: { installed: false, running: false } } });
         }
-        if (endpoint === '/api/astro-servers') return Response.json({ servers: [] });
         return Response.json({ running: false, sessionOpen: false, healthy: false, provider: null, phase: 'stopped',
           endpoint: 'http://telemetry.example.test' });
       }
@@ -1565,6 +1577,9 @@ test('shared voice service controls preserve native readiness, errors and start/
       assert.equal(Object.keys(state.voiceActions).length, 0);
       assert.ok(requests.some(request => request.endpoint === server.endpoint && request.action === action));
     }
+    await state.setVoiceServiceTarget(server, 'remote', 'http://dndiy:9882');
+    assert.equal(Object.keys(state.voiceActions).length, 0);
+    assert.ok(requests.some(request => request.endpoint === server.endpoint && request.action === 'set-target' && request.target === 'remote' && request.remoteUrl === 'http://dndiy:9882'));
   }
   deferActions = true;
   const whisper = state.controlServer(state.servers[0], 'start');

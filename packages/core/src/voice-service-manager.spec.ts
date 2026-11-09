@@ -2,7 +2,9 @@ import assert from 'node:assert/strict'
 import test from 'node:test'
 import {
   normalizeVoiceServiceConfig,
+  resolveRemoteVoiceServiceUrl,
   withVoiceServiceDevice,
+  withVoiceServiceTarget,
 } from './voice-service-manager.js'
 
 test('normalizes Kokoro configuration through defaults, file values, and environment overrides', () => {
@@ -74,4 +76,39 @@ test('rejects a malformed shared configuration document instead of fabricating d
     () => withVoiceServiceDevice({ servers: {} }, 'kokoro', 'cuda'),
     /must contain a kokoro server entry/,
   )
+})
+
+test('normalizes and updates voice service target (local vs remote) and resolves remote URLs', () => {
+  const remoteConfig = normalizeVoiceServiceConfig('whisper', {
+    target: 'remote',
+    remoteUrl: 'http://dndiy:9883/',
+  }, {})
+  assert.equal(remoteConfig.target, 'remote')
+  assert.equal(remoteConfig.remoteUrl, 'http://dndiy:9883')
+  assert.equal(resolveRemoteVoiceServiceUrl('whisper', remoteConfig), 'http://dndiy:9883')
+
+  const original = {
+    version: '1.0.0',
+    servers: {
+      kokoro: { enabled: true, port: 9882, device: 'cpu', langCode: 'a' },
+      whisper: { enabled: true, port: 9883, device: 'cpu', model: 'base.en' },
+    },
+  }
+  const updated = withVoiceServiceTarget(original, 'kokoro', 'remote', 'http://dndiy:9882/')
+  assert.deepEqual((updated.servers as Record<string, unknown>).kokoro, {
+    enabled: true,
+    port: 9882,
+    device: 'cpu',
+    langCode: 'a',
+    target: 'remote',
+    remoteUrl: 'http://dndiy:9882',
+  })
+  const clearedUrl = withVoiceServiceTarget(updated, 'kokoro', 'local', '')
+  assert.deepEqual((clearedUrl.servers as Record<string, unknown>).kokoro, {
+    enabled: true,
+    port: 9882,
+    device: 'cpu',
+    langCode: 'a',
+    target: 'local',
+  })
 })

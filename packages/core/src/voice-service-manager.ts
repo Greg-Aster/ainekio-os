@@ -11,6 +11,8 @@ export interface VoiceServiceStatus {
   running: boolean
   healthy: boolean
   readiness: 'stopped' | 'loading' | 'ready' | 'error'
+  target?: 'local' | 'remote'
+  remoteUrl?: string
   pid?: number
   url: string
   health?: Record<string, unknown>
@@ -22,6 +24,8 @@ export interface VoiceServiceConfig {
   startOnSystemBoot: boolean
   port: number
   device: 'cpu' | 'cuda' | 'auto'
+  target?: 'local' | 'remote'
+  remoteUrl?: string
   model?: string
   computeType?: 'int8' | 'float16' | 'float32'
   langCode?: string
@@ -130,6 +134,46 @@ export function withVoiceServiceDevice(
   }
 }
 
+export function withVoiceServiceTarget(
+  document: unknown,
+  id: VoiceServiceId,
+  target: 'local' | 'remote',
+  remoteUrl?: string,
+): Record<string, unknown> {
+  if (target !== 'local' && target !== 'remote') {
+    throw new Error('Voice service target must be local or remote')
+  }
+  if (!isRecord(document) || !isRecord(document.servers)) {
+    throw new Error(`etc/${CONFIG_FILE} must contain a servers object`)
+  }
+
+  const entry = document.servers[id]
+  if (!isRecord(entry)) {
+    throw new Error(`etc/${CONFIG_FILE} must contain a ${id} server entry`)
+  }
+
+  const nextEntry: Record<string, unknown> = {
+    ...entry,
+    target,
+  }
+  if (remoteUrl !== undefined) {
+    const trimmed = remoteUrl.trim().replace(/\/$/, '')
+    if (trimmed) {
+      nextEntry.remoteUrl = trimmed
+    } else {
+      delete nextEntry.remoteUrl
+    }
+  }
+
+  return {
+    ...document,
+    servers: {
+      ...document.servers,
+      [id]: nextEntry,
+    },
+  }
+}
+
 function writeVoiceServerConfig(document: Record<string, unknown>): void {
   const configPath = path.join(systemPaths.etc, CONFIG_FILE)
   const tempPath = `${configPath}.${process.pid}.${Date.now()}.tmp`
@@ -203,13 +247,22 @@ export function normalizeVoiceServiceConfig(
   const requestedDevice = environment[`${envPrefix}_DEVICE`] ?? entry.device
   const device = requestedDevice === 'cuda' ? 'cuda' : id === 'kokoro' && requestedDevice === 'auto' ? 'auto' : 'cpu'
   const port = positivePort(environment[`${envPrefix}_PORT`] ?? entry.port, defaults.port)
-  const shared: Pick<VoiceServiceConfig, 'enabled' | 'startOnSystemBoot' | 'port' | 'device'> = {
+  const requestedTarget = environment[`${envPrefix}_TARGET`] ?? entry.target
+  const target: 'local' | 'remote' | undefined =
+    requestedTarget === 'remote' ? 'remote' : requestedTarget === 'local' ? 'local' : undefined
+  const requestedRemoteUrl = environment[`${envPrefix}_REMOTE_URL`] ?? entry.remoteUrl
+  const remoteUrl = typeof requestedRemoteUrl === 'string' && requestedRemoteUrl.trim()
+    ? requestedRemoteUrl.trim().replace(/\/$/, '')
+    : undefined
+  const shared: Pick<VoiceServiceConfig, 'enabled' | 'startOnSystemBoot' | 'port' | 'device' | 'target' | 'remoteUrl'> = {
     enabled: typeof entry.enabled === 'boolean' ? entry.enabled : defaults.enabled,
     startOnSystemBoot: typeof entry.startOnSystemBoot === 'boolean'
       ? entry.startOnSystemBoot
       : defaults.startOnSystemBoot,
     port,
     device,
+    ...(target ? { target } : {}),
+    ...(remoteUrl ? { remoteUrl } : {}),
   }
 
   if (id === 'whisper') {
@@ -234,8 +287,45 @@ export function getVoiceServiceConfig(id: VoiceServiceId): VoiceServiceConfig {
   return normalizeVoiceServiceConfig(id, readServiceEntry(id))
 }
 
+function resolveDefaultRemoteHost(): string | undefined {
+  if (process.env.MH_REMOTE_VOICE_HOST?.trim()) {
+    return process.env.MH_REMOTE_VOICE_HOST.trim()
+  }
+  try {
+    const backendPath = path.join(systemPaths.etc, 'llm-backend.json')
+    if (fs.existsSync(backendPath)) {
+      const parsed = JSON.parse(fs.readFileSync(backendPath, 'utf8')) as {
+        remote?: { serverUrl?: string }
+      }
+      if (parsed.remote?.serverUrl?.trim()) {
+        return parsed.remote.serverUrl.trim()
+      }
+    }
+  } catch {}
+  return undefined
+}
+
+export function resolveRemoteVoiceServiceUrl(
+  id: VoiceServiceId,
+  config: VoiceServiceConfig = getVoiceServiceConfig(id),
+): string {
+  if (config.remoteUrl) return config.remoteUrl.replace(/\/$/, '')
+  const remoteHost = resolveDefaultRemoteHost()
+  if (remoteHost) {
+    try {
+      const parsed = new URL(remoteHost.includes('://') ? remoteHost : `http://${remoteHost}`)
+      return `${parsed.protocol}//${parsed.hostname}:${config.port}`
+    } catch {}
+  }
+  return `http://127.0.0.1:${config.port}`
+}
+
 export function getVoiceServiceUrl(id: VoiceServiceId): string {
-  return `http://127.0.0.1:${getVoiceServiceConfig(id).port}`
+  const config = getVoiceServiceConfig(id)
+  if (config.target === 'remote') {
+    return resolveRemoteVoiceServiceUrl(id, config)
+  }
+  return `http://127.0.0.1:${config.port}`
 }
 
 function getVoiceServiceSpec(id: VoiceServiceId): VoiceServiceSpec {
@@ -316,6 +406,31 @@ async function readHealth(id: VoiceServiceId): Promise<HealthResult> {
 
 export async function getVoiceServiceStatus(id: VoiceServiceId): Promise<VoiceServiceStatus> {
   const spec = getVoiceServiceSpec(id)
+  if (spec.config.target === 'remote') {
+    const url = getVoiceServiceUrl(id)
+    const { responding, healthy, health } = await readHealth(id)
+    const state = String(health?.status ?? '').toLowerCase()
+    const readiness = healthy
+      ? 'ready'
+      : responding && state === 'loading'
+        ? 'loading'
+        : responding
+          ? 'error'
+          : 'stopped'
+    return {
+      id,
+      installed: true,
+      running: responding,
+      healthy,
+      readiness,
+      target: 'remote',
+      ...(spec.config.remoteUrl ? { remoteUrl: spec.config.remoteUrl } : {}),
+      url,
+      health,
+      error: responding ? undefined : `Remote ${id} server at ${url} is unreachable`,
+    }
+  }
+
   const installed = spec.requiredFiles.every(file => fs.existsSync(file))
   const pid = readManagedPid(spec.pidFile)
   const { responding, healthy, health } = await readHealth(id)
@@ -335,6 +450,8 @@ export async function getVoiceServiceStatus(id: VoiceServiceId): Promise<VoiceSe
     running,
     healthy,
     readiness,
+    ...(spec.config.target ? { target: spec.config.target } : {}),
+    ...(spec.config.remoteUrl ? { remoteUrl: spec.config.remoteUrl } : {}),
     pid,
     url: getVoiceServiceUrl(id),
     health,
@@ -348,6 +465,11 @@ export async function ensureVoiceServiceRunning(id: VoiceServiceId): Promise<Voi
 
 async function ensureVoiceServiceRunningUnlocked(id: VoiceServiceId): Promise<VoiceServiceStatus> {
   const current = await getVoiceServiceStatus(id)
+  if (current.target === 'remote') {
+    if (current.healthy) return current
+    if (current.running) return waitForVoiceServiceReady(id)
+    throw new Error(current.error || `Remote ${id} server at ${current.url} is not reachable`)
+  }
   if (current.running) return !current.healthy ? waitForVoiceServiceReady(id) : current
 
   const spec = getVoiceServiceSpec(id)
@@ -491,6 +613,48 @@ export async function updateVoiceServiceDevice(
       restarted: true,
       config: getVoiceServiceConfig(id),
       status,
+    }
+  })
+}
+
+export async function updateVoiceServiceTarget(
+  id: VoiceServiceId,
+  target: 'local' | 'remote',
+  remoteUrl?: string,
+): Promise<VoiceServiceDeviceUpdate> {
+  if (target !== 'local' && target !== 'remote') {
+    throw new Error('Voice service target must be local or remote')
+  }
+  return withServiceMutation(id, async () => {
+    const document = readVoiceServerConfigForUpdate()
+    if (!isRecord(document.servers) || !isRecord(document.servers[id])) {
+      throw new Error(`etc/${CONFIG_FILE} must contain a ${id} server entry`)
+    }
+
+    const currentEntry = document.servers[id]
+    const currentTarget = currentEntry.target === 'remote' ? 'remote' : 'local'
+    const normalizedRemoteUrl = remoteUrl !== undefined ? remoteUrl.trim().replace(/\/$/, '') : undefined
+
+    if (target === 'remote') {
+      const spec = getVoiceServiceSpec(id)
+      const pid = readManagedPid(spec.pidFile)
+      if (pid) {
+        await stopVoiceService(id)
+      }
+    }
+
+    const updatedDocument = withVoiceServiceTarget(document, id, target, normalizedRemoteUrl)
+    const changed = currentTarget !== target
+      || (normalizedRemoteUrl !== undefined && (currentEntry.remoteUrl ?? '') !== normalizedRemoteUrl)
+    if (changed) {
+      writeVoiceServerConfig(updatedDocument)
+    }
+
+    return {
+      changed,
+      restarted: false,
+      config: getVoiceServiceConfig(id),
+      status: await getVoiceServiceStatus(id),
     }
   })
 }

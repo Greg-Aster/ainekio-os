@@ -4,6 +4,7 @@ import {
   ensureVoiceServiceRunning,
   getVoiceServiceStatus,
   stopVoiceService,
+  updateVoiceServiceTarget,
 } from '../../voice-service-manager.js'
 
 export const handleWhisperServer: UnifiedHandler = async (req) => {
@@ -21,7 +22,19 @@ export const handleWhisperServer: UnifiedHandler = async (req) => {
       const result = await stopVoiceService('whisper')
       return successResponse(result)
     }
-    return errorResponse('Invalid action. Use "start" or "stop"', 400)
+    if (action === 'set-target') {
+      if (req.user && req.user.role !== 'owner') {
+        return errorResponse('Only the installation owner can change voice service target', 403)
+      }
+      const target = req.body?.target
+      const remoteUrl = req.body?.remoteUrl
+      if (target !== 'local' && target !== 'remote') {
+        return errorResponse('target must be "local" or "remote"', 400)
+      }
+      const updated = await updateVoiceServiceTarget('whisper', target, typeof remoteUrl === 'string' ? remoteUrl : undefined)
+      return successResponse({ success: true, message: `Whisper target set to ${target}`, ...updated.status, config: updated.config })
+    }
+    return errorResponse('Invalid action. Use "start", "stop", or "set-target"', 400)
   } catch (error) {
     console.error('[whisper-server] Error:', error)
     return errorResponse((error as Error).message, 500)

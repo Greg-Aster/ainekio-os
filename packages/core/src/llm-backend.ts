@@ -536,7 +536,7 @@ export async function startAssignedModelServices(username: string, roles?: Model
   if (llamaModels.length) {
     await promisify(execFile)(path.join(ROOT, 'bin/llama-cpp-services'), ['start', JSON.stringify(llamaModels)]);
   }
-  if (selected.some(model => model.provider === 'ollama') && !await isOllamaRunning()) {
+  if (selected.some(model => model.provider === 'ollama') && config.ollama.autoStart && await isOllamaInstalled() && !await isOllamaRunning()) {
     const result = await startOllamaService();
     if (!result.success) throw new Error(result.error || 'Selected Ollama service failed to start');
   }

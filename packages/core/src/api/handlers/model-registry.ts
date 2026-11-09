@@ -644,11 +644,11 @@ export async function handleAssignModelRole(req: UnifiedRequest): Promise<Unifie
         };
       } else if (modelId.startsWith('remote-server:')) {
         // Remote server model - runtime discovery from connected remote server
-        // ID format: remote-server:remote-ollama-modelname
+        // ID format: remote-server:remote-ollama-modelname or remote-server:remote-llama-cpp-modelname
         const remoteId = modelId.replace(/^remote-server:/, '');
-        // Extract model name: remote-ollama-qwen3.5:9b -> qwen3.5:9b
-        const modelName = remoteId.replace(/^remote-ollama-/, '');
-        const remoteProvider = 'remote-ollama';
+        const isLlamaCpp = remoteId.startsWith('remote-llama-cpp-');
+        const modelName = remoteId.replace(/^remote-(?:ollama|llama-cpp)-/, '');
+        const remoteProvider = isLlamaCpp ? 'remote-llama-cpp' : 'remote-ollama';
 
         registry.models[modelId] = {
           provider: 'remote-server',
