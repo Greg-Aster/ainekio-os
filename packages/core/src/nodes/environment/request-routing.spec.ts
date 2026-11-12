@@ -60,14 +60,14 @@ const graph = { ...fullGraph, nodes: fullGraph.nodes.filter(node => !excluded.ha
   edges: fullGraph.edges.filter(edge => !excluded.has(edge.source) && !excluded.has(edge.target)) }
 const activeExecutions = [{ executionId: 'ongoing-1', canSteer: true, objective: 'Find the cat' }]
 const observation = { sessionId: 'robot-1', environmentId: 'fixture', timestamp: '2026-10-07T12:00:00Z',
-  capabilities: { actions: ['robotCommand'], robotCommands: ['wave'], robotCommandDescriptions: { wave: 'Wave one front leg.' } }, state: {} }
+  capabilities: { actions: ['requestMotion'], expressionLibrary: [{ name: 'happy', label: 'Warm smile' }] }, state: {} }
 
 test('input received during recall reaches active-task initial state before any program phase runs', async () => {
   const { environmentActiveTaskNode } = await import('./active-task.node.js')
   const userInput = { userMessage: 'A later input', timestamp: 456 }
   let childContext: any
   const result = await environmentActiveTaskNode.execute({
-    program: { steps: [{ kind: 'action', action: { type: 'robotCommand', command: 'wave' } }] },
+    program: { steps: [{ kind: 'action', action: { type: 'requestMotion', description: 'wave' } }] },
     sessionId: 'robot-1', userInput,
   }, { username: 'routing-fixture', graphExecution: {
     callGraph: async (_graph: unknown, context: any) => {
@@ -257,7 +257,7 @@ test('ordinary greeting skips optional source reads and the editor note', async 
   assert.deepEqual(envelope.memories, [])
   assert.equal(envelope.execution, null)
   assert.deepEqual(envelope.currentEnvironment.state, {})
-  assert.equal(envelope.currentEnvironment.capabilities.robotCommandCatalog.wave, 'Wave one front leg.')
+  assert.deepEqual(envelope.currentEnvironment.capabilities.actions, ['requestMotion'])
   assert.equal(envelope.activePersona, null)
   assert.equal(JSON.stringify(calls).includes('ENVIRONMENT MODE — REQUEST-FIRST DATA FLOW'), false)
 })
@@ -308,14 +308,14 @@ test('body-event intentions select the existing autonomous prompts through the s
 
 test('an action reads bridge capabilities without history, memories, status or task context', async () => {
   const { reads, envelope } = await run('Please wave', ['needsAction'], {
-    response: '', program: { steps: [{ kind: 'action', action: { type: 'robotCommand', command: 'wave' } }] },
+    response: '', program: { steps: [{ kind: 'action', action: { type: 'requestMotion', description: 'wave' } }] },
     taskDecision: { outcome: 'act', objective: 'Wave', reason: 'Requested gesture', completionCriteria: 'Wave completes',
       continuationPolicy: 'none', requiredCompletionBasis: 'action_result' },
   })
   assert.equal(reads.filter(item => item === 'physical-dispatch').length, 1)
   for (const source of ['history', 'memory', 'status', 'execution', 'persona']) assert.equal(reads.includes(source), false)
   assert.equal(envelope.activePersona, null)
-  assert.equal(envelope.currentEnvironment.capabilities.robotCommandCatalog.wave, 'Wave one front leg.')
+  assert.deepEqual(envelope.currentEnvironment.capabilities.actions, ['requestMotion'])
   assert.deepEqual(envelope.recentConversation, [])
 })
 
@@ -367,7 +367,7 @@ test('cancellation uses the existing execution event owner and introduces no rob
 
 test('action-selected follow-up plans from the selected conversation history', async () => {
   const { reads, envelope } = await run('Do that again', ['needsAction', 'needsConversationHistory', 'needsResponse'], {
-    response: '', program: { steps: [{ kind: 'action', action: { type: 'robotCommand', command: 'wave' } }] },
+    response: '', program: { steps: [{ kind: 'action', action: { type: 'requestMotion', description: 'wave' } }] },
     taskDecision: { outcome: 'act', objective: 'Wave again', reason: 'Repeat the requested action', completionCriteria: 'Wave completes',
       continuationPolicy: 'none', requiredCompletionBasis: 'action_result' },
   })
@@ -397,7 +397,7 @@ test('task and conversation are separate model calls sharing selected evidence w
   const { deliveredResponses, reads } = await run('Repeat the movement and explain it',
     ['needsAction', 'needsResponse', 'needsPersona', 'needsConversationHistory', 'needsMemory'], {
       response: 'The movement is selected.',
-      program: { steps: [{ kind: 'action', action: { type: 'robotCommand', command: 'wave' } }] },
+      program: { steps: [{ kind: 'action', action: { type: 'requestMotion', description: 'wave' } }] },
       taskDecision: { outcome: 'act', objective: 'Wave', reason: 'Requested movement', completionCriteria: 'Wave completes',
         continuationPolicy: 'none', requiredCompletionBasis: 'action_result' },
     })
@@ -416,9 +416,10 @@ test('task and conversation are separate model calls sharing selected evidence w
     assert.deepEqual(conversation[field], task[field], field)
   }
   assert.equal('capabilityRules' in conversation, false)
-  assert.deepEqual(conversation.currentEnvironment.capabilities, task.currentEnvironment.capabilities)
-  assert.equal(conversation.selectedTask.program.steps[0].action.command, 'wave')
-  assert.deepEqual(conversation.selectedTask.commandDescriptions, { wave: 'Wave one front leg.' })
+  assert.deepEqual(conversation.currentEnvironment.capabilities.actions, ['requestMotion'])
+  assert.equal('robotCommandCatalog' in conversation.currentEnvironment.capabilities, false)
+  assert.equal(conversation.selectedTask.program.steps[0].action.description, 'wave')
+  assert.equal('commandDescriptions' in conversation.selectedTask, false)
   assert.equal(conversation.selectedTask.actionAdmission.admitted, true)
   assert.equal(conversation.selectedTask.taskDecision.objectiveComplete, false)
   assert.deepEqual(deliveredResponses, ['The movement is selected.'])
@@ -474,7 +475,7 @@ test('task-only validation preserves action contracts while allowing no selected
   assert.equal(empty.taskDecision, null)
   assert.equal(empty.hasResponse, false)
   await assert.rejects(environmentActionParserNode.execute({ response: JSON.stringify({ program: null, taskDecision: null, response: 'Leaked speech' }) }, {}, properties), /response is not an Environment model-output field/)
-  await assert.rejects(environmentActionParserNode.execute({ response: JSON.stringify({ program: { steps: [{ kind: 'action', action: { type: 'robotCommand', command: 'wave' } }] }, taskDecision: null }) }, {}, properties), /requires its objective decision/)
+  await assert.rejects(environmentActionParserNode.execute({ response: JSON.stringify({ program: { steps: [{ kind: 'action', action: { type: 'requestMotion', description: 'wave' } }] }, taskDecision: null }) }, {}, properties), /requires its objective decision/)
 })
 
 
@@ -488,15 +489,15 @@ test('existing saved combined graphs retain their output contract while Environm
 })
 
 
-test('a capability question retains the catalog even when no program is selected', async () => {
+test('a capability question retains advertised actions even when no program is selected', async () => {
   await run('What movements can you perform?', ['needsResponse', 'needsEnvironment'])
   const envelope = JSON.parse(calls.filter(call => call.role === 'persona').at(-1).messages[1].content)
   assert.equal(envelope.selectedTask.program, undefined)
-  assert.deepEqual(envelope.currentEnvironment.capabilities.robotCommandCatalog, { wave: 'Wave one front leg.' })
+  assert.deepEqual(envelope.currentEnvironment.capabilities.actions, ['requestMotion'])
 })
 
 test('selected motion starts before delayed speech and survives a failed conversation call', async () => {
-  const selection = { response: 'I can wave.', program: { steps: [{ kind: 'action', action: { type: 'robotCommand', command: 'wave' } }] },
+  const selection = { response: 'I can wave.', program: { steps: [{ kind: 'action', action: { type: 'requestMotion', description: 'wave' } }] },
     taskDecision: { outcome: 'act', objective: 'Wave', reason: 'Requested gesture', completionCriteria: 'Wave completes',
       continuationPolicy: 'none', requiredCompletionBasis: 'action_result' } }
   for (const failSpeech of [false, true]) {
@@ -515,8 +516,7 @@ test('returned camera and action receipts reach the final response after the com
   const request = 'Tell me what you see, tell me a fact about cats, and do a bow.'
   const frame = { id: 'returned-picture', timestamp: '2026-10-07T12:01:00Z', source: 'robot-camera',
     dataUrl: 'data:image/jpeg;base64,/9j/2gAA/9k=', mimeType: 'image/jpeg', metadata: { actionId: 'capture-1' } }
-  const body = { ...observation, capabilities: { actions: ['captureImage', 'robotCommand'],
-    robotCommands: ['bow'], robotCommandDescriptions: { bow: 'Lower the front of the body, then recover.' } } }
+  const body = { ...observation, capabilities: { actions: ['captureImage', 'requestMotion'] } }
   const returned = { ...body, timestamp: '2026-10-07T12:01:03Z', visual: frame,
     feedback: [{ type: 'completed', actionId: 'bow-1', message: 'Bow completed', timestamp: '2026-10-07T12:01:03Z' }] }
   const execution = { executionId: 'current', events: [{ kind: 'physical_result', actionId: 'bow-1',
@@ -524,7 +524,7 @@ test('returned camera and action receipts reach the final response after the com
   const result = await run(request, ['needsResponse', 'needsAction', 'needsVision'], {
     response: 'The camera shows the room. Cats have retractable claws. The bow completed.',
     program: { steps: [{ kind: 'action', action: { type: 'captureImage' } },
-      { kind: 'action', action: { type: 'robotCommand', command: 'bow' } }] },
+      { kind: 'action', action: { type: 'requestMotion', description: 'bow' } }] },
     taskDecision: { outcome: 'act', objective: request, reason: 'Requested tasks', completionCriteria: 'Capture, respond and bow',
       continuationPolicy: 'none', requiredCompletionBasis: 'visual_observation' },
   }, { awaitTask: true, observation: body, returnedObservation: returned, execution,
@@ -544,7 +544,7 @@ test('returned camera and action receipts reach the final response after the com
 })
 
 test('physical failure reaches conversation as a failure and interrupted work produces no premature final response', async () => {
-  const selection = { program: { steps: [{ kind: 'action', action: { type: 'robotCommand', command: 'wave' } }] },
+  const selection = { program: { steps: [{ kind: 'action', action: { type: 'requestMotion', description: 'wave' } }] },
     taskDecision: { outcome: 'act', objective: 'Wave', reason: 'Requested', completionCriteria: 'Wave completes',
       continuationPolicy: 'none', requiredCompletionBasis: 'action_result' } }
   const failure = { actionId: 'wave-1', type: 'failed', message: 'Simulated actuator failure', timestamp: '2026-10-07T12:01:00Z' }
@@ -559,16 +559,16 @@ test('physical failure reaches conversation as a failure and interrupted work pr
   assert.equal(interrupted.reads.some(item => item.startsWith('speech:')), false)
 })
 
-test('an unavailable selected command reaches the final response without waiting for an unadmitted program', async () => {
+test('an unavailable selected action reaches the final response without waiting for an unadmitted program', async () => {
   const result = await run('Bow', ['needsResponse', 'needsAction'], {
-    response: 'That command was not admitted.',
-    program: { steps: [{ kind: 'action', action: { type: 'robotCommand', command: 'bow' } }] },
+    response: 'That action was not admitted.',
+    program: { steps: [{ kind: 'action', action: { type: 'requestMotion', description: 'bow' } }] },
     taskDecision: { outcome: 'act', objective: 'Bow', reason: 'Requested', completionCriteria: 'Bow completes',
       continuationPolicy: 'none', requiredCompletionBasis: 'action_result' },
-  })
+  }, { observation: { ...observation, capabilities: { actions: ['captureImage'] } } })
   const envelope = JSON.parse(calls.at(-1).messages[1].content)
   assert.equal(envelope.selectedTask.actionAdmission.admitted, false)
-  assert.equal(envelope.selectedTask.actionAdmission.reason, 'robot_command_unavailable')
+  assert.equal(envelope.selectedTask.actionAdmission.reason, 'action_capability_unavailable')
   assert.equal(result.result.nodes.get('active-task')?.status, 'skipped')
   assert.equal(result.reads.filter(item => item.startsWith('speech:')).length, 1)
 })
@@ -599,7 +599,7 @@ test('conversation-only routing skips both planners', async () => {
 })
 
 test('the small model can delegate the unchanged context and the larger result uses the same executor', async () => {
-  const program = { steps: [{ kind: 'action', action: { type: 'robotCommand', command: 'wave' } }] }
+  const program = { steps: [{ kind: 'action', action: { type: 'requestMotion', description: 'wave' } }] }
   const plan = { program, taskDecision: { outcome: 'act', objective: 'Wave', reason: 'Requested gesture',
     completionCriteria: 'Wave completes', continuationPolicy: 'none', requiredCompletionBasis: 'action_result' } }
   const result = await run('Wave for me', ['needsAction'], { delegatePlanning: true }, { delegatedPlan: plan })
@@ -612,7 +612,7 @@ test('the small model can delegate the unchanged context and the larger result u
   assert.equal(calls[2].messages[0].content.includes('delegatePlanning'), false)
   assert.ok(calls[1].options.jsonSchema.anyOf.some((branch: any) => branch.properties.delegatePlanning))
   assert.equal(calls[2].options.jsonSchema.anyOf.some((branch: any) => branch.properties.delegatePlanning), false)
-  assert.equal(result.result.nodes.get('6')!.outputs!.program.steps[0].action.command, 'wave')
+  assert.equal(result.result.nodes.get('6')!.outputs!.program.steps[0].action.description, 'wave')
   assert.equal(result.result.nodes.get('6')!.outputs!.program.steps[0].action.sessionId, 'robot-1')
   assert.equal(result.reads.filter(value => value === 'physical-dispatch').length, 1)
   assert.equal(result.result.nodes.get('6')!.outputs!.rawResponse, JSON.stringify(plan))
@@ -713,7 +713,7 @@ test('later input during execution or conversation takes precedence over input r
 
 test('input received during task recall reaches execution as well as final continuation', async () => {
   await run('Current request', ['needsAction'], {
-    response: '', program: { steps: [{ kind: 'action', action: { type: 'robotCommand', command: 'wave' } }] },
+    response: '', program: { steps: [{ kind: 'action', action: { type: 'requestMotion', description: 'wave' } }] },
     taskDecision: { outcome: 'act', objective: 'Wave', reason: 'Requested gesture', completionCriteria: 'Wave completes',
       continuationPolicy: 'none', requiredCompletionBasis: 'action_result' },
   }, { memoryWork: true, routing: { needsResponse: false, needsAction: true, taskContext: ['memory'], conversationContext: [] } })

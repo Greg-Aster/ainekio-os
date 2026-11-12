@@ -733,10 +733,7 @@
       m => m.provider === 'remote-server' || m.provider === 'runpod_serverless'
     );
     if (remoteCandidate) return remoteCandidate.id;
-    if (backendAvailability.bigBrother.enabled && backendAvailability.bigBrother.provider === 'gemini') {
-      return 'big-brother.gemini';
-    }
-    return 'big-brother.codex';
+    return 'big-brother.gemini';
   }
 
   async function applyModelPreset(preset: 'local' | 'hybrid' | 'bb-codex' | 'bb-gemini') {
@@ -746,7 +743,8 @@
     modelConfigurationError = '';
     modelConfigurationNotice = '';
     try {
-      if (preset === 'bb-codex' || preset === 'bb-gemini') {
+      const hybridRemoteTarget = preset === 'hybrid' ? resolveRemotePresetModelId() : undefined;
+      if (preset === 'bb-codex' || preset === 'bb-gemini' || hybridRemoteTarget === 'big-brother.gemini') {
         const bbPayload = preset === 'bb-codex'
           ? { enabled: true, provider: 'codex', model: 'gpt-6.1-sol', reasoningEffort: 'low' }
           : { enabled: true, provider: 'gemini', model: 'gemini-3.8-flash-low', reasoningEffort: 'low' };
@@ -761,15 +759,17 @@
         }
       }
 
-      const primarySection = modelRoleSections[0]?.roles.map(r => r.role) || ['persona', 'orchestrator'];
+      const allSectionRoles = modelRoleSections.flatMap(section => section.roles.map(r => r.role));
       const targetRoles = Array.from(new Set([
-        ...primarySection,
+        ...allSectionRoles,
         'persona',
         'orchestrator',
-        ...(mode === 'environment' ? ['environmentActionSelector'] : []),
+        'autonomy',
+        'lightweight',
+        ...(mode === 'environment' ? ['environmentActionSelector', 'environmentVision'] : []),
       ])).filter(role => role !== 'embedder');
 
-      const fastEdgeRoles = new Set(['orchestrator', 'environmentActionSelector', 'lightweight', 'environmentVision']);
+      const fastEdgeRoles = new Set(['orchestrator', 'environmentActionSelector']);
 
       for (const role of targetRoles) {
         let targetModelId: string | undefined;
@@ -778,13 +778,11 @@
         } else if (preset === 'hybrid') {
           targetModelId = fastEdgeRoles.has(role)
             ? resolveLocalPresetModelId(role)
-            : (resolveRemotePresetModelId() || resolveLocalPresetModelId(role));
+            : (hybridRemoteTarget || resolveLocalPresetModelId(role));
         } else if (preset === 'bb-codex') {
           targetModelId = 'big-brother.codex';
         } else {
-          targetModelId = role === 'environmentVision'
-            ? resolveLocalPresetModelId(role)
-            : 'big-brother.gemini';
+          targetModelId = 'big-brother.gemini';
         }
         if (!targetModelId || roleAssignments[role] === targetModelId) continue;
         const response = await apiFetch('/api/model-registry', {
@@ -802,7 +800,7 @@
       const presetLabel = preset === 'local'
         ? 'Local'
         : preset === 'hybrid'
-          ? 'Hybrid (Edge + Remote)'
+          ? 'Hybrid (0.8B Edge + BB-Gemini ACP)'
           : preset === 'bb-codex'
             ? 'BB-Codex'
             : 'BB-Gemini';
@@ -1277,9 +1275,14 @@
     if (assigned.every(id => id === 'big-brother.gemini' || (id === 'big-brother.configured' && backendAvailability.bigBrother.provider === 'gemini'))) {
       return 'bb-gemini';
     }
+    if (assigned.every(id => id.startsWith('gemini.'))) {
+      return 'gemini-api';
+    }
     const isLocalModel = (id: string) => {
       const m = findAssignedModel(id);
-      return m ? (!isEmbedderOnlyModel(m) && (m.provider === 'llama-cpp' || m.provider === 'ollama' || m.provider === 'local')) : !id.startsWith('big-brother.') && !id.startsWith('remote-server:');
+      return m
+        ? (!isEmbedderOnlyModel(m) && (m.provider === 'llama-cpp' || m.provider === 'ollama' || m.provider === 'local'))
+        : !id.startsWith('big-brother.') && !id.startsWith('remote-server:') && !id.startsWith('gemini.');
     };
     if (assigned.every(isLocalModel)) {
       return 'local';
@@ -1580,7 +1583,7 @@
               class="py-1 px-1 rounded text-[0.65rem] font-semibold transition-all cursor-pointer border-0 truncate {activePreset === 'local' ? 'bg-violet-600 text-white shadow-sm' : 'bg-transparent text-gray-600 dark:text-gray-300 hover:bg-black/5 dark:hover:bg-white/5'}"
               disabled={loadingModelRegistry || Boolean(savingModelRole)}
               on:click={() => applyModelPreset('local')}
-              title="Run all roles on local llama.cpp / Ollama (0.8B/2B specialists + local base)"
+              title="Run all roles on local llama.cpp (0.8B LoRA specialists + 9B local base)"
             >
               Local
             </button>
@@ -1589,7 +1592,7 @@
               class="py-1 px-1 rounded text-[0.65rem] font-semibold transition-all cursor-pointer border-0 truncate {activePreset === 'hybrid' ? 'bg-violet-600 text-white shadow-sm' : 'bg-transparent text-gray-600 dark:text-gray-300 hover:bg-black/5 dark:hover:bg-white/5'}"
               disabled={loadingModelRegistry || Boolean(savingModelRole)}
               on:click={() => applyModelPreset('hybrid')}
-              title="Hybrid: Keep fast Intent/Task/Lightweight roles on local Q6A llama.cpp and route Persona/Planner to Remote Server (dndiy) or Cloud"
+              title="Hybrid: Fast 0.8B local LoRAs for Intent/Task + warm BB-Gemini ACP (paid Google subscription) for Persona & Vision"
             >
               Hybrid
             </button>
@@ -1607,7 +1610,7 @@
               class="py-1 px-1 rounded text-[0.65rem] font-semibold transition-all cursor-pointer border-0 truncate {activePreset === 'bb-gemini' ? 'bg-violet-600 text-white shadow-sm' : 'bg-transparent text-gray-600 dark:text-gray-300 hover:bg-black/5 dark:hover:bg-white/5'}"
               disabled={loadingModelRegistry || Boolean(savingModelRole)}
               on:click={() => applyModelPreset('bb-gemini')}
-              title="Route roles to Big Brother Gemini (gemini-3.8-flash-low)"
+              title="Route all roles to warm BB-Gemini ACP server on your paid Google subscription (gemini-3.8-flash-low)"
             >
               BB-Gemini
             </button>

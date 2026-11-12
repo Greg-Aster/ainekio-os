@@ -26,8 +26,8 @@ test('image acquisition has a longer dispatch window without weakening control e
     manager.clear()
     const controlQueuedAt = new Date().toISOString()
     const controlRequest = enqueueEnvironmentAction({
-      type: 'robotCommand',
-      command: 'model-authored-command',
+      type: 'requestMotion',
+      description: 'model-authored-motion',
       sessionId: 'robot-1',
       createdAt: controlQueuedAt,
     })
@@ -44,8 +44,8 @@ test('completed robot actions do not synthesize a workflow-specific recapture', 
   try {
     manager.clear()
     const action = enqueueEnvironmentAction({
-      type: 'robotCommand',
-      command: 'model-authored-command',
+      type: 'requestMotion',
+      description: 'model-authored-motion',
       sessionId: 'robot-1',
       metadata: {
         robotObserver: {

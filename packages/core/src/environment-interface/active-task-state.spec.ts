@@ -191,15 +191,15 @@ for (const basis of ['action_result', 'visual_observation', 'environment_state',
 
 test('multi-step program completion waits for every selected action and retains objective assessment', async () => {
   const f = fixture({ steps: [
-    { kind: 'action', action: { type: 'robotCommand', command: 'bow' } },
-    { kind: 'action', action: { type: 'robotCommand', command: 'wave' } },
+    { kind: 'action', action: { type: 'requestMotion', description: 'bow' } },
+    { kind: 'action', action: { type: 'requestMotion', description: 'wave' } },
   ] })
   Object.assign(f.context, { activeTaskDecision: { ...decision, requiredCompletionBasis: 'action_result', continuationPolicy: 'none' } })
   await assert.rejects(() => f.receive(f.state, 'unrelated', 'completed'), /WAIT/)
   const first = await f.receive(f.state, 'motion', 'completed')
   assert.equal(first.stepIndex, 1)
   assert.notEqual(first.objectiveComplete, true)
-  const second = await f.receive({ ...first, motionId: 'second', action: { type: 'robotCommand', command: 'wave' } }, 'second', 'completed')
+  const second = await f.receive({ ...first, motionId: 'second', action: { type: 'requestMotion', description: 'wave' } }, 'second', 'completed')
   const final = await f.advance(second)
   assert.equal(final.done, true)
   assert.equal(final.objectiveComplete, false)
@@ -209,9 +209,9 @@ test('multi-step program completion waits for every selected action and retains 
 
 for (const type of ['failed', 'rejected', 'expired', 'cancelled', 'outcome_unknown'] as const) {
   test(`finite receipt objective does not complete on ${type}`, async () => {
-    const f = fixture({ steps: [{ kind: 'action', action: { type: 'robotCommand', command: 'bow' } }] })
+    const f = fixture({ steps: [{ kind: 'action', action: { type: 'requestMotion', description: 'bow' } }] })
     Object.assign(f.context, { activeTaskDecision: { ...decision, requiredCompletionBasis: 'action_result', continuationPolicy: 'none' } })
-    const result = await f.receive({ ...f.state, action: { type: 'robotCommand', command: 'bow' } }, 'motion', type)
+    const result = await f.receive({ ...f.state, action: { type: 'requestMotion', description: 'bow' } }, 'motion', type)
     const final = await f.advance(result)
     assert.equal(final.objectiveComplete, false)
     assert.equal(f.task().decision.outcome, decision.outcome, 'The actual action failure does not select another objective outcome')
@@ -231,9 +231,9 @@ test('bounded objectives remain open after one program returns', async () => {
 })
 
 test('a failed program preserves the selected goal decision without manufacturing continued pursuit', async () => {
-  const f = fixture({ steps: [{ kind: 'action', action: { type: 'robotCommand', command: 'bow' } }] })
+  const f = fixture({ steps: [{ kind: 'action', action: { type: 'requestMotion', description: 'bow' } }] })
   Object.assign(f.context, { activeTaskDecision: { ...decision, requiredCompletionBasis: 'action_result', continuationPolicy: 'bounded' } })
-  const result = await f.advance(await f.receive({ ...f.state, action: { type: 'robotCommand', command: 'bow' } }, 'motion', 'rejected'))
+  const result = await f.advance(await f.receive({ ...f.state, action: { type: 'requestMotion', description: 'bow' } }, 'motion', 'rejected'))
   assert.equal(result.done, true)
   assert.equal(result.objectiveComplete, false)
   assert.equal(f.task().decision.outcome, decision.outcome)
@@ -310,7 +310,7 @@ for (const imageFirst of [false, true]) {
   test(`capture completes its own step with receipt and image (imageFirst=${imageFirst})`, async () => {
     const capture: EnvironmentTaskProgram = { steps: [
       { kind: 'action', action: { type: 'captureImage' } },
-      { kind: 'action', action: { type: 'robotCommand', command: 'wave' } },
+      { kind: 'action', action: { type: 'requestMotion', description: 'wave' } },
     ] }
     const f = fixture(capture)
     let state: ActiveTaskState = { ...f.state, action: { type: 'captureImage' }, snapshotId: 'motion' }
@@ -327,7 +327,7 @@ for (const imageFirst of [false, true]) {
     assert.match(state.evidence[0], /frame/)
     assert.equal(f.dispatches.length, 0, 'Capture completion does not ask a model to prove later steps')
     // The integration test covers dispatch; here supply the later action receipt.
-    state = await f.receive({ ...state, action: { type: 'robotCommand', command: 'wave' }, motionId: 'wave-action' }, 'wave-action', 'completed')
+    state = await f.receive({ ...state, action: { type: 'requestMotion', description: 'wave' }, motionId: 'wave-action' }, 'wave-action', 'completed')
     state = await f.advance(state)
     assert.equal(state.done, true)
     assert.equal(state.objectiveComplete, false, 'The model-owned result review still receives captured evidence')
@@ -380,7 +380,7 @@ test('a replacement program cannot bypass uncertain delivery from the earlier mo
   const f = fixture()
   const sent = await f.advance(f.state)
   const uncertain = await f.receive(sent, f.dispatches[0].actionId, 'outcome_unknown')
-  const replacement = fixture({ steps: [{ kind: 'action', action: { type: 'robotCommand', command: 'wave' } }] })
+  const replacement = fixture({ steps: [{ kind: 'action', action: { type: 'requestMotion', description: 'wave' } }] })
   await replacement.advance({ ...uncertain, awaitingReplacement: true, retrySteering: true })
   assert.equal(replacement.dispatches.length, 0)
   assert.equal(replacement.task().feedback.type, 'outcome_unknown')
@@ -807,14 +807,13 @@ for (const nextAction of [{ type: 'stop' as const }, { type: 'move' as const, di
     const unsubscribe = bridge.subscribeEnvironmentActions(observation.sessionId, () => {})
     const before = [observation.sessionId, 'gateway', 'p4', 1, 10]
     const owned = [...before.slice(0, 4), 11]
-    const live = (sequence: number) => ({ ...observation, capabilities: { ...observation.capabilities,
-      actions: [...observation.capabilities.actions, 'robotCommand' as const], robotCommands: ['wave'] },
+    const live = (sequence: number) => ({ ...observation,
       state: { ...observation.state, body: { authenticated: true, robotId: 'p4' },
         gateway: { robots: { p4: { epoch: 1, body_command_sequence: sequence } } },
         locomotionMeasurement: { yaw: { available: true, source: 'imu', robotId: 'p4', referenceId: 'boot', observedAt: new Date().toISOString(), degrees: 0, uncertaintyDegrees: null } } } })
     recordEnvironmentObservation(live(10))
     try {
-      const f = fixture({ steps: [{ kind: 'action', action: { type: 'robotCommand', command: 'wave' } },
+      const f = fixture({ steps: [{ kind: 'action', action: { type: 'requestMotion', description: 'wave' } },
         { kind: 'action', action: nextAction }] })
       let state = await f.advance({ stepIndex: 0, evidence: [], updateRevision: 0, interpretationFence: JSON.stringify(before) })
       assert.equal(state.interpretationFence, JSON.stringify(before), 'Admission must not consume program ownership')
@@ -1057,12 +1056,12 @@ test('owned cancellation advances the resume fence only from its correlated term
 
 test('restricted loss cannot advance to a later phase or apply an interpreted replacement', async () => {
   await singlePersonFixture(async f => {
-    ;(f.context as any).activeProgram.steps.push({ kind: 'action', action: { type: 'robotCommand', command: 'wave' } })
+    ;(f.context as any).activeProgram.steps.push({ kind: 'action', action: { type: 'requestMotion', description: 'wave' } })
     f.frame(2, 2); await f.advance(); await f.terminal()
     f.tick(3100); await f.advance()
     assert.equal(f.state().stepIndex, 0)
     assert.equal(f.state().objectiveComplete, false)
-    assert.equal(f.dispatches.some((d: any) => d.payload.input.command === 'wave'), false)
+    assert.equal(f.dispatches.some((d: any) => d.payload.input.description === 'wave'), false)
     const { environmentActiveTaskNode } = await import('../nodes/environment/active-task.node.js')
     await assert.rejects(() => environmentActiveTaskNode.execute({ program }, {
       ...(f.context as any), activeTaskContinuation: { program, state: f.state(), decision },
@@ -1386,7 +1385,7 @@ test('acquisition continuation preserves instruction admission and consumes no s
 
 
 test('ended-session evidence releases a continuous task without completing its objective or running its next step', async () => {
-  const f = fixture({ steps: [...program.steps, { kind: 'action', action: { type: 'robotCommand', command: 'wave' } }] })
+  const f = fixture({ steps: [...program.steps, { kind: 'action', action: { type: 'requestMotion', description: 'wave' } }] })
   let state = await f.receive(f.state, 'motion', 'outcome_unknown')
   state = await f.advance(state)
   assert.equal(state.done, undefined)

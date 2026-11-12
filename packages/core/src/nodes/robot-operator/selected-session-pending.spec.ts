@@ -16,7 +16,7 @@ const { robotAutonomyControllerContextNode } = await import('./context-builder.n
 
 const now = new Date().toISOString()
 const observation = { environmentId: 'fixture', adapter: 'fixture', sessionId: 'selected-robot',
-  timestamp: now, capabilities: { actions: ['robotCommand'] }, state: {} }
+  timestamp: now, capabilities: { actions: ['requestMotion'] }, state: {} }
 const bridgeState = { enabled: true, updatedAt: now, feedback: [], sessions: {
   'selected-robot': { sessionId: 'selected-robot', environmentId: 'fixture', adapter: 'fixture',
     status: 'connected', connectedAt: now, lastSeenAt: now, latestObservation: observation },
@@ -25,7 +25,7 @@ const manager = getQueueManager()
 const unknown = { id: 'old-unrelated-command', type: 'environment_command', handler: 'environment.command',
   state: 'waiting', priority: 'normal', source: 'system', username: 'system', resource: 'environment:body',
   cognitiveMode: 'environment', createdAt: '2026-09-07T17:32:52.438Z', attempt: 0, maxAttempts: 1,
-  input: { type: 'robotCommand', sessionId: 'body', command: 'walk' },
+  input: { type: 'requestMotion', sessionId: 'body', description: 'stand up' },
   cancellationRequestedAt: '2026-09-07T17:32:52.492Z', cancellationReason: 'User cancelled',
   waitingReason: 'outcome_unknown: Acknowledgement lost' }
 
@@ -50,7 +50,7 @@ test('selected robot context excludes unrelated unknown work while preserving it
 test('selected robot context counts its own admitted work separately from other sessions', async () => {
   manager.importState({ items: [unknown], history: [], lastUpdated: now } as never)
   manager.enqueue({ type: 'environment_command', username: 'fixture', source: 'user',
-    input: { type: 'robotCommand', command: 'wave', sessionId: 'selected-robot' } })
+    input: { type: 'requestMotion', description: 'wave', sessionId: 'selected-robot' } })
   const { bridgeSummary, count } = await selectedPendingCount()
   assert.equal(bridgeSummary.pendingCommandCount, 2)
   assert.equal(count, 1)

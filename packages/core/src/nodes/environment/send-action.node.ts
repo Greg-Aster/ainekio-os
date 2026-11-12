@@ -7,7 +7,7 @@ import {
   type EnvironmentActionType,
 } from '../../environment-interface/index.js';
 
-const ACTION_OPTIONS: EnvironmentActionType[] = ['move', 'look', 'jump', 'interact', 'stop', 'captureImage', 'robotCommand', 'requestMotion', 'faceExpression', 'inspect', 'visualApproach', 'sendText'];
+const ACTION_OPTIONS: EnvironmentActionType[] = ['move', 'look', 'jump', 'interact', 'stop', 'captureImage', 'requestMotion', 'faceExpression', 'inspect', 'visualApproach', 'sendText'];
 const BODY_ACTIONS = new Set<EnvironmentActionType>(ACTION_OPTIONS.filter(action => action !== 'sendText'));
 type SendStatus = 'coordinated_for_adapter' | 'waiting_for_adapter' | 'bridge_disabled' | 'no_actions' | 'partial' | 'rejected';
 
@@ -172,9 +172,7 @@ export const environmentSendActionNode = defineNode({
       for (const action of rawActions) {
         try {
           if (!context.graphExecution) throw new Error('Environment Bridge Out requires the durable graph runtime');
-          const locomotion = action.type === 'move' || action.type === 'robotCommand'
-            && targetSession?.latestObservation?.capabilities.locomotion?.commands.includes(action.command ?? '');
-          if (locomotion && !action.movementUpdate) {
+          if (action.type === 'move' && !action.movementUpdate) {
             normalizeLocomotionGoal(action.locomotionGoal);
             if (!context.activeProgram) throw new Error('Locomotion goals execute through Active Task');
           }

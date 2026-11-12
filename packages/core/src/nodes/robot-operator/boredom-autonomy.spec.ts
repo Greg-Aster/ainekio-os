@@ -155,8 +155,7 @@ function robotObservation() {
     sessionId: 'robot-1',
     timestamp: '2026-08-03T12:00:00.000Z',
     capabilities: {
-      actions: ['captureImage', 'robotCommand', 'sendText'],
-      robotCommands: ['walk', 'wave', 'stop'],
+      actions: ['captureImage', 'requestMotion', 'sendText'],
       visual: true,
       movement: true,
     },
@@ -345,9 +344,6 @@ test('a closed Observer planner gate does not call the model', async () => {
 
 test('planner context exposes a strict delegation contract and correlated-evidence gate', async () => {
   const current: any = robotObservation();
-  current.capabilities.robotCommandDescriptions = {
-    walk: 'walk forward using the requested step count',
-  };
   const ready = await robotAutonomyPlannerContextNode.execute({
     instruction: 'Author one high-level interest.',
     observation: current,
@@ -580,7 +576,7 @@ test('Robot Operator context preserves canonical combined history without adding
   assert.match(serialized, /isInnerDialogue/);
   assert.doesNotMatch(serialized, /Legacy raw inner record/);
   assert.doesNotMatch(serialized, /Private reasoning/);
-  assert.match(serialized, /captureImage|robotCommand/);
+  assert.match(serialized, /captureImage|requestMotion/);
   assert.doesNotMatch(serialized, /image captured/);
 });
 
@@ -642,12 +638,6 @@ test('Robot Autonomy planner context carries trigger, semantic memory and delega
   observation.metadata.autonomousStimulus = 'boredom-reflection';
   observation.metadata.robotObserver.requestedBy = 'boredom-reflection';
   observation.metadata.robotOperatorMemories = ['The striped ball once led to a playful bow.'];
-  observation.capabilities.robotCommandDescriptions = {
-    walk: 'walk forward using the requested step count',
-    wave: 'perform a waving gesture',
-    stop: 'stop the current body motion',
-  };
-  observation.capabilities.actions.push('requestMotion');
   observation.capabilities.motionClasses = ['body_local'];
   observation.metadata.robotOperatorDecision = {
     observed: 'The recent context connects the striped ball with playful movement.',
@@ -677,7 +667,7 @@ test('Robot Autonomy planner context carries trigger, semantic memory and delega
           bridgeRecord: {
             direction: 'outbound',
             status: 'coordinated_for_adapter',
-            commands: [{ id: 'action-1', type: 'robotCommand', command: 'wave', status: 'queued' }],
+            commands: [{ id: 'action-1', type: 'requestMotion', description: 'wave', status: 'queued' }],
             correlationId: 'cycle-1',
           },
         },
@@ -690,7 +680,7 @@ test('Robot Autonomy planner context carries trigger, semantic memory and delega
             direction: 'inbound',
             status: 'completed',
             actionId: 'action-1',
-            action: { id: 'action-1', type: 'robotCommand', command: 'wave' },
+            action: { id: 'action-1', type: 'requestMotion', description: 'wave' },
             message: 'done',
           },
         },
@@ -703,7 +693,7 @@ test('Robot Autonomy planner context carries trigger, semantic memory and delega
         motion: { available: true, activity: 'idle' },
         state: { gateway: { raw: 'x'.repeat(20_000) } },
       },
-      lastAction: { command: 'wave', status: 'completed' },
+      lastAction: { type: 'requestMotion', description: 'wave', status: 'completed' },
       task: {
         objective: 'Find the striped ball.',
         instruction: 'Continue looking for the striped ball.',
@@ -769,7 +759,7 @@ test('Robot Autonomy planner context carries trigger, semantic memory and delega
     supporting.robotOperatorContext.verifiedActionHistory.entries[0],
     {
       actionId: 'action-1',
-      requested: { type: 'robotCommand', command: 'wave' },
+      requested: { type: 'requestMotion', description: 'wave' },
       status: 'completed',
       correlationId: 'cycle-1',
       requestedAt: 1,
@@ -787,7 +777,7 @@ test('Robot Operator context keeps prior action context without treating it as c
     actionId: 'prior-action',
     correlationId: 'prior-cycle',
     status: 'completed',
-    requested: { type: 'robotCommand', command: 'bow' },
+    requested: { type: 'requestMotion', description: 'bow' },
     result: { type: 'completed', message: 'bow completed' },
   };
 
@@ -803,7 +793,7 @@ test('Robot Operator context keeps prior action context without treating it as c
   assert.equal(result.context.historicalLatestActionIncluded, true);
   const supporting = modelInputEnvelope(result);
   assert.equal(
-    supporting.robotOperatorContext.recentActionContext.entry.requested.command,
+    supporting.robotOperatorContext.recentActionContext.entry.requested.description,
     'bow',
   );
   assert.equal(supporting.robotOperatorContext.recentActionContext.currentEvidence, false);
@@ -999,7 +989,7 @@ test('Robot Autonomy Controller context combines unfinished work, buffers, bridg
       })),
     ],
     innerHistory: [{ role: 'reflection', content: 'The last view was too dark.', timestamp: 2000 }],
-    actionHistory: [{ actionId: 'turn-1', status: 'completed', verified: true, requested: { type: 'robotCommand', command: 'turn-right' } }],
+    actionHistory: [{ actionId: 'turn-1', status: 'completed', verified: true, requested: { type: 'move', direction: 'right' } }],
     personaText: 'Curious, attentive, and persistent.',
     activeDesires: [{ id: 'desire-1', title: 'Explore carefully', status: 'pending' }],
     availableTasks: tasks,

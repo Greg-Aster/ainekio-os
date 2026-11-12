@@ -60,22 +60,20 @@ for (const steps of [['sit','stand'],['wave','nod'],['bow','sit']]) add('expande
 ], task(`Perform the stored warmup: ${steps.join(', ')}.`,steps.map(action)),[...movement,'needsMemory'],{
  memories:[{id:'synthetic-warmup',type:'conversation',timestamp:TIME,content:`The saved warmup is: ${steps.join(', then ')}.`}],
 })
-// The same requested gesture must map through its supplied description, not its spelling.
+// The same requested expression must map through its supplied label, not its token spelling.
 const renamed = observation()
-renamed.capabilities.robotCommands = ['crouch_token','salute_token','rise_token']
-renamed.capabilities.robotCommandDescriptions = {
- crouch_token:'Raise the body from sitting to the standard upright stance.',
- salute_token:'Lower the front of the body into a bow and recover.',
- rise_token:'Lift a front limb and wave it, then put it back.',
-}
-add('expanded-description-authority',['Stand upright.','Get into your standing posture.','Rise to standing now.','Please take the upright stance.'],
- task('Stand upright.',[action('crouch_token')]),movement,{observation:renamed})
-add('expanded-description-authority',['Bow now.','Give us a bow.','Please make a bowing gesture.','Lower into a bow for me.'],
- task('Bow once.',[action('salute_token')]),movement,{observation:renamed})
-// Restricting a synthetic catalog tests supplied capabilities; this does not restrict runtime capabilities.
+renamed.capabilities.expressionLibrary = [
+ { name: 'sad_token', label: 'Warm welcoming smile expression' },
+ { name: 'sleep_token', label: 'Focused thinking face expression' },
+ { name: 'calm_token', label: 'Startled wide-eyed face expression' },
+]
+add('expanded-description-authority',['Show a warm welcoming smile on your face.','Set your face display to a welcoming smile.','Put on the warm smile expression.','Display a welcoming smile.'],
+ task('Display a warm welcoming smile.',[{ kind: 'action', action: { type: 'faceExpression', expression: 'sad_token' } }]),movement,{observation:renamed})
+add('expanded-description-authority',['Show a focused thinking face.','Put your display into the thinking expression.','Display the focused thinking look.','Set your face to thinking.'],
+ task('Display a focused thinking expression.',[{ kind: 'action', action: { type: 'faceExpression', expression: 'sleep_token' } }]),movement,{observation:renamed})
+// Restricting synthetic capabilities tests supplied action types; this does not restrict runtime capabilities.
 const small = observation()
-small.capabilities.robotCommands=['stand','bow']
-small.capabilities.robotCommandDescriptions={stand:'Rise onto four feet into the upright stance.',bow:'Lower the front end in a bow and return.'}
+small.capabilities = { actions: ['requestMotion', 'stop'], movement: true, visual: false }
 add('expanded-small-catalog',['Stand and then bow.','Bow after standing up.','First take your upright stance; then make a bow.','Start by standing and finish by bowing.'],
  task('Stand, then bow.',[action('stand'),action('bow')]),movement,{observation:small})
 
@@ -105,11 +103,14 @@ const evaluation: Array<[string,string[],Record<string,any>]> = [
  ['no-delegate',['Handle this yourself: sit, then bow.','Without asking another planner, sit before bowing.'],task('Sit, bow.',[action('sit'),action('bow')])],
 ]
 for (const [suite,texts,expected] of evaluation) add(`fresh-${suite}`,texts,expected,movement,{},'evaluation')
-for (const [command, alias] of [['wave','slot_8'],['bow','slot_3'],['stand','slot_9']]) {
+for (const [labelText, alias] of [['cheerful grin','slot_8'],['curious squint','slot_3'],['sleepy blink','slot_9']]) {
  const obs=observation()
- obs.capabilities.robotCommands=['slot_3','slot_8','slot_9']
- obs.capabilities.robotCommandDescriptions={slot_3:'Bow by dipping the front of the body and recovering.',slot_8:'Raise a front leg and wave it.',slot_9:'Take the normal upright stance on four legs.'}
- add('fresh-description-authority',[`Please ${command} for the visitor.`,`I want you to ${command} now.`],task(`Perform ${command}.`,[action(alias!)]),movement,{observation:obs},'evaluation')
+ obs.capabilities.expressionLibrary=[
+  { name: 'slot_3', label: 'Curious squint face expression' },
+  { name: 'slot_8', label: 'Cheerful grin face expression' },
+  { name: 'slot_9', label: 'Sleepy blink face expression' },
+ ]
+ add('fresh-description-authority',[`Show the ${labelText} face expression for the visitor.`,`Set your display to the ${labelText} expression now.`],task(`Display ${labelText}.`,[{ kind: 'action', action: { type: 'faceExpression', expression: alias! } }]),movement,{observation:obs},'evaluation')
 }
 for (const steps of [['stand','sit','wave'],['nod','pushup','bow']]) add('fresh-memory-reference',[
  'Perform the saved departure routine.', 'Use the stored departure routine for your movements.',

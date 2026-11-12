@@ -7,12 +7,15 @@ This existing lane trains independent Intent and Task LoRA adapters on Qwen3.5 0
 - **Intent** reads only the current request and returns `needsResponse`, `needsAction`, `needsToolUse`, `taskPlanner`, and independent `taskContext` / `conversationContext` lists, with optional memory search fields. Context lists select individual persona sections and the relevant evidence sources for each consumer.
 - **Task** receives the runtime Context Builder's selected evidence and capability catalog. It returns `taskDecision`, an ordered `program`, and execution handoff fields when applicable. It can also return the approved `{"delegatePlanning":true}` branch to ask the configured larger model for a plan. Both paths use Core task validation and the same active executor. Task does not select speech steps. Intent selects `needsResponse`, and the separate Persona conversation model authors the outward response after selected task results.
 
-**Body Control motion contract (October 23 source update).** Task no longer uses
-`generatedMotion` or a MetaHuman joint-generation graph. A robot configured for
-Freestyle advertises `requestMotion` with a movement `description`; Body Control
-owns generation and execution. Library-configured fixtures retain their named
-commands. The custom-motion source cases use this action, and the exact wave,
-right-hand and Hamlet requests are held-out regression cases. Scoring counts
+**Body Control motion contract.** Task uses `requestMotion` with a movement
+`description` for finite postures and gestures, goal-directed `move` for
+continuous locomotion, `faceExpression` for standalone display expressions, and
+`stop` for preemption; Body Control owns Freestyle generation and execution, while
+preprogrammed named motions are manual Body Control dashboard controls only and
+`robotCommand` / `robotMotionPlan` are retired from `/environment` and MetaHuman.
+The custom-motion source cases use `requestMotion`, catalog-authority variants
+exercise `faceExpression` against `expressionLibrary`, and the exact wave,
+right-hand and Hamlet requests remain held-out regression cases. Scoring counts
 `requestMotion` as a physical selection. Regenerate datasets from the current
 graph/schema before a new training run; existing JSONL snapshots, frozen runs and
 LoRA weights have not been migrated or qualified by these source changes.

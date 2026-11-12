@@ -56,7 +56,7 @@ function completedNodeOutput(
 function compactQueuedEnvironmentAction(value: unknown): Record<string, unknown> | null {
   if (!isRecord(value)) return null;
   const result: Record<string, unknown> = {};
-  for (const key of ['id', 'type', 'command', 'direction', 'target', 'status']) {
+  for (const key of ['id', 'type', 'description', 'expression', 'direction', 'target', 'status']) {
     if (typeof value[key] === 'string' && value[key].trim()) result[key] = value[key].trim();
   }
   if (typeof value.units === 'number') result.units = value.units;

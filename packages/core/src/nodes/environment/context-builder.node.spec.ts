@@ -95,7 +95,7 @@ test('status context retains execution provenance and full outcomes without a se
       source: 'autonomy', decision: { outcome: 'continue', reason: 'rejected', objectiveComplete: false,
         continuationPolicy: 'none', requiredCompletionBasis: 'action_result', observationSummary: 'No movement',
         completionEvidence: '', nestedEvidence: Array.from({ length: 30 }, (_, i) => ({ i, value: 'Full evidence' })) },
-      selectedAction: { type: 'robotCommand', command: 'stretch' }, actionId: 'stretch', actionStatus: 'rejected',
+      selectedAction: { type: 'requestMotion', description: 'stretch' }, actionId: 'stretch', actionStatus: 'rejected',
       feedback: { type: 'rejected', actionId: 'stretch', message: 'Motion mapping failed', observedAt: '2026-10-15T03:50:59Z' },
       baselineFrame: null, updatedAt: '2026-10-15T03:51:00Z' },
     situation: { uncertainties: Array.from({ length: 20 }, (_, i) => `Uncertainty ${i}`) },
@@ -144,10 +144,7 @@ test('selector follows the adapter-selected V1 or V2 body without losing model o
   for (const robotId of ['v1', 'v2', 'v1'] as const) {
     const v2 = robotId === 'v2'
     const current = observation()
-    current.capabilities = { actions: ['robotCommand', 'move', 'requestMotion'],
-      robotCommands: v2 ? ['crawl', 'crab_right', 'turn_left_15'] : ['#1', '#2', 'crab'],
-      robotCommandDescriptions: v2 ? { crab_right: 'ongoing wide-stance sideways right' }
-        : { crab: 'perform an alternating crab-like leg motion, then return to stand' } }
+    current.capabilities = { actions: v2 ? ['move', 'requestMotion'] : ['requestMotion'] }
     current.state = { body: { authenticated: true, robotId }, gateway: {
       connected: true, transport: 'protocol-v1', uptime: 100, instance: 'fixture',
       joint_contract: { version: 1, joints: ['R1', 'R2', 'L1', 'L2', 'R4', 'R3', 'L3', 'L4'] }, robots },
@@ -161,7 +158,7 @@ test('selector follows the adapter-selected V1 or V2 body without losing model o
     assert.deepEqual(envelope.currentEnvironment.state.activeMovementUpdates.controls,
       v2 ? ['speed', 'stride', 'rate', 'forward', 'turn'] : [])
     assert.equal(envelope.currentEnvironment.capabilities.actions.includes('requestMotion'), true)
-    assert.deepEqual(envelope.currentEnvironment.capabilities.robotCommandCatalog, current.capabilities.robotCommandDescriptions)
+    assert.equal(envelope.currentEnvironment.capabilities.actions.includes('move'), v2)
     if (v2) assert.equal(envelope.currentEnvironment.state.gateway.selectedRobot.activeWalk.speed, 150)
   }
 })
@@ -195,13 +192,7 @@ function observation(): EnvironmentObservation {
     sessionId: 'robot-1',
     timestamp: '2026-09-02T12:00:00.000Z',
     capabilities: {
-      actions: ['robotCommand', 'requestMotion', 'captureImage'],
-      robotCommands: ['stand', '#1', '#2'],
-      robotCommandDescriptions: {
-        stand: 'Rise into the standard upright four-leg standing pose.',
-        '#1': 'Lift one rear leg in the first numbered gesture.',
-        '#2': 'Lower into the second numbered squatting gesture.',
-      },
+      actions: ['requestMotion', 'captureImage'],
       motionClasses: ['body_local'],
       text: true,
       movement: true,
@@ -231,8 +222,8 @@ const robotStatus = {
   },
   lastAction: {
     actionId: 'action-1',
-    type: 'robotCommand',
-    command: 'stand',
+    type: 'requestMotion',
+    description: 'stand',
     status: 'completed',
   },
   task: {
@@ -246,7 +237,7 @@ const robotStatus = {
       continuationPolicy: 'bounded',
       requiredCompletionBasis: 'visual_observation',
     },
-    selectedAction: { type: 'robotCommand', command: 'stand' },
+    selectedAction: { type: 'requestMotion', description: 'stand' },
     actionId: 'action-1',
     actionStatus: 'completed',
     feedback: null,
@@ -311,12 +302,9 @@ test('Environment Context Builder packages only orchestrator-selected context an
   assert.equal(envelope.evidenceAvailability.environmentObservation, 'triggering')
   assert.equal(envelope.evidenceAvailability.currentVision, true)
   assert.equal(envelope.currentEnvironment.state.posture, 'standing')
-  assert.equal(
-    envelope.currentEnvironment.capabilities.robotCommandCatalog['#2'],
-    'Lower into the second numbered squatting gesture.',
-  )
+  assert.deepEqual(envelope.currentEnvironment.capabilities.actions, ['requestMotion', 'captureImage'])
   assert.equal(envelope.robotStatus.body.battery.voltage, 7.4)
-  assert.equal(envelope.robotStatus.lastAction.command, 'stand')
+  assert.equal(envelope.robotStatus.lastAction.description, 'stand')
   assert.equal(envelope.robotStatus.task.objective, 'Continue looking for the cat.')
   assert.deepEqual(envelope.recentConversation.map((entry: any) => entry.content), [
     'What can you do?',
@@ -403,7 +391,7 @@ test('Environment Context Builder does not present a saved camera frame as curre
 })
 
 test('Environment selector schema describes conversation or an ordered program with evidence-based task completion', () => {
-  const capabilities = { actions: ['robotCommand', 'requestMotion'], robotCommands: ['stand', '#1', '#2'] }
+  const capabilities = { actions: ['requestMotion', 'faceExpression'], expressions: ['happy', 'thinking'] }
   const schema = buildEnvironmentSelectorJsonSchema(capabilities) as any
   assert.equal('properties' in schema, false, 'Provider alternatives are complete object contracts')
   assert.equal('allOf' in schema, false)
@@ -433,11 +421,11 @@ test('Environment selector schema describes conversation or an ordered program w
   for (const step of steps) assert.equal(step.additionalProperties, false)
   const [action] = steps
   assert.deepEqual(action.required, ['kind', 'action'])
-  const [command, request] = action.properties.action.anyOf
-  assert.deepEqual(command.required, ['type', 'command'])
-  assert.deepEqual(command.properties.command.enum, capabilities.robotCommands)
+  const [request, face] = action.properties.action.anyOf
   assert.deepEqual(request.required, ['type', 'description'])
   assert.equal(request.properties.description.minLength, 1)
+  assert.deepEqual(face.required, ['type', 'expression'])
+  assert.deepEqual(face.properties.expression.enum, capabilities.expressions)
   assert.equal(activity.properties.taskDecision.type, 'object', 'A physical program requires its objective decision')
   assert.equal(activity.properties.taskDecision.additionalProperties, false)
   const outcomes = activity.properties.taskDecision.properties.outcome.enum
@@ -448,18 +436,16 @@ test('Environment selector schema describes conversation or an ordered program w
   assert.deepEqual(required.anyOf, [activity], 'Requiring action uses the same complete program contract')
 })
 
-test('program steps remain restricted to advertised commands, generation and feedback capabilities', () => {
-  for (const [actions, robotCommands, expectedKinds, expectedActions] of [
-    [[], [], [], []],
-    [['robotCommand'], [], [], []],
-    [['robotCommand'], ['wave'], ['action'], ['robotCommand']],
-    [['requestMotion'], [], ['action'], ['requestMotion']],
-    [['move'], [], ['action'], ['move']],
-    [['captureImage'], [], ['action', 'vision', 'behavior'], ['captureImage']],
-    [['move', 'captureImage'], [], ['action', 'vision', 'behavior'], ['move', 'captureImage']],
-    [['robotCommand', 'requestMotion', 'move', 'captureImage'], ['wave'], ['action', 'vision', 'behavior'], ['move', 'captureImage', 'robotCommand', 'requestMotion']],
+test('program steps remain restricted to advertised generation, locomotion and feedback capabilities', () => {
+  for (const [actions, expectedKinds, expectedActions] of [
+    [[], [], []],
+    [['requestMotion'], ['action'], ['requestMotion']],
+    [['move'], ['action'], ['move']],
+    [['captureImage'], ['action', 'vision', 'behavior'], ['captureImage']],
+    [['move', 'captureImage'], ['action', 'vision', 'behavior'], ['move', 'captureImage']],
+    [['requestMotion', 'move', 'captureImage', 'faceExpression'], ['action', 'vision', 'behavior'], ['move', 'captureImage', 'requestMotion', 'faceExpression']],
   ] as const) {
-    const schema = buildEnvironmentSelectorJsonSchema({ actions, robotCommands }) as any
+    const schema = buildEnvironmentSelectorJsonSchema({ actions, expressions: ['happy'] }) as any
     const activity = schema.anyOf.find((route: any) => route.properties.program.type === 'object')
     const steps = activity?.properties.program.properties.steps.items.anyOf ?? []
     assert.deepEqual(steps.map((step: any) => step.properties.kind.const), [...expectedKinds], JSON.stringify(actions))
@@ -468,7 +454,7 @@ test('program steps remain restricted to advertised commands, generation and fee
     assert.deepEqual([...new Set(choices.flatMap((choice: any) => choice.properties.type.enum))].sort(), [...expectedActions].sort())
     for (const choice of choices) {
       assert.equal(choice.additionalProperties, false)
-      if (choice.properties.command) assert.deepEqual(choice.properties.command.enum, robotCommands)
+      if (choice.properties.expression) assert.deepEqual(choice.properties.expression.enum, ['happy'])
     }
     const behavior = steps.find((step: any) => step.properties.kind.const === 'behavior')
     if (behavior) {
@@ -487,7 +473,7 @@ test('program steps remain restricted to advertised commands, generation and fee
       assert.equal(vision.properties.operation.const, 'acquire')
       assert.equal(behavior.properties.identifyEveryFrames.minimum, 1)
     }
-    const disabled = buildEnvironmentSelectorJsonSchema({ actions, robotCommands, actionRouteSelected: false, requireAction: true }) as any
+    const disabled = buildEnvironmentSelectorJsonSchema({ actions, actionRouteSelected: false, requireAction: true }) as any
     assert.ok(disabled.anyOf.every((route: any) => route.properties.program.type === 'null'))
     assert.ok(disabled.anyOf.every((route: any) => !route.properties.taskDecision.anyOf[1].properties.outcome.enum.includes('act')))
   }
@@ -725,8 +711,7 @@ test('selected body status retains complete reported samples without inventing s
 
 test('locomotion capability context presents the exact executable goal schemas and placement', async () => {
   const current = observation()
-  current.capabilities.actions = ['move', 'robotCommand', 'captureImage']
-  current.capabilities.robotCommands = ['walk', 'wave']
+  current.capabilities.actions = ['move', 'requestMotion', 'captureImage']
   current.capabilities.locomotion = { commands: ['walk'], goalKinds: ['distance', 'relativeTurn', 'approach', 'follow', 'visual'] }
   const result = await environmentContextBuilderNode.execute({ userInstruction: 'Execute the selected locomotion goal.', observation: current,
     routingAnalysis: { needsAction: true, taskContext: ['environment'], conversationContext: [] } }, {}, { purpose: 'task' })
@@ -769,7 +754,7 @@ test('conversation context retains the prose producer and acquisition evidence a
   assert.equal(status.recordedSituation.updatedAt, undefined)
 })
 
-test('conversation context strips action catalogs, raw body status, and persona bookkeeping while retaining selected command descriptions and motor output', async () => {
+test('conversation context strips action catalogs, raw body status, and persona bookkeeping while retaining selected task details and motor output', async () => {
   const current = observation()
   current.capabilities.expressionLibrary = [{ name: 'happy', label: 'Warm smile' }]
   current.capabilities.locomotion = { commands: ['walk'], goalKinds: ['distance'] }
@@ -803,13 +788,12 @@ test('conversation context strips action catalogs, raw body status, and persona 
       parkedGoals: [{ executionId: 'exec-1', objectiveId: 'obj-1', objective: 'Earlier parked goal', instruction: 'Full verbose instruction', decision: { outcome: 'wait' }, updatedAt: '2026-10-26T17:10:00Z' }],
     },
     selectedTask: {
-      program: { steps: [{ kind: 'action', action: { type: 'robotCommand', command: 'stand' } }] },
+      program: { steps: [{ kind: 'action', action: { type: 'requestMotion', description: 'stand' } }] },
     },
   }, {}, { purpose: 'conversation', systemPrompt: 'Fixture' })
   const { parseContext } = await import('../../context-serialization.js')
   const payload = parseContext(conversation.message)
   assert.equal(payload.currentEnvironment.capabilities.expressionLibrary, undefined)
-  assert.equal(payload.currentEnvironment.capabilities.robotCommandCatalog, undefined)
   assert.equal(payload.currentEnvironment.capabilities.locomotion.programSteps, undefined)
   assert.equal(payload.currentEnvironment.state.gateway.selectedRobot.status, undefined)
   assert.deepEqual(payload.currentEnvironment.state.gateway.selectedRobot.motorOutput, {
@@ -818,7 +802,7 @@ test('conversation context strips action catalogs, raw body status, and persona 
     output_fault: 0,
     timestamp: '2026-10-26T17:19:25Z',
   })
-  assert.equal(payload.selectedTask.commandDescriptions.stand, 'Rise into the standard upright four-leg standing pose.')
+  assert.equal(payload.selectedTask.program.steps[0].action.description, 'stand')
   assert.equal(payload.activePersona.identity.name, 'Ainekio')
   assert.equal(payload.activePersona.$schema, undefined)
   assert.equal(payload.activePersona.notes, undefined)

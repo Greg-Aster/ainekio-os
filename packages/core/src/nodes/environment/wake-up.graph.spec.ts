@@ -73,7 +73,7 @@ for (const failed of [false, true]) test(`wake-up uses one Persona call and one 
         epoch: recognition.epoch, counter: recognition.frameCounter, recognition } }
     const status = { status_received_at: now, motion: { activity: 'gesture', asset: 'stretch' }, vbat: 7.4 }
     const observation = { sessionId, environmentId: 'fixture', adapter: 'fixture', timestamp: now,
-      capabilities: { actions: ['robotCommand', 'captureImage'] as any[], robotCommands: ['stand', 'stretch'] },
+      capabilities: { actions: ['requestMotion', 'captureImage'] as any[] },
       ...(!failed ? { visual: frame } : {}),
       state: { body: { robotId: 'fixture-body' }, gateway: { robots: { 'fixture-body': { status } } },
         bodyEvent: { name: 'body_event', event_id: `boot-${failed}`, data: { kind: 'wake', reason: 'boot',

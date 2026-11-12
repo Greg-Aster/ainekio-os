@@ -40,13 +40,13 @@ test('stale measurements never establish arrival and unknown uncertainty remains
   assert.equal(evaluateLocomotionGoal(goal, current, initial).reached, false)
   assert.equal(current.yaw.uncertaintyDegrees, null)
 })
-test('schema removes advertised bare locomotion aliases while retaining finite gestures', () => {
-  const schema = buildEnvironmentSelectorJsonSchema({ actions: ['move', 'robotCommand', 'captureImage'], robotCommands: ['walk', 'w', 'wave'],
+test('schema requires locomotionGoal on move while retaining description-based gestures', () => {
+  const schema = buildEnvironmentSelectorJsonSchema({ actions: ['move', 'requestMotion', 'captureImage'],
     locomotion: { commands: ['walk', 'w'], goalKinds: ['distance', 'relativeTurn', 'approach', 'follow', 'visual'] } })
   const visit = (value: any): any[] => !value || typeof value !== 'object' ? [] : [value, ...Object.values(value).flatMap(visit)]
   const objects = visit(schema)
-  const commands = objects.filter(v => v.properties?.command).flatMap(v => v.properties.command.enum ?? [])
-  assert.deepEqual(commands, ['wave'])
+  assert.equal(objects.some(v => v.properties?.command), false)
+  assert.ok(objects.some(v => v.properties?.type?.enum?.includes('requestMotion') && v.required?.includes('description')))
   for (const node of objects.filter(v => v.properties?.type?.enum?.includes('move') || v.properties?.type?.const === 'move')) {
     assert.ok(node.required?.includes('locomotionGoal'))
   }

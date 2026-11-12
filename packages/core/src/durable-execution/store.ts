@@ -256,9 +256,9 @@ export class ExecutionStore {
     return this.decodeDocument(row.bootstrap)
   }
 
-  entryOrNull(executionId: string): any | null {
+  entryOrNull(executionId: string, path: readonly (string | number)[] = []): any | null {
     const row = this.db.prepare('SELECT bootstrap FROM execution_entries WHERE execution_id = ?').get(executionId) as { bootstrap: string } | undefined
-    return row ? this.decodeDocument(row.bootstrap) : null
+    return row ? this.decodeDocument(row.bootstrap, path) : null
   }
 
   task(executionId: string): import('./types.js').ExecutionObjective | null {

@@ -1,5 +1,5 @@
 import type { EnvironmentObservation } from '@metahuman/core'
-import { addCase, noTask, task, TIME, type CaseSplit } from './development-cases.js'
+import { action, addCase, noTask, task, TIME, type CaseSplit } from './development-cases.js'
 import { bodyObservation } from './posture-cases.js'
 
 // Supervised data only. Related requests see the same capability/evidence
@@ -7,6 +7,7 @@ import { bodyObservation } from './posture-cases.js'
 // depend on the request and supplied facts, not a runtime keyword rule.
 interface Variant { instruction: string; output: Record<string, any> }
 const body = bodyObservation() as EnvironmentObservation
+body.capabilities.actions.push('move')
 body.state = { posture: null, cameraReady: true }
 const history = [
   { summary: 'A carton on a shelf has a reflective label; its lettering is not legible in this saved image.',
@@ -19,9 +20,9 @@ const history = [
     interpretedAt: '2030-01-14T10:00:03.000Z', observationId: 'contrast-bag' },
 ]
 const capture = () => ({ kind: 'action', action: { type: 'captureImage' } })
-const command = (name: string, units?: number) => ({ kind: 'action', action: {
-  type: 'robotCommand', command: name, ...(units !== undefined ? { units, continuous: false } : {}),
-} })
+const command = (name: string, units?: number) => units !== undefined
+  ? ({ kind: 'action', action: { type: 'move', direction: name, units, continuous: false } })
+  : action(name)
 function plan(objective: string, completionCriteria: string, steps: unknown[], visual = false) {
   return task(objective, steps, { completionCriteria,
     reason: 'This program follows the activities selected by the current instruction.',

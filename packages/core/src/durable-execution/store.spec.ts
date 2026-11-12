@@ -1194,7 +1194,7 @@ test('checkpoint field projection resolves references without expanding unrelate
   })
   try {
     const execution = store.create('test-user', definition)
-    const context = { activeTaskSessionId: 'selected-body', activeProgram: { steps: [{ kind: 'action', action: { type: 'robotCommand', command: 'bow' } }] }, unrelated }
+    const context = { activeTaskSessionId: 'selected-body', activeProgram: { steps: [{ kind: 'action', action: { type: 'requestMotion', description: 'bow' } }] }, unrelated }
     const document = { json: { channel_values: { contextSnapshot: context, modelOutput: { unrelated } } } }
     const encoded = store.encodeDocument(execution.executionId, document)
     assert.equal(store.decodeDocument(encoded, ['json', 'channel_values', 'contextSnapshot', 'activeTaskSessionId']), 'selected-body')

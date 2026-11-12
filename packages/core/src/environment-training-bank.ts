@@ -110,7 +110,10 @@ export function readEnvironmentTrainingEvidence(store: ExecutionStore, execution
       const input = payload.input && typeof payload.input === 'object'
         ? payload.input as Record<string, unknown> : {}
       return { effectId: value.effectId, actionId: value.actionId, status: value.status,
-        kind: value.kind, actionType: input.type, command: input.command, sessionId: input.sessionId }
+        kind: value.kind, actionType: input.type,
+        ...(typeof input.description === 'string' ? { description: input.description } : {}),
+        ...(typeof input.direction === 'string' ? { direction: input.direction } : {}),
+        sessionId: input.sessionId }
     })
   return { scope: 'same execution; action identity is recorded, but this list does not automatically attribute a result to one model decision',
     events, dispatches,

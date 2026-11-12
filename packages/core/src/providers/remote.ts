@@ -6,9 +6,15 @@
  */
 
 import { RunPodServerlessProvider } from './runpod.js'
-import type { ProviderMessage, ProviderOptions, ProviderResponse } from './types.js'
+import {
+  parseProviderImageDataUrl,
+  providerImagePolicyFromOptions,
+  type ProviderMessage,
+  type ProviderOptions,
+  type ProviderResponse,
+} from './types.js'
 
-export type RemoteProviderName = 'runpod' | 'claude' | 'openrouter' | 'openai'
+export type RemoteProviderName = 'runpod' | 'claude' | 'openrouter' | 'openai' | 'gemini'
 
 export interface RemoteProviderCredentials {
   provider: RemoteProviderName
@@ -178,6 +184,138 @@ async function callOpenAICompatible(
   }
 }
 
+function normalizeGeminiJsonSchema(value: unknown): unknown {
+  if (Array.isArray(value)) return value.map(normalizeGeminiJsonSchema)
+  if (!value || typeof value !== 'object') return value
+  const record = value as JsonRecord
+  const result: JsonRecord = {}
+  for (const [key, item] of Object.entries(record)) {
+    if (key === 'const') {
+      const inferredType = typeof item === 'boolean'
+        ? 'boolean'
+        : typeof item === 'number'
+          ? 'number'
+          : 'string'
+      if (!Object.hasOwn(record, 'type')) result.type = inferredType
+      result.enum = [item]
+    } else {
+      result[key] = normalizeGeminiJsonSchema(item)
+    }
+  }
+  return result
+}
+
+async function callGemini(
+  messages: ProviderMessage[],
+  credentials: RemoteProviderCredentials,
+  options: ProviderOptions,
+): Promise<ProviderResponse> {
+  const imagePolicy = providerImagePolicyFromOptions(options)
+  const rawModel = options.model || credentials.model || 'gemini-3.5-flash-lite'
+  const model = rawModel.replace(/^models\//, '')
+
+  const systemParts: Array<{ text: string }> = []
+  const contents: Array<{ role: 'user' | 'model'; parts: Array<JsonRecord> }> = []
+
+  for (const message of messages) {
+    if (message.role === 'system') {
+      const text = typeof message.content === 'string'
+        ? message.content
+        : message.content.filter(p => p.type === 'text').map(p => p.text).join('\n')
+      if (text.trim()) systemParts.push({ text })
+      continue
+    }
+
+    const role = message.role === 'assistant' ? 'model' : 'user'
+    const parts: Array<JsonRecord> = []
+    if (typeof message.content === 'string') {
+      if (message.content) parts.push({ text: message.content })
+    } else {
+      for (const part of message.content) {
+        if (part.type === 'text') {
+          if (part.text) parts.push({ text: part.text })
+        } else if (part.type === 'image_url') {
+          const parsed = parseProviderImageDataUrl(part.image_url.url, imagePolicy)
+          parts.push({
+            inlineData: {
+              mimeType: parsed.mimeType,
+              data: parsed.base64,
+            },
+          })
+        }
+      }
+    }
+    if (parts.length > 0) contents.push({ role, parts })
+  }
+
+  const generationConfig: JsonRecord = {
+    ...(options.temperature !== undefined ? { temperature: options.temperature } : {}),
+    ...(options.maxTokens !== undefined ? { maxOutputTokens: options.maxTokens } : {}),
+    ...(options.topP !== undefined ? { topP: options.topP } : {}),
+    ...(options.topK !== undefined ? { topK: options.topK } : {}),
+    ...(options.seed !== undefined ? { seed: options.seed } : {}),
+  }
+
+  if (options.jsonSchema || options.format === 'json') {
+    generationConfig.responseMimeType = 'application/json'
+    if (options.jsonSchema) {
+      generationConfig.responseJsonSchema = normalizeGeminiJsonSchema(options.jsonSchema)
+    }
+  }
+
+  // Disable hidden thinking delay on thinking-capable Flash models unless explicitly requested;
+  // gemini-3.5-flash-lite is natively non-thinking and rejects thinkingConfig.
+  if (!model.includes('3.5-flash-lite')) {
+    if (options.enableThinking === true) {
+      generationConfig.thinkingConfig = { includeThoughts: true }
+    } else if (model.startsWith('gemini-3.8-') || model.startsWith('gemini-3.1-flash-lite')) {
+      generationConfig.thinkingConfig = { thinkingLevel: model.includes('flash-lite') ? 'MINIMAL' : 'LOW' }
+    } else if (model.startsWith('gemini-3.5-flash') || model.startsWith('gemini-2.5-flash')) {
+      generationConfig.thinkingConfig = { thinkingBudget: 0 }
+    }
+  }
+
+  const baseUrl = (credentials.endpoint || 'https://generativelanguage.googleapis.com/v1beta').replace(/\/$/, '')
+  const url = `${baseUrl}/models/${encodeURIComponent(model)}:generateContent?key=${encodeURIComponent(credentials.apiKey)}`
+
+  const data = asRecord(await requestJson('Gemini', url, {
+    signal: options.signal,
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({
+      ...(systemParts.length > 0 ? { systemInstruction: { parts: systemParts } } : {}),
+      contents,
+      generationConfig,
+    }),
+  }))
+
+  const candidate = asRecord(asArray(data?.candidates)[0])
+  const contentRecord = asRecord(candidate?.content)
+  const parts = asArray(contentRecord?.parts).map(asRecord).filter((p): p is JsonRecord => Boolean(p))
+  const textParts = parts.filter(p => p.thought !== true && typeof p.text === 'string').map(p => String(p.text))
+  const thoughtParts = parts.filter(p => p.thought === true && typeof p.text === 'string').map(p => String(p.text))
+  const content = textParts.join('')
+  if (!content) {
+    const finishReason = stringValue(candidate?.finishReason) || 'unknown'
+    throw new Error(`Gemini response did not contain text (finishReason: ${finishReason})`)
+  }
+
+  const usage = asRecord(data?.usageMetadata)
+  const promptTokens = numberValue(usage?.promptTokenCount)
+  const completionTokens = numberValue(usage?.candidatesTokenCount)
+  return {
+    content,
+    ...(thoughtParts.length > 0 ? { thinking: thoughtParts.join('') } : {}),
+    model: stringValue(data?.modelVersion) || model,
+    provider: 'gemini',
+    usage: {
+      promptTokens,
+      completionTokens,
+      totalTokens: numberValue(usage?.totalTokenCount) || promptTokens + completionTokens,
+    },
+  }
+}
+
 export async function callRemoteProvider(
   credentials: RemoteProviderCredentials,
   messages: ProviderMessage[],
@@ -195,6 +333,8 @@ export async function callRemoteProvider(
     }
     case 'claude':
       return callClaude(messages, credentials, options)
+    case 'gemini':
+      return callGemini(messages, credentials, options)
     case 'openrouter':
     case 'openai':
       return callOpenAICompatible(credentials.provider, messages, credentials, options)

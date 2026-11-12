@@ -14,6 +14,7 @@ import { TerminalScreen } from './screen.js'
 import { TerminalProcess } from './process.js'
 import { TerminalError, type TerminalEvent, type TerminalSession, type TerminalState, type TerminalProvider, type DiagnosticRequest, type DiagnosticReceipt } from './types.js'
 import { appendDiagnosticLog, bigBrotherRepairLog } from './diagnostics.js'
+import { GeminiAcpServer } from './providers/gemini-acp-server.js'
 import { runProvider } from './providers/session.js'
 import { terminalHeading } from './presentation.js'
 import { admitTerminalResponse } from './response.js'
@@ -40,7 +41,11 @@ interface OwnedSession {
 export class TerminalRuntime extends EventEmitter {
   private sessions = new Map<string, OwnedSession>()
   private status: TerminalState['status'] = 'running'
-  constructor(readonly receipts: string) { super() }
+  private geminiAcp: GeminiAcpServer
+  constructor(readonly receipts: string) {
+    super()
+    this.geminiAcp = new GeminiAcpServer(receipts)
+  }
   state(): TerminalState { return { status: this.status, sessions: [...this.sessions.values()].map(s => ({ ...s.info })) } }
   private changed(): void { this.emit('event', { type: 'state', state: this.state() } satisfies TerminalEvent) }
   private admit(): void {
@@ -99,8 +104,10 @@ export class TerminalRuntime extends EventEmitter {
       const current = session
       this.sessions.set(id, current)
       let cleanup: (() => Promise<void>) | undefined
-      const finished = runProvider(provider, prompt, options, this.receipts, combined,
-        data => this.write(current, data), observe, release => { cleanup = release })
+      const finished = provider === 'gemini' && options.modelRequest
+        ? this.geminiAcp.executeTurn(options, combined, data => this.write(current, data), observe)
+        : runProvider(provider, prompt, options, this.receipts, combined,
+            data => this.write(current, data), observe, release => { cleanup = release })
       current.close = async () => {
         cancellation.abort(new Error('Big Brother terminal closed'))
         try { await finished } catch (error) {
@@ -297,7 +304,10 @@ export class TerminalRuntime extends EventEmitter {
   }
   async stop(): Promise<void> {
     this.status = 'stopping'; this.changed()
-    const results = await Promise.allSettled([...this.sessions.keys()].map(id => this.close(id)))
+    const results = await Promise.allSettled([
+      ...[...this.sessions.keys()].map(id => this.close(id)),
+      this.geminiAcp.stop(),
+    ])
     const failures = results.filter(result => result.status === 'rejected') as PromiseRejectedResult[]
     if (failures.length) throw new AggregateError(failures.map(result => result.reason), 'Failed to stop terminal sessions')
     this.status = 'stopped'; this.changed()

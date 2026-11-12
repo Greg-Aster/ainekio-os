@@ -23,7 +23,7 @@ test('ordered speech examples use the live contract, keep sibling folds together
     if (input.inputSource === 'autonomy') assert.equal(input.plannerDecision.instruction, input.currentInstruction)
     for (const step of output.program?.steps ?? []) {
       assert.notEqual(step.kind, 'speech')
-      if (step.kind === 'action') assert.equal(step.action.type, 'robotCommand')
+      if (step.kind === 'action') assert.equal(step.action.type, 'requestMotion')
     }
     if (row.metadata.suite.includes('voice-only')) assert.equal(output.program, null)
   }
@@ -67,10 +67,8 @@ test('small Task training delegates visual objectives and preserves nonvisual pr
     } else if (row.metadata.contextVariation === 'clean') {
       nonvisual++
       if (output.delegatePlanning && !reference.delegatePlanning) {
-        const catalog = JSON.parse(row.user).currentEnvironment.capabilities.robotCommandCatalog
         assert.ok(reference.program.steps.some((step: any) =>
-          step.action?.type === 'robotCommand' && !Object.hasOwn(catalog, step.action.command)
-          || step.action?.type === 'move' && !step.action.locomotionGoal), 'Only retired gait labels gain nonvisual delegation')
+          step.action?.type === 'move' && !step.action.locomotionGoal), 'Only retired gait labels gain nonvisual delegation')
         assert.deepEqual(output, { delegatePlanning: true })
       } else assert.deepEqual(output, reference)
     }

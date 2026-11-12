@@ -14,7 +14,6 @@ export type RobotStatusDesireSummary = DesireAwareness
 export interface RobotStatusAction {
   actionId: string
   type: string
-  command: string
   description: string
   status: string
   message: string
@@ -82,7 +81,6 @@ export interface RobotStatusTaskDecision {
 
 export interface RobotStatusTaskAction {
   type: string
-  command?: string
   direction?: string
   target?: string
   description?: string
@@ -274,7 +272,6 @@ function normalizeAction(value: unknown): RobotStatusAction | null {
   return {
     actionId,
     type: cleanText(value.type, 80),
-    command: cleanText(value.command, 160),
     description: typeof value.description === 'string' ? value.description : '',
     status: cleanText(value.status, 80),
     message: cleanText(value.message, 500),
@@ -296,7 +293,6 @@ function normalizeTaskAction(value: unknown): RobotStatusTaskAction | null {
   if (!type) return null
   return {
     type,
-    ...(optionalText(value.command, 160) ? { command: optionalText(value.command, 160) } : {}),
     ...(optionalText(value.direction, 80) ? { direction: optionalText(value.direction, 80) } : {}),
     ...(optionalText(value.target, 200) ? { target: optionalText(value.target, 200) } : {}),
     ...(typeof value.description === 'string' ? { description: value.description } : {}),
@@ -558,7 +554,7 @@ export function buildRobotStatusProjection(
   const latestVisualObservation = visualObservations[0]
   const retainLastAction = previous?.lastAction && previous.sourceUpdatedAt.robotHistory > sources.sourceUpdatedAt.robotHistory
   const lastAction = retainLastAction ? previous.lastAction : normalizeAction(sources.lastAction)
-  const lastBodyAction = lastAction && ['robotCommand', 'move', 'stop', 'requestMotion'].includes(lastAction.type)
+  const lastBodyAction = lastAction && ['move', 'stop', 'requestMotion'].includes(lastAction.type)
     ? lastAction : previous?.lastBodyAction ?? null
   const situationEvidence: RobotStatusSituationEvidence = {}
   for (const field of ROBOT_STATUS_PROSE_FIELDS) {

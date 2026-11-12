@@ -47,7 +47,7 @@ test('curator LLM call runs through graph and saves a proposal from original inp
       objective: 'Wave at the person.', instruction: originalMessage, source: 'user',
       completionCriteria: 'The selected gesture has been performed.',
       decision: { outcome: 'incomplete', objectiveComplete: false, reason: 'Only acceptance is recorded.',
-        requiredCompletionBasis: 'command' }, selectedAction: { type: 'command', command: 'wave' },
+        requiredCompletionBasis: 'action_result' }, selectedAction: { type: 'requestMotion', description: 'wave' },
       actionId: 'wave-action', actionStatus: 'accepted', feedback: null, baselineFrame: null,
       updatedAt: '2026-10-25T12:00:00Z' },
   }))()

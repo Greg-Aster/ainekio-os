@@ -12,7 +12,6 @@ const observation: EnvironmentObservation = {
   timestamp: '2026-09-02T12:00:00.000Z',
   capabilities: {
     actions: ['captureImage'],
-    robotCommands: [],
     text: true,
     movement: false,
     visual: true,

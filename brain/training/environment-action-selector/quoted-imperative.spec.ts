@@ -27,16 +27,14 @@ test('quoted commands remain conversation-only while unquoted commands retain bo
     assert.equal(steps.length, [1, 1, 0, 1, 2, 1, 1][i])
     for (const step of steps) {
       assert.equal(step.kind, 'action')
-      if (step.kind === 'action') assert.ok(Object.hasOwn(input.currentEnvironment.capabilities.robotCommandCatalog, step.action.command))
+      if (step.kind === 'action') assert.ok(['requestMotion', 'stop'].includes(step.action.type))
     }
     if (i === 5) assert.equal(steps[0].kind, 'action')
     if (i === 0) {
       const direct = peers.find(r => r.metadata.instructionIndex === 5 && r.metadata.inputSource === row.metadata.inputSource && r.metadata.contextVariation === row.metadata.contextVariation)!
-      // Compare meaning, not opaque identifiers, which vary with instruction index.
-      const catalog = input.currentEnvironment.capabilities.robotCommandCatalog
-      const directInput = JSON.parse(direct.user), directOutput = JSON.parse(direct.output)
+      const directOutput = JSON.parse(direct.output)
       if (retiredDirect) assert.deepEqual(directOutput, { delegatePlanning: true })
-      else assert.notEqual(catalog[steps[0].action.command], directInput.currentEnvironment.capabilities.robotCommandCatalog[directOutput.program.steps[0].action.command])
+      else assert.notDeepEqual(steps[0].action, directOutput.program.steps[0].action)
     }
   }
 })

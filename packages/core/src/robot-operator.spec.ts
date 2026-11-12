@@ -112,8 +112,8 @@ test('Environment graph receipts distinguish queued work from physical completio
           rejectedCount: 0,
           commands: [{
             id: 'command-1',
-            type: 'robotCommand',
-            command: 'turn-right',
+            type: 'requestMotion',
+            description: 'turn right',
             status: 'pending',
           }],
         },
@@ -130,8 +130,8 @@ test('Environment graph receipts distinguish queued work from physical completio
   const effect = summarizeEnvironmentGraphEffect(graphState)
   assert.deepEqual((effect.actionQueue as any).commands, [{
     id: 'command-1',
-    type: 'robotCommand',
-    command: 'turn-right',
+    type: 'requestMotion',
+    description: 'turn right',
     status: 'pending',
   }])
   assert.equal((effect.actionQueue as any).queuedCount, 1)
@@ -156,8 +156,7 @@ test('Robot Operator context is kept separate from the bridge observation', () =
     sessionId: 'robot-1',
     timestamp: '2026-08-23T12:00:00.000Z',
     capabilities: {
-      actions: ['robotCommand', 'requestMotion', 'captureImage'],
-      robotCommands: ['gesture_alpha', 'gesture_beta'],
+      actions: ['requestMotion', 'captureImage'],
       movement: true,
       visual: true,
     },
@@ -182,11 +181,9 @@ test('Robot Operator context is kept separate from the bridge observation', () =
   assert.equal(observation.visuals?.[0]?.id, 'old-frame-2')
   assert.deepEqual(observation.state, { stale: true })
   assert.deepEqual(observation.capabilities.actions, [
-    'robotCommand',
     'requestMotion',
     'captureImage',
   ])
-  assert.deepEqual(observation.capabilities.robotCommands, ['gesture_alpha', 'gesture_beta'])
   assert.equal(observation.metadata?.sensorReading, 'bridge-owned')
   assert.equal(observation.metadata?.actionContext, undefined)
   assert.equal(observation.metadata?.robotObserver, undefined)

@@ -106,7 +106,7 @@ test('later display and delivery events do not evict action receipts or user cor
     { eventId: 'stretch-rejected', executionId: 'execution', sequence: 1, createdAt: 1,
       kind: 'physical_result', actionId: 'stretch', payload: { feedback: {
         actionId: 'stretch', type: 'rejected', message: 'Motion mapping failed', timestamp: '2026-10-15T03:51:42Z',
-      }, action: { type: 'robotCommand', command: 'stretch' } } },
+      }, action: { type: 'requestMotion', description: 'stretch' } } },
     { eventId: 'correction', executionId: 'execution', sequence: 2, createdAt: 2,
       kind: 'user_input', payload: { userMessage: 'Only speak; I am holding you.', speaker: 'user' } },
     ...Array.from({ length: 24 }, (_, index): ExecutionEvent => ({
@@ -155,7 +155,7 @@ test('nested specialist graph returns preserve frame provenance and all non-imag
     graphResults: [{ outputs: { observations: [{ visual: frame }], explanation: 'Observed evidence' } }],
     result: { stdout: 'Worker log', stderr: '', reasoning: { source: 'model', confidence: 'uncertain',
       timestamp: '2026-10-11T02:30:01.000Z', text: 'The frame alone does not establish completion.' },
-      action: { type: 'robotCommand', command: 'bow' },
+      action: { type: 'requestMotion', description: 'bow' },
       details: Array.from({ length: 30 }, (_, n) => ({ n, detail: 'Keep this evidence'.repeat(100) })) },
   } }
   const original = structuredClone(event)
@@ -164,7 +164,7 @@ test('nested specialist graph returns preserve frame provenance and all non-imag
   assert.deepEqual(payload.result.graphResults[0].outputs.observations[0].visual.metadata, frame.metadata)
   assert.equal(payload.result.graphResults[0].outputs.observations[0].visual.dataUrl, undefined)
   assert.deepEqual(payload.result.result.details, (event.payload as any).result.result.details)
-  assert.deepEqual(payload.result.result.action, { type: 'robotCommand', command: 'bow' })
+  assert.deepEqual(payload.result.result.action, { type: 'requestMotion', description: 'bow' })
   assert.deepEqual(payload.result.result.reasoning, (event.payload as any).result.result.reasoning)
   assert.deepEqual(event, original)
 })

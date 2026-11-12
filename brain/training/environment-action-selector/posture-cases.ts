@@ -1,54 +1,19 @@
 import { addCase, action, task, noTask, intentOutput, TIME } from './development-cases.js'
 import { createHash } from 'node:crypto'
 
-// Public command meanings from the bridge interface; fixture identity and state are synthetic.
-const catalog = {
-  "backward": "walk backward; continuous=true runs until stopped; optional speed or stride and rate controls",
-  "bow": "lower the front body into a sustained bow, then return to stand",
-  "celebrate": "lower into a full-body pose and wave all four legs, then return to stand",
-  "crab": "ongoing wide-stance sideways left; supports Speed, stride, cadence and Finish",
-  "crab_backward": "ongoing wide-stance backward; supports Speed, stride, cadence and Finish",
-  "crab_forward": "ongoing wide-stance forward; supports Speed, stride, cadence and Finish",
-  "crab_right": "ongoing wide-stance sideways right; supports Speed, stride, cadence and Finish",
-  "crab_turn_left": "ongoing wide-stance turning left; supports Speed, stride, cadence and Finish",
-  "crab_turn_right": "ongoing wide-stance turning right; supports Speed, stride, cadence and Finish",
-  "crawl": "walk continuously with the body low above the floor; supports direction, Speed, stride and cadence",
-  "crouch": "squat on all four feet and hold the body above the floor",
-  "curious": "perform the preprogrammed left-right scanning and curious pose motion",
-  "cute": "move into a low expressive pose and wave the rear legs, then return to stand",
-  "dance": "alternate paired legs in a rhythmic dance, then return to stand",
-  "dead": "collapse into Play Dead with outstretched front arms and grounded lower legs; hold",
-  "freaky": "move into a low asymmetric pose and pulse one leg, then return to stand",
-  "lay_down": "lower into the grounded wide lying pose and hold; distinct from Rest and Play Dead",
-  "left": "ongoing gait turn left; supports Speed, stride, cadence and Finish; optional units choose finite cycles",
-  "neutral": "move into the body-control neutral pose",
-  "nod": "perform the preprogrammed shallow nodding gesture, then return to stand",
-  "point": "hold an asymmetric pointing pose, then return to stand",
-  "pushup": "lower the front body for repeated push-ups, then return to stand",
-  "rest": "move into the preprogrammed rest pose",
-  "right": "ongoing gait turn right; supports Speed, stride, cadence and Finish; optional units choose finite cycles",
-  "run": "bound with front and rear leg pairs; automatic Speed above 100 to 200 selects Run, 0 finishes",
-  "sad": "hold and sway through a lowered sad pose, then return to stand",
-  "shake": "shake the rear leg pair, then return to stand",
-  "shrug": "sit, lift and open the front arms in a shrug, then return to standing",
-  "sit": "lower into the preprogrammed held sitting pose",
-  "stand": "stand normally on all four feet",
-  "stop": "stop the current body motion",
-  "stretch": "extend diagonal and front leg pairs in a stretch, then return to stand",
-  "surprised": "lower into a flat pose and wave the front legs, then return to stand",
-  "swim": "paddle the upper leg joints in a swimming-like motion, then return to stand",
-  "upright": "experimental motion: sit, brace the front legs backward, then rise onto the rear lower legs and hold upri",
-  "walk": "walk forward; continuous=true runs until stopped; optional speed or stride and rate controls",
-  "wave": "raise and wave one leg, then return to stand",
-  "worm": "two slow, deep whole-body waves, then return to standing"
-}
+// Synthetic fixture identity and state for posture and expression examples.
+const expressions = [
+  { name: 'neutral', label: 'Neutral resting face', group: 'Expressions' },
+  { name: 'happy', label: 'Warm cheerful face', group: 'Expressions' },
+  { name: 'curious', label: 'Attentive curious face', group: 'Expressions' },
+  { name: 'surprised', label: 'Startled wide-eyed face', group: 'Expressions' },
+]
 
 export function bodyObservation() {
   return { adapter: 'synthetic-body', environmentId: 'training-room', sessionId: 'training-body', timestamp: TIME,
-    capabilities: { actions: ['robotCommand', 'captureImage', 'stop', 'faceExpression'],
-      robotCommands: Object.keys(catalog), robotCommandDescriptions: catalog,
+    capabilities: { actions: ['requestMotion', 'captureImage', 'stop', 'faceExpression'],
       movement: true, visual: true,
-      expressionLibrary: Object.keys(catalog).map(name => ({ name, label: name, group: 'Expressions' })),
+      expressionLibrary: structuredClone(expressions),
     },
     state: { body: { robotId: 'training-body', authenticated: true, motionAvailable: true },
       posture: 'stand', gateway: { selectedRobot: { robot_id: 'training-body', model: 'v2-12servo',

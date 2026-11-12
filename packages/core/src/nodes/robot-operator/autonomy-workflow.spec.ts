@@ -24,10 +24,10 @@ const timestamp = '2026-10-08T18:00:00.000Z'
 const plannerDecision = { observed: 'The body is idle.', instruction: 'Perform a bow.', reason: 'Selected by the controller.', decidedAt: timestamp }
 const robotObserver = { cycleId: 'fixture-cycle', step: 1, triggerSource: 'autonomy', requestedBy: 'robot-autonomy-controller', graph: 'environment' }
 const observation = { adapter: 'fixture', environmentId: 'fixture', sessionId: 'fixture-body', timestamp,
-  capabilities: { actions: ['robotCommand'], robotCommands: ['bow'], robotCommandDescriptions: { bow: 'Lower the front end and return.' } },
+  capabilities: { actions: ['requestMotion', 'faceExpression'], expressionLibrary: [{ name: 'neutral', label: 'Neutral' }, { name: 'happy', label: 'Happy' }] },
   state: { body: { authenticated: true } }, feedback: [] }
 const decision = { objective: 'Perform a bow.', completionCriteria: 'Bow receipt', outcome: 'act', reason: 'Selected motion.', continuationPolicy: 'none', requiredCompletionBasis: 'action_result' }
-const program = { steps: [{ kind: 'action', action: { type: 'robotCommand', command: 'bow' } }] }
+const program = { steps: [{ kind: 'action', action: { type: 'requestMotion', description: 'bow' } }] }
 after(() => { eventBus.disconnect(); mock.restoreAll(); fs.rmSync(root, { recursive: true, force: true }) })
 
 async function simulate(options: { action: boolean; response: boolean; failure?: boolean; interrupted?: boolean; visionPlanner?: boolean; human?: boolean }) {
@@ -70,7 +70,8 @@ async function simulate(options: { action: boolean; response: boolean; failure?:
     observation_history: async () => ({ observations: [] }),
     environment_active_task: async inputs => {
       order.push('action')
-      assert.equal(inputs.program.steps[0].action.command, 'bow')
+      assert.equal(inputs.program.steps[0].action.type, 'requestMotion')
+      assert.equal(inputs.program.steps[0].action.description, 'bow')
       return { finished: !options.interrupted,
         result: { done: !options.interrupted, objectiveComplete: !options.failure, evidence: [receipt],
           failure: options.failure ? receipt.message : undefined, stepIndex: 1 },
@@ -110,7 +111,7 @@ async function simulate(options: { action: boolean; response: boolean; failure?:
         assert.deepEqual(taskContext.plannerDecision, plannerDecision)
         assert.deepEqual(taskContext.delegatedMemories, ['A delegated historical memory.'])
       }
-      assert.equal(taskContext.currentEnvironment.capabilities.robotCommandCatalog.bow, 'Lower the front end and return.')
+      assert.deepEqual(taskContext.currentEnvironment.capabilities.actions, ['requestMotion', 'faceExpression'])
     } else assert.equal(taskContext, undefined, 'Conversation-only input must not invoke Task')
     if (options.response && !options.interrupted) {
       assert.equal(conversationContext.inputSource, source)

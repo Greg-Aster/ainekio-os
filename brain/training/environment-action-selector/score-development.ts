@@ -35,8 +35,8 @@ function view(value: Record<string, any> | null, specialist: Specialist) {
   }
 }
 function hasPhysical(value: Record<string, any> | null) {
-  return Boolean(Array.isArray(value?.program?.steps) && value.program.steps.some((step: any) => step?.kind === 'generatedMotion' || step?.kind === 'behavior'
-    || ['robotCommand', 'requestMotion', 'move', 'stop', 'visualApproach'].includes(step?.action?.type)))
+  return Boolean(Array.isArray(value?.program?.steps) && value.program.steps.some((step: any) => step?.kind === 'behavior'
+    || ['requestMotion', 'move', 'stop', 'visualApproach'].includes(step?.action?.type)))
 }
 export interface SemanticReview {
   recordId: string

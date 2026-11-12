@@ -60,7 +60,7 @@ const observation: EnvironmentObservation = {
   adapter: 'ainekio-gateway',
   sessionId: 'robot-session',
   timestamp: '2026-07-17T11:59:59.000Z',
-  capabilities: { actions: ['robotCommand'], text: true },
+  capabilities: { actions: ['requestMotion'], text: true },
   state: { transport: 'protocol-v1' },
   visual: {
     id: 'stale-camera-frame',

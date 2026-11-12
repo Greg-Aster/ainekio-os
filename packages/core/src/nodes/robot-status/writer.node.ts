@@ -32,7 +32,7 @@ function systemReport(status: RobotStatusSnapshot): string {
       : 'unknown'
   const action = status.lastAction
   const actionDescription = action
-    ? action.description || action.command || action.type || 'unnamed action'
+    ? action.description || action.type || 'unnamed action'
     : 'none recorded'
   const actionStatus = action?.status ? ` — ${action.status}` : ''
   const desires = status.agency.activeDesires.length > 0
@@ -52,7 +52,7 @@ function systemReport(status: RobotStatusSnapshot): string {
     `Motion: ${motion}`,
     `Body state: ${body?.motion.activity || 'not reported'}`,
     `Last action: ${actionDescription}${actionStatus}`,
-    `Last body action: ${status.lastBodyAction?.description || status.lastBodyAction?.command || status.lastBodyAction?.type || 'none recorded'}${status.lastBodyAction?.status ? ` — ${status.lastBodyAction.status}` : ''}`,
+    `Last body action: ${status.lastBodyAction?.description || status.lastBodyAction?.type || 'none recorded'}${status.lastBodyAction?.status ? ` — ${status.lastBodyAction.status}` : ''}`,
     `Environment: ${status.situation.environmentDescription}`,
     `Goal: ${status.situation.currentGoal || 'none reported'}`,
     `Intent: ${status.situation.currentIntent || 'none reported'}`,

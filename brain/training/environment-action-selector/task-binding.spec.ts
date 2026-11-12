@@ -13,7 +13,7 @@ test('gesture/photo contrasts retain the same context but select distinct reques
     const outputs = family.map(row => JSON.parse(row.plannerReferenceOutput ?? row.output))
     assert.ok(outputs.some(value => value.program === null))
     assert.ok(outputs.some(value => value.program?.steps.length === 1 && value.program.steps[0].action.type === 'captureImage'))
-    assert.ok(outputs.some(value => value.program?.steps.length === 1 && value.program.steps[0].action.type === 'robotCommand'))
+    assert.ok(outputs.some(value => value.program?.steps.length === 1 && value.program.steps[0].action.type === 'requestMotion'))
     assert.ok(outputs.some(value => value.program?.steps.length === 2))
     const context = family.map(row => {
       const value = JSON.parse(row.user)
@@ -32,7 +32,7 @@ test('exclusive, inclusive-boundary and sequence labels follow the supplied volt
     const envelope = JSON.parse(row.user)
     const instruction = envelope.currentInstruction as string
     const output = JSON.parse(row.output)
-    const actions = output.program?.steps.map((step: any) => step.action.command) ?? []
+    const actions = output.program?.steps.map((step: any) => step.action.description) ?? []
     if (instruction.startsWith('Perform both')) {
       assert.equal(actions.length, 2)
       continue
@@ -71,10 +71,6 @@ test('visual targets distinguish finite repositioning, observed completion and m
       assert.ok(output.taskDecision.objective.includes(target))
       assert.ok(output.taskDecision.completionCriteria.includes(target))
       assert.doesNotMatch(output.taskDecision.objective, /label|carton|glare/)
-    }
-    for (const step of steps) if (step.action?.type === 'robotCommand') {
-      assert.equal(step.action.continuous, false)
-      assert.ok(step.action.units > 0)
     }
     if (row.metadata.instructionIndex === 3) {
       assert.equal(steps[0].kind, 'behavior')

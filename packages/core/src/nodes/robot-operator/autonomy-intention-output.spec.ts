@@ -34,7 +34,7 @@ const decision = {
   observed: 'The desk is partially obscured in the supplied image.',
 }
 const observation = { environmentId: 'fixture', adapter: 'fixture', sessionId: 'fixture-body', timestamp: observedAt,
-  capabilities: { actions: ['robotCommand'], robotCommands: ['walk'], movement: true }, state: {} }
+  capabilities: { actions: ['move', 'requestMotion'], movement: true }, state: {} }
 const graphs = ['boredom-observer', 'boredom-movement', 'boredom-reflection', 'robot-autonomy-controller']
 const read = (name: string) => JSON.parse(fs.readFileSync(path.join(repo, `etc/cognitive-graphs/${name}-mode.json`), 'utf8'))
 

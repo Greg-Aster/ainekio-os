@@ -72,6 +72,9 @@ export interface UserCredentials {
     apiKey: string;
     endpoint?: string;
   };
+  gemini?: {
+    apiKey: string;
+  };
   /** Remote MetaHuman server (via Cloudflare tunnel, etc.) */
   server?: {
     /** Server URL (e.g., https://mh.example.com) */
@@ -98,6 +101,9 @@ export interface SystemCredentials {
     apiKey: string;
   };
   openrouter?: {
+    apiKey: string;
+  };
+  gemini?: {
     apiKey: string;
   };
 }
@@ -171,6 +177,10 @@ export function loadSystemCredentials(): SystemCredentials {
   if (!creds.openrouter && process.env.OPENROUTER_API_KEY) {
     creds.openrouter = { apiKey: process.env.OPENROUTER_API_KEY };
   }
+  const geminiKey = process.env.GOOGLE_API_KEY || process.env.GEMINI_API_KEY;
+  if (!creds.gemini?.apiKey && geminiKey) {
+    creds.gemini = { apiKey: geminiKey };
+  }
 
   return creds;
 }
@@ -183,7 +193,7 @@ export function loadProviderPolicy(): ProviderPolicy {
 
   const defaults: ProviderPolicy = {
     allowSystemFallback: false,
-    providerPriority: ['runpod', 'claude', 'openrouter', 'openai'],
+    providerPriority: ['runpod', 'gemini', 'claude', 'openrouter', 'openai'],
   };
 
   if (!fs.existsSync(policyPath)) {

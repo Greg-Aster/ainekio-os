@@ -17,7 +17,7 @@ after(() => { eventBus.disconnect(); fs.rmSync(root, { recursive: true, force: t
 test('action evidence matches the full sent identity, not a truncated prefix', async () => {
   const prefix = 'action-'.repeat(40);
   const sentId = `${prefix}sent`;
-  const prepared = prepareEnvironmentCommand({ id: sentId, type: 'robotCommand', command: 'wave', sessionId: 'fixture' });
+  const prepared = prepareEnvironmentCommand({ id: sentId, type: 'requestMotion', description: 'wave', sessionId: 'fixture' });
   const record = { actionId: prepared.input.id, correlationId: `${prefix}complete-cycle` };
   const foreign = await node.execute({ actionId: `${prefix}different`, record }, {});
   assert.equal(foreign.available, false, 'A common prefix is not the same sent action');

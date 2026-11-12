@@ -283,7 +283,7 @@ test('blocked audio rendering releases conversation, admits another reply and co
         assert.ok(loadBufferForUser(username, 'conversation').messages.some(message => message.content === 'Second independently delivered response.'))
         const movement = manager.enqueue({ type: 'environment_command', handler: 'environment.command', username,
           resource: 'environment:speech-fixture-body', source: 'user',
-          input: { id: 'concurrent-motion', sessionId: 'speech-fixture-body', type: 'robotCommand', command: 'bow' } })
+          input: { id: 'concurrent-motion', sessionId: 'speech-fixture-body', type: 'requestMotion', description: 'bow' } })
         assert.ok(manager.claim(movement.id), 'Speech preparation does not own the body')
         release()
         await pendingSpeech

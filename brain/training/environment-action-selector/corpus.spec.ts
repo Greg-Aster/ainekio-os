@@ -230,7 +230,7 @@ test('goal examples distinguish compound commands, visual success and reported s
   }
   assert.ok(outputs.some(output => output.program?.steps.length > 1
     && output.program.steps.some((step: any) => step.action?.type === 'captureImage')
-    && output.program.steps.some((step: any) => step.action?.type === 'robotCommand')))
+    && output.program.steps.some((step: any) => step.action?.type === 'requestMotion')))
   assert.ok(outputs.some(output => output.program?.steps.length === 1
     && output.program.steps[0].action?.type === 'captureImage'
     && output.taskDecision.requiredCompletionBasis === 'visual_observation'))
@@ -315,10 +315,8 @@ test('both specialists use valid runtime outputs; advertised commands pass capab
     const source = DEVELOPMENT_CASES.find(item => item.id === record.metadata.sourceCaseId)!
     const output = JSON.parse(record.output)
     if (!output.program) continue
-    const catalog = envelope.currentEnvironment.capabilities.robotCommandCatalog
     const parsed = await environmentActionParserNode.execute({ response: record.output,
-      observation: { state: envelope.currentEnvironment.state, capabilities: { actions: envelope.currentEnvironment.capabilities.actions,
-        robotCommands: Object.keys(catalog ?? {}), robotCommandDescriptions: catalog } },
+      observation: { state: envelope.currentEnvironment.state, capabilities: envelope.currentEnvironment.capabilities },
       activeExecutions: source.inputs?.activeExecutions ?? [],
     }, {} as never, { includeResponse: false } as never)
     assert.equal(parsed.valid, true, `${record.metadata.recordId}: ${JSON.stringify(parsed.validationErrors)}`)
@@ -361,13 +359,17 @@ test('evaluation and cross-validation keep all variants of each source on one si
 test('opaque catalogs preserve meanings and every ordered program step', async () => {
   const records = (await recordsPromise).filter(record => record.metadata.contextVariation === 'opaque-identifiers')
   assert.ok(records.length)
+  let checkedExpressions = 0
   for (const record of records) {
-    const catalog = JSON.parse(record.user).currentEnvironment.capabilities.robotCommandCatalog ?? {}
-    for (const step of JSON.parse(record.output).program?.steps ?? []) if (step.action?.type === 'robotCommand') {
-      assert.match(step.action.command, /^k\d+$/)
-      assert.equal(typeof catalog[step.action.command], 'string')
+    const library = JSON.parse(record.user).currentEnvironment.capabilities.expressionLibrary ?? []
+    for (const step of JSON.parse(record.output).program?.steps ?? []) if (step.action?.type === 'faceExpression') {
+      assert.match(step.action.expression, /^k\d+$/)
+      const entry = library.find((item: any) => item.name === step.action.expression)
+      assert.equal(typeof entry?.label, 'string')
+      checkedExpressions++
     }
   }
+  assert.ok(checkedExpressions > 0)
 })
 
 
@@ -420,7 +422,7 @@ test('conditional task cases expose the status value that determines the request
     assert.equal(typeof envelope.robotStatus.body.battery.voltage, 'number')
     assert.equal(envelope.robotStatus.body.battery.observedAt, '2030-01-15T12:00:00.000Z')
     const choices = pairs.get(envelope.currentInstruction) ?? new Set<string>()
-    choices.add(JSON.parse(record.output).program.steps[0].action.command)
+    choices.add(JSON.parse(record.output).program.steps[0].action.description)
     pairs.set(envelope.currentInstruction, choices)
     const group = folds.get(envelope.currentInstruction) ?? new Set<number>()
     group.add(record.metadata.developmentFold)
@@ -440,8 +442,8 @@ test('task catalog-only variations keep commands and separately selected evidenc
       assert.ok(envelope.selectedRoutes.needsEnvironment)
       assert.ok(Array.isArray(envelope.currentEnvironment.state.recognition.visionOperations))
     } else assert.equal(envelope.currentEnvironment.state.batteryPercent, undefined)
-    if (JSON.parse(record.output).program?.steps.some((step: any) => step.action?.type === 'robotCommand')) {
-      assert.ok(Object.keys(envelope.currentEnvironment.capabilities.robotCommandCatalog).length > 0)
+    if (JSON.parse(record.output).program?.steps.some((step: any) => step.action?.type === 'requestMotion')) {
+      assert.ok(envelope.currentEnvironment.capabilities.actions.includes('requestMotion'))
     }
     if (record.metadata.suite === 'expanded-status-condition') assert.equal(typeof envelope.robotStatus.body.battery.voltage, 'number')
   }
@@ -485,17 +487,16 @@ test('refinement comparisons distinguish strict thresholds and retain source att
     assert.equal(typeof voltage, 'number')
     const request = input.currentInstruction
     const threshold = Number(request.match(/(?:less than|at least|greater than) ([\d.]+) volts/)[1])
-    const commands = input.currentEnvironment.capabilities.robotCommandCatalog
     const steps = output.program?.steps ?? []
     assert.ok(steps.length <= 1, 'An exclusive branch is not a sequence')
-    const description = steps.length ? commands[steps[0].action.command] : null
+    const description = steps.length ? steps[0].action.description : null
     const logicalCommand = request.startsWith('Only') ? request.match(/perform (\w+) when/)[1]
       : voltage < threshold ? (request.match(/choose (\w+);/)?.[1] ?? request.match(/perform (\w+) otherwise/)[1])
         : (request.match(/otherwise choose (\w+)/)?.[1] ?? request.match(/Perform (\w+) when/)[1])
     if (request.startsWith('Only') && voltage <= threshold) assert.equal(steps.length, 0)
     else {
       assert.equal(steps.length, 1)
-      const meanings: Record<string, RegExp> = { nod: /nod/i, sit: /seat/i, wave: /wave/i }
+      const meanings: Record<string, RegExp> = { nod: /nod/i, sit: /sit|seat/i, wave: /wave/i }
       assert.match(description, meanings[logicalCommand]!)
     }
     const folds = groupFolds.get(String(threshold)) ?? new Set<number>()
@@ -511,8 +512,8 @@ test('posture training covers real body meanings, prior activity, and long obser
   const posture = records.filter(record => record.metadata.suite.startsWith('body-posture-') && record.metadata.specialist === 'task')
   for (const command of ['rest', 'lay_down']) {
     const clean = posture.find(record => record.metadata.contextVariation === 'clean'
-      && JSON.parse(record.output).program.steps[0].action.command === command)!
-    assert.ok(JSON.parse(clean.user).currentEnvironment.capabilities.robotCommandCatalog[command])
+      && JSON.parse(record.output).program.steps[0].action.description === command)!
+    assert.ok(JSON.parse(clean.user).currentEnvironment.capabilities.actions.includes('requestMotion'))
   }
   const long = posture.filter(record => record.metadata.suite === 'body-posture-observation-history')
   assert.equal(long.length, 48)
@@ -523,7 +524,7 @@ test('posture training covers real body meanings, prior activity, and long obser
   const folds = new Map<string, number>()
   for (const record of posture) {
     if (record.metadata.contextVariation !== 'clean') continue
-    const command = JSON.parse(record.output).program.steps[0].action.command
+    const command = JSON.parse(record.output).program.steps[0].action.description
     if (folds.has(command)) assert.equal(record.metadata.developmentFold, folds.get(command))
     else folds.set(command, record.metadata.developmentFold)
   }

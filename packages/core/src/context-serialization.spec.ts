@@ -6,12 +6,12 @@ const expandReferences = (value: any) => parseContext(JSON.stringify(value));
 
 test('repeated observations and action receipts remain losslessly accessible with their provenance', () => {
   const observation = { summary: 'A book beside a lamp on the table.', observedAt: '2026-10-08T12:00:00Z', frameId: 'frame-1', source: 'camera' };
-  const action = { id: 'action-1', type: 'robotCommand', command: 'bow', result: 'completed', at: '2026-10-09T12:00:00Z' };
+  const action = { id: 'action-1', type: 'requestMotion', description: 'bow', result: 'completed', at: '2026-10-09T12:00:00Z' };
   const input = { observationHistory: [observation], robotStatus: {
     latestVisualObservation: observation, lastAction: action, lastBodyAction: action,
   }, history: [{ role: 'user', content: 'What did you dream last night?', timestamp: '2026-10-09T12:00:01Z' },
     { role: 'inner', content: 'A dated dream.', timestamp: '2026-10-08T02:00:00Z' }],
-    objective: 'Look at the table', capabilities: { actions: ['takePicture', 'robotCommand'] } };
+    objective: 'Look at the table', capabilities: { actions: ['takePicture', 'requestMotion'] } };
   const result = serializeContext(input);
   assert(result.length < JSON.stringify(input).length);
   assert.deepEqual(JSON.parse(result).robotStatus.latestVisualObservation, { $ref: '#/observationHistory/0' });

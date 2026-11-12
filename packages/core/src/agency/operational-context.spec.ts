@@ -14,16 +14,16 @@ const event = (kind: string, payload: unknown, sequence = 1): ExecutionEvent => 
 })
 
 test('execution evidence retains original request separately from wrong selected program and command receipt', () => {
-  const events = [event('physical_result', { action: { type: 'robotCommand', command: 'surprised' }, feedback: { type: 'completed', message: 'done', actionId: 'command-1' } })]
+  const events = [event('physical_result', { action: { type: 'requestMotion', description: 'act surprised' }, feedback: { type: 'completed', message: 'done', actionId: 'command-1' } })]
   const result = projectDesireExecutionEvidence(record,
     { context: { userMessage: 'Please stretch', userMessageEntry: { role: 'user', content: 'Please stretch', timestamp: 10 } } }, null, events,
     [{ namespace: 'child-1', checkpointId: 'checkpoint-2', nodes: [['task', {
       status: 'completed', definition: { type: 'environment_task_planner' }, startTime: 15, endTime: 18,
-      outputs: { program: { steps: [{ kind: 'action', action: { type: 'robotCommand', command: 'surprised' } }] },
+      outputs: { program: { steps: [{ kind: 'action', action: { type: 'requestMotion', description: 'act surprised' } }] },
         taskDecision: { objective: 'React with surprise', objectiveComplete: false }, valid: true },
     }]] }])
   assert.equal(result.admittedInput.userMessage, 'Please stretch')
-  assert.deepEqual(result.selections[0].program, { steps: [{ kind: 'action', action: { type: 'robotCommand', command: 'surprised' } }] })
+  assert.deepEqual(result.selections[0].program, { steps: [{ kind: 'action', action: { type: 'requestMotion', description: 'act surprised' } }] })
   assert.equal(result.status, 'waiting')
   assert.equal(result.task, null, 'absent overall objective is not synthesized from command completion')
   assert.deepEqual(result.events, events)

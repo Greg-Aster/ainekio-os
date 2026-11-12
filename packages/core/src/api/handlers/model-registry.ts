@@ -13,6 +13,7 @@ import { startAssignedModelServices } from '../../llm-backend.js';
 import type { UnifiedRequest, UnifiedResponse } from '../types.js';
 import { successResponse } from '../types.js';
 import { assertTrainingModelApproved } from '../../adapters.js';
+import { resolveCredentials } from '../../llm-config.js';
 import { safeWriteJSON } from '../../safe-file.js';
 import {
   getProfilePaths,
@@ -486,8 +487,35 @@ export async function handleGetModelRegistry(req: UnifiedRequest): Promise<Unifi
     } | null = null;
 
     // Registered llama.cpp deployments remain selectable independently of server state.
-    const cloudProviderSet = new Set(['runpod_serverless', 'huggingface', 'openai', 'openrouter', 'remote-server']);
+    const cloudProviderSet = new Set(['runpod_serverless', 'huggingface', 'openai', 'openrouter', 'claude', 'gemini', 'remote-server']);
     const bigBrotherProviders = new Set(['big-brother']);
+    const hasGeminiApiKey = Boolean(
+      resolveCredentials(user.username, 'gemini')?.apiKey
+      || process.env.GOOGLE_API_KEY
+      || process.env.GEMINI_API_KEY
+    );
+    if (hasGeminiApiKey) {
+      for (const geminiModel of [
+        { id: 'gemini.gemini-3.5-flash-lite', model: 'gemini-3.5-flash-lite', description: 'Gemini 3.5 Flash-Lite (Direct Free-Tier API, fast text + inline vision)' },
+        { id: 'gemini.gemini-3.5-flash', model: 'gemini-3.5-flash', description: 'Gemini 3.5 Flash (Direct Free-Tier API, text + inline vision)' },
+      ]) {
+        if (!availableModels.some(entry => entry.id === geminiModel.id)) {
+          availableModels.push({
+            id: geminiModel.id,
+            provider: 'gemini',
+            model: geminiModel.model,
+            roles: [],
+            capabilities: ['text', 'image'],
+            adapters: [],
+            baseModel: null,
+            description: geminiModel.description,
+            options: {},
+            metadata: { source: 'gemini-api-discovery' },
+            source: 'runtime-discovery',
+          });
+        }
+      }
+    }
     for (const bbId of BIG_BROTHER_MODEL_IDS) {
       if (!availableModels.some(model => model.id === bbId)) {
         const cli = bigBrotherModelDefinition(bbId, user.username);
@@ -641,6 +669,19 @@ export async function handleAssignModelRole(req: UnifiedRequest): Promise<Unifie
           description: `Ollama model ${inferredName}`,
           options: {},
           metadata: { source: 'ollama-discovery' }
+        };
+      } else if (modelId.startsWith('gemini.')) {
+        const geminiModelName = modelId.replace(/^gemini\./, '');
+        if (!geminiModelName) return { status: 400, error: 'Invalid Gemini model ID' };
+        registry.models[modelId] = {
+          provider: 'gemini',
+          model: geminiModelName,
+          roles: role ? [role] : [],
+          capabilities: ['text', 'image'],
+          adapters: [],
+          description: `Direct Gemini API (${geminiModelName})`,
+          options: {},
+          metadata: { source: 'gemini-api-discovery' },
         };
       } else if (modelId.startsWith('remote-server:')) {
         // Remote server model - runtime discovery from connected remote server

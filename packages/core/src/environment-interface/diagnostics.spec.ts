@@ -91,7 +91,7 @@ test('keeps only the latest bounded image and WAV in memory', () => {
     adapter: 'ainekio-gateway',
     sessionId: 'robot-session',
     timestamp: '2026-07-17T21:00:00.000Z',
-    capabilities: { actions: ['robotCommand'] },
+    capabilities: { actions: ['requestMotion'] },
     visual: {
       id: 'frame-1',
       timestamp: '2026-07-17T21:00:00.000Z',

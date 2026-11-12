@@ -20,9 +20,7 @@ test('Environment Bridge Input always exposes complete Ainekio observation and b
     sessionId: 'robot-1',
     timestamp,
     capabilities: {
-      actions: ['robotCommand'],
-      robotCommands: ['wave'],
-      robotCommandDescriptions: { wave: 'Raise and lower one front leg.' },
+      actions: ['requestMotion'],
       visual: true,
     },
     text: [{ id: 'text-1', source: 'player', text: 'Hello', timestamp }],
@@ -207,7 +205,7 @@ test('Environment Bridge Input always exposes complete Ainekio observation and b
   assert.equal(selected.sessionId, 'robot-1');
   assert.equal(selected.state.body.robotId, 'robot-1');
   assert.equal(selected.visual.id, 'frame-1');
-  assert.deepEqual(selected.capabilities.actions, ['robotCommand']);
+  assert.deepEqual(selected.capabilities.actions, ['requestMotion']);
   assert.equal(selected.text[0].text, 'Hello');
   assert.equal(selected.feedback[0].type, 'completed');
   assert.equal(selected.metadata.sensorReading, 'adapter-owned');
@@ -242,7 +240,7 @@ test('Environment Bridge Input always exposes complete Ainekio observation and b
   assert.equal(selected.mediaDiagnostics.imageFrames, 1);
   assert.equal(selected.diagnostics.sessionId, 'robot-1');
   assert.equal(selected.diagnosticsSnapshot.sessions[0].sessionId, 'robot-1');
-  assert.deepEqual(selected.observation.capabilities.actions, ['robotCommand']);
+  assert.deepEqual(selected.observation.capabilities.actions, ['requestMotion']);
   assert.equal(selected.observation.text[0].text, 'Hello');
   assert.equal(selected.observation.metadata.sensorReading, 'adapter-owned');
   assert.equal(selected.observation.metadata.robotOperatorDecision, undefined);
@@ -305,7 +303,7 @@ test('a boot observation uses later same-body telemetry for its camera interface
   const timestamp = '2026-10-13T23:33:23.551Z';
   const observation: EnvironmentObservation = {
     environmentId: 'ainekio', adapter: 'ainekio-gateway', sessionId: 'boot-session', timestamp,
-    capabilities: { actions: ['robotCommand'], robotCommands: ['stretch', 'stand'], visual: false },
+    capabilities: { actions: ['requestMotion'], visual: false },
     state: { body: { robotId: 'p4', cameraReady: false },
       bodyEvent: { name: 'body_event', kind: 'wake', reason: 'boot', event_id: 'boot-1' },
       gateway: { robots: { p4: { epoch: 7, status: { camera_ready: false } } } } },
@@ -318,7 +316,7 @@ test('a boot observation uses later same-body telemetry for its camera interface
   assert.equal(result.isTriggeringObservation, true);
   assert.equal(result.observation.timestamp, timestamp);
   assert.deepEqual(result.observation.state.bodyEvent, original.state!.bodyEvent);
-  assert.deepEqual(result.observation.capabilities.actions, ['robotCommand', 'captureImage']);
+  assert.deepEqual(result.observation.capabilities.actions, ['requestMotion', 'captureImage']);
   assert.equal(result.observation.capabilities.visual, true);
   assert.equal(result.observation.state.body.cameraReady, true);
   assert.equal(result.observation.state.gateway.robots.p4.status.output_armed, false);
@@ -328,14 +326,14 @@ test('a boot observation uses later same-body telemetry for its camera interface
 test('boot interface refresh does not import status from a different robot or connection epoch', async () => {
   const observation: EnvironmentObservation = {
     environmentId: 'ainekio', adapter: 'ainekio-gateway', sessionId: 'boot-session', timestamp: new Date().toISOString(),
-    capabilities: { actions: ['robotCommand'], visual: false },
+    capabilities: { actions: ['requestMotion'], visual: false },
     state: { body: { robotId: 'p4', cameraReady: false }, gateway: { robots: { p4: { epoch: 7 } } } },
   };
   for (const [robot_id, epoch] of [['p4', 8], ['other', 7]] as const) {
     recordEnvironmentBridgeTelemetry({ sessionId: 'boot-session', robotId: robot_id,
       robotStatus: { kind: 'robot.status', robot_id, epoch, camera_ready: true } });
     const result = await environmentBridgeInputNode.execute({}, { environmentObservation: observation }, {});
-    assert.deepEqual(result.observation.capabilities.actions, ['robotCommand']);
+    assert.deepEqual(result.observation.capabilities.actions, ['requestMotion']);
     assert.equal(result.observation.state.body.cameraReady, false);
   }
 });

@@ -1,4 +1,4 @@
-import { addCase, noTask, task, TIME, type CaseSplit } from './development-cases.js'
+import { action, addCase, noTask, task, TIME, type CaseSplit } from './development-cases.js'
 import { bodyObservation } from './posture-cases.js'
 import type { EnvironmentObservation } from '@metahuman/core'
 
@@ -9,9 +9,9 @@ const body: EnvironmentObservation = bodyObservation() as EnvironmentObservation
 body.capabilities.actions.push('move')
 body.state = { posture: null, cameraReady: true }
 const capture = () => ({ kind: 'action', action: { type: 'captureImage' } })
-const command = (name: string, units?: number) => ({ kind: 'action', action: {
-  type: 'robotCommand', command: name, ...(units !== undefined ? { units, continuous: false } : {}),
-} })
+const command = (name: string, units?: number) => units !== undefined
+  ? ({ kind: 'action', action: { type: 'move', direction: name, units, continuous: false } })
+  : action(name)
 
 // Dated, synthetic evidence exercises the same selected-context path as live
 // tasks. It is not an observation of the new request's result.

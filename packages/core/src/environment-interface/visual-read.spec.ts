@@ -18,6 +18,7 @@ const { dispatchEnvironmentVisualReads, recordEnvironmentVisualReadResult, relea
   subscribeEnvironmentActions, writeEnvironmentBridgeState, readEnvironmentBridgeState,
   recordEnvironmentObservation, reconcileEnvironmentDepthDemands } = await import('./store.js');
 const { environmentImageInputNode } = await import('../nodes/environment/image-input.node.js');
+const { nodeRegistry, nodeExecutors, nodeSchemas, extractSchema } = await import('../nodes/index.js');
 const { runDurableGraph, withGraphWork } = await import('../durable-execution/runtime.js');
 const { ExecutionEngine } = await import('../queue/execution-engine.js');
 new ExecutionEngine({}, manager); // Adapter work must deliver receipts without a recovery sweep.
@@ -123,6 +124,85 @@ test('selected vision reads stream cache across actual durable dispatch and cont
     try { assert.equal(store.events(started.executionId!).filter(event => event.kind === 'work_result').length, 1); }
     finally { store.close(); }
   } finally { disconnect(); }
+});
+
+test('camera read wait drains preceding execution events in one pass and hands off cleanly to child callGraph', async () => {
+  const childGraph = validateSvelteFlowGraph({ name: 'Child delivery', version: '1.0', format: 'svelte-flow',
+    scheduler: { version: 1, activation: 'demand', skippedState: 'explicit', sideEffectOrder: 'serial-topological', maxLoopIterations: 5 },
+    nodes: [{ id: 'echo', type: 'inputNode', position: { x: 0, y: 0 }, data: { label: 'Echo', nodeType: 'text_input', properties: { inputKey: 'summary', message: '' } } }],
+    edges: [] });
+  const deliverId = 'visual_read_child_delivery_fixture';
+  const deliverNode = {
+    ...environmentImageInputNode,
+    id: deliverId, name: 'Deliver Fixture', description: 'Fixture',
+    inputs: [{ name: 'frames', type: 'array' as const, optional: false }],
+    outputs: [{ name: 'summary', type: 'string' as const }],
+    properties: {}, propertySchemas: {},
+    execute: async (inputs: Record<string, any>, context: Record<string, any>) => {
+      const child = await context.graphExecution.callGraph(childGraph, {
+        username: context.username, requestId: context.requestId, environment: 'server',
+        summary: `frames:${Array.isArray(inputs.frames) ? inputs.frames.length : 0}`,
+      });
+      return { summary: child.nodes.get('echo')?.outputs?.text };
+    },
+  };
+  nodeRegistry.set(deliverId, deliverNode as any);
+  nodeExecutors.set(deliverId, deliverNode.execute as any);
+  nodeSchemas.set(deliverId, extractSchema(deliverNode as any));
+  const graphWithChild = validateSvelteFlowGraph({
+    ...graph,
+    nodes: [...graph.nodes, { id: 'deliver', type: 'environmentNode', position: { x: 3, y: 0 }, data: { label: 'Deliver', nodeType: deliverId, properties: {} } }],
+    edges: [...graph.edges, { id: 'select-deliver', source: 'select', sourceHandle: 'frames', target: 'deliver', targetHandle: 'frames' }],
+  });
+  const runWithChild = async (executionId?: string, eventHandler?: (event: any) => void) => {
+    const work = manager.enqueue({ type: 'generic', handler: 'graph.resume', source: 'user', username, input: { id: randomUUID() } });
+    assert.ok(manager.claim(work.id));
+    const result = await withGraphWork(work, id => manager.attachExecution(work.id, id), () => runDurableGraph({
+      graph: graphWithChild, executionId, eventHandler,
+      context: { username, requestId: randomUUID(), environment: 'server' },
+    }), async input => manager.enqueue(input));
+    manager.complete(work.id, result.status !== 'failed', { status: result.status });
+    return result;
+  };
+  const disconnect = connect();
+  try {
+    const started = await runWithChild();
+    assert.equal(started.status, 'waiting', started.error?.stack);
+    const [request] = dispatchEnvironmentVisualReads(sessionId);
+    assert.ok(request);
+    const appendFeedback = (start: number, count: number) => {
+      const store = openExecutionStore(username);
+      try {
+        for (let i = start; i < start + count; i++) {
+          store.appendEvent(started.executionId!, {
+            eventId: `preceding-feedback-${i}`,
+            kind: 'physical_result',
+            actionId: `thinking-${i}`,
+            payload: { feedback: { id: `fb-${i}`, actionId: `thinking-${i}`, type: 'completed', timestamp: new Date().toISOString() } },
+          });
+        }
+      } finally { store.close(); }
+    };
+    appendFeedback(0, 2);
+    const stillWaiting = await runWithChild(started.executionId);
+    assert.equal(stillWaiting.status, 'waiting', 'Unrelated events before the camera receipt must leave the read waiting');
+    appendFeedback(2, 2);
+    recordEnvironmentVisualReadResult({ ...request, type: 'environment.visual.result', visual });
+    await new Promise(resolve => setImmediate(resolve));
+    const events: string[] = [];
+    const completed = await runWithChild(started.executionId, event => {
+      if (event.nodeId === 'select') events.push(event.type);
+    });
+    assert.equal(completed.status, 'completed', completed.error?.stack);
+    assert.deepEqual(completed.nodes.get('select')?.outputs?.frames, [visual]);
+    assert.equal(completed.nodes.get('deliver')?.outputs?.summary, 'frames:1');
+    assert.deepEqual(events, ['node_start', 'node_complete'], 'Select node must drain queued events in a single pass without replay');
+  } finally {
+    nodeRegistry.delete(deliverId);
+    nodeExecutors.delete(deliverId);
+    nodeSchemas.delete(deliverId);
+    disconnect();
+  }
 });
 
 test('absent current frame and failed read cannot silently use a supplied old snapshot', async () => {

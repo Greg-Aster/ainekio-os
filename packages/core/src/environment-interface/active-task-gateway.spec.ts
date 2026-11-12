@@ -83,7 +83,7 @@ async function acknowledgeControls(f: ReturnType<typeof fixture>, body: Awaited<
 }
 
 const physicalRoute = {"needsGoalReview": false, "needsToolUse": false, "taskPlanner": "specialist", "needsResponse": false, "needsAction": true, "taskContext": ["environment"], "conversationContext": []}
-const wave = { kind: 'action', action: { type: 'robotCommand', command: 'wave' } }
+const wave = { kind: 'action', action: { type: 'requestMotion', description: 'wave' } }
 const turnGoal = { type: 'move', direction: 'left', continuous: true, durationMs: 0, speed: 40, locomotionGoal: { kind: 'relativeTurn', degrees: 90, tolerance: 2 } }
 
 // The input enters the actual Environment routing graph twice, then the current
@@ -108,7 +108,7 @@ async function interpretedProgram(body: Awaited<ReturnType<typeof simulatedBody>
   await executeWork(work)
   await f.run(id)
   const command = f.received.shift()!
-  assert.equal(command.command, 'wave')
+  assert.equal(command.description, 'wave')
   assert.deepEqual(command.metadata?.interpretationBody, body.snapshot.receipts[bootstrap.id].data.interpretationBody)
   await body.request('action', { action: command })
   await body.request('complete', { actionId: command.id })
@@ -369,7 +369,7 @@ test('paired lost terminal receipt and cancellation settle on authenticated reco
         assert.equal(replayed.dispatch(owned.durable!.effectId).status, 'completed')
       } finally { replayed.close() }
       const replacement = f.received.shift() ?? core.dispatchEnvironmentActions(f.observation.sessionId, 10)[0]
-      assert.equal(replacement.command, 'wave')
+      assert.equal(replacement.description, 'wave')
       assert.equal(body.snapshot.wire.length, 2, 'Reconnection sends no automatic motion or stop')
       await body.request('action', { action: replacement })
       await body.request('complete', { actionId: replacement.id })
@@ -406,10 +406,10 @@ test('speech and movement release only their own ended execution and retain unkn
   const sessionId = `channels-${randomUUID()}`
   const enqueue = (type: string) => manager.enqueue({ type: 'environment_command', handler: 'environment.command',
     resource: `${type}:${sessionId}`, source: 'environment', username,
-    input: { id: randomUUID(), sessionId, type, command: type === 'robotCommand' ? 'wave' : undefined } })
-  const movement = enqueue('robotCommand'), speech = enqueue('speak')
+    input: { id: randomUUID(), sessionId, type, description: type === 'requestMotion' ? 'wave' : undefined } })
+  const movement = enqueue('requestMotion'), speech = enqueue('speak')
   assert.ok(manager.claim(movement.id)); assert.ok(manager.claim(speech.id))
-  const nextMovement = enqueue('robotCommand'), nextSpeech = enqueue('speak')
+  const nextMovement = enqueue('requestMotion'), nextSpeech = enqueue('speak')
   const feedback = (task: typeof speech, ended = false) => core.recordEnvironmentActionResult({
     id: randomUUID(), actionId: task.input.id, type: 'outcome_unknown', timestamp: new Date().toISOString(),
     message: ended ? 'Session ended; physical outcome remains unknown' : 'Disconnected',

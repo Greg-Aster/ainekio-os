@@ -18,7 +18,6 @@ const PHYSICAL_MOTION_ACTIONS = new Set([
   'move',
   'look',
   'jump',
-  'robotCommand',
   'requestMotion',
   'inspect',
   'visualApproach',
@@ -26,19 +25,6 @@ const PHYSICAL_MOTION_ACTIONS = new Set([
 
 function isRecord(value: unknown): value is Record<string, unknown> {
   return Boolean(value) && typeof value === 'object' && !Array.isArray(value);
-}
-
-function unsupportedRobotCommand(
-  actions: Array<{ type?: string; command?: string }>,
-  advertised: string[] | undefined,
-): string | null {
-  const supported = new Set((advertised ?? []).map(command => command.trim()).filter(Boolean));
-  const action = actions.find(candidate => (
-    candidate.type === 'robotCommand'
-    && typeof candidate.command === 'string'
-    && !supported.has(candidate.command.trim())
-  ));
-  return action?.command?.trim() || null;
 }
 
 function actionIsAdvertised(
@@ -119,9 +105,6 @@ function motionAdmissionMessage(reason: string): string {
   if (reason === 'target_relative_frame_unavailable') {
     return 'The selected visual feedback action requires a target from the current camera frame.';
   }
-  if (reason === 'robot_command_unavailable') {
-    return 'The Environment LLM selected a robot command that this robot does not advertise.';
-  }
   if (reason === 'action_capability_unavailable') {
     return 'The Environment LLM selected an action that the connected robot does not advertise.';
   }
@@ -139,7 +122,7 @@ export const environmentActionParserNode = defineNode({
     { name: 'activeExecutions', type: 'array', optional: true, description: 'Unfinished executions available for steering or cancellation' },
     { name: 'frames', type: 'array', optional: true, description: 'Exact images supplied by the context builder to this model call' },
     { name: 'response', type: 'any', description: 'Structured complete-task selection' },
-    { name: 'observation', type: 'object', optional: true, description: 'Observation containing adapter-advertised robot commands' },
+    { name: 'observation', type: 'object', optional: true, description: 'Observation containing adapter-advertised capabilities' },
     { name: 'sessionId', type: 'string', optional: true, description: 'Default target session' },
     { name: 'robotObserver', type: 'object', optional: true, description: 'Robot Operator cycle from its dedicated input node' },
     { name: 'currentVisualEvidence', type: 'boolean', optional: true, description: 'Whether Environment Image Input verified that the selected frame belongs to this graph run' },
@@ -202,15 +185,10 @@ export const environmentActionParserNode = defineNode({
       actions: phases.flatMap(step => step.kind === 'action' ? [step.action] : step.kind === 'behavior' && step.motion !== null ? [step.motion] : []),
     };
     const motionClass = normalizedEnvironmentMotionClass(parsed.taskDecision?.motionClass);
-    const unsupportedCommand = unsupportedRobotCommand(
-      parsed.actions,
-      observation?.capabilities?.robotCommands?.filter(command => !observation.capabilities.locomotion?.commands.includes(command)),
-    );
     const unavailableAction = parsed.actions.find(action => !actionIsAdvertised(action, observation));
     const unavailableExpression = parsed.actions.find(action => !expressionIsAdvertised(action, observation));
     const supportedParsedActions = parsed.actions.filter(action => (
       actionIsAdvertised(action, observation)
-      && !unsupportedRobotCommand([action], observation?.capabilities?.robotCommands?.filter(command => !observation.capabilities.locomotion?.commands.includes(command)))
       && expressionIsAdvertised(action, observation)
     ));
     const hasNonMotionAlternative = supportedParsedActions.some(action => !isPhysicalMotionAction(action));
@@ -235,9 +213,7 @@ export const environmentActionParserNode = defineNode({
         admissionBlockedReason = 'target_relative_frame_unavailable';
       }
     }
-    if (!admissionBlockedReason && unsupportedCommand) {
-      admissionBlockedReason = 'robot_command_unavailable';
-    } else if (!admissionBlockedReason && unavailableAction?.type === 'captureImage') {
+    if (!admissionBlockedReason && unavailableAction?.type === 'captureImage') {
       admissionBlockedReason = 'camera_unavailable';
     } else if (!admissionBlockedReason && unavailableAction) {
       admissionBlockedReason = 'action_capability_unavailable';

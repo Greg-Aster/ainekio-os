@@ -63,7 +63,7 @@ test('Matched Sent Action verifies Core-provided context without owning lookup o
   const environmentActionContext = {
     actionId: 'sent-action-1',
     status: 'completed',
-    requested: { type: 'robotCommand', command: 'wave' },
+    requested: { type: 'requestMotion', description: 'wave' },
     correlationId: 'cycle-1',
     queuedAt: '2026-09-03T12:00:00.000Z',
     completedAt: '2026-09-03T12:00:01.000Z',

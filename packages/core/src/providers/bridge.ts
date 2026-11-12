@@ -36,7 +36,6 @@ import { loadFreshOperatorConfig } from '../config.js';
 // Track if we've already logged the active backend
 let backendLoggedOnce = false;
 import {
-  type ProviderImageContentPart,
   type ProviderMessage,
   type ProviderOptions,
   type ProviderResponse,
@@ -45,7 +44,6 @@ import {
   type ProviderType,
   ProviderInputError,
   inspectProviderMessages,
-  parseProviderImageDataUrl,
   providerImagePolicyFromOptions,
   isCloudProvider,
   isRemoteServerProvider,
@@ -124,6 +122,29 @@ export async function callProvider(
   if (isRemoteServerProvider(providerName)) {
     return callRemoteServerProvider(messages, options, onProgress);
   }
+  if (providerName === 'gemini' || providerName === 'openai' || providerName === 'openrouter' || providerName === 'claude') {
+    if (providerName !== 'gemini') {
+      assertAdapterPreservesImageInput(providerName, contentInspection.imageCount);
+    }
+    const resolved = username ? resolveCredentials(username, providerName) : null;
+    const envKey = providerName === 'gemini'
+      ? (process.env.GOOGLE_API_KEY || process.env.GEMINI_API_KEY || '')
+      : providerName === 'claude'
+        ? (process.env.ANTHROPIC_API_KEY || '')
+        : (process.env[`${providerName.toUpperCase()}_API_KEY`] || '');
+    const apiKey = resolved?.apiKey || envKey;
+    if (!apiKey) {
+      throw new Error(`No API key found for ${providerName}. Configure credentials in profiles/${username || '<user>'}/etc/llm-credentials.json or environment.`);
+    }
+    onProgress?.({ phase: 'running', message: `Calling ${providerName} (${options.model || 'default'})...` });
+    const response = await callDirectRemoteProvider(
+      { provider: providerName, apiKey, endpoint: resolved?.endpoint || options.endpoint, model: options.model },
+      messages,
+      options,
+    );
+    onProgress?.({ phase: 'completed', message: `${providerName} response received` });
+    return response;
+  }
   if (options.executionTarget === 'remote') {
     if (isCloudProvider(providerName)) {
       assertAdapterPreservesImageInput(providerName, contentInspection.imageCount)
@@ -179,20 +200,10 @@ export async function callProvider(
         responseInstructions += `\nThe final response must conform to this JSON Schema:\n${JSON.stringify(options.jsonSchema)}`;
       }
     }
-    const nativeMessages = resolvedBackendId === 'codex';
-    if (options.toolAccess === 'read-only' && !nativeMessages && resolvedBackendId !== 'gemini') {
+    const nativeMessages = resolvedBackendId === 'codex' || resolvedBackendId === 'gemini';
+    if (options.toolAccess === 'read-only' && !nativeMessages) {
       throw new Error('This model backend does not provide the requested read-only terminal tool access');
     }
-    const extractedImages = !nativeMessages && hasImages
-      ? messages.flatMap(m => Array.isArray(m.content)
-        ? m.content
-          .filter((part): part is ProviderImageContentPart => part.type === 'image_url')
-          .map(part => {
-            const parsed = parseProviderImageDataUrl(part.image_url.url, imagePolicy);
-            return { mimeType: parsed.mimeType, base64: parsed.base64 };
-          })
-        : [])
-      : undefined;
     const prompt = nativeMessages ? '' : messages.map(m =>
       `[${m.role === 'system' ? 'System' : m.role === 'user' ? 'User' : 'Assistant'}]: ${messageText(m)}`
     ).join('\n\n') + (responseInstructions ? `\n\n[System]: ${responseInstructions}` : '');
@@ -208,7 +219,6 @@ export async function callProvider(
       preferredBackend,
       ...(options.cliProvider && options.model ? { model: options.model } : {}),
       ...(options.reasoningEffort ? { reasoningEffort: options.reasoningEffort } : {}),
-      ...(extractedImages?.length ? { images: extractedImages } : {}),
       ...(nativeMessages ? { modelRequest: { messages, ...(responseInstructions ? { responseInstructions } : {}),
         ...(options.contextWindow !== undefined ? { contextWindow: options.contextWindow } : {}) } } : {}),
     });
@@ -275,11 +285,13 @@ async function callRemoteProvider(
   if (backendConfig.remote?.provider === 'server') {
     return callRemoteServerProvider(messages, options, onProgress);
   }
-  const inspection = inspectProviderMessages(messages, providerImagePolicyFromOptions(options))
-  assertAdapterPreservesImageInput('Remote provider', inspection.imageCount)
   const remoteConfig = backendConfig.remote;
   if (!remoteConfig?.provider) {
     throw new Error('No remote provider configured');
+  }
+  if (remoteConfig.provider !== 'gemini') {
+    const inspection = inspectProviderMessages(messages, providerImagePolicyFromOptions(options))
+    assertAdapterPreservesImageInput('Remote provider', inspection.imageCount)
   }
 
   onProgress?.({ phase: 'running', message: `Using remote provider: ${remoteConfig.provider}` });
@@ -291,14 +303,18 @@ async function callRemoteProvider(
   // Resolve credentials: user profile → system config → env vars
   const resolved = username ? resolveCredentials(username, remoteConfig.provider) : null;
 
-  const supportedProviders: RemoteProviderName[] = ['runpod', 'claude', 'openrouter', 'openai']
+  const supportedProviders: RemoteProviderName[] = ['runpod', 'claude', 'openrouter', 'openai', 'gemini']
   if (!supportedProviders.includes(remoteConfig.provider as RemoteProviderName)) {
     throw new Error(`Unsupported remote provider: ${remoteConfig.provider}`)
   }
 
+  const fallbackEnvKey = remoteConfig.provider === 'gemini'
+    ? (process.env.GOOGLE_API_KEY || process.env.GEMINI_API_KEY || '')
+    : (process.env[`${remoteConfig.provider.toUpperCase()}_API_KEY`] || '')
+
   const credentials: RemoteProviderCredentials = {
     provider: remoteConfig.provider as RemoteProviderName,
-    apiKey: resolved?.apiKey || process.env[`${remoteConfig.provider.toUpperCase()}_API_KEY`] || '',
+    apiKey: resolved?.apiKey || fallbackEnvKey,
     endpoint: resolved?.endpoint || remoteConfig.serverUrl,
     model: remoteConfig.model || options.model,
   };
@@ -308,11 +324,8 @@ async function callRemoteProvider(
   }
 
   const response = await callDirectRemoteProvider(credentials, messages, {
-    signal: options.signal,
-    model: options.model,
-    temperature: options.temperature,
-    maxTokens: options.maxTokens,
-    topP: options.topP,
+    ...options,
+    model: options.model || remoteConfig.model,
   });
 
   onProgress?.({ phase: 'completed', message: 'Remote response received' });

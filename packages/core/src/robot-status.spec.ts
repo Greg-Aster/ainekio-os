@@ -115,12 +115,11 @@ const sources = {
     },
     state: { posture: 'standing' },
     telemetry: { vbat: 7.4 },
-    capabilities: { actions: ['robotCommand'], robotCommands: ['wave'] },
+    capabilities: { actions: ['requestMotion'] },
   },
   lastAction: {
     actionId: 'action-1',
-    type: 'robotCommand',
-    command: 'wave',
+    type: 'requestMotion',
     description: 'Wave.',
     status: 'completed',
     message: 'Wave completed.',
@@ -398,11 +397,6 @@ test('out-of-order projections retain facts together with their independent sour
 })
 
 test('Robot Status context separates current facts from bounded narrative context', async () => {
-  const robotCommands = [
-    '#1',
-    '#2',
-    ...Array.from({ length: 40 }, (_value, index) => `motion_${String(index + 1).padStart(2, '0')}`),
-  ]
   const result = await robotStatusContextBuilderNode.execute!({
     instruction: 'Return the compact status JSON.',
     environmentSummary: {
@@ -422,8 +416,7 @@ test('Robot Status context separates current facts from bounded narrative contex
             dataUrl: 'data:image/jpeg;base64,secret-image-data',
           },
           capabilities: {
-            actions: ['robotCommand'],
-            robotCommands,
+            actions: ['requestMotion'],
             movement: true,
             visual: true,
           },
@@ -449,7 +442,7 @@ test('Robot Status context separates current facts from bounded narrative contex
           status: 'completed',
           actionId: 'action-1',
           message: 'Wave completed.',
-          action: { id: 'action-1', type: 'robotCommand', command: 'wave' },
+          action: { id: 'action-1', type: 'requestMotion', description: 'wave' },
         },
       },
     }],
@@ -467,10 +460,10 @@ test('Robot Status context separates current facts from bounded narrative contex
     activity: 'idle',
     observedAt: '2026-08-27T18:00:01.000Z',
   })
-  assert.equal(result.sourceFacts.lastAction.command, 'wave')
+  assert.equal(result.sourceFacts.lastAction.description, 'wave')
   assert.equal(result.sourceFacts.lastAction.status, 'completed')
   assert.equal(result.sourceFacts.activeDesires[0].title, 'Find the cat')
-  assert.deepEqual(result.sourceFacts.body.capabilities.robotCommands, robotCommands)
+  assert.deepEqual(result.sourceFacts.body.capabilities.actions, ['requestMotion'])
   assert.equal(result.context.environmentEvidence.location.label, 'work area')
   assert.equal(JSON.stringify(result.context).includes('secret-image-data'), false)
   assert.equal(result.messages.length, 2)
@@ -543,7 +536,7 @@ test('Robot Status writer and reusable input node share the same canonical snaps
   assert.equal(read.context.body.battery.voltage, 7.4)
   assert.equal(read.context.body.identity.robotId, 'selected-body')
   assert.equal(read.context.body.motion.available, true)
-  assert.equal(read.context.lastAction.command, 'wave')
+  assert.equal(read.context.lastAction.description, 'Wave.')
   assert.equal(read.context.agency.activeDesires[0].title, 'Find the cat')
   assert.equal(read.context.agency.activeDesires[0].nextAction, 'desire-agent')
   assert.equal('reason' in read.context.agency.activeDesires[0], false)
@@ -558,7 +551,7 @@ test('Robot Status writer and reusable input node share the same canonical snaps
 
 test('Robot Status Out persists the Environment LLM task and correlated action result without another model call', async () => {
   const username = 'robot-status-out-owner'
-  const selectedAction = { type: 'robotCommand', command: 'walk_forward' }
+  const selectedAction = { type: 'requestMotion', description: 'walk_forward' }
   const initialInput = {
     observation: {
       sessionId: 'robot-1',
@@ -566,8 +559,7 @@ test('Robot Status Out persists the Environment LLM task and correlated action r
       timestamp: '2026-09-02T18:00:00.000Z',
       state: { posture: 'standing', body: { motionAvailable: true } },
       capabilities: {
-        actions: ['robotCommand'],
-        robotCommands: ['walk_forward'],
+        actions: ['requestMotion'],
         movement: true,
         visual: true,
       },
@@ -608,8 +600,7 @@ test('Robot Status Out persists the Environment LLM task and correlated action r
       timestamp: '2026-09-02T18:00:05.000Z',
       state: { posture: 'standing', body: { motionAvailable: true } },
       capabilities: {
-        actions: ['robotCommand'],
-        robotCommands: ['walk_forward'],
+        actions: ['requestMotion'],
         movement: true,
         visual: true,
       },
@@ -640,15 +631,15 @@ test('Robot Status Out persists the Environment LLM task and correlated action r
 
   assert.equal(initial.persisted, true)
   assert.equal(initial.task.objective, 'Inspect the object from closer range.')
-  assert.equal(initial.task.selectedAction.command, 'walk_forward')
+  assert.equal(initial.task.selectedAction.description, 'walk_forward')
   assert.equal(initial.task.actionId, 'action-2')
   assert.equal(initial.task.baselineFrame.id, 'before-action-2')
-  assert.equal(initial.lastAction.command, 'walk_forward')
+  assert.equal(initial.lastAction.description, 'walk_forward')
 
   assert.equal(completed.task.decision.objectiveComplete, true)
   assert.equal(completed.task.actionStatus, 'completed')
   assert.equal(completed.task.feedback.actionId, 'action-2')
-  assert.equal(completed.lastAction.command, 'walk_forward')
+  assert.equal(completed.lastAction.description, 'walk_forward')
   assert.equal(completed.lastAction.status, 'completed')
   assert.equal(completed.status.situation.currentGoal, '')
   assert.equal(loadRobotStatus(username)?.task, null)
@@ -683,10 +674,10 @@ test('Robot Status Out preserves the originating task instruction while recordin
       objectiveComplete: false,
       requiredCompletionBasis: 'action_result',
     },
-    actions: [{ type: 'robotCommand', command: 'walk_forward' }],
+    actions: [{ type: 'requestMotion', description: 'walk_forward' }],
     bridgeRecord: {
       status: 'coordinated_for_adapter',
-      requestedActions: [{ type: 'robotCommand', command: 'walk_forward' }],
+      requestedActions: [{ type: 'requestMotion', description: 'walk_forward' }],
       commands: [{ id: 'continuation-action' }],
     },
   }
@@ -697,7 +688,7 @@ test('Robot Status Out preserves the originating task instruction while recordin
   assert.equal(delegatedStep.task.instruction, 'Find the cat.')
   assert.equal(delegatedStep.task.decision.reason, 'Changing viewpoint may improve the available visual evidence.')
   assert.equal(delegatedStep.task.source, 'user')
-  assert.equal(delegatedStep.task.selectedAction.command, 'walk_forward')
+  assert.equal(delegatedStep.task.selectedAction.description, 'walk_forward')
 })
 
 test('Robot Status Out preserves the execution origin rather than inferring steering from input prose', async () => {
@@ -778,10 +769,10 @@ test('Robot Status Out records a new action within the execution without replaci
     userInstruction: 'Turn right forty-five degrees.',
     inputSource: 'user',
     taskDecision: null,
-    actions: [{ type: 'robotCommand', command: 'turn_right_45' }],
+    actions: [{ type: 'requestMotion', description: 'turn_right_45' }],
     bridgeRecord: {
       status: 'coordinated_for_adapter',
-      requestedActions: [{ type: 'robotCommand', command: 'turn_right_45' }],
+      requestedActions: [{ type: 'requestMotion', description: 'turn_right_45' }],
       commands: [{ id: 'standalone-turn' }],
     },
   }
@@ -794,7 +785,7 @@ test('Robot Status Out records a new action within the execution without replaci
     },
     actionContext: {
       actionId: 'standalone-turn',
-      requested: { type: 'robotCommand', command: 'turn_right_45' },
+      requested: { type: 'requestMotion', description: 'turn_right_45' },
     },
   }
   const { outputs: [initial, standalone, returned] } = await statusGraph(username,
@@ -806,7 +797,7 @@ test('Robot Status Out records a new action within the execution without replaci
   assert.equal(standalone.task.feedback, null)
   assert.deepEqual(standalone.task.decision, initial.task.decision)
   assert.equal(standalone.task.objectiveId, initial.task.objectiveId)
-  assert.equal(standalone.lastAction.command, 'turn_right_45')
+  assert.equal(standalone.lastAction.description, 'turn_right_45')
   assert.equal(standalone.lastAction.actionId, 'standalone-turn')
 
   assert.equal(returned.task.objective, 'Locate the missing object.')
@@ -814,7 +805,7 @@ test('Robot Status Out records a new action within the execution without replaci
   assert.equal(returned.task.actionStatus, 'completed')
   assert.equal(returned.task.feedback.actionId, 'standalone-turn')
   assert.deepEqual(returned.task.decision, initial.task.decision)
-  assert.equal(returned.lastAction.command, 'turn_right_45')
+  assert.equal(returned.lastAction.description, 'turn_right_45')
   assert.equal(returned.lastAction.status, 'completed')
 
   // A different execution may share the status file, but must not adopt its goal.
@@ -908,8 +899,7 @@ test('Environment selector receives the decision-bearing Robot Status fields', a
       timestamp: '2026-08-27T18:05:00.000Z',
       state: {},
       capabilities: {
-        actions: ['robotCommand'],
-        robotCommands: ['wave'],
+        actions: ['requestMotion'],
         motionClasses: ['body_local'],
         navigation: false,
         visual: true,
@@ -923,7 +913,7 @@ test('Environment selector receives the decision-bearing Robot Status fields', a
 
   assert.equal(envelope.robotStatus.body.battery.voltage, 7.4)
   assert.equal(envelope.robotStatus.body.motion.available, true)
-  assert.equal(envelope.robotStatus.lastAction.command, 'wave')
+  assert.equal(envelope.robotStatus.lastAction.description, 'Wave.')
   assert.equal(envelope.robotStatus.situation.currentGoal, '')
   assert.equal(envelope.robotStatus.task, null)
   assert.equal(envelope.robotStatus.agency.activeDesires[0].title, 'Find the cat')
@@ -1046,12 +1036,12 @@ test('Robot task programs use the sole active executor and retain task-level cog
 
 test('speech and camera projections preserve the last body action as historical evidence', async () => {
   const { buildRobotStatusProjection } = await import('./robot-status.js')
-  const bodyAction = { actionId: 'stand-result', type: 'requestMotion', command: '', description: 'Stand up.',
+  const bodyAction = { actionId: 'stand-result', type: 'requestMotion', description: 'Stand up.',
     status: 'completed', message: 'done', completedAt: '2026-10-07T21:00:00Z',
     sessionId: 'robot-1', robotId: 'selected-body', observedAt: '2026-10-07T21:00:00Z' }
   const first = buildRobotStatusProjection(null, { currentTask: null, parkedGoals: [] }, situation, { ...sources, lastAction: bodyAction })
   const speech = buildRobotStatusProjection(first, { currentTask: null, parkedGoals: [] }, situation, { ...sources,
-    lastAction: { ...bodyAction, actionId: 'speech-result', type: 'speak', command: '', completedAt: '2026-10-07T21:01:00Z' } })
+    lastAction: { ...bodyAction, actionId: 'speech-result', type: 'speak', completedAt: '2026-10-07T21:01:00Z' } })
   assert.equal(speech.lastAction?.type, 'speak')
   assert.deepEqual(speech.lastBodyAction, bodyAction)
   const envelope = JSON.parse(buildEnvironmentSelectorEnvelope({ instruction: 'Please stand up', robotStatus: speech }))

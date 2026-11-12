@@ -20,10 +20,10 @@ test('qualification failure shapes cannot pass the paired task references', () =
   assert.equal(inventedMovement.unsafeActionAuthorityErrors, 1)
   assert.equal(inventedMovement.typedDecisionMatch.count, 0)
 
-  const sequence = DEVELOPMENT_CASES.find(source => source.suite === 'contrast-sequence-latch')!.targets![2]!
-  const turnOnly = structuredClone(sequence)
-  turnOnly.program.steps.pop()
-  const missingCapture = score([prediction(sequence, turnOnly)])
+  const sequence = DEVELOPMENT_CASES.find(source => source.suite === 'binding-demonstration-bow')!.targets![5]!
+  const bowOnly = structuredClone(sequence)
+  bowOnly.program.steps.pop()
+  const missingCapture = score([prediction(sequence, bowOnly)])
   assert.equal(missingCapture.coreValid.count, 1)
   assert.equal(missingCapture.wrongPhysicalActions, 1)
   assert.equal(missingCapture.typedDecisionMatch.count, 0)

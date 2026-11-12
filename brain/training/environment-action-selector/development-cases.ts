@@ -64,23 +64,20 @@ export function addCase(specialist: Specialist, suite: string, instructions: str
   return cases[cases.length - 1]!
 }
 export const TIME = '2030-01-15T12:00:00.000Z'
-export const COMMAND_DESCRIPTIONS: Record<string, string> = {
-  stand: 'Rise into the standard upright four-leg standing pose.',
-  sit: 'Lower the body into the built-in seated pose.',
-  wave: 'Lift and wave one front limb, then return it.',
-  bow: 'Lower the front of the body into a bow, then recover.',
-  pushup: 'Lower and raise the body once in the built-in push-up motion.',
-  nod: 'Dip and raise the front of the body once in a nodding gesture.',
-  turn_left: 'Rotate the body approximately 90 degrees to the left.',
-  turn_right: 'Rotate the body approximately 90 degrees to the right.',
-  walk_forward: 'Advance forward using the built-in walking gait.',
-  walk_backward: 'Move backward using the built-in reverse gait.',
-}
+export const RETIRED_GAIT_DIRECTIONS = new Set([
+  'walk', 'walk_forward', 'walk_backward', 'backward', 'forward', 'left', 'right',
+  'turn_left', 'turn_right', 'run', 'crawl', 'crab', 'crab_backward', 'crab_forward',
+  'crab_right', 'crab_turn_left', 'crab_turn_right',
+])
 export function observation(): EnvironmentObservation {
   return { adapter: 'synthetic-training-adapter', environmentId: 'training-room', sessionId: 'training-body', timestamp: TIME,
     state: { batteryPercent: 72, posture: 'standing' }, capabilities: {
-      actions: ['robotCommand', 'move', 'stop', 'captureImage'],
-      robotCommands: Object.keys(COMMAND_DESCRIPTIONS), robotCommandDescriptions: { ...COMMAND_DESCRIPTIONS },
+      actions: ['requestMotion', 'move', 'stop', 'captureImage', 'faceExpression'],
+      expressionLibrary: [
+        { name: 'neutral', label: 'Neutral resting face' },
+        { name: 'happy', label: 'Warm cheerful face' },
+        { name: 'curious', label: 'Attentive curious face' },
+      ],
       movement: true, visual: true,
     } }
 }
@@ -89,5 +86,9 @@ export const task = (objective: string, steps: unknown[], extra: Record<string, 
     outcome: 'act', reason: 'The current request selects this activity.', continuationPolicy: 'none',
     requiredCompletionBasis: 'action_result', ...extra }, program: { steps },
 })
-export const action = (command: string) => ({ kind: 'action', action: { type: 'robotCommand', command } })
+export const action = (name: string) => {
+  if (name === 'stop') return { kind: 'action', action: { type: 'stop' } }
+  if (RETIRED_GAIT_DIRECTIONS.has(name)) return { kind: 'action', action: { type: 'move', direction: name } }
+  return { kind: 'action', action: { type: 'requestMotion', description: name } }
+}
 export const noTask = () => ({ taskDecision: null, program: null })

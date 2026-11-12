@@ -73,7 +73,7 @@ test('robot control persists, cancels its existing execution, and preserves unkn
     const unrelated = store.enter(owner.username, definition, 'other', { graph: { cognitiveMode: 'dual' } });
     const manager = getQueueManager();
     const command = manager.enqueue({ type: 'environment_command', handler: 'environment.command', username: owner.username,
-      input: { id: 'unknown-command', type: 'robotCommand', command: 'walk', sessionId: 'fixture-robot' } });
+      input: { id: 'unknown-command', type: 'requestMotion', description: 'walk forward', sessionId: 'fixture-robot' } });
     assert.ok(manager.claim(command.id));
     manager.wait(command.id, 'outcome_unknown: terminal receipt absent');
     let response = await handleEnvironmentBridgeBehaviorSettings(request({ enabled: false }));

@@ -45,7 +45,7 @@ test('locomotion references preserve endpoint units, sensor evidence, source and
 })
 
 test('retired cycle-based labels delegate without inventing distance, while visual goals retain their criteria', () => {
-  const retired = { program: { steps: [{ kind: 'action', action: { type: 'robotCommand', command: 'walk', units: 3 } }] } }
+  const retired = { program: { steps: [{ kind: 'action', action: { type: 'move', direction: 'forward', units: 3, continuous: false } }] } }
   const migration = migrateLocomotionReference(retired)
   assert.deepEqual(migration.output, { delegatePlanning: true })
   assert.ok(migration.reason)

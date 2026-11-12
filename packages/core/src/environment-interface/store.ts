@@ -44,7 +44,7 @@ const MAX_FEEDBACK = 200;
 const MAX_PROCESSED_TEXT_EVENTS = 1_000;
 const DEFAULT_MAX_ACTION_DURATION_MS = 1_500;
 const ACTION_TYPES = new Set<EnvironmentActionType>([
-  'move', 'look', 'jump', 'interact', 'stop', 'captureImage', 'robotCommand', 'requestMotion', 'faceExpression', 'inspect', 'visualApproach', 'speak', 'sendText',
+  'move', 'look', 'jump', 'interact', 'stop', 'captureImage', 'requestMotion', 'faceExpression', 'inspect', 'visualApproach', 'speak', 'sendText',
 ]);
 
 type ActionSubscriber = () => void;
@@ -339,7 +339,7 @@ export function getEnvironmentActionContext(
       : commandStatus(task),
     requested: {
       type: requested.type,
-      ...(requested.command ? { command: requested.command } : {}),
+      ...(requested.description ? { description: requested.description } : {}),
       ...(requested.direction ? { direction: requested.direction } : {}),
       ...(typeof requested.units === 'number' ? { units: requested.units } : {}),
       ...(requested.target ? { target: requested.target } : {}),
@@ -720,7 +720,6 @@ function normalizeAction(
     durationMs = Math.min(maxDurationMs, Math.floor(options.defaultDurationMs!));
   }
   if (action.type === 'sendText' && !action.text?.trim()) throw new Error('Environment sendText action requires text');
-  if (action.type === 'robotCommand' && !action.command?.trim()) throw new Error('Environment robotCommand action requires a semantic command');
   if (action.type === 'requestMotion' && !action.description?.trim()) throw new Error('Environment requestMotion action requires a description');
   if (action.type === 'faceExpression') {
     if (action.displayRelease !== true && !action.expression?.trim()) throw new Error('Environment faceExpression action requires an expression identifier');
@@ -732,9 +731,6 @@ function normalizeAction(
     for (const key of ['displayBackground', 'displayRelease'] as const) {
       if (action[key] !== undefined && typeof action[key] !== 'boolean') throw new Error(`Invalid ${key}`);
     }
-  }
-  if (action.type !== 'robotCommand' && action.command?.trim()) {
-    throw new Error(`Environment ${action.type} action cannot contain a robot command`);
   }
   if (action.type === 'move' && !action.direction && !action.vector) {
     throw new Error('Environment move action requires a direction or vector');
@@ -760,17 +756,13 @@ function normalizeAction(
 
   const sessionId = action.sessionId || options.sessionId || getLatestEnvironmentObservation()?.sessionId;
   if (!sessionId) throw new Error('Environment action requires a connected target session');
-  const command = action.command?.trim();
-  // Both advertised forms describe the same transport operation and must use
-  // the same stop admission, ownership and acknowledgement contract.
-  const type = action.type === 'robotCommand' && command?.toLowerCase() === 'stop' ? 'stop' : action.type;
+  const type = action.type;
   return {
     type,
     sessionId,
     text: action.text?.trim(),
     vector: action.vector,
     direction: action.direction,
-    command: type === 'robotCommand' ? command : undefined,
     description: type === 'requestMotion' ? action.description?.trim() : undefined,
     expression: type === 'faceExpression' ? action.expression?.trim() : undefined,
     ...(type === 'faceExpression' ? {

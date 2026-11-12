@@ -23,7 +23,6 @@ const DIRECT_ACTION_TYPES = new Set<EnvironmentActionType>([
   'interact',
   'stop',
   'captureImage',
-  'robotCommand',
   'requestMotion',
   'faceExpression',
   'inspect',
@@ -190,25 +189,6 @@ export function projectSelectorState(value: unknown): unknown {
   };
 }
 
-
-/**
- * Preserve only descriptions for currently executable exact command names. The
- * adapter owns their complete meaning; this projection does not choose a command
- * or shorten its description.
- */
-function projectRobotCommandDescriptions(
-  capabilities: Pick<EnvironmentCapabilities, 'robotCommands' | 'robotCommandDescriptions' | 'locomotion'>,
-): Record<string, string> {
-  if (!isRecord(capabilities.robotCommandDescriptions)) return {};
-  const entries = [...new Set((capabilities.robotCommands ?? []).filter(command => !capabilities.locomotion?.commands.includes(command)))].slice(0, 64).flatMap(command => {
-    const description = typeof capabilities.robotCommandDescriptions?.[command] === 'string'
-      ? capabilities.robotCommandDescriptions[command].trim()
-      : '';
-    return description ? [[command, description] as const] : [];
-  });
-  return Object.fromEntries(entries);
-}
-
 /** History remains evidence, not additional system instructions. Preserve the
  * canonical buffer's dates and source identities through model presentation. */
 export function projectEnvironmentHistory(value: unknown) {
@@ -277,9 +257,6 @@ function selectorCapabilityRules(capabilities: EnvironmentCapabilities, state: u
   const actions = new Set(capabilities.actions);
   const recognition = isRecord(state) && isRecord(state.recognition) ? state.recognition : null;
   const visionOperations = new Set(Array.isArray(recognition?.visionOperations) ? recognition.visionOperations : []);
-  const commandDescriptions = projectRobotCommandDescriptions({ ...capabilities, robotCommands: capabilities.robotCommands?.filter(command => !capabilities.locomotion?.commands.includes(command)) });
-  const gateway = isRecord(state) && isRecord(state.gateway) ? state.gateway : null;
-  const robot = isRecord(gateway?.selectedRobot) ? gateway.selectedRobot : null;
   return [
     TASK_OUTPUT_DESCRIPTION,
     actions.has('captureImage') ? `referenceFrameId: ${VISION_REFERENCE_FRAME_DESCRIPTION}` : '',
@@ -288,11 +265,6 @@ function selectorCapabilityRules(capabilities: EnvironmentCapabilities, state: u
       .map(([operation, description]) => `${operation}: ${description}`),
     actions.has('faceExpression')
       ? 'faceExpression changes only the display to an expression from expressionLibrary; expression is the library identifier. It does not move the body.'
-      : '',
-    actions.has('robotCommand')
-      ? Object.keys(commandDescriptions).length > 0
-        ? 'robotCommand: robotCommandCatalog maps command identifiers to descriptions of their effects. The command field of a robotCommand action contains the chosen catalog identifier. A chosen physical activity is represented by ordered program steps. Its local executor advances through action receipts and ongoing behaviors without a model call for each movement. For a directly specified movement, preserve every target or body part, motion, direction, and timing detail.'
-        : 'robotCommand: command descriptions are unavailable, so do not infer opaque or punctuation-only command effects.'
       : '',
     actions.has('requestMotion')
       ? 'requestMotion sends a movement description to the selected robot’s configured Body Control motion system. description states the requested movement; Body Control returns execution results.'
@@ -325,9 +297,6 @@ export function buildEnvironmentSelectorEnvelope(
 ): string {
   const now = new Date(input.currentTime ?? Date.now());
   const observation = input.observation;
-  const robotCommandDescriptions = observation
-    ? projectRobotCommandDescriptions(observation.capabilities)
-    : {};
   const frames = (input.visualFrames ?? []).map(projectEnvironmentVisualFrame);
   const recognition = isRecord(input.recognition) ? input.recognition : null;
   const sourceFrame = isRecord(recognition?.sourceFrame) ? recognition.sourceFrame : null;
@@ -366,9 +335,6 @@ export function buildEnvironmentSelectorEnvelope(
         actions: observation.capabilities.actions.slice(0, 32),
         ...(observation.capabilities.actions.includes('faceExpression')
           ? { expressionLibrary: observation.capabilities.expressionLibrary ?? [] } : {}),
-        ...(Object.keys(robotCommandDescriptions).length > 0
-          ? { robotCommandCatalog: robotCommandDescriptions }
-          : { robotCommands: observation.capabilities.robotCommands?.filter(command => !observation.capabilities.locomotion?.commands.includes(command)).slice(0, 64) ?? [] }),
         ...(observation.capabilities.locomotion ? { locomotion: { goalKinds: observation.capabilities.locomotion.goalKinds, lateral: observation.capabilities.locomotion.lateral } } : {}),
         motionClasses: observation.capabilities.motionClasses ?? [],
         navigation: observation.capabilities.navigation === true,
@@ -414,17 +380,6 @@ function normalizeAction(value: unknown, sessionId?: string): Partial<Environmen
   const record = value as Record<string, unknown>;
   const type = record.type;
   if (typeof type !== 'string' || !DIRECT_ACTION_TYPES.has(type as EnvironmentActionType)) {
-    return null;
-  }
-
-  if (type === 'robotCommand') {
-    const command = typeof record.command === 'string' ? record.command.trim() : '';
-    if (!command) {
-      return null;
-    }
-  } else if (typeof record.command === 'string' && record.command.trim()) {
-    // A semantic command belongs only to robotCommand. Accepting it on move
-    // previously let malformed selector output fall through as a generic walk.
     return null;
   }
 
@@ -482,7 +437,6 @@ function normalizeAction(value: unknown, sessionId?: string): Partial<Environmen
     ...(type === 'requestMotion' ? { description: (record.description as string).trim() } : {}),
     text: typeof record.text === 'string' ? record.text : undefined,
     direction: typeof record.direction === 'string' ? record.direction as EnvironmentAction['direction'] : undefined,
-    command: typeof record.command === 'string' ? record.command : undefined,
     units: typeof record.units === 'number' ? record.units : undefined,
     amount: typeof record.amount === 'number' ? record.amount : undefined,
     durationMs: typeof record.durationMs === 'number' ? record.durationMs : undefined,
@@ -672,7 +626,6 @@ const LOCOMOTION_GOAL_SCHEMA = {
 };
 const SELECTOR_SCHEMA_ACTION_PROPERTIES = {
   type: { type: 'string', enum: [...DIRECT_ACTION_TYPES] },
-  command: SELECTOR_SCHEMA_STRING,
   direction: SELECTOR_SCHEMA_STRING,
   target: SELECTOR_SCHEMA_STRING,
   text: SELECTOR_SCHEMA_STRING,
@@ -690,15 +643,14 @@ const SELECTOR_SCHEMA_ACTION_PROPERTIES = {
   locomotionGoal: LOCOMOTION_GOAL_SCHEMA,
 } as const;
 
-const { units: _cycleUnits, amount: _movementAmount, command: _movementCommand, ...LOCOMOTION_ACTION_PROPERTIES } = SELECTOR_SCHEMA_ACTION_PROPERTIES;
+const { units: _cycleUnits, amount: _movementAmount, ...LOCOMOTION_ACTION_PROPERTIES } = SELECTOR_SCHEMA_ACTION_PROPERTIES;
 
 function selectorActionItemSchema(
   directActionTypes: EnvironmentActionType[],
-  robotCommands: string[],
   expressions: string[],
 ): Record<string, unknown> {
-  const nonCommandTypes = directActionTypes.filter(type => type !== 'robotCommand' && type !== 'faceExpression' && type !== 'requestMotion' && type !== 'move');
-  const { command: _command, locomotionGoal: _goal, ...nonCommandProperties } = SELECTOR_SCHEMA_ACTION_PROPERTIES;
+  const nonCommandTypes = directActionTypes.filter(type => type !== 'faceExpression' && type !== 'requestMotion' && type !== 'move');
+  const { locomotionGoal: _goal, ...nonCommandProperties } = SELECTOR_SCHEMA_ACTION_PROPERTIES;
   const nonCommandSchema = {
     type: 'object',
     additionalProperties: false,
@@ -706,29 +658,6 @@ function selectorActionItemSchema(
     properties: {
       ...nonCommandProperties,
       type: { type: 'string', enum: nonCommandTypes },
-    },
-  };
-  const robotCommandSchema = {
-    type: 'object',
-    additionalProperties: false,
-    required: ['type', 'command'],
-    properties: {
-      type: { type: 'string', enum: ['robotCommand'] },
-      command: robotCommands.length > 0
-        ? { type: 'string', enum: robotCommands }
-        : SELECTOR_SCHEMA_STRING,
-      units: SELECTOR_SCHEMA_ACTION_PROPERTIES.units,
-      amount: SELECTOR_SCHEMA_ACTION_PROPERTIES.amount,
-      durationMs: SELECTOR_SCHEMA_ACTION_PROPERTIES.durationMs,
-      metadata: SELECTOR_SCHEMA_ACTION_PROPERTIES.metadata,
-      direction: SELECTOR_SCHEMA_ACTION_PROPERTIES.direction,
-      continuous: SELECTOR_SCHEMA_ACTION_PROPERTIES.continuous,
-      speed: SELECTOR_SCHEMA_ACTION_PROPERTIES.speed,
-      stride: SELECTOR_SCHEMA_ACTION_PROPERTIES.stride,
-      rate: SELECTOR_SCHEMA_ACTION_PROPERTIES.rate,
-      gait: SELECTOR_SCHEMA_ACTION_PROPERTIES.gait,
-      forward: SELECTOR_SCHEMA_ACTION_PROPERTIES.forward,
-      turn: SELECTOR_SCHEMA_ACTION_PROPERTIES.turn,
     },
   };
 
@@ -743,7 +672,6 @@ function selectorActionItemSchema(
       properties: { ...LOCOMOTION_ACTION_PROPERTIES, durationMs: { const: 0 }, continuous: { const: true }, locomotionGoal: { ...LOCOMOTION_GOAL_SCHEMA, anyOf: LOCOMOTION_GOAL_SCHEMA.anyOf.slice(0, 3) }, type: { type: 'string', enum: ['move'] } },
     });
   }
-  if (directActionTypes.includes('robotCommand')) variants.push(robotCommandSchema);
   if (directActionTypes.includes('requestMotion')) variants.push({
     type: 'object', additionalProperties: false, required: ['type', 'description'],
     properties: { type: { type: 'string', enum: ['requestMotion'] }, description: { type: 'string', minLength: 1 } },
@@ -760,7 +688,6 @@ export interface EnvironmentSelectorJsonSchemaInput {
   includeResponse?: boolean;
   activeExecutions?: EnvironmentExecutionTarget[];
   actions?: readonly string[];
-  robotCommands?: readonly string[];
   locomotion?: EnvironmentCapabilities['locomotion'];
   expressions?: readonly string[];
   visionOperations?: readonly string[];
@@ -789,13 +716,9 @@ export function buildEnvironmentSelectorJsonSchema(
   const advertisedActions = new Set(input.actions ?? []);
   const actionRouteSelected = input.actionRouteSelected !== false;
   const expressions = [...new Set((input.expressions ?? []).map(name => name.trim()).filter(Boolean))];
-  const robotCommands = [...new Set((input.robotCommands ?? []).filter(command => !input.locomotion?.commands.includes(command))
-    .map(command => command.trim())
-    .filter(Boolean))].slice(0, 64);
   const directActionTypes = [...DIRECT_ACTION_TYPES].filter(type => (
     actionRouteSelected
     && (!capabilityBound || advertisedActions.has(type))
-    && (type !== 'robotCommand' || !capabilityBound || robotCommands.length > 0)
     && (type !== 'faceExpression' || !capabilityBound || expressions.length > 0)
   ));
   const nonActionOutcomes = ENVIRONMENT_TASK_OUTCOMES.filter(outcome => outcome !== 'act');
@@ -840,7 +763,7 @@ export function buildEnvironmentSelectorJsonSchema(
     alternatives.push(branch({ type: 'null' }, taskSchema({ outcome: { type: 'string', enum: nonActionOutcomes } })));
   }
   const steps: Record<string, unknown>[] = [];
-  const action = selectorActionItemSchema(directActionTypes, robotCommands, expressions);
+  const action = selectorActionItemSchema(directActionTypes, expressions);
   if (directActionTypes.length) steps.push({ type: 'object', additionalProperties: false,
     required: ['kind', 'action'], properties: { kind: { const: 'action' }, action } });
   const cameraSupported = actionRouteSelected && (!capabilityBound || advertisedActions.has('captureImage'));
@@ -929,7 +852,6 @@ const SELECTOR_ACTION_FIELDS = new Set([
   'type',
   'text',
   'direction',
-  'command',
   'units',
   'amount',
   'durationMs',

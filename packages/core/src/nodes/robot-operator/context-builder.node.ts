@@ -191,7 +191,7 @@ function compactAction(value: unknown): Record<string, unknown> | null {
   if (!type) return null;
   return {
     type,
-    ...(cleanText(value.command) ? { command: cleanText(value.command) } : {}),
+    ...(cleanText(value.description) ? { description: cleanText(value.description) } : {}),
     ...(cleanText(value.direction) ? { direction: cleanText(value.direction) } : {}),
     ...(typeof value.units === 'number' ? { units: value.units } : {}),
     ...(cleanText(value.target) ? { target: cleanText(value.target) } : {}),

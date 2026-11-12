@@ -68,7 +68,7 @@ test('all feedback wakeups use the same execution resource regardless of the pri
   } finally { store.close() }
 })
 
-async function fixture(username: string, handler?: string, physical = false, action = { type: 'robotCommand', command: 'walk' } as Record<string, unknown>, input: Record<string, unknown> = {}) {
+async function fixture(username: string, handler?: string, physical = false, action = { type: 'requestMotion', description: 'stand up' } as Record<string, unknown>, input: Record<string, unknown> = {}) {
   const store = openExecutionStore(username)
   assert.ok(String(store.db.name).startsWith(root + path.sep))
   const record = store.create(username, definition)
@@ -229,7 +229,7 @@ test('camera recovery preserves connected reads, other profiles, depth demand an
   const depth = manager.enqueue({ type: 'generic', handler: 'environment.visual-read', username,
     input: { sessionId: 'absent-camera', vision: { operation: 'depthDemand', enabled: true } } })
   const physical = manager.enqueue({ type: 'environment_command', handler: 'environment.command', username,
-    input: { sessionId: 'absent-camera', type: 'robotCommand', command: 'stand' } })
+    input: { sessionId: 'absent-camera', type: 'requestMotion', description: 'stand' } })
   const disconnect = subscribeEnvironmentActions('connected-camera', () => {})
   try {
     await recoverDurableExecutions(manager, 30)

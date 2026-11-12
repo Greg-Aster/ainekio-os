@@ -3,7 +3,7 @@ import { resolve } from 'node:path'
 import { validateEnvironmentSelectorOutput } from '@metahuman/core'
 import { getNode, parseEnvironmentIntentRouting, isPlanningDelegation, ENVIRONMENT_REQUEST_INTENT_JSON_SCHEMA, parseAutonomyContext, AUTONOMY_CONTEXT_JSON_SCHEMA } from '@metahuman/core/nodes'
 import { ACTION_SELECTOR_DIRECTORY, REPOSITORY_ROOT, loadPriorEvaluationEvidence, sha256 } from './corpus.js'
-import { cases, observation, COMMAND_DESCRIPTIONS, TIME, type IntentRequirements, type CaseSplit, type SpecialistCase } from './development-cases.js'
+import { cases, observation, TIME, type IntentRequirements, type CaseSplit, type SpecialistCase } from './development-cases.js'
 import './intent-cases.js'
 import './task-cases.js'
 import './intent-expanded-cases.js'
@@ -48,19 +48,6 @@ export interface ActionSelectorTrainingRecord {
     inputSource?: 'user' | 'autonomy'
     outputContract?: 'autonomy-context'
   }
-}
-// Equivalent catalog wording is data augmentation, not an instruction change.
-const CATALOG_PARAPHRASES: Record<string, string> = {
-  stand: 'Take the normal upright stance supported by all four legs.',
-  sit: 'Settle the body into its standard seated position.',
-  wave: 'Raise a front leg, wave it, and put it back down.',
-  bow: 'Dip the front end in a bow and return to the starting posture.',
-  pushup: 'Perform one push-up by lowering the whole body and lifting it again.',
-  nod: 'Give one nod by dipping and lifting the front of the body.',
-  turn_left: 'Make a left quarter-turn of approximately ninety degrees.',
-  turn_right: 'Make a right quarter-turn of approximately ninety degrees.',
-  walk_forward: 'Walk ahead with the standard forward gait.',
-  walk_backward: 'Walk in reverse with the standard backward gait.',
 }
 export async function loadGraphProperties(inputSource: 'user' | 'autonomy' = 'user') {
   const graph = JSON.parse(await readFile(resolve(REPOSITORY_ROOT, 'etc/cognitive-graphs',
@@ -112,28 +99,30 @@ export async function buildDevelopmentRecords(selected: SpecialistCase[] = DEVEL
       }
       const selectedRoutes = structuredClone(source.routes)
       if (variation === 'reordered') {
-        inputs.observation.capabilities.robotCommands?.reverse()
         inputs.observation.capabilities.actions.reverse()
+        inputs.observation.capabilities.expressionLibrary?.reverse()
         // Vision operations are advertised in recognition state. Removing that
         // selected evidence would change the interface, not just reorder it.
         if (source.split !== 'regression' && Array.isArray(selectedRoutes.taskContext)
           && !inputs.observation.state?.recognition) {
           selectedRoutes.taskContext = selectedRoutes.taskContext.filter(entry => entry !== 'environment')
         }
-        const catalog = inputs.observation.capabilities.robotCommandDescriptions ?? {}
-        inputs.observation.capabilities.robotCommandDescriptions = Object.fromEntries(Object.entries(catalog).reverse().map(([name, description]) =>
-          [name, source.split !== 'regression' && description === COMMAND_DESCRIPTIONS[name] ? CATALOG_PARAPHRASES[name] : description]))
       }
       if (variation === 'opaque-identifiers') {
-        const catalog = inputs.observation.capabilities.robotCommandDescriptions ?? {}
-        const names = Object.keys(catalog)
-        const remap = Object.fromEntries(names.map((name, index) => [name, `${source.split === 'development' ? 'k' : 'z'}${(index * 7 + instructionIndex * 11 + source.fold * 13) % 97}`]))
-        inputs.observation.capabilities.robotCommands = names.map(name => remap[name])
-        if (inputs.observation.capabilities.locomotion) {
-          inputs.observation.capabilities.locomotion.commands = inputs.observation.capabilities.locomotion.commands.map((name: string) => remap[name])
+        const library = inputs.observation.capabilities.expressionLibrary ?? []
+        const remap = Object.fromEntries(library.map((entry: any, index: number) => [
+          entry.name,
+          `${source.split === 'development' ? 'k' : 'z'}${(index * 7 + instructionIndex * 11 + source.fold * 13) % 97}`,
+        ]))
+        inputs.observation.capabilities.expressionLibrary = library.map((entry: any) => ({
+          ...entry,
+          name: remap[entry.name] ?? entry.name,
+        }))
+        for (const step of expected.program?.steps ?? []) {
+          if (step.action?.type === 'faceExpression' && remap[step.action.expression]) {
+            step.action.expression = remap[step.action.expression]
+          }
         }
-        inputs.observation.capabilities.robotCommandDescriptions = Object.fromEntries(names.map(name => [remap[name], catalog[name]]))
-        for (const step of expected.program?.steps ?? []) if (step.action?.type === 'robotCommand') step.action.command = remap[step.action.command]
       }
       let system: string, user: string, jsonSchema: Record<string, unknown>
       if (source.specialist === 'intent') {

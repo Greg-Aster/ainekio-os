@@ -149,6 +149,8 @@ test('speech parser retains exact wording and exposes malformed output to the ex
   await assert.rejects(() => fastBodyEventResponseNode.execute({ response: '{"speech":null}' }, {}, {}), /requires speech/)
 })
 
+const committedReactions: Array<{ eventKind: string; speech: string; timestamp: string }> = []
+
 for (const [kind, expression, available, speechMode] of [
   ['tipped', 'confused', true, 'enabled'], ['rapid_movement', 'surprised', true, 'enabled'],
   ['tipped', 'confused', false, 'enabled'], ['rapid_movement', 'surprised', false, 'enabled'],
@@ -158,7 +160,9 @@ for (const [kind, expression, available, speechMode] of [
   test(`${kind} ${kind === 'servo_stall' ? 'delivers a help request without selecting a face' : available
     ? 'sets before inference and releases after outputs' : 'reports unavailable face without release'} with ${speechMode} speech`, async () => {
     await withUserContext({ username, userId: user.id, role: 'owner' }, async () => {
-      generatedSpeech = speechMode === 'empty' ? '' : spoken
+      const expectedRecentReactions = committedReactions.slice(-6)
+      const utterance = `${spoken} [${kind}:${available}:${speechMode}]`
+      generatedSpeech = speechMode === 'empty' ? '' : utterance
       speechDisabled = speechMode === 'disabled'
       const hasFeed = generatedSpeech !== ''
       const hasSpeech = hasFeed && !speechDisabled
@@ -234,11 +238,17 @@ for (const [kind, expression, available, speechMode] of [
         const request = calls[countBefore]
         assert.equal(request.role, 'lightweight')
         assert.equal(request.options.enableThinking, false)
+        assert.equal(request.options.temperature, 0.8)
+        assert.equal(request.options.repeatPenalty, 1.2)
         assert.deepEqual(request.options.jsonSchema.required, ['speech'])
         assert.deepEqual(JSON.parse(request.messages[1].content), { eventKind: kind,
           ...(kind === 'servo_stall' ? { joints: current.state.bodyEvent.data.joints,
             reason: 'no_position_progress', outputs_released: true } : {}),
+          ...(expectedRecentReactions.length ? { recentReactions: expectedRecentReactions } : {}),
         })
+        if (hasFeed) {
+          committedReactions.push({ eventKind: kind, speech: utterance, timestamp: current.timestamp })
+        }
         assert.deepEqual(result.nodes.get('event')?.outputs?.event, current.state.bodyEvent)
         const selectedFace = result.nodes.get(kind === 'tipped' ? 'tipped-face' : 'movement-face')!
         if (kind === 'servo_stall') assert.equal(selectedFace.status, 'skipped')
@@ -263,7 +273,7 @@ for (const [kind, expression, available, speechMode] of [
         assert.equal(speech.length, hasSpeech ? 1 : 0)
         if (hasSpeech) {
           assert.equal(speech[0].input.sessionId, current.sessionId)
-          assert.equal(speech[0].input.text, spoken)
+          assert.equal(speech[0].input.text, utterance)
         }
         const store = openExecutionStore(username)
         try {
@@ -313,3 +323,21 @@ for (const [kind, expression, available, speechMode] of [
 }
 
 after(() => { eventBus.disconnect(); mock.restoreAll(); fs.rmSync(root, { recursive: true, force: true }) })
+
+test('recentReactionLimit bounds attributed prior fast reactions and omits history when set to zero', async () => {
+  const properties = graph.nodes.find(node => node.id === 'event')!.data.properties!
+  const current = observation('rapid_movement', 'limit-check')
+  const limited = await fastBodyEventContextNode.execute({}, {
+    username, environmentObservation: current,
+  } as any, { ...properties, recentReactionLimit: 2 })
+  assert.deepEqual(JSON.parse(limited.messages[1].content), {
+    eventKind: 'rapid_movement',
+    recentReactions: committedReactions.slice(-2),
+  })
+  const disabled = await fastBodyEventContextNode.execute({}, {
+    username, environmentObservation: current,
+  } as any, { ...properties, recentReactionLimit: 0 })
+  assert.deepEqual(JSON.parse(disabled.messages[1].content), {
+    eventKind: 'rapid_movement',
+  })
+})

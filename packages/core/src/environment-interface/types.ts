@@ -5,7 +5,6 @@ export type EnvironmentActionType =
   | 'interact'
   | 'stop'
   | 'captureImage'
-  | 'robotCommand'
   | 'requestMotion'
   | 'faceExpression'
   | 'inspect'
@@ -132,9 +131,6 @@ export interface EnvironmentCapabilities {
   /** Display assets advertised by the selected body's existing expression library. */
   expressionLibrary?: Array<{ name: string; label: string; group?: string }>;
   expressionFeedback?: boolean;
-  robotCommands?: string[];
-  /** Adapter-owned physical meaning for each advertised exact robot command. */
-  robotCommandDescriptions?: Record<string, string>;
   /** Motion references the adapter can truthfully execute. */
   motionClasses?: EnvironmentMotionClass[];
   text?: boolean;
@@ -336,7 +332,6 @@ export interface EnvironmentAction {
   /** Internal update of the admitted motion, never a new model-selected action. */
   movementUpdate?: { actionId: string; revision: number; controls: Record<string, number> };
 
-  command?: string;
   description?: string;
   expression?: string;
   displayToken?: string;
@@ -386,7 +381,7 @@ export interface EnvironmentActionContext {
   status: string;
   requested: {
     type?: EnvironmentActionType;
-    command?: string;
+    description?: string;
     direction?: EnvironmentAction['direction'];
     units?: number;
     target?: string;

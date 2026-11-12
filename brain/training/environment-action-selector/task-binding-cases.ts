@@ -1,5 +1,5 @@
 import type { EnvironmentObservation } from '@metahuman/core'
-import { addCase, noTask, task, TIME, type CaseSplit } from './development-cases.js'
+import { action, addCase, noTask, task, TIME, type CaseSplit } from './development-cases.js'
 import { bodyObservation } from './posture-cases.js'
 
 // Supervised request/evidence pairs, not runtime directions. Previously inspected
@@ -15,9 +15,9 @@ const observationHistory = [{
   frameIds: ['binding-old-frame'], frames: [{ id: 'binding-old-frame', timestamp: '2030-01-14T11:10:00.000Z' }],
 }]
 const capture = () => ({ kind: 'action', action: { type: 'captureImage' } })
-const command = (name: string, units?: number) => ({ kind: 'action', action: {
-  type: 'robotCommand', command: name, ...(units === undefined ? {} : { units, continuous: false }),
-} })
+const command = (name: string, units?: number) => units !== undefined
+  ? ({ kind: 'action', action: { type: 'move', direction: name, units, continuous: false } })
+  : action(name)
 function plan(objective: string, completionCriteria: string, steps: unknown[], visual = false) {
   return task(objective, steps, { completionCriteria,
     continuationPolicy: visual ? 'bounded' : 'none', requiredCompletionBasis: visual ? 'visual_observation' : 'action_result' })

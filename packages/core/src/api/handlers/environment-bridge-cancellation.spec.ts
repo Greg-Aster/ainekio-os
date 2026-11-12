@@ -145,7 +145,7 @@ test('saved-only cancellation wakes the activity observer and updates viewers wi
 
 test('unreachable physical work keeps its uncertainty until explicit owner confirmation', async () => {
   const task = manager.enqueue({ type: 'environment_command', handler: 'environment.command', username: 'physical-owner',
-    input: { id: randomUUID(), sessionId: 'absent-body', type: 'robotCommand', command: 'walk' } });
+    input: { id: randomUUID(), sessionId: 'absent-body', type: 'requestMotion', description: 'walk' } });
   assert.ok(manager.claim(task.id));
   manager.wait(task.id, 'outcome_unknown: Acknowledgement lost');
   const request: UnifiedRequest = { path: '/api/unified-queue/tasks/' + task.id, method: 'DELETE', params: { id: task.id },
@@ -205,7 +205,7 @@ test('owner stop confirmation and delayed adapter evidence remain distinct and i
       const execution = store.create(username, definition);
       const lease = store.claim(execution.executionId, definition);
       const effectId = randomUUID();
-      const input = { id: randomUUID(), sessionId: randomUUID(), type: 'robotCommand', command: 'walk' };
+      const input = { id: randomUUID(), sessionId: randomUUID(), type: 'requestMotion', description: 'walk' };
       await new ExecutionCheckpointer(store, lease).put({ configurable: { thread_id: execution.executionId } }, {
         v: 4, id: randomUUID(), ts: new Date().toISOString(), channel_versions: {}, versions_seen: {},
         channel_values: { executionTransition: { transitionId: randomUUID(), dispatches: [{ effectId,
@@ -355,13 +355,13 @@ test('persisted physical cancellation reaches the Bridge stream and replays unti
       firstSeenAt: timestamp, lastSeenAt: timestamp,
     }])),
   });
-  const action = bridge.enqueueEnvironmentAction({ sessionId: 'body-a', type: 'robotCommand', command: 'walk' });
+  const action = bridge.enqueueEnvironmentAction({ sessionId: 'body-a', type: 'requestMotion', description: 'walk' });
   const claimed = bridge.dispatchEnvironmentActions('body-a')[0];
   assert.equal(claimed.id, action.id);
   bridge.recordEnvironmentActionResult({ id: 'accepted-a', actionId: action.id,
     timestamp, type: 'accepted', message: 'Fake adapter accepted' });
 
-  const other = bridge.enqueueEnvironmentAction({ sessionId: 'body-b', type: 'robotCommand', command: 'walk' });
+  const other = bridge.enqueueEnvironmentAction({ sessionId: 'body-b', type: 'requestMotion', description: 'walk' });
   bridge.dispatchEnvironmentActions('body-b');
   manager.cancel(other.workItemId!, 'Cancel the other body');
 
@@ -401,7 +401,7 @@ test('persisted physical cancellation reaches the Bridge stream and replays unti
   assert.equal(manager.getTask(action.workItemId!)!.state, 'cancelled');
 
   bridge.setEnvironmentBridgeEnabled(true);
-  const nextAction = bridge.enqueueEnvironmentAction({ sessionId: 'body-a', type: 'robotCommand', command: 'walk' });
+  const nextAction = bridge.enqueueEnvironmentAction({ sessionId: 'body-a', type: 'requestMotion', description: 'walk' });
   const resumed = await openStream('body-a');
   try {
     const event = await resumed.next();
@@ -419,7 +419,7 @@ test('persisted physical cancellation reaches the Bridge stream and replays unti
 test('interrupted speech reconciles through the adapter without blocking newer speech across recovery', async () => {
   const { ExecutionCheckpointer } = await import('../../durable-execution/checkpointer.js');
   const { executionWorkInput } = await import('../../durable-execution/coordinator-outbox.js');
-  for (const kind of ['speak', 'robotCommand']) {
+  for (const kind of ['speak', 'requestMotion']) {
     const username = 'speech-recovery-owner';
     const sessionId = randomUUID();
     const store = openExecutionStore(username);
@@ -477,7 +477,7 @@ test('same-millisecond reports without adapter receipt IDs remain distinct in Ro
   const username = 'feedback-identity-owner';
   const actionIds = [randomUUID(), randomUUID()];
   const work = actionIds.map(id => manager.enqueue({ type: 'environment_command', handler: 'environment.command', username,
-    input: { id, sessionId: 'identity-fixture', type: 'robotCommand', command: 'wave' } }));
+    input: { id, sessionId: 'identity-fixture', type: 'requestMotion', description: 'wave' } }));
   const receiptIds: string[] = [];
   t.mock.method(Date, 'now', () => 1_700_000_000_000);
   const admit = async (user: string, record: Record<string, unknown>) => {

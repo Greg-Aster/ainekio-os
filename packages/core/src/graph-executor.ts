@@ -831,14 +831,20 @@ export async function executeGraph(
         waitForEvent: (reason = 'external_event') => {
           const owner = durable.store.get(durable.lease.executionId);
           const sequence = owner.lastProcessedSequence + processedEventIds.length + 1;
-          // Every wait occupies the same interrupt position on replay, including
-          // events already in the ledger. Skipping an interrupt reuses its old
-          // resume value at the next wait in this node.
-          const eventId: string = interrupt({ executionId: owner.executionId, occurrenceId, reason, sequence });
-          const event = durable.store.event(owner.executionId, eventId);
-          if (event.sequence !== sequence) throw new Error('Resume event is not the next admitted execution event');
-          processedEventIds.push(event.eventId);
-          return event;
+          const existing = durable.store.events(owner.executionId, sequence - 1)[0];
+          const scratchpad = (runtimeConfig?.configurable as Record<string, any> | undefined)?.['__pregel_scratchpad'] as
+            | { interruptCounter: number; resume: unknown[]; nullResume?: unknown }
+            | undefined;
+          const hasLangGraphResume = Boolean(
+            scratchpad && (scratchpad.interruptCounter + 1 < scratchpad.resume.length || scratchpad.nullResume !== undefined),
+          );
+          if (!existing || hasLangGraphResume) {
+            interrupt({ executionId: owner.executionId, occurrenceId, reason, sequence });
+          }
+          const admitted = existing ?? durable.store.events(owner.executionId, sequence - 1)[0];
+          if (!admitted || admitted.sequence !== sequence) throw new Error('Resume event is not the next admitted execution event');
+          processedEventIds.push(admitted.eventId);
+          return admitted;
         },
       } : undefined;
 

@@ -133,8 +133,7 @@ async function assessAutonomy(current: EnvironmentObservation) {
 const objective = 'Locate the fixture target and report its location.'
 const observation = {
   environmentId: 'fixture-room', adapter: 'ainekio-gateway', sessionId: 'fixture-body', timestamp: new Date().toISOString(),
-  capabilities: { actions: ['captureImage', 'robotCommand', 'requestMotion', 'sendText'], robotCommands: ['walk', 'stop'],
-    robotCommandDescriptions: { walk: 'Walk forward', stop: 'Stop body movement' }, visual: true, movement: true },
+  capabilities: { actions: ['captureImage', 'requestMotion', 'sendText'], visual: true, movement: true },
   state: { body: { authenticated: true, cameraReady: true, motionAvailable: true } },
   visual: { id: 'fixture-before', mimeType: 'image/jpeg', dataUrl: 'data:image/jpeg;base64,/9j/2gAA/9k=', timestamp: new Date().toISOString() },
   metadata: {}, feedback: [],
@@ -164,7 +163,7 @@ function controllerChoice(taskId: string, executionId?: string) {
 }
 
 function presetChoice() {
-  return { program: { steps: [{ kind: 'action', action: { type: 'robotCommand', command: 'walk' } }] },
+  return { program: { steps: [{ kind: 'action', action: { type: 'requestMotion', description: 'walk' } }] },
     taskDecision: { outcome: 'act', objective, completionCriteria: 'Identify the target in visual evidence and report its location.',
       reason: 'Inspect a different area.',
       requiredCompletionBasis: 'visual_observation', continuationPolicy: 'bounded' } }
@@ -275,7 +274,7 @@ async function probe(label: string, entry: string, action: boolean, response: bo
   let state = await run({ graph: graph(entry === 'autonomy' ? 'environment' : entry), context: ctx })
   assert.notEqual(state.status, 'failed', state.error?.stack)
   if (action) {
-    const completed = completeAction(current, 'robotCommand', label + '-after')
+    const completed = completeAction(current, 'requestMotion', label + '-after')
     if (taskDecision.requiredCompletionBasis !== 'action_result') replies.push(goalReview('wait'))
     state = await run({ graph: graph(entry === 'autonomy' ? 'environment' : entry), context: context(completed.after), executionId: state.executionId })
   }
@@ -317,7 +316,7 @@ test('selected action and assessment return before one final Persona response is
       let state = await run({ graph: graph('environment'), context: ctx })
       assert.equal(state.status, 'waiting', state.error?.stack)
       assert.equal(calls.length - before, 2, 'Persona cannot start while the selected action is outstanding')
-      const { action } = completeAction(current, 'robotCommand', 'returned-result-frame')
+      const { action } = completeAction(current, 'requestMotion', 'returned-result-frame')
       const assessment = goalCompletion('returned-result-frame')
       replies.push(assessment, 'The target is beside the fixture box.')
       state = await run({ graph: graph('environment'), context: ctx, executionId: state.executionId })
@@ -373,7 +372,6 @@ test('finite action-result goal completes without Goal Review', async () => {
 test('recorded reflection rejection ends its one-off task and delivers one reply without opening a goal wait', async () => {
   await withUserContext(user, async () => {
     const current = { ...freshObservation('reflection-rejection'), visual: undefined }
-    current.capabilities.robotCommands = ['stand', 'stop']
     recordEnvironmentObservation(current)
     const disconnect = connectAdapter(current.sessionId!)
     const instruction = 'Ask what useful embodied participation means in this moment: Offer to keep company with a specific interested expression.'
@@ -382,7 +380,7 @@ test('recorded reflection rejection ends its one-off task and delivers one reply
       plannerDecision: { observed: 'The explicit dated context describes an interest in companionship.',
         instruction, reason: 'Ask what helpful participation means in this particular situation.' },
     } }
-    const response = 'The stand command was rejected. What kind of company would you like?'
+    const response = 'The stand motion was rejected. What kind of company would you like?'
     const before = calls.length
     // Preserve the actual erroneous Task selection to prove that a rejected
     // one-off program does not become a new continuing goal in the executor.
@@ -390,12 +388,12 @@ test('recorded reflection rejection ends its one-off task and delivers one reply
       taskDecision: { objective: 'What does a companion look like in this moment?',
         completionCriteria: 'The selected program has a correlated completion receipt.', outcome: 'act',
         reason: 'The current request selects this activity.', continuationPolicy: 'none', requiredCompletionBasis: 'action_result' },
-      program: { steps: [{ kind: 'action', action: { type: 'robotCommand', command: 'stand' } }] },
+      program: { steps: [{ kind: 'action', action: { type: 'requestMotion', description: 'stand' } }] },
     })
     try {
       let state = await run({ graph: graph('environment'), context: ctx })
       assert.equal(state.status, 'waiting', state.error?.stack)
-      completeAction(current, 'robotCommand', 'rejected-stand', 'rejected')
+      completeAction(current, 'requestMotion', 'rejected-stand', 'rejected')
       replies.push(response)
       state = await run({ graph: graph('environment'), context: ctx, executionId: state.executionId })
       assert.equal(state.nodes.get('review-remaining-objective')?.status, 'skipped')
@@ -446,7 +444,7 @@ for (const action of [false, true]) test(`finite Body Event invocation ends with
         assert.notEqual(snapshot(state.executionId!).record.waitingReason, 'user_or_autonomy')
         assert.equal(snapshot(state.executionId!).task?.decision.objectiveComplete, false)
         const original = snapshot(state.executionId!).task!
-        const completed = completeAction(current, 'robotCommand', 'body-event-after')
+        const completed = completeAction(current, 'requestMotion', 'body-event-after')
         replies.push(goalReview('wait'))
         state = await run({ graph: graph('body-event-trigger'), context: ctx, executionId: state.executionId })
         const saved = snapshot(state.executionId!).task!
@@ -532,7 +530,7 @@ test('a retained goal releases work capacity while new conversation and motion e
       const motionContext = { ...ctx, requestId: randomUUID(), userMessage: 'Walk forward once.' }
       let motion = await run({ graph: graph('environment'), context: motionContext })
       assert.equal(motion.status, 'waiting', motion.error?.stack)
-      completeAction(current, 'robotCommand', 'new-action-completed')
+      completeAction(current, 'requestMotion', 'new-action-completed')
       motion = await run({ graph: graph('environment'), context: motionContext, executionId: motion.executionId })
       assert.equal(motion.status, 'completed', motion.error?.stack)
       const preserved = snapshot(retained.executionId!)
@@ -581,7 +579,7 @@ for (const firstAction of [false, true]) test(`Full Auto resumes a goal with pre
         assert.ok(taskMessages.includes(saved.task!.actionId))
         assert.ok(taskMessages.includes('Fixture effect completed'))
       }
-      completeAction(current,'robotCommand','second-step-after')
+      completeAction(current,'requestMotion','second-step-after')
       replies.push(goalCompletion('second-step-after'))
       const finished = await run({graph:graph('environment'),context:ctx,executionId:state.executionId})
       assert.equal(finished.status,'completed',finished.error?.stack)
@@ -665,7 +663,7 @@ for (const outcome of ['wait', 'abandon'] as const) test(`Goal Review can revise
       const ctx = context(current)
       let state = await run({ graph: graph('environment'), context: ctx })
       const original = snapshot(state.executionId!).task!
-      const { action } = completeAction(current, 'robotCommand', 'goal-revision-result')
+      const { action } = completeAction(current, 'requestMotion', 'goal-revision-result')
       const assessment = { ...goalReview('wait'), outcome,
         objective: 'Identify the fixture target beside the doorway.',
         completionCriteria: 'A current frame identifies the target beside the doorway.',
@@ -734,7 +732,7 @@ test('an incomplete action assessment records its receipt without dispatching an
       const ctx = context(current)
       let state = await run({ graph: graph('environment'), context: ctx })
       const original = snapshot(state.executionId!).task!
-      const first = completeAction(current, 'robotCommand', 'first-step')
+      const first = completeAction(current, 'requestMotion', 'first-step')
       replies.push(goalReview('wait'))
       state = await run({ graph: graph('environment'), context: ctx, executionId: state.executionId })
       assert.equal(state.status, 'waiting', state.error?.stack)
@@ -791,7 +789,7 @@ test('fresh process restores the goal and receipt then runs only its pending rev
       const started=await run({graph:graph('environment'),context:context(current)})
       assert.equal(started.status,'waiting',started.error?.stack)
       const saved=snapshot(started.executionId!)
-      completeAction(current,'robotCommand','restart-after')
+      completeAction(current,'requestMotion','restart-after')
       const requestPath=path.join(root,'restart-probe.json'), output=path.join(root,'restart-result.json')
       fs.writeFileSync(requestPath,JSON.stringify({root,graphName:'environment',executionId:started.executionId,replies:[goalReview('wait')],output}))
       const child=spawnSync(process.execPath,['--experimental-test-module-mocks','--import','tsx',fileURLToPath(import.meta.url)],{cwd:repo,env:{...process.env,METAHUMAN_GOAL_TEST_RESUME:requestPath},encoding:'utf8',timeout:30000})

@@ -213,13 +213,7 @@ export async function executeRobotAutonomyTriggerWork(
   }
   if (
     agentId === 'boredom-movement'
-    && (
-      !session.latestObservation.capabilities.actions.includes('requestMotion')
-      && (
-        !session.latestObservation.capabilities.actions.includes('robotCommand')
-        || !session.latestObservation.capabilities.robotCommands?.length
-      )
-    )
+    && !session.latestObservation.capabilities.actions.includes('requestMotion')
   ) {
     return { skipped: true, reason: 'robot_movement_unavailable', sessionId: session.sessionId, agentId }
   }

@@ -25,7 +25,10 @@ test('speech/action contrasts preserve quoted words, body intent, provenance and
     assert.equal(steps.length, [0, 1, 1, 2, 0, 1, 1][i])
     for (const step of steps) {
       assert.equal(step.kind, 'action')
-      if (step.kind === 'action') assert.ok(Object.hasOwn(input.currentEnvironment.capabilities.robotCommandCatalog, step.action.command))
+      if (step.kind === 'action') {
+        assert.equal(step.action.type, 'requestMotion')
+        assert.ok(step.action.description.length > 0)
+      }
     }
     if (i === 5) assert.equal(steps[0].kind, 'action')
   }

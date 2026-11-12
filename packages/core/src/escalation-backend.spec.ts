@@ -319,7 +319,13 @@ test('status-widget assignments route Persona to Big Brother and preserve indepe
       assert.equal(geminiResult.provider, 'big-brother');
       assert.equal(geminiResult.model, 'gemini-3.8-flash-low');
       assert.equal(calls.at(-1), 'execute:gemini');
-      assert.deepEqual(receivedOptions?.images, [{ mimeType: 'image/jpeg', base64: '/9j/2Q==' }]);
+      assert.deepEqual(receivedOptions?.modelRequest?.messages, [{
+        role: 'user',
+        content: [
+          { type: 'text', text: 'What do you see?' },
+          { type: 'image_url', image_url: { url: 'data:image/jpeg;base64,/9j/2Q==' } },
+        ],
+      }]);
       assert.equal((await assign('persona', 'default.embedder')).status, 400);
     });
   } finally {

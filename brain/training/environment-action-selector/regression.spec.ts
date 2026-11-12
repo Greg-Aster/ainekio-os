@@ -20,8 +20,7 @@ const observation: EnvironmentObservation = {
   timestamp: '2030-01-15T12:00:00.000Z',
   state: {},
   capabilities: {
-    actions: ['robotCommand', 'requestMotion', 'captureImage'],
-    robotCommands: ['turn_right_90', 'turn_left_90'],
+    actions: ['requestMotion', 'captureImage'],
     motionClasses: ['body_local', 'open_loop_displacement'],
     movement: true,
     visual: true,

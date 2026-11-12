@@ -15,9 +15,9 @@ test('JSON Parser reads the named text input used by graph edges', async () => {
 
 test('JSON Parser retains legacy indexed input compatibility', async () => {
   const result = await JSONParserNode.execute({
-    0: '{"type":"robotCommand","command":"wave"}',
+    0: '{"type":"requestMotion","description":"wave"}',
   }, {}, {});
 
   assert.equal(result.success, true);
-  assert.deepEqual(result.data, { type: 'robotCommand', command: 'wave' });
+  assert.deepEqual(result.data, { type: 'requestMotion', description: 'wave' });
 });

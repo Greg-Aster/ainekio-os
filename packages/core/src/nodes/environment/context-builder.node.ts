@@ -291,14 +291,7 @@ export const environmentContextBuilderNode = defineNode({
         })).currentEnvironment?.recognition;
       }
       const environment = evidence.currentEnvironment;
-      const catalog = environment?.capabilities?.robotCommandCatalog ?? {};
       const selectedTask = inputs.selectedTask ?? {};
-      const commands = (selectedTask.program?.steps ?? [])
-        .filter((step: any) => step.kind === 'action' && step.action.type === 'robotCommand')
-        .map((step: any) => step.action.command as string);
-      const commandDescriptions = Object.fromEntries(commands
-        .filter((command: string) => typeof catalog[command] === 'string')
-        .map((command: string) => [command, catalog[command]]));
       const taskResult = inputs.taskResult;
       const hasReturnedImages = Array.isArray(inputs.resultImages) && inputs.resultImages.length > 0;
       const returned = taskResult && isRecord(inputs.observation)
@@ -314,7 +307,7 @@ export const environmentContextBuilderNode = defineNode({
       const compactEnvironment = (env: unknown) => {
         if (!isRecord(env)) return env;
         const capabilities = isRecord(env.capabilities) ? (() => {
-          const { expressionLibrary: _expressions, robotCommandCatalog: _catalog, ...rest } = env.capabilities;
+          const { expressionLibrary: _expressions, ...rest } = env.capabilities;
           if (isRecord(rest.locomotion)) {
             const { programSteps: _programSteps, ...locomotion } = rest.locomotion;
             return { ...rest, locomotion };
@@ -373,7 +366,7 @@ export const environmentContextBuilderNode = defineNode({
             planningRequired: taskResult.planningRequired, acquisition: taskResult.acquisition,
             visionResult: taskResult.visionResult, queryId: taskResult.queryId,
             perception: taskResult.perception } } : {}),
-        selectedTask: { ...selectedTask, commandDescriptions } });
+        selectedTask });
       const images = hasReturnedImages ? inputs.resultImages : selectedImages;
       return { receivedInput: recalled?.receivedInput, selectedContext: evidence, message: conversationMessage, messages: [
         { role: 'system', content: systemPrompt.trim() },
@@ -387,7 +380,6 @@ export const environmentContextBuilderNode = defineNode({
       includeResponse: properties?.purpose !== 'task',
       activeExecutions,
       actions: promptObservation?.capabilities.actions ?? [],
-      robotCommands: promptObservation?.capabilities.robotCommands ?? [],
       locomotion: promptObservation?.capabilities.locomotion,
       expressions: promptObservation?.capabilities.expressionLibrary?.map(entry => entry.name) ?? [],
       actionRouteSelected,

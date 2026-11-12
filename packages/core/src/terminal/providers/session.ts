@@ -1,5 +1,7 @@
 import { spawn } from 'node:child_process'
 import fs from 'node:fs'
+import os from 'node:os'
+import path from 'node:path'
 import { StringDecoder } from 'node:string_decoder'
 import { ROOT } from '../../path-builder.js'
 import { TerminalProcess } from '../process.js'
@@ -47,9 +49,25 @@ export async function runProvider(
     signal.throwIfAborted()
     await display(terminalHeading(`MetaHuman Big Brother — ${providerLabel(provider)}`))
     signal.throwIfAborted()
+    const childEnv: NodeJS.ProcessEnv = { ...process.env, TERM: 'xterm-256color', NO_COLOR: '1', IS_SANDBOX: '1' }
+    if (provider === 'gemini' && !options.diagnostic && !options.session) {
+      const realHome = process.env.HOME || os.homedir()
+      const realAgyDir = path.join(realHome, '.gemini', 'antigravity-cli')
+      if (fs.existsSync(path.join(realAgyDir, 'antigravity-oauth-token'))) {
+        const isolatedHome = path.join(invocation.tempDir, 'home')
+        const isolatedAgyDir = path.join(isolatedHome, '.gemini', 'antigravity-cli')
+        fs.mkdirSync(isolatedAgyDir, { recursive: true, mode: 0o700 })
+        for (const name of ['antigravity-oauth-token', 'installation_id', 'jetski_state.pbtxt']) {
+          const source = path.join(realAgyDir, name)
+          if (fs.existsSync(source)) fs.symlinkSync(source, path.join(isolatedAgyDir, name))
+        }
+        fs.writeFileSync(path.join(isolatedAgyDir, 'settings.json'), JSON.stringify({ allowNonWorkspaceAccess: true }), { mode: 0o600 })
+        childEnv.HOME = isolatedHome
+      }
+    }
     const child = spawn(invocation.command, invocation.args, {
       cwd: invocation.cwd || options.workingDirectory || ROOT, detached: true,
-      env: { ...process.env, TERM: 'xterm-256color', NO_COLOR: '1', IS_SANDBOX: '1' },
+      env: childEnv,
       stdio: ['pipe', 'pipe', 'pipe'],
     })
     const exit = new Promise<{ code: number | null; error?: Error }>(resolve => {

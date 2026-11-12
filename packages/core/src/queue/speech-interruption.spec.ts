@@ -23,7 +23,7 @@ test('new utterance replaces current speech without waiting for its receipt; chu
   const unsent = chunk('old', 1);
   const otherRobot = chunk('other', 0, 'second-robot'); manager.claim(otherRobot.id);
   const movement = manager.enqueue({ type: 'environment_command', username: 'fixture', resource: 'body:robot',
-    input: { type: 'robotCommand', sessionId: 'robot', command: 'walk' } });
+    input: { type: 'requestMotion', sessionId: 'robot', description: 'stand up' } });
   manager.claim(movement.id);
   render('new');
   assert.ok(old.cancellationRequestedAt);

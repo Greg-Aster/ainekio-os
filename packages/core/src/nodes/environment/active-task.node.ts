@@ -103,7 +103,7 @@ export const environmentActiveTaskNode = defineNode({
         : first?.kind === 'action' && (first.action.continuous || first.action.locomotionGoal) ? first.action : null
       const currentMotion = continuation.state.action
       if (nextMotion && currentMotion?.continuous && nextMotion.type === currentMotion.type
-        && nextMotion.command === currentMotion.command && nextMotion.gait === currentMotion.gait) {
+        && nextMotion.gait === currentMotion.gait) {
         const current = continuation.program.steps[continuation.state.stepIndex]
         const sameBehavior = first.kind === 'behavior' && current?.kind === 'behavior'
           && first.target === current.target && first.completionCriteria === current.completionCriteria
@@ -218,7 +218,7 @@ export const environmentActiveTaskStepNode = defineNode({
           && environmentActionHasEnded(state.feedback)),
         rejection: loss.resumeRejection,
       } : undefined,
-      selectedAction: state.action ? { type: state.action.type!, command: state.action.command, description: state.action.description, direction: state.action.direction, target: state.action.target }
+      selectedAction: state.action ? { type: state.action.type!, description: state.action.description, direction: state.action.direction, target: state.action.target }
         : state.completedActionId && previous?.actionId === state.completedActionId ? previous.selectedAction : null,
       actionId: state.motionId ?? state.completedActionId ?? '', actionStatus: state.feedback?.type === 'outcome_unknown' ? 'outcome_unknown' : state.failure?.type
         ?? (state.completedActionId && state.feedback?.actionId === state.completedActionId ? state.feedback.type : 'active'),

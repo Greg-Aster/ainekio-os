@@ -68,7 +68,7 @@ add('independent-execution', ['Separately, wave once.', 'Start a new task to wav
   { ...task('Perform an independent wave.', [action('wave')]), executionDisposition: 'new', targetExecutionId: '' }, [...movement, 'needsExecutionContext'],
   { activeExecutions: [{ executionId: 'execution-41', canSteer: true }] })
 const unavailable = observation()
-unavailable.capabilities = { actions: [], robotCommands: [], movement: false, visual: false }
+unavailable.capabilities = { actions: [], movement: false, visual: false }
 add('unavailable-capability', ['Please wave.', 'Bow for me.', 'Do one pushup.', 'Sit down.'], {
   taskDecision: { objective: 'Perform the requested movement.', completionCriteria: 'The requested movement has completed.',
     outcome: 'request_user', reason: 'The supplied interface exposes no movement capability.', continuationPolicy: 'none', requiredCompletionBasis: 'action_result' }, program: null,

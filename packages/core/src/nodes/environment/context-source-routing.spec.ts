@@ -14,8 +14,8 @@ eventBus.disconnect()
 after(() => { eventBus.disconnect(); mock.restoreAll() })
 const observation = {
   adapter: 'fixture', environmentId: 'fixture', sessionId: 'body', timestamp: '2030-01-01T00:00:00Z',
-  state: { posture: 'stand' }, capabilities: { actions: ['robotCommand'],
-    robotCommands: ['stand', 'rest'], robotCommandDescriptions: { stand: 'Stand on four feet.', rest: 'Take the rest pose.' } },
+  state: { posture: 'stand' }, capabilities: { actions: ['requestMotion', 'faceExpression'],
+    expressionLibrary: [{ name: 'neutral', label: 'Neutral' }, { name: 'happy', label: 'Happy' }] },
 }
 const build = async (taskContext: string[], conversationContext: string[] = [], purpose = 'task') => {
   const result = await environmentContextBuilderNode.execute({
@@ -31,7 +31,8 @@ test('environment evidence cannot inject an unselected Robot Status or execution
   const context = await build(['environment'])
   assert.equal(context.currentInstruction, 'Please rest.')
   assert.equal(context.currentEnvironment.state.posture, 'stand')
-  assert.equal(context.currentEnvironment.capabilities.robotCommandCatalog.rest, 'Take the rest pose.')
+  assert.deepEqual(context.currentEnvironment.capabilities.actions, ['requestMotion', 'faceExpression'])
+  assert.deepEqual(context.currentEnvironment.capabilities.expressionLibrary, [{ name: 'neutral', label: 'Neutral' }, { name: 'happy', label: 'Happy' }])
   assert.equal(context.currentEnvironment.live, undefined)
   assert.equal(context.execution, null)
   assert.equal(context.robotStatus, null)
@@ -62,8 +63,8 @@ test('goal review exposes the originating request separately from the selected o
   const envelope = parseContext(result.messages[1].content)
   assert.deepEqual(envelope.originatingInstruction, { content: 'Please rest.', source: 'user' })
   assert.deepEqual(envelope.execution, execution)
-  assert.deepEqual(envelope.robotStimulus.capabilities.robotCommandDescriptions,
-    observation.capabilities.robotCommandDescriptions)
+  assert.deepEqual(envelope.robotStimulus.capabilities.actions,
+    observation.capabilities.actions)
 })
 
 const completeText = (label: string) => `${label}\n${'Recorded context. '.repeat(900)}\n${label} END: the later result changed the situation.`
@@ -99,12 +100,12 @@ test('Environment context delivers complete selected text to task and conversati
   const instruction = completeText('Current instruction')
   const persona = completeText('Persona')
   const reply = completeText('Reply target')
-  const description = completeText('Command meaning')
+  const expression = completeText('Expression meaning')
   const thought = completeText('Inner thought')
   const feedback = completeText('Action result')
   const current = { ...observation, feedback: [{ id: 'receipt', timestamp: observation.timestamp,
     type: 'completed', message: feedback }], capabilities: { ...observation.capabilities,
-    robotCommandDescriptions: { stand: description } } }
+    expressionLibrary: [{ name: 'neutral', label: expression }] } }
   for (const purpose of ['task', 'conversation']) {
     const result = await environmentContextBuilderNode.execute({
       userInstruction: instruction, personaText: persona,
@@ -120,7 +121,9 @@ test('Environment context delivers complete selected text to task and conversati
     assert.equal(envelope.currentInstruction, instruction)
     assert.equal(envelope.activePersona, persona)
     assert.equal(envelope.replyToContext, reply)
-    assert.equal(envelope.currentEnvironment.capabilities.robotCommandCatalog.stand, description)
+    if (purpose === 'task') {
+      assert.equal(envelope.currentEnvironment.capabilities.expressionLibrary[0].label, expression)
+    }
     assert.equal(envelope.currentEnvironment.feedback[0].message, feedback)
     assert.equal(envelope.robotStatus.task.objective, feedback)
     assert.equal(envelope.innerDialogue[0].content, thought)

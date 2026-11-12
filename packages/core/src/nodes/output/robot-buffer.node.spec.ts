@@ -7,7 +7,7 @@ test('receipts identify display feedback separately from motion commands', () =>
     [{ type: 'faceExpression', expression: 'thinking' }, 'display thinking'],
     [{ type: 'faceExpression', expression: 'confused' }, 'display confused'],
     [{ type: 'faceExpression', displayRelease: true }, 'display release'],
-    [{ type: 'robotCommand', command: 'walk' }, 'action walk'],
+    [{ type: 'requestMotion', description: 'wave' }, 'action requestMotion'],
   ] as const) {
     const record = { direction: 'inbound' as const, status: 'completed', message: 'done', actionId: 'action-1', action,
       feedback: { id: 'receipt-1', actionId: 'action-1', type: 'completed' } }

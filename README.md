@@ -1,152 +1,81 @@
 # Ainekio OS
 
-Ainekio OS is a local-first operating system for a persistent personal AI identity. It combines a web interface, CLI, memory store, cognitive graphs, autonomous agents, voice tools, model routing, and training pipelines so an AI can keep context, learn from use, and act under explicit trust boundaries.
+Ainekio OS is a local-first cognitive runtime and operating system for a persistent AI companion and personal counterpart. It pairs durable node-graph execution, attributed local memory, background agency, role-based model routing, local voice I/O, LoRA adapter training, and physical robot embodiment via [Ainekio](https://github.com/Greg-Aster/Ainekio-bot) ([ainek.io](https://ainek.io)).
 
-It is not a single chatbot wrapper. It is a development system for building a digital counterpart: one that can talk with you, maintain an inner dialogue, remember what matters, generate goals, run background work, train adapters from your history, and connect to external environments.
+![Ainekio OS interface](docs/images/ainekio-os-ui.png)
 
-**Working on Ainekio:** open the [one-page robot system map](docs/robot/SYSTEM_ARCHITECTURE.md#processes-and-connections)
-for the complete data flow in a single Mermaid diagram. The shared
-[robot design core](docs/robot/ROBOT_BIBLE.md) owns the companion's purpose and
-capability contracts. Follow the contract and qualification scenario relevant
-to the task; [AGENTS.md](AGENTS.md) governs repository work.
+## Core Capabilities
 
-![Ainekio OS interface](docs/images/metahuman-os-ui-2026-02-27.png)
-
-## What It Is For
-
-Ainekio OS is built for long-running personal AI operation:
-
-- **Conversation**: a chat surface backed by mode-specific cognitive graphs, streaming reasoning events, conversation buffers, memory grounding, and persona voice.
-- **Inner life**: separate inner-dialogue streams for reflections, dreams, curiosity, recursive thought, and autonomous memory associations.
-- **Memory**: local JSON/profile storage for conversations, episodic events, tasks, summaries, preferences, audio transcripts, and training-ready examples.
-- **Learning**: curation, dataset building, LoRA/fine-tune workflows, and backend-owned model activation from the user's own memories and persona data.
-- **Agency**: supervised autonomous desire generation, planning, review, execution, outcome review, and goal proposal.
-- **Tools**: trust-aware skills for files, tasks, calendar, memory search, shell-safe commands, agents, code changes, and remote/operator escalation.
-- **Voice**: local STT/TTS, voice chat, transcript ingestion, Piper voices, and Kokoro voices.
-- **Embodiment**: an in-development environment mode that reads observations from games, simulators, robots, or other surfaces and queues bounded semantic actions.
-
-The design assumption is local ownership. Runtime identity, profiles, memories, logs, generated adapters, browser state, and local agent data are user data, not maintained source.
+- **Durable Cognitive Workflows**: Mode-specific LangGraph workflows and a visual SvelteFlow editor (`etc/cognitive-graphs/`) with persistent execution state, live SSE progress streams, and crash recovery.
+- **Attributed Local Memory**: Profile-scoped JSON storage and reconciled vector search across conversations, episodic events, tasks, summaries, preferences, audio transcripts, and curated training examples. Profiles, memories, logs, and trained weights stay outside maintained source.
+- **Role-Based Model Routing**: Dispatches persona, orchestrator, vision, motion, curator, coder, and embedding calls across a shared native `llama.cpp` service, Ollama, remote/cloud endpoints (including RunPod and Hugging Face), and CLI escalation backends (`claude-code`, `codex`, `gemini`).
+- **Autonomous Agency & Background Work**: Work-coordinated agents in `brain/` handle memory ingestion, reflection, dreaming, curiosity, Sleep Workflow vector reconciliation, and supervised desire generation, planning, execution, and outcome review.
+- **Embodied Robot Control**: An authenticated Environment Bridge connects cognitive workflows to the physical [Ainekio quadruped](https://github.com/Greg-Aster/Ainekio-bot) or host simulator—streaming camera frames, transcripts, attitude/body events, and action receipts while driving speech, expressions, neural/Freestyle motion, active visual tasks, and Full Auto self-directed behavior.
+- **Local Voice & Continual Learning**: Local Whisper STT and Kokoro/Piper TTS services, alongside dataset curation and local or RunPod LoRA fine-tuning that registers trained adapters directly with target backends.
 
 ## Cognitive Modes
 
-Modes are not themes. They change how the system reasons, writes memory, uses agents, and routes actions.
-
-| Mode | What It Is For | Behavior |
+| Mode | Purpose | Execution Profile |
 | --- | --- | --- |
-| **Dual Consciousness** | Full personal mirror mode. Best for normal long-term use when you want the system to learn, remember, and evolve. | Deep memory grounding, proactive agents, full memory writes, training-triggered learning, richer cognitive processing. |
-| **Agent Mode** | Command and task mode. Best when you want direct assistance without full autonomous personality drift. | Explicit instruction following, command-oriented memory capture, lighter context, less background autonomy. |
-| **Emulation Mode** | Read-only persona mode. Best for demos, safe conversations, or frozen personality snapshots. | No memory writes, no persona mutation, conversational use of existing memory/persona state. |
-| **Environment Mode** | Embodied interface mode. Best for experiments where Ainekio OS observes and acts in another environment. | Reads bridge observations, builds environment prompts, parses model output into semantic actions, queues adapter-controlled movement/text/interaction. |
+| **Dual Consciousness** | Primary long-running companion and personal counterpart mode | Full memory reads and writes, proactive background agents, reflections, and continual learning |
+| **Agent Mode** | Direct command and tool execution | Task-focused context, explicit instruction following, minimal background autonomy |
+| **Emulation Mode** | Read-only persona snapshot | Answers from existing persona and memory state without mutating profile data |
+| **Environment Mode** | Embodied robot and simulator operation | Consumes bridge observations and body events, runs multimodal perception/action graphs, and dispatches physical actions and speech |
 
-## Learning And Training
+## Repository Layout
 
-Ainekio OS is designed to improve from accumulated local experience rather than only prompt engineering.
+| Path | Responsibility |
+| --- | --- |
+| `apps/site` | Astro + Svelte web interface, operator consoles, and visual workflow editor |
+| `apps/react-native` | Mobile client shell |
+| `packages/core` | Storage, policy, durable execution, graph nodes, model router, voice, training, and unified API handlers |
+| `packages/agent-runtime` | Shared execution contracts for background agents |
+| `packages/cli` | `mh` command-line interface for status, memory, tasks, and operations |
+| `brain/` | Autonomous agents, Environment Bridge, background services, and training pipelines |
+| `etc/cognitive-graphs/` | Node-graph definitions for cognitive modes and subsystems |
+| `docs/` | Robot contracts, technical architecture, and user documentation |
 
-The learning path is:
+## Quick Start
 
-```text
-conversation / tasks / memories / transcripts / reflections
-  -> memory organization and curation
-  -> training dataset export
-  -> local or remote LoRA/fine-tune run
-  -> one trained artifact registered with its target backend
-  -> future responses routed through the updated model stack
-```
-
-Training can use profile memories, persona data, conversation history, therapy/persona-generator sessions, cognitive-mode metadata, and curated samples. The training system includes local GPU workflows, RunPod-oriented remote workflows, bounded dataset selection, and one target-specific artifact per run.
-
-The goal is a rolling personalization loop: the system captures experience as memory, curates it into useful training material, and produces adapters that change how the persona thinks and speaks over time.
-
-## Model And Backend System
-
-Ainekio OS routes LLM calls through a role-aware model router instead of binding the whole system to one model.
-
-Supported backend paths include:
-
-- **Ollama** for simple local model serving.
-- **Shared native llama.cpp service** for text, vision, motion and CPU embedding presets.
-- **remote/server providers** for connected Ainekio OS servers or cloud-backed inference.
-- **Big Brother/operator backends** such as Claude Code, Codex, Aider, Qwen Code, or Gemini CLI for escalated reasoning and coding workflows.
-
-The router can select models by role: persona, orchestrator, curator, coder, embeddings, training support, and other graph/node responsibilities. This lets one installation use different models for conversation, memory curation, code execution, summarization, and background agents.
-
-## Autonomous System
-
-The `brain/` layer contains agents and services above the core engine. They are not side scripts; they are the background metabolism of the system.
-
-Examples include:
-
-- memory organizer and ingestor;
-- reflector, dreamer, daydreamer, train-of-thought, curiosity service, and inner curiosity;
-- desire generator, desire planner, desire executor, and outcome reviewer;
-- curator, training orchestrators, adapter builders, and model utilities;
-- audio organizer and maintenance services.
-
-Full vector-index reconciliation is core engine work admitted through the Work Coordinator, including the final Sleep Workflow stage; it is not a separate agent or scheduler.
-
-The agency system turns memories, goals, tasks, reflections, and curiosity into supervised desires. Desires can be clarified, planned, reviewed, approved, executed through the operator/tool layer, and later promoted into proposed persona goals.
-
-## Interface And Tools
-
-The main interface is the Astro/Svelte web app in `apps/site`. It provides:
-
-- chat, inner dialogue, voice mode, and live streaming progress;
-- memory browser, task management, agency dashboard, model/backend controls, voice workspace, and training UI;
-- flow editor for cognitive graph templates and node-based workflows;
-- audit stream, agent monitor, system status, terminal/process tools, and security policy controls.
-
-The CLI in `packages/cli` exposes the same local-first system for status checks, memory capture, tasks, agents, Ollama/backend work, and operational scripts.
-
-## Architecture
-
-This is a pnpm monorepo with a strict ownership boundary:
-
-- `apps/*`: interface shells such as the Astro/Svelte web app and maintained mobile shell.
-- `packages/core`: engine logic, storage, policy, memory, graph execution, model routing, training APIs, voice APIs, and shared handlers.
-- `brain/*`: autonomous agents, services, training jobs, and workers above the engine.
-- `packages/cli`: the `mh` command shell.
-- `etc/`: configuration and cognitive graph definitions.
-- `docs/`: user, technical, audit, and planning documentation.
-
-For the current architecture contract, see:
-
-- [Maintained Source Surface](docs/technical/MAINTAINED_SURFACE.md)
-- [Refactor Blueprint](docs/technical/REFACTOR_BLUEPRINT.md)
-- [Maintained Source Audit Protocol](docs/technical/AUDIT_PROTOCOL.md)
-- [Consolidation Progress](docs/audits/consolidation-progress.md)
-
-## Running It
-
-For normal local use:
+Requires Node.js `>=22.3.0 <23` and `pnpm` `>=10.15.1 <11`.
 
 ```bash
+pnpm install
+pnpm build
 ./start.sh
 ```
 
-For development:
+Rebuild and hot-restart the web release while keeping voice and runtime services up:
 
 ```bash
-cd apps/site
+pnpm build && ./start.sh --restart-app
+```
+
+Run the web interface in Vite/Astro dev mode:
+
+```bash
 pnpm dev
 ```
 
-For startup details, see [STARTUP.md](STARTUP.md). For installation, setup, usage, configuration, and troubleshooting, start with the [User Guide](docs/user-guide/index.md).
+See [STARTUP.md](STARTUP.md) for service lifecycle options and the [User Guide](docs/user-guide/index.md) for onboarding, profile setup, and model configuration.
 
-## Development Status
-
-Ainekio OS is an active research and development repo. The current work is consolidating architecture, hardening API ownership, improving autonomous workflows, expanding learning/training, and prototyping environment-mode embodiment.
-
-Useful checks:
+## Verification
 
 ```bash
-pnpm -s validate:graphs
-pnpm -s audit:graph-executors -- --fail-on-missing
-pnpm -s exec tsx scripts/check-architecture.ts --fail-on-stale-baseline
-./bin/audit check
+pnpm verify            # Workspace typechecks, architecture rules, test suites, and Site build
+./bin/audit check      # Architecture boundary checker and manifest/size audit
+pnpm validate:graphs   # Cognitive graph schema and executor validation
 ```
 
-Some areas are experimental, especially agency, model training, voice systems, operator escalation, mobile parity, and environment adapters. Keep changes scoped, preserve user-data boundaries, and document meaningful behavior changes under `docs/`.
+## Documentation
+
+- [Robot Design Core](docs/robot/ROBOT_BIBLE.md) — Companion purpose, ownership boundaries, and capability contracts
+- [Robot Software Architecture](docs/robot/SYSTEM_ARCHITECTURE.md) — End-to-end processes, protocols, and execution paths
+- [Body Capabilities](docs/robot/BODY_CAPABILITIES.md) & [Companion Behavior](docs/robot/COMPANION_BEHAVIOR.md) — Physical action and behavioral contracts
+- [Node and Workflow Design](docs/technical/NODE_WORKFLOW_DESIGN.md) — Cognitive graph architecture and node conventions
+- [Maintained Surface](docs/technical/MAINTAINED_SURFACE.md) & [Refactor Blueprint](docs/technical/REFACTOR_BLUEPRINT.md) — Monorepo ownership and design rules
+- [User Guide](docs/user-guide/index.md) — Installation, modes, voice, agency, and training setup
 
 ## License
 
-MIT. See [LICENSE](LICENSE).
+CC BY 4.0. See [LICENSE](LICENSE).

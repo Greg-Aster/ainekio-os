@@ -22,7 +22,7 @@ import {
 
 const LOG_PREFIX = '[model-resolver]';
 
-export type ModelProvider = 'big-brother' | 'llama-cpp' | 'ollama' | 'openai' | 'local' | 'runpod_serverless' | 'huggingface' | 'remote-server';
+export type ModelProvider = 'big-brother' | 'llama-cpp' | 'ollama' | 'openai' | 'openrouter' | 'claude' | 'gemini' | 'local' | 'runpod_serverless' | 'huggingface' | 'remote-server';
 export type ModelCapability = 'text' | 'image';
 
 export interface ModelDefinition {

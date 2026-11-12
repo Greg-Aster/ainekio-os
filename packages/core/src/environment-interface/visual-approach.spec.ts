@@ -349,8 +349,8 @@ test('target-relative camera feedback is admitted only as an advertised visualAp
 
   const openLoop = await environmentActionParserNode.execute({
     response: selectorJson({
-      response: 'Walking open loop.',
-      actions: [{ type: 'robotCommand', command: 'walk' }],
+      response: 'Moving open loop.',
+      actions: [{ type: 'requestMotion', description: 'step forward toward the scene target' }],
       movementRequest: null,
     }),
     instruction: 'Approach the selected scene target for a better view.',
@@ -359,15 +359,14 @@ test('target-relative camera feedback is admitted only as an advertised visualAp
       ...observation,
       capabilities: {
         ...observation.capabilities,
-        actions: ['robotCommand', 'visualApproach'],
-        robotCommands: ['walk'],
+        actions: ['requestMotion', 'visualApproach'],
       },
     },
     sessionId: observation.sessionId,
   }, {});
   assert.equal(openLoop.actions.length, 1);
-  assert.equal(openLoop.actions[0]?.type, 'robotCommand');
-  assert.equal(openLoop.actions[0]?.command, 'walk');
+  assert.equal(openLoop.actions[0]?.type, 'requestMotion');
+  assert.equal(openLoop.actions[0]?.description, 'step forward toward the scene target');
   assert.equal(openLoop.actionAdmission.admitted, true);
   assert.equal(openLoop.actionAdmission.reason, '');
 

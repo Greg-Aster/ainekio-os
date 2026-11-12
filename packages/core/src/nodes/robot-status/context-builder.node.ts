@@ -146,7 +146,6 @@ function bodyFacts(summary: unknown, telemetry: unknown, selectedSessionId?: str
     telemetry: recordProjection(robotTelemetry, 32),
     capabilities: {
       actions: Array.isArray(capabilities.actions) ? capabilities.actions.slice(0, 32) : [],
-      robotCommands: Array.isArray(capabilities.robotCommands) ? capabilities.robotCommands.slice(0, 64) : [],
       motionClasses: Array.isArray(capabilities.motionClasses) ? capabilities.motionClasses.slice(0, 16) : [],
       visual: capabilities.visual === true,
       movement: capabilities.movement === true,
@@ -159,9 +158,10 @@ function actionDescription(action: Record<string, unknown> | null): string {
   const metadata = isRecord(action.metadata) ? action.metadata : null
   const motionSummary = cleanText(metadata?.motionSummary, 300)
   if (motionSummary) return motionSummary
-  const command = cleanText(action.command, 160)
-  if (command) return command
-  return (typeof action.description === 'string' ? action.description.trim() : '') || cleanText(action.type, 80)
+  return (typeof action.description === 'string' ? action.description.trim() : '')
+    || cleanText(action.direction, 80)
+    || cleanText(action.target, 200)
+    || cleanText(action.type, 80)
 }
 
 function latestAction(value: unknown): RobotStatusAction | null {
@@ -178,7 +178,6 @@ function latestAction(value: unknown): RobotStatusAction | null {
     return {
       actionId,
       type: cleanText(action?.type, 80),
-      command: cleanText(action?.command, 160),
       description: actionDescription(action),
       status: cleanText(bridge.status, 80) || cleanText(feedback?.type, 80),
       message: cleanText(bridge.message, 500) || cleanText(feedback?.message, 500),

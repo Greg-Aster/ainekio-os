@@ -207,7 +207,7 @@ test('last command provenance remains separate from queued, active and completed
   const username = 'coordinator-control-user'
   const manager = getQueueManager()
   const work = manager.enqueue({ type: 'environment_command', handler: 'environment.command', username,
-    input: { id: randomUUID(), type: 'robotCommand', command: 'stand', sessionId: source.sessionId } })
+    input: { id: randomUUID(), type: 'requestMotion', description: 'stand', sessionId: source.sessionId } })
   const queued = await readRobotStatusLive(username, source.sessionId)
   assert.equal(queued.control.lastBodyCommandSource, 'manual')
   assert.equal(queued.control.lastCoordinatorLease, null, 'Queued work has not acquired the body')
@@ -247,7 +247,7 @@ test('status preserves movement limits without treating an objective as an actio
     const definition = { graphId: 'movement-status', graphHash: 'h', runtimeVersion: 'v', checkpointSchemaVersion: 1, nodeVersions: {} }
     const execution = store.create(username, definition)
     const lease = store.claim(execution.executionId, definition)
-    const action = { id: randomUUID(), type: 'robotCommand', command: 'crawl', sessionId: source.sessionId, ...parameters }
+    const action = { id: randomUUID(), type: 'move', gait: 'crawl', direction: 'forward', sessionId: source.sessionId, ...parameters }
     const program = { steps: [{ kind: 'action', action }, { kind: 'action', action: { type: 'captureImage' } }] }
     const work = manager.enqueue({ type: 'environment_command', handler: 'environment.command', username, input: action,
       durable: { executionId: execution.executionId, effectId: `movement-${index}`, recovery: 'reconcile' } })
@@ -342,7 +342,7 @@ test('active behavior projection reads selected checkpoint fields without loadin
   const execution = store.create(username, definition); const lease = store.claim(execution.executionId, definition)
   const saver = new ExecutionCheckpointer(store, lease)
   const now = Date.now()
-  const program = { steps: [{ kind: 'action', action: { type: 'robotCommand', command: 'bow' } }] }
+  const program = { steps: [{ kind: 'action', action: { type: 'requestMotion', description: 'bow' } }] }
   const state = { stepIndex: 0, evidence: [], updateRevision: 0, motionId: 'bow', done: undefined }
   const unrelated = 'full unrelated model context '.repeat(10_000)
   try {

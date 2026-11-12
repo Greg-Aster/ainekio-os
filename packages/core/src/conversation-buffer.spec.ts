@@ -146,8 +146,8 @@ try {
   assert.equal(robotMessages[0]?.content, 'Robot action completed: done');
   assert.equal(robotMessages[0]?.meta?.direction, 'inbound');
   assert.equal(await submitRobotBridgeRecord(username, {
-    ...completedRecord, action: { type: 'robotCommand', command: 'stop' },
-  }), true, 'Adding the command label to a replay must not prevent acknowledgement of the same receipt');
+    ...completedRecord, action: { type: 'stop' },
+  }), true, 'Adding the action detail to a replay must not prevent acknowledgement of the same receipt');
   assert.deepEqual(loadBufferForUser(username, 'robot').messages, robotMessages,
     'A receipt replay preserves the original entry instead of rewriting or duplicating it');
   const replayExecutions = openExecutionStore(username);

@@ -188,7 +188,7 @@ const context = await environmentContextBuilderNode.execute({
     adapter: 'test-adapter',
     sessionId: 'robot-1',
     timestamp: new Date().toISOString(),
-    capabilities: { actions: ['robotCommand'], robotCommands: ['wave'] },
+    capabilities: { actions: ['requestMotion'] },
   },
   instruction: 'What is my name?',
   userInstruction: 'What is my name?',
@@ -212,12 +212,11 @@ assert.equal(context.messages.length, 2);
 assert.doesNotMatch(String(context.messages[0]?.content), /My name is Greg/);
 const memorySelectorEnvelope = JSON.parse(String(context.messages.at(-1)?.content)) as {
   currentInstruction: string;
-  currentEnvironment: { capabilities: { actions: string[]; robotCommands: string[] } };
+  currentEnvironment: { capabilities: { actions: string[] } };
   memories: string[];
 };
 assert.equal(memorySelectorEnvelope.currentInstruction, 'What is my name?');
-assert.deepEqual(memorySelectorEnvelope.currentEnvironment.capabilities.actions, ['robotCommand']);
-assert.deepEqual(memorySelectorEnvelope.currentEnvironment.capabilities.robotCommands, ['wave']);
+assert.deepEqual(memorySelectorEnvelope.currentEnvironment.capabilities.actions, ['requestMotion']);
 assert.match(memorySelectorEnvelope.memories[0] ?? '', /My name is Greg/);
 assert.equal(
   JSON.stringify(memorySelectorEnvelope.memories).match(/My name is Greg/g)?.length,
@@ -244,7 +243,7 @@ const selfContainedContext = await environmentContextBuilderNode.execute({
     adapter: 'test-adapter',
     sessionId: 'robot-1',
     timestamp: new Date().toISOString(),
-    capabilities: { actions: [], robotCommands: [] },
+    capabilities: { actions: [] },
   },
   instruction: 'Hello, how are you?',
   userInstruction: 'Hello, how are you?',
@@ -287,7 +286,7 @@ const followUpContext = await environmentContextBuilderNode.execute({
     adapter: 'test-adapter',
     sessionId: 'robot-1',
     timestamp: new Date().toISOString(),
-    capabilities: { actions: [], robotCommands: [] },
+    capabilities: { actions: [] },
   },
   instruction: followUpInstruction,
   userInstruction: followUpInstruction,
@@ -336,7 +335,7 @@ const currentStateContext = await environmentContextBuilderNode.execute({
     adapter: 'test-adapter',
     sessionId: 'robot-1',
     timestamp: new Date().toISOString(),
-    capabilities: { actions: ['robotCommand'], robotCommands: ['wave'] },
+    capabilities: { actions: ['requestMotion'] },
     state: { batteryPercent: 72 },
   },
   instruction: 'What is the current battery level?',

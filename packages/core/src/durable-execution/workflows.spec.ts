@@ -125,8 +125,7 @@ const routes = { needsResponse: true, needsConversationHistory: true, needsMemor
 const objective = 'Locate the fixture target and report its location.'
 const observation = {
   environmentId: 'fixture-room', adapter: 'ainekio-gateway', sessionId: 'fixture-body', timestamp: new Date().toISOString(),
-  capabilities: { actions: ['captureImage', 'robotCommand', 'requestMotion', 'sendText'], robotCommands: ['walk', 'stop'],
-    robotCommandDescriptions: { walk: 'Walk forward', stop: 'Stop body movement' }, visual: true, movement: true },
+  capabilities: { actions: ['captureImage', 'requestMotion', 'sendText'], visual: true, movement: true },
   state: { body: { authenticated: true, cameraReady: true, motionAvailable: true } },
   visual: { id: 'fixture-before', mimeType: 'image/jpeg', dataUrl: 'data:image/jpeg;base64,/9j/2gAA/9k=', timestamp: new Date().toISOString() },
   metadata: {}, feedback: [],
@@ -165,7 +164,7 @@ function seedDaydreamMemories() {
 }
 
 function presetChoice() {
-  return { response: '', program: { steps: [{ kind: 'action', action: { type: 'robotCommand', command: 'walk' } }] },
+  return { response: '', program: { steps: [{ kind: 'action', action: { type: 'requestMotion', description: 'walk' } }] },
     taskDecision: { outcome: 'act', objective, completionCriteria: 'Identify the target in visual evidence and report its location.',
       reason: 'Inspect a different area.',
       requiredCompletionBasis: 'visual_observation', continuationPolicy: 'bounded' } }
@@ -291,7 +290,7 @@ test('an edited template resumes the saved Environment graph without replaying i
       const started = await run({ graph: loaded.graph, context: context(current) })
       assert.equal(started.status, 'waiting', started.error?.stack)
       const executionId = started.executionId!
-      completeAction(current, 'robotCommand', 'editor-save-after')
+      completeAction(current, 'requestMotion', 'editor-save-after')
       const store = openExecutionStore(username)
       try {
         const objectiveId = store.task(executionId)!.objectiveId
@@ -389,8 +388,8 @@ test('saved Controller calls the real Executor and resumes its preset action und
       assert.equal(started.status, 'waiting', started.error?.stack)
       assert.equal(calls.length, beforeCalls + 3, 'Controller, route selection and preset selection each run once')
       const executionId = started.executionId!
-      const { action, after } = completeAction(current, 'robotCommand', 'controller-preset-after')
-      assert.equal(action.command, 'walk')
+      const { action, after } = completeAction(current, 'requestMotion', 'controller-preset-after')
+      assert.equal(action.description, 'walk')
       assert.equal(action.executionId, executionId)
       replies.push(goalCompletion('controller-preset-after'))
       const resumed = await run({ graph: graph('robot-autonomy-controller'), context: controllerContext(after), executionId })
@@ -423,8 +422,8 @@ test('saved Controller selects Observer, waits for its image, then calls Executo
       const moving = await run({ graph: graph('robot-autonomy-controller'), context: controllerContext(captured.after), executionId })
       assert.equal(moving.status, 'waiting', moving.error?.stack)
       assert.equal(calls.length, beforeCalls + 4, 'Only Observer interpretation and its real Executor child should run')
-      const moved = completeAction(captured.after, 'robotCommand', 'controller-observer-after')
-      assert.equal(moved.action.command, 'walk')
+      const moved = completeAction(captured.after, 'requestMotion', 'controller-observer-after')
+      assert.equal(moved.action.description, 'walk')
       assert.equal(moved.action.executionId, executionId)
       assert.notEqual(moved.action.id, captured.action.id)
       replies.push(goalCompletion('controller-observer-after'))
@@ -580,7 +579,7 @@ test('a new process resumes the saved Controller child wait without reconstructi
       const started = await run({ graph: graph('robot-autonomy-controller'), context: controllerContext(current) })
       assert.equal(started.status, 'waiting', started.error?.stack)
       const executionId = started.executionId!
-      const { action } = completeAction(current, 'robotCommand', 'process-restart-after')
+      const { action } = completeAction(current, 'requestMotion', 'process-restart-after')
       assert.equal(action.executionId, executionId)
       const requestPath = path.join(root, 'process-restart-request.json')
       const outputPath = path.join(root, 'process-restart-result.json')
@@ -772,7 +771,7 @@ test('saved Controller and Goal Review return incomplete executor instructions t
       }
       assert.equal(calls.length, before + 4)
       assertCorrection(calls[before], calls[before + 1], invalidChoice)
-      completeAction(current, 'robotCommand', 'choice-correction-after')
+      completeAction(current, 'requestMotion', 'choice-correction-after')
       replies.push(goalCompletion('choice-correction-after'))
       const completed = await run({ graph: graph('robot-autonomy-controller'), context: controllerContext(current), executionId })
       assert.equal(completed.status, 'completed', completed.error?.stack)
@@ -797,7 +796,7 @@ test('user and Controller selectors correct rejected programs before dispatch', 
       assert.equal(started.status, 'waiting', started.error?.stack)
       assert.match(calls.at(-1)!.messages.at(-1).content, /requires a program/)
       assert.equal(calls.length, before + (entry === 'environment' ? 3 : 4))
-      const { action } = completeAction(current, 'robotCommand', `corrected-${entry}`)
+      const { action } = completeAction(current, 'requestMotion', `corrected-${entry}`)
       replies.push(goalCompletion(`corrected-${entry}`))
       assert.equal(action.executionId, started.executionId)
       const finished = await run({ graph: graph(entry === 'autonomy' ? 'environment' : entry), context: context(current), executionId: started.executionId })
@@ -843,7 +842,7 @@ test('user input retains one buffer and memory identity across a workflow handof
       assert.equal(memories().length, 1)
       const originalEntry = entries()[0]
       const originalMemory = memories()[0]
-      completeAction(current, 'robotCommand', 'input-identity-after')
+      completeAction(current, 'requestMotion', 'input-identity-after')
       replies.push( conversationRoutes,
         { response: 'The movement finished.', program: null,  taskDecision: null }, goalCompletion('input-identity-after'))
       const finished = await run({ graph: graph('environment'), context: initialContext, executionId })
@@ -1484,8 +1483,8 @@ test('body event decision reaches Environment Mode and retains one execution thr
       assert.ok(selectorInput.includes('body-event-trigger'), 'Intention keeps its source rather than becoming user speech')
       assert.ok(selectorInput.includes(objective))
       const executionId = started.executionId!
-      const { action, after } = completeAction(current, 'robotCommand', 'body-event-after')
-      assert.equal(action.command, 'walk')
+      const { action, after } = completeAction(current, 'requestMotion', 'body-event-after')
+      assert.equal(action.description, 'walk')
       assert.equal(action.executionId, executionId)
       replies.push({ response: '', outcome: 'complete', reason: 'The returned image supplies the requested evidence.',
         requiredCompletionBasis: 'visual_observation', observationSummary: 'Target identified in body-event-after.',
@@ -1519,7 +1518,7 @@ test('body event context keeps another event response under its existing executi
       ownerId = first.executionId!
       const admitted = takeAdapterActions(current.sessionId)
       assert.equal(admitted.length, 1)
-      assert.equal(admitted[0].command, 'walk')
+      assert.equal(admitted[0].description, 'walk')
       assert.equal(admitted[0].executionId, ownerId)
       assert.equal(loadRobotStatus(username)?.task?.executionId, ownerId)
       const next = { ...structuredClone(current), id: 'motion-next-observation',

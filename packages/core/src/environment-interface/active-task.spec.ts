@@ -182,13 +182,13 @@ const decision = { outcome: 'act', objective: 'Find the described object and gre
 const behavior = { kind: 'behavior', target: 'the distinctive object described by the owner', completionCriteria: 'Identify the described object in an image.',
   motion: { type: 'move', direction: 'forward', continuous: true, durationMs: 1000, speed: 60, forward: 80, turn: 20 },
   candidateLabels: ['cup'], identifyEveryFrames: 3, steering: { label: 'cup', gain: 100 } }
-const program = { steps: [behavior, { kind: 'action', action: { type: 'robotCommand', command: 'wave' } }] }
+const program = { steps: [behavior, { kind: 'action', action: { type: 'requestMotion', description: 'wave' } }] }
 const route = {"needsGoalReview": false, "needsToolUse": false, "taskPlanner": "specialist", "needsResponse": false, "needsAction": true, "taskContext": ["environment", "vision"], "conversationContext": []}
 
 function fixture(sessionId: string, automaticInterpretation = true, suppliedObservation?: EnvironmentObservation) {
   const timestamp = new Date().toISOString()
   const observation: EnvironmentObservation = suppliedObservation ?? { adapter: 'ainekio-gateway', environmentId: 'fixture-room', sessionId, timestamp,
-    capabilities: { actions: ['move', 'stop', 'captureImage', 'robotCommand'], robotCommands: ['wave', 'dance', 'turn_right_180', 'run'], visual: true, movement: true },
+    capabilities: { actions: ['move', 'stop', 'captureImage', 'requestMotion'], visual: true, movement: true },
     state: { body: { authenticated: true, cameraReady: true, robotId: 'fixture-robot' },
       gateway: { robots: { 'fixture-robot': { epoch: 1, connection_state: 'online' } } },
       activeMovementUpdates: { version: 1, available: true, gatewayInstance: 'fixture-gateway', robotId: 'fixture-robot', epoch: 1,
@@ -280,7 +280,7 @@ test('saved Environment workflow executes a selected expression through the time
       assert.equal(result.status, 'completed')
       assert.equal(calls.length, before + 3, 'Goal Review evaluates the completed selected program')
       assert.equal(delivered.length, 5, 'The request and Goal Review each release their thinking feedback')
-      assert.ok(delivered.every(action => action.type === 'faceExpression' && !action.command))
+      assert.ok(delivered.every(action => action.type === 'faceExpression'))
       const selected = delivered.find(action => action.expression === 'bow')!
       assert.ok(selected)
       assert.equal(selected.displayTimeoutMs, 60000)
@@ -372,11 +372,11 @@ for (const outcome of ['complete', 'request_user'] as const) {
       try {
         replies.push(route, { taskDecision: { ...decision, objective: originalRequest,
           completionCriteria: 'The selected program receives correlated completion results.', requiredCompletionBasis: 'action_result' },
-          program: { steps: [{ kind: 'action', action: { type: 'robotCommand', command: 'wave' } }] } })
+          program: { steps: [{ kind: 'action', action: { type: 'requestMotion', description: 'wave' } }] } })
         const started = await f.run(undefined, { userMessage: originalRequest })
         assert.equal(started.status, 'waiting')
         const [action] = f.received.splice(0)
-        assert.equal(action.command, 'wave')
+        assert.equal(action.description, 'wave')
         f.complete(action)
         replies.push({ response: '', outcome, taskId: 'none', instruction: '', requiredCompletionBasis: 'action_result',
           observationSummary: 'The selected wave returned a completed receipt.',
@@ -404,18 +404,18 @@ test('turn then dance executes locally with no model decision between movements'
     const f = fixture('sequence-body'); const before = calls.length
     try {
       replies.push(route, { response: '', taskDecision: { ...decision, objective: 'Turn around and dance.' }, program: { steps: [
-        { kind: 'action', action: { type: 'robotCommand', command: 'turn_right_180' } },
-        { kind: 'action', action: { type: 'robotCommand', command: 'dance' } }] } })
+        { kind: 'action', action: { type: 'requestMotion', description: 'turn_right_180' } },
+        { kind: 'action', action: { type: 'requestMotion', description: 'dance' } }] } })
       const started = await f.run(); assert.equal(started.status, 'waiting')
-      const [turn] = f.received.splice(0); assert.equal(turn.command, 'turn_right_180'); f.complete(turn)
+      const [turn] = f.received.splice(0); assert.equal(turn.description, 'turn_right_180'); f.complete(turn)
       assert.equal((await f.run(started.executionId)).status, 'waiting')
-      const [dance] = f.received.splice(0); assert.equal(dance.command, 'dance'); f.complete(dance)
+      const [dance] = f.received.splice(0); assert.equal(dance.description, 'dance'); f.complete(dance)
       assert.equal((await f.run(started.executionId)).status, 'completed')
       assert.equal(calls.length, before + 2, 'Only initial routing and complete-task selection may call a model')
       const { loadRobotStatus } = await import('../robot-status.js')
       const status = loadRobotStatus(username)!
       assert.equal(status.lastAction?.actionId, dance.id)
-      assert.equal(status.lastAction?.command, 'dance')
+      assert.equal(status.lastAction?.description, 'dance')
       assert.equal(status.lastAction?.status, 'completed')
       assert.equal(status.lastBodyAction?.actionId, dance.id)
       assert.equal(status.lastAction?.sessionId, f.observation.sessionId)
@@ -437,7 +437,7 @@ test('a queued wave ignores camera wake-ups and still resumes on its physical re
     const store = openExecutionStore(username)
     try {
       replies.push(route, { taskDecision: { ...decision, objective: 'Please wave.' },
-        program: { steps: [{ kind: 'action', action: { type: 'robotCommand', command: 'wave' } }] } })
+        program: { steps: [{ kind: 'action', action: { type: 'requestMotion', description: 'wave' } }] } })
       const started = await f.run()
       const executionId = started.executionId!
       assert.equal(started.status, 'waiting')
@@ -454,7 +454,7 @@ test('a queued wave ignores camera wake-ups and still resumes on its physical re
         timestamp: new Date().toISOString(), message: 'Simulated correlated Stop acknowledgement' })
       await new Promise(resolve => setImmediate(resolve))
       const [wave] = f.received.splice(0)
-      assert.equal(wave.command, 'wave')
+      assert.equal(wave.description, 'wave')
       f.complete(wave)
       assert.equal((await f.run(executionId)).status, 'completed')
       assert.equal(calls.length, before + 2, 'An action receipt advances the existing program without more inference')
@@ -507,7 +507,7 @@ test('the running gait steers during delayed identification, then waves before w
       assert.equal(f.received.length, 0, 'Finish ACK cannot advance to the wave')
       f.feedback(motion, 'completed')
       await f.run(executionId)
-      const [wave] = f.received.splice(0); assert.equal(wave.command, 'wave')
+      const [wave] = f.received.splice(0); assert.equal(wave.description, 'wave')
       const saved = openExecutionStore(username); assert.equal(saved.task(executionId)?.decision.objectiveComplete, false); saved.close()
       f.complete(wave); assert.equal((await f.run(executionId)).status, 'completed')
       const final = openExecutionStore(username); assert.equal(final.task(executionId)?.decision.objectiveComplete, true); final.close()
@@ -590,18 +590,21 @@ test('an ongoing movement accepts a new composed instruction without a search or
   })
 })
 
-test('ongoing named gaits retain their adapter defaults and accept speed changes on the original movement', async () => {
+test('ongoing gaits retain their gait selection and accept speed changes on the original movement', async () => {
   await withUserContext({ username, userId: username, role: 'owner' }, async () => {
     const f = fixture('named-ongoing-body')
     try {
-      const movement = { type: 'robotCommand', command: 'run', continuous: true }
+      const movement = { type: 'move', gait: 'run', direction: 'forward', continuous: true, durationMs: 0 }
       const select = (action: typeof movement & { speed?: number }) => ({ response: '', taskDecision: decision,
         program: { steps: [{ kind: 'action', action }] } })
       replies.push(route, select(movement))
       const started = await f.run(); const id = started.executionId!
       const [motion] = f.received.splice(0)
+      assert.equal(motion.gait, 'run')
       f.feedback(motion, 'accepted'); await f.run(id)
-      assert.equal(f.received.length, 0, 'The executor cannot replace an unspecified named gait speed or direction')
+      const [initialUpdate] = f.received.splice(0)
+      assert.equal(initialUpdate.movementUpdate!.actionId, motion.id)
+      f.complete(initialUpdate); await f.run(id)
       const store = openExecutionStore(username)
       try { store.deliverEvent(id, { eventId: randomUUID(), kind: 'user_steering',
         payload: { userMessage: 'Continue running at speed 120.', sessionId: f.observation.sessionId } }) } finally { store.close() }
@@ -609,7 +612,7 @@ test('ongoing named gaits retain their adapter defaults and accept speed changes
       assert.equal((await f.run(id)).status, 'waiting')
       const [update] = f.received.splice(0)
       assert.equal(update.movementUpdate!.actionId, motion.id)
-      assert.deepEqual(update.movementUpdate!.controls, { speed: 120 })
+      assert.deepEqual(update.movementUpdate!.controls, { speed: 120, forward: 100, turn: 0 })
       assert.deepEqual(update.bodyLease, motion.bodyLease)
       assert.equal(f.received.length, 0)
     } finally { f.unsubscribe() }
@@ -677,7 +680,7 @@ test('capture then gesture advances from the capture receipt and image before ob
       replies.push(route, { taskDecision: { ...decision, objective: 'Take a picture then wave',
         completionCriteria: 'The picture is captured and the wave completes', requiredCompletionBasis: 'action_result' },
         program: { steps: [{ kind: 'action', action: { type: 'captureImage' } },
-          { kind: 'action', action: { type: 'robotCommand', command: 'wave' } }] } })
+          { kind: 'action', action: { type: 'requestMotion', description: 'wave' } }] } })
       const started = await f.run(); const id = started.executionId!
       const [capture] = f.received.splice(0); assert.equal(capture.type, 'captureImage')
       f.complete(capture)
@@ -690,7 +693,7 @@ test('capture then gesture advances from the capture receipt and image before ob
       }), { username, sourceObservation: captured })
       const before = calls.length
       assert.equal((await f.run(id)).status, 'waiting')
-      const [wave] = f.received.splice(0); assert.equal(wave.command, 'wave')
+      const [wave] = f.received.splice(0); assert.equal(wave.description, 'wave')
       assert.equal(calls.length, before, 'The capture does not ask vision to prove a future gesture')
       f.complete(wave)
       replies.push({ response: '', outcome: 'complete', taskId: 'none', instruction: '', requiredCompletionBasis: 'action_result',
@@ -902,7 +905,7 @@ test('a second user turn preserves the objective and history while replacing spe
       assert.equal((event.payload as any).conversationInput, secondMessage)
       assert.equal((event.payload as any).replyToContent, null)
       replies.push({"needsResponse": true, "needsAction": true, "taskContext": ["conversationHistory", "environment"], "conversationContext": ["conversationHistory", "environment"]},
-        { response: secondResponse, program: { steps: [{ kind: 'action', action: { type: 'robotCommand', command: 'wave' } }] },
+        { response: secondResponse, program: { steps: [{ kind: 'action', action: { type: 'requestMotion', description: 'wave' } }] },
           taskDecision: { ...decision, objective: initial.objective } })
       const resumed = await f.run(started.executionId)
       assert.equal(resumed.status, 'waiting')
@@ -924,7 +927,7 @@ test('a second user turn preserves the objective and history while replacing spe
       assert.equal(saved.task(started.executionId!)!.instruction, firstMessage)
       saved.close()
       const [action] = f.received.splice(0)
-      assert.equal(action.command, 'wave')
+      assert.equal(action.description, 'wave')
       f.complete(action)
       assert.equal((await f.run(started.executionId)).status, 'completed')
     } finally { speechDisabled = true; f.unsubscribe() }

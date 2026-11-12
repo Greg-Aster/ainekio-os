@@ -36,7 +36,6 @@ function taskAction(value: unknown): RobotStatusTaskAction | null {
   const description = typeof value.description === 'string' ? value.description : cleanText(metadata?.motionSummary, 500)
   return {
     type,
-    ...(cleanText(value.command, 160) ? { command: cleanText(value.command, 160) } : {}),
     ...(cleanText(value.direction, 80) ? { direction: cleanText(value.direction, 80) } : {}),
     ...(cleanText(value.target, 200) ? { target: cleanText(value.target, 200) } : {}),
     ...(description ? { description } : {}),
@@ -84,8 +83,7 @@ function lastAction(
   return {
     actionId: id || matchingPrevious?.actionId || '',
     type: compact?.type || matchingPrevious?.type || '',
-    command: compact?.command || matchingPrevious?.command || '',
-    description: compact?.description || matchingPrevious?.description || compact?.target || '',
+    description: compact?.description || matchingPrevious?.description || compact?.direction || compact?.target || '',
     status: cleanText(terminal?.type, 80)
       || cleanText(bridgeRecord?.status, 80)
       || matchingPrevious?.status

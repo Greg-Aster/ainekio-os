@@ -7,7 +7,7 @@ import { WorkCommitUncertainError } from './types.js'
 
 const action = (): TaskInput => ({
   type: 'environment_command', handler: 'environment.command', resource: 'body:test',
-  source: 'environment', username: 'fixture', input: { sessionId: 'test-body', type: 'robotCommand', command: 'walk' },
+  source: 'environment', username: 'fixture', input: { sessionId: 'test-body', type: 'requestMotion', description: 'stand up' },
   durable: { executionId: 'execution', effectId: 'effect', recovery: 'reconcile' },
 })
 

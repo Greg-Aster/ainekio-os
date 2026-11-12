@@ -54,21 +54,21 @@ for (const settlement of ['before-notification', 'during-acceptance'] as const) 
   };
   try {
     await connect();
-    const admit = (sessionId: string, type: 'faceExpression' | 'robotCommand') => {
+    const admit = (sessionId: string, type: 'faceExpression' | 'requestMotion') => {
       const actionId = randomUUID();
       const effectId = `${execution.executionId}:${sessionId}`;
       store.db.transaction(() => store.commitTransition(execution.executionId, effectId, {
         transitionId: effectId, dispatches: [{ effectId, kind: 'coordinator_work', actionId,
           payload: { type: 'environment_command', handler: 'environment.command', source: 'autonomy',
             resource: `${type === 'faceExpression' ? 'environment-display' : 'environment'}:${sessionId}`,
-            input: { id: actionId, type, sessionId, ...(type === 'faceExpression' ? { expression: 'thinking' } : { command: 'walk' }) } } }],
+            input: { id: actionId, type, sessionId, ...(type === 'faceExpression' ? { expression: 'thinking' } : { description: 'stand up' }) } } }],
       }))();
       const task = manager.enqueue(executionWorkInput(store, store.dispatch(effectId)));
       store.acknowledgeAdmission(effectId, task.id);
       return { task, effectId, actionId };
     };
     for (const state of ['started', 'accepted', 'unknown']) {
-      const admitted = admit(state, 'robotCommand');
+      const admitted = admit(state, 'requestMotion');
       const claimed = manager.claim(admitted.task.id, `fixture:${state}`)!;
       assert.ok(claimed.startedAt && claimed.bodyLease);
       if (state !== 'started') store.recordActionAcceptance(admitted.effectId, claimed);
