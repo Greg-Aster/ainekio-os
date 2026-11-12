@@ -1,7 +1,7 @@
 # Architecture and Repair Design
 
-This is the design authority for repairs and consolidation in MetaHuman OS.
-[AGENTS.md](../../AGENTS.md) owns scope and approval; [Maintained Surface](MAINTAINED_SURFACE.md)
+This is the design authority for repairs and consolidation in Ainekio OS.
+Local repository guidelines (`AGENTS.md`) own scope and approval; [Maintained Surface](MAINTAINED_SURFACE.md)
 owns executable-source policy and live runtime boundaries. Use [Audit Protocol](AUDIT_PROTOCOL.md)
 for an explicitly requested audit. Dated baseline plans and the consolidation ledger
 are historical evidence, not an instruction to begin another repository-wide rewrite.
@@ -16,7 +16,7 @@ but leaves more responsibilities and failure modes behind.
 
 For robot work, begin with the affected capability in the shared
 [design core](../robot/ROBOT_BIBLE.md). Trace the concrete path from admission
-to result, including persisted state and both sides of any Ainekio/MetaHuman
+to result, including persisted state and both sides of any Ainekio / Ainekio OS
 handoff. Select the relevant [qualification scenario](../robot/QUALIFICATION.md);
 a local repair must preserve the interacting companion capabilities. The
 [maintenance walkthroughs](../robot/QUALIFICATION.md#maintenance-walkthroughs)
@@ -69,7 +69,7 @@ intentional domain evidence rather than relabeling it as unwanted queue history.
 
 ## Target Architecture
 
-MetaHuman is a pnpm monorepo with interface packages on top of a behind-the-scenes
+Ainekio OS is a pnpm monorepo with interface packages on top of a behind-the-scenes
 engine.
 
 ```text

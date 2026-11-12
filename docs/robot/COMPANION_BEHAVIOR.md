@@ -77,9 +77,9 @@ Three separate controls govern operation:
 
 | Control | Choices / function | Distinction |
 | --- | --- | --- |
-| MetaHuman cognitive mode | Dual Consciousness, Agent, Emulation, Environment | Selects the kind of cognitive operation and its associated policies/graphs |
+| Ainekio OS cognitive mode | Dual Consciousness, Agent, Emulation, Environment | Selects the kind of cognitive operation and its associated policies/graphs |
 | Robot autonomy mode | Reactive, Semi, Full | Selects how new embodied work is initiated and continued |
-| Lifecycle | MetaHuman Sleep Workflow; body Idle/Doze/sleep states | Cognitive maintenance and physical power/peripheral states are separate |
+| Lifecycle | Ainekio OS Sleep Workflow; body Idle/Doze/sleep states | Cognitive maintenance and physical power/peripheral states are separate |
 
 [The cognitive-mode source](../../packages/core/src/cognitive-mode.ts) defines Dual for deep identity/memory-oriented operation, Agent for command/task assistance, Emulation for use of an existing persona with read-only defaults, and Environment for embodied interaction. Environment Mode is the robot workflow covered throughout this reference. Cognitive mode also determines whose conversational replies personalization learns; see [Conversational training by cognitive mode](MODELS_AND_LEARNING.md#conversational-training-by-cognitive-mode).
 
@@ -97,9 +97,9 @@ The LLM owns high-level choices. Implementing Full autonomy means making the dec
 
 ### Sleep, wake, and maintenance
 
-MetaHuman's [Sleep Workflow](../../packages/core/src/queue/sleep-workflow.ts) sequences Organizer → memory Curator → Environment decision-review proposals → eligible personalization training → Desire Agent → Dreamer → persona review → memory-index refresh. The Environment Training Curator uses its existing agent and proposal store for recorded Intent and Task decisions (controlled by its Agent Catalog enable switch); proposals retain separate human review and specialist training without fitting or activating models or reviewing Freestyle motions during Sleep. User activity ends the remaining sleep chain through its lifecycle owner, coordinated with awake automation and robot operator scheduling.
+Ainekio OS's [Sleep Workflow](../../packages/core/src/queue/sleep-workflow.ts) sequences Organizer → memory Curator → Environment decision-review proposals → eligible personalization training → Desire Agent → Dreamer → persona review → memory-index refresh. The Environment Training Curator uses its existing agent and proposal store for recorded Intent and Task decisions (controlled by its Agent Catalog enable switch); proposals retain separate human review and specialist training without fitting or activating models or reviewing Freestyle motions during Sleep. User activity ends the remaining sleep chain through its lifecycle owner, coordinated with awake automation and robot operator scheduling.
 
-Sleep organizes experience, supports reviewed learning and persona development, and produces internal material for later cognition. It is separate from body low-power states, and a body boot/wake event does not imply a MetaHuman sleep session occurred.
+Sleep organizes experience, supports reviewed learning and persona development, and produces internal material for later cognition. It is separate from body low-power states, and a body boot/wake event does not imply an Ainekio OS sleep session occurred.
 
 ## Memory, persona, and inner dialogue
 
@@ -170,12 +170,12 @@ The editable [Active Operator graph](../../etc/cognitive-graphs/robot-autonomy-c
 
 Full Auto requires sustained, meaningful self-directed activity with progress and accurate outcomes. Every successful Full assessment must select or continue meaningful activity—musing, reasoning, tasks, agents, movement or the Sleep workflow. Doing nothing, returning all-zero activations, or running idle assessment loops is invalid, and code must never substitute a scripted fallback, forced movement or fixed task rotation.
 
-- **Independent execution and continuation:** Selected operations run through independent Work Coordinator admissions so their duration does not block subsequent assessments. Full can initiate new work, continue an existing execution by ID through the durable autonomy event owner (preserving original objective, autonomous authorship and prior results), or invoke a Desire lifecycle stage through Desire Agent. Delegated computer-tool work settles independently while speech rendering is pending.
+- **Independent execution and continuation:** Selected operations run through independent Work Coordinator admissions so their duration does not block subsequent assessments. Full can initiate new work, continue an existing execution by ID through the durable autonomy event owner (preserving original objective, autonomous authorship and prior results), or invoke a Desire lifecycle stage through Desire Agent. Delegated computer-tool work through Big Brother Terminal (`claude-code`, `codex`, or `gemini`) settles independently while speech rendering is pending.
 - **Canonical activity and connection state:**
   - Activity context reads canonical execution outcomes (up to Task Receipt Limit for completed activities, plus all linked running, waiting and idle objectives), pairing each selected action ID with its correlated receipt so later speech playback cannot overwrite action evidence.
-  - Core's Robot Operator body-connection reader reports actual selected-body connectivity (a gateway connection alone is insufficient). When the robot body is disconnected, embodied functions must not be triggered or updated, while non-embodied activity (reasoning, memory, agents, Sleep) remains available.
+  - Core's Robot Operator body-connection reader supplies actual selected-body connectivity (`bodyConnection`) in model-visible `activationState` (a gateway connection alone is insufficient). When no robot session is connected, downstream trigger handling skips embodied `boredom-*` stimulus workflows (`no_connected_robot_session`), while `environment-mode.json` remains usable for non-embodied activity (reasoning, memory, inner dialogue, agents, delegated computer tasks, and Sleep).
   - Disconnected finite camera reads resolve immediately with their actual failure across Bridge teardown and Coordinator recovery without leaving stranded subscribers.
-- **Inner Dialogue recording:** Autonomous intentions dispatched to Environment execution (including Observer, Movement, Reflection and direct Full Auto Controller handoffs) are published to Inner Dialogue Buffer and saved by Inner Dialogue Memory Saver with the selected instruction, stated reason, observed context and provenance metadata (`autonomy`, `autonomy-intention`). This records the declared intention without claiming physical completion or adding spoken output.
+- **Inner Dialogue recording:** Autonomous intentions dispatched to Environment execution in both Semi and Full Auto modes (including Observer, Movement, Reflection and direct Controller handoffs via `active_operator_dispatch`) are published to Inner Dialogue Buffer and saved by Inner Dialogue Memory Saver with the selected instruction, stated reason, observed context and provenance metadata (`autonomy`, `autonomy-intention`). This records the declared intention without claiming physical completion or adding spoken output.
 
 References: [autonomy controller](../../etc/cognitive-graphs/robot-autonomy-controller-mode.json), [shared human/autonomy executor](../../etc/cognitive-graphs/environment-mode.json), [Active Operator](../../brain/agents/active-operator/), [Robot Goal Review](../../etc/cognitive-graphs/robot-goal-review-mode.json), [Weekly Goal Review](../../etc/cognitive-graphs/goal-review.json), [Agency owners](../../packages/core/src/agency), [remaining-objective routing](../../packages/core/src/nodes/utility/execution-context.node.ts).
 
@@ -190,11 +190,11 @@ Connections and the existing execution owners determine scheduling. This describ
 5. The active-task executor dispatches selected operations and records progress and outcomes.
 6. Remaining-objective routing conditionally invokes Goal Review for an unfinished owned objective; its assessment returns as data.
 7. When Intent selects `needsResponse`, the final context builder waits on selected graph branches, combines selected sources, returned execution/image evidence and applicable goal assessment, and passes them to Persona. Conversation Out records and speaks the reply.
-8. Save nodes retain Intent and Task decisions for later curation.
+8. `environment_training_output` nodes (`save-intent-decision` and `save-task-decision`) record Intent and Task decisions to the Environment Training review bank for later curation.
 
 Core distinction: **request → selected plan → dispatched operation → operation receipt → evidence about the objective**. Receiving command completion does not by itself prove that an object was found, tracking is active, or a clearer image was obtained. Conversation inference or delivery failure remains a failure rather than an empty successful reply.
 
-Sources: [Environment graph](../../etc/cognitive-graphs/environment-mode.json), [autonomy controller](../../etc/cognitive-graphs/robot-autonomy-controller-mode.json), [shared human/autonomy executor](../../etc/cognitive-graphs/environment-mode.json), [Goal Review](../../etc/cognitive-graphs/robot-goal-review-mode.json).
+Sources: [Environment graph](../../etc/cognitive-graphs/environment-mode.json), [autonomy controller](../../etc/cognitive-graphs/robot-autonomy-controller-mode.json), [Goal Review](../../etc/cognitive-graphs/robot-goal-review-mode.json).
 
 ### Illustrative request paths
 
@@ -222,4 +222,4 @@ Active Operator reads the Coordinator's active-item membership, not its retained
 
 ### Active Operator activation display and evidence
 
-Agency → Active Operator displays the configured operation list, current activation percentages, recent assessment trends, reasons, instructions and work states. The operation selection is editable in the graph's Available Autonomy Tasks node; model selection remains a saved model role in the model widget. Assessment records remain in durable executions and are projected into the next decision; there is no separate accumulating queue history. Initial unassessed operations have level zero and no assessment date. Semi levels accumulate the model-selected signed adjustments; levels are not automatically raised or reset. Goal Review is still tied to goals and returned evidence, not an idle polling operation. Reflection, daydream and curiosity timers migrated to this owner are removed; Sleep and explicit manual invocation retain their existing owners.
+Agency → Active Operator displays the configured operation list, current activation percentages, recent assessment trends, reasons, instructions and work states. The operation selection is editable in the graph's Available Autonomy Tasks node; per-mode model role assignments live in the right-sidebar **Server Status** (`Servers & Placement`) panel while graph `Model Router` nodes select the role category. Assessment records remain in durable executions and are projected into the next decision; there is no separate accumulating queue history. Initial unassessed operations have level zero and no assessment date. Semi levels accumulate the model-selected signed adjustments; levels are not automatically raised or reset. Goal Review is still tied to goals and returned evidence, not an idle polling operation. Reflection, daydream and curiosity timers migrated to this owner are removed; Sleep and explicit manual invocation retain their existing owners.

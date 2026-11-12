@@ -1,4 +1,4 @@
-# Running MetaHuman OS
+# Running Ainekio OS
 
 The maintained runtime is Linux-first. Install dependencies and build the Site
 before starting it:
@@ -42,7 +42,8 @@ Model Registry/Router select models; native presets own model loading, CPU/GPU
 placement and capacity. The Embedder role uses that same service. Application
 shutdown leaves its independent systemd unit running. The old Node embedding
 service, process manager and local-model start/stop controls are removed.
-Shared voice boot selection remains in `etc/voice-servers.json`.
+Shared voice boot and local/remote Whisper STT + Kokoro TTS target selection
+remains in `etc/voice-servers.json`.
 
 Event-bus shell and API controls share the process lifecycle in Core's existing
 event-bus server module and `logs/run/event-bus.pid`. Stop terminates the recorded
@@ -71,7 +72,7 @@ Normal `./start.sh` and full `./stop.sh` retain their service lifecycle behavior
 ## Development
 
 ```bash
-pnpm --dir apps/site dev
+pnpm dev   # or: pnpm --dir apps/site dev
 ```
 
 The development command runs only the Site dev server. Start optional background

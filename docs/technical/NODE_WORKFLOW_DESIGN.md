@@ -5,7 +5,7 @@ configurable workflows from reusable elements. Repairing a workflow must not
 routinely expand the node catalog or hide its behavior inside custom code.
 
 This guide applies to node types, graph structure, and their editor presentation.
-[AGENTS.md](../../AGENTS.md) governs authorization and coding work;
+Local repository guidelines (`AGENTS.md`) govern authorization and coding work;
 [Maintained Surface](MAINTAINED_SURFACE.md) owns runtime responsibilities;
 [Robot Bible](../robot/ROBOT_BIBLE.md) describes intended robot behavior.
 

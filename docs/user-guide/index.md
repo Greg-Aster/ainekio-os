@@ -60,6 +60,13 @@ owner-only setup.
 - [Frequently Asked Questions](reference/faq.md)
 - [Troubleshooting](reference/troubleshooting.md)
 
+## Embodied Robot and Environment Mode
+
+- [Robot Design Core](../robot/ROBOT_BIBLE.md)
+- [Robot Software Architecture](../robot/SYSTEM_ARCHITECTURE.md)
+- [Body Capabilities](../robot/BODY_CAPABILITIES.md)
+- [Companion Behavior & Full Auto](../robot/COMPANION_BEHAVIOR.md)
+
 ## Policies
 
 - [Terms of Service](appendix/21-terms-of-service.md)
@@ -67,12 +74,13 @@ owner-only setup.
 
 ## Reading the guide
 
-Paths such as `System → Backend` describe web-interface navigation. Commands
-are run from the repository root unless stated otherwise. Owner-only controls
-are labelled; standard and guest accounts will not see every control.
+Paths such as `Servers → Placement & Routing` or `System → Settings` describe
+web-interface navigation. Commands are run from the repository root unless
+stated otherwise. Owner-only controls are labelled; standard and guest accounts
+will not see every control.
 
 Runtime status is evidence about the current installation. Documentation, source
 code, or a successful build does not prove that an optional provider, remote
 server, environment adapter, or physical robot is connected.
 
-Last source reconciliation: 2026-09-01.
+Last source reconciliation: 2026-11-12.

@@ -36,7 +36,7 @@ The active development scope is **V2: twelve servos, ESP32-P4 and PCA9685 servo
 output**. V1 work is paused; its separate eight-servo ESP32-S3 implementation
 is retained. The selected body's identity, advertised capabilities and installed
 calibration determine what can actually be requested. A session name or an old hardware inventory is
-insufficient evidence. See [Ainekio's model boundaries](../../../Ainekio/docs/ROBOT_MODELS.md).
+insufficient evidence. See [Ainekio's model boundaries](https://github.com/Greg-Aster/Ainekio-bot/blob/dev/docs/ROBOT_MODELS.md).
 
 ## Robot functions
 
@@ -84,7 +84,7 @@ function has been demonstrated on the current installation.
 ## System map
 
 [Robot software architecture](SYSTEM_ARCHITECTURE.md) is the current software map
-across MetaHuman, Body Control and the V2 body. It owns the diagrams, process and
+across Ainekio OS, Body Control and the V2 body. It owns the diagrams, process and
 interface descriptions, execution paths, implementation owners and state lifetimes.
 Its [distribution section](SYSTEM_ARCHITECTURE.md#intended-boundaries-and-remaining-distribution-work)
 links to the separate proposals for work across multiple computers.
@@ -93,7 +93,7 @@ links to the separate proposals for work across multiple computers.
 
 Use the affected capability contract linked in [Robot functions](#robot-functions),
 then follow its implementation in the [architecture](SYSTEM_ARCHITECTURE.md).
-[Ainekio's authority map](../../../Ainekio/docs/README.md) links the selected body's
+[Ainekio's authority map](https://github.com/Greg-Aster/Ainekio-bot/blob/dev/docs/README.md) links the selected body's
 hardware and protocol specifications. The [repair design](../technical/REFACTOR_BLUEPRINT.md#repair-design)
 owns the change method; [qualification walkthroughs](QUALIFICATION.md#maintenance-walkthroughs)
 connect each repair to its existing checks.

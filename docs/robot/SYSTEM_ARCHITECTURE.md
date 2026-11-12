@@ -1,10 +1,10 @@
 # Robot software architecture
 
-This is the canonical software map for **V2** across Ainekio and MetaHuman:
+This is the canonical software map for **V2** across Ainekio and Ainekio OS:
 processes, interfaces, execution paths and state owners. V1 work is paused.
-Source paths were traced on **2026-10-26**; this is not a claim that every
+Source paths were traced on **2026-11-12**; this is not a claim that every
 checkout change is deployed.
-The [design core](ROBOT_BIBLE.md) owns product intent; [V2 specifications](../../../Ainekio/docs/v2-12servo/SPECIFICATIONS.md)
+The [design core](ROBOT_BIBLE.md) owns product intent; [V2 specifications](https://github.com/Greg-Aster/Ainekio-bot/blob/dev/docs/v2-12servo/SPECIFICATIONS.md)
 own the physical assembly. Read this page before changing robot software.
 
 The Bible links the intended capability contracts; this page owns their software
@@ -37,7 +37,7 @@ Start here. Each box is expanded in a diagram below. Arrows name the information
 flowchart TB
   H((Human)):::human
   UI["Browser or terminal"]:::ui
-  MH["MetaHuman OS<br/>Conversations, memory and tasks"]:::software
+  MH["Ainekio OS<br/>Conversations, memory and tasks"]:::software
   MODELS["Model services<br/>Text, vision and embeddings"]:::service
   BR["Environment Bridge"]:::software
   BC["Body Control<br/>Python application"]:::software
@@ -207,19 +207,20 @@ flowchart LR
 
 ### Body Control and movement
 
-Body Control runs on the desktop or robot-local host. Its generator is a separate HTTP service. Firmware executes physical commands; returned feedback establishes what happened.
+Body Control runs on the desktop or robot-local host. Freestyle's generator and the host neural gait simulator run as separate HTTP services. Firmware executes physical commands (including analytic gaits and the embedded Microduck neural policy); returned feedback establishes what happened.
 
 ```mermaid
 %%{init: {"theme":"base","themeVariables":{"darkMode":true,"background":"#0f172a","primaryColor":"#29233e","primaryTextColor":"#ede9fe","primaryBorderColor":"#b39aef","lineColor":"#94a3b8","edgeLabelBackground":"#17202d","clusterBkg":"#151e2c","clusterBorder":"#526176","titleColor":"#e2e8f0","fontSize":"16px"},"flowchart":{"nodeSpacing":20,"rankSpacing":35,"useMaxWidth":true}}}%%
 flowchart TB
-  BR["MetaHuman Environment Bridge"]:::service
+  BR["Ainekio OS Environment Bridge"]:::service
   DASH["Body Control dashboard<br/>Browser · port 8791"]:::ui
   ADAPTER["Environment adapter<br/>/environment · port 8790"]:::software
   GW["GatewayService<br/>Robot sessions and command transport"]:::software
   EXEC["Freestyle executor<br/>Compile and execute a program"]:::software
   GEN["Freestyle generator<br/>HTTP · port 8794"]:::service
-  MODEL["Host-local llama.cpp<br/>Shared 0.8B base + Freestyle LoRA"]:::service
-  P4["P4 firmware<br/>/robot connection · port 8790"]:::hardware
+  MODEL["Shared llama.cpp or Big Brother SSH<br/>0.8B LoRA or remote provider"]:::service
+  NEURAL["Neural gait service<br/>MuJoCo/MJX · port 8796"]:::service
+  P4["P4 firmware + onboard Microduck<br/>/robot connection · port 8790"]:::hardware
   OUT["PCA9685 and servos<br/>LCD and speaker"]:::hardware
   SENSORS["Camera, IMU and joint feedback"]:::hardware
   BR <-->|"Actions, observations and receipts"| ADAPTER
@@ -228,6 +229,7 @@ flowchart TB
   GW <-->|"Movement request / compiled commands and results"| EXEC
   EXEC <-->|"Movement description and program"| GEN
   GEN <-->|"Prompt and generated program"| MODEL
+  GW <-->|"Nominal foot targets and sim state"| NEURAL
   GW <-->|"Commands, receipts and telemetry"| P4
   P4 -->|"Targets, expressions and audio"| OUT
   SENSORS -->|"Images and measurements"| P4
@@ -241,7 +243,7 @@ flowchart TB
 
 ### Voice input and speech output
 
-Input and output can overlap other work. Output follows the selected audio destination. These paths share the existing speech clients; they do not require every destination to play.
+Input and output can overlap other work. Output follows the selected audio destination, and Whisper STT / Kokoro TTS support either local ports (`9883` / `9882`) or configured remote targets.
 
 ```mermaid
 %%{init: {"theme":"base","themeVariables":{"darkMode":true,"background":"#0f172a","primaryColor":"#29233e","primaryTextColor":"#ede9fe","primaryBorderColor":"#b39aef","lineColor":"#94a3b8","edgeLabelBackground":"#17202d","clusterBkg":"#151e2c","clusterBorder":"#526176","titleColor":"#e2e8f0","fontSize":"16px"},"flowchart":{"nodeSpacing":20,"rankSpacing":35,"useMaxWidth":true}}}%%
@@ -249,10 +251,10 @@ flowchart TB
   H((Human)):::human
   MIC["Robot microphone"]:::hardware
   BODY["P4, Body Control and Bridge<br/>Transport robot audio"]:::software
-  INPUT["MetaHuman STT client"]:::software
-  STT["Whisper STT<br/>HTTP · 9883"]:::service
-  ENGINE["MetaHuman speech input and workflows"]:::software
-  TTS["Kokoro TTS<br/>HTTP · 9882"]:::service
+  INPUT["Ainekio OS STT client"]:::software
+  STT["Whisper STT<br/>Local 9883 or remote target"]:::service
+  ENGINE["Ainekio OS speech input and workflows"]:::software
+  TTS["Kokoro TTS<br/>Local 9882 or remote target"]:::service
   DELIVERY["Speech delivery<br/>Selected destination"]:::software
   BROWSER["Browser speakers"]:::ui
   HOST["Body Control computer speakers"]:::hardware
@@ -279,12 +281,12 @@ flowchart TB
 
 ### Model and embedding services
 
-One llama.cpp service per computer exposes model aliases. Native workers load the selected weights. The installed desktop presets use GPU offload for generation and CPU inference for embeddings; Q6A has its own host settings.
+One `llama.cpp` service per computer exposes model aliases. Native workers load the selected weights. Desktop presets use GPU offload for generation and CPU inference for embeddings; robot-local SBCs such as Radxa Q6A maintain their own host presets.
 
 ```mermaid
 %%{init: {"theme":"base","themeVariables":{"darkMode":true,"background":"#0f172a","primaryColor":"#29233e","primaryTextColor":"#ede9fe","primaryBorderColor":"#b39aef","lineColor":"#94a3b8","edgeLabelBackground":"#17202d","clusterBkg":"#151e2c","clusterBorder":"#526176","titleColor":"#e2e8f0","fontSize":"16px"},"flowchart":{"nodeSpacing":20,"rankSpacing":35,"useMaxWidth":true}}}%%
 flowchart LR
-  ROUTER["MetaHuman model routing"]:::software
+  ROUTER["Ainekio OS model routing"]:::software
   MOTION["Freestyle generator"]:::software
   LLAMA["llama.cpp HTTP API<br/>8080 · native model workers"]:::service
   Q9["Qwen3.5 9B<br/>Text and vision"]:::service
@@ -293,15 +295,16 @@ flowchart LR
   FQ["Freestyle Qwen<br/>Motion programs"]:::service
   EQ["Qwen3 Embedding 0.6B<br/>CPU · 1024 dimensions"]:::service
   EN["Nomic Embed Text v1.5<br/>CPU · 768 dimensions"]:::service
-  CODEX["Codex / Big Brother<br/>App-server session"]:::service
+  BB["Big Brother<br/>Codex · Claude Code · Gemini ACP"]:::service
   OLLAMA["Ollama<br/>HTTP · 11434"]:::service
-  RUNPOD["RunPod Serverless<br/>Configured remote endpoint"]:::service
+  REMOTE["Remote & Cloud APIs<br/>Gemini · Claude · OpenAI · OpenRouter · RunPod"]:::service
   ROUTER <-->|"Text, images or embedding input / output"| LLAMA
   MOTION <-->|"Motion prompt and program"| LLAMA
+  MOTION <-->|"Optional SSH delegation"| BB
   LLAMA <--> Q9 & ENV08 & ENV2 & FQ & EQ & EN
-  ROUTER <-->|"Selected provider request / result"| CODEX
+  ROUTER <-->|"Selected provider request / result"| BB
   ROUTER <-->|"Selected provider request / result"| OLLAMA
-  ROUTER <-->|"Selected provider request / result"| RUNPOD
+  ROUTER <-->|"Selected provider request / result"| REMOTE
   classDef human fill:#263344,stroke:#cbd5e1,color:#f1f5f9
   classDef ui fill:#172d47,stroke:#60a5fa,color:#dbeafe
   classDef software fill:#29233e,stroke:#b39aef,color:#ede9fe
@@ -345,7 +348,7 @@ flowchart TB
   classDef data fill:#263126,stroke:#86c995,color:#dcfce7
 ```
 
-The [Svelte Flow map](http://127.0.0.1:4321/architecture) in the Site application
+The interactive Svelte Flow map (`/architecture` in the Site application)
 is described in its [implementation notes](../../apps/site/src/components/architecture-map/README.md).
 The diagrams show configured paths, not live health or deployment status. See the
 [placement table](#shared-llamacpp-hosting) for the desktop/Q6A split and
@@ -359,14 +362,15 @@ through the [profile registry](../../packages/core/src/model-resolver.ts);
 the [embedding request owner](../../packages/core/src/embeddings.ts),
 the [native llama.cpp provider](../../packages/core/src/providers/llama-cpp.ts),
 [deployment configuration](../../etc/deployment.json), and the
-[Freestyle service definition](../../../Ainekio/experiments/freestyle/ainekio-freestyle-api.service).
+[Freestyle service definition](https://github.com/Greg-Aster/Ainekio-bot/blob/dev/experiments/freestyle/ainekio-freestyle-api.service).
 
-**Body Control is a Python application.** Its [composition root](../../../Ainekio/Master/gateway/server/__main__.py)
-creates GatewayService, the environment adapter, camera processing, gait learning
-and the dashboard HTTP thread. Freestyle's generator is a separate HTTP service;
-its executor is loaded by the dashboard into the gateway process.
+**Body Control is a Python application.** Its [composition root](https://github.com/Greg-Aster/Ainekio-bot/blob/dev/Master/gateway/server/__main__.py)
+creates GatewayService, the environment adapter, camera processing, gait learning,
+the optional host neural gait service (`8796`), and the dashboard HTTP thread.
+Freestyle's generator (`8794`) is a separate HTTP service; its executor is loaded
+by the dashboard into the gateway process.
 
-**MetaHuman OS spans multiple processes and clients.** Core (`packages/core/src/`)
+**Ainekio OS spans multiple processes and clients.** Core (`packages/core/src/`)
 is a shared TypeScript library imported by the Astro Node.js web server, the `mh`
 CLI, and worker subprocesses. Brain supplies finite agent adapters and persistent
 service entrypoints (including Environment Bridge, supervised through Agent Catalog
@@ -377,54 +381,53 @@ model does not move durable task state to that server.
 | Connection | Endpoint / owner |
 | --- | --- |
 | Robot → Body Control | Robot initiates authenticated `/robot`, default port **8790**; gateway assigns session epochs and command sequences |
-| Operator → Body Control | Dashboard HTTP, default **8791**, independent of MetaHuman's web UI |
+| Operator → Body Control | Dashboard HTTP, default **8791**, independent of Ainekio OS's web UI |
 | Bridge → Body Control | Authenticated `/environment` on **8790**; gateway accepts loopback peers. Remote SSH/Cloudflare forwarding terminates there |
-| Bridge ↔ MetaHuman Core | Authenticated `/api/environment-bridge/*`: observation and result POSTs; `/stream` carries outbound work |
-| Freestyle executor → generator | Configured HTTP endpoint, default `127.0.0.1:8794`; generator calls its configured model backend |
+| Bridge ↔ Ainekio OS Core | Authenticated `/api/environment-bridge/*`: observation and result POSTs; `/stream` carries outbound work |
+| Freestyle executor → generator | Configured HTTP endpoint, default `127.0.0.1:8794`; generator calls shared `llama.cpp` or Big Brother over SSH |
+| Gateway ↔ neural gait service | Local HTTP/MuJoCo policy service, default `127.0.0.1:8796` |
 
 These are bidirectional information paths, not a serial execution sequence.
 Speech, sensing, motion and inference can overlap. For physical V2 startup, use
-the [startup guide](../../../Ainekio/docs/STARTUP.md).
+the [startup guide](https://github.com/Greg-Aster/Ainekio-bot/blob/dev/docs/STARTUP.md).
 
 ## Shared llama.cpp hosting
 
-Each computer running local llama.cpp inference uses one `llama-cpp.service` and
+Each computer running local `llama.cpp` inference uses one `llama-cpp.service` and
 one host-local preset (conventionally `~/.config/llama.cpp/models.ini`). Systemd
 owns the host service lifetime; [`bin/llama-cpp-services`](../../bin/llama-cpp-services)
 is its installation and start entrypoint. The unit executes the native
-`llama-server` binary directly, independent of MetaHuman or Body Control.
+`llama-server` binary directly, independent of Ainekio OS or Body Control.
 
 Model Resolver/Registry own role assignments, capabilities, model aliases,
 endpoint placement and request-local LoRA selection. The provider bridge and
 [`providers/llama-cpp.ts`](../../packages/core/src/providers/llama-cpp.ts) transport
-MetaHuman requests. Freestyle's [generator](../../../Ainekio/experiments/freestyle/generator.py)
-builds motion inputs, decodes results and calls `/v1` directly, separate from its
-compiler, executor and recordings.
+Ainekio OS requests. Freestyle's [generator](https://github.com/Greg-Aster/Ainekio-bot/blob/dev/experiments/freestyle/generator.py)
+builds motion inputs, decodes results and calls `/v1` directly (or delegates over SSH
+to Big Brother via `big_brother.py`), separate from its compiler, executor and recordings.
 
-| Arrangement | MetaHuman client | Freestyle generator client |
+| Arrangement | Ainekio OS client | Freestyle generator client |
 | --- | --- | --- |
-| Both applications on desktop | Desktop service root, e.g. `http://127.0.0.1:8080` | Same desktop listener plus `/v1`; selects its motion alias |
-| MetaHuman on desktop, Body Control on Q6A | Configured desktop service | Q6A's own service plus `/v1`; Q6A loopback refers to Q6A, not the desktop |
+| Both applications on desktop | Desktop service root, e.g. `http://127.0.0.1:8080` | Same desktop listener plus `/v1`; selects its motion alias (or Big Brother SSH) |
+| Ainekio OS on desktop, Body Control on Q6A | Configured desktop service | Q6A's own service plus `/v1` (or SSH to desktop Big Brother); Q6A loopback refers to Q6A |
 
 The host preset defines one section per deployment with absolute artifact paths,
 explicit aliases, `load-on-startup = false`, and per-model context, mmproj, KV,
 GPU, parallelism, reasoning, sampling and LoRA initialization settings. Keep
 model-specific settings in their preset sections rather than global router
-arguments. Native demand loading and idle sleep (five minutes on this
-installation) own weight residency. Inventory and health reads do not load
-weights; model-qualified property or adapter reads can load the selected worker.
-The service runs with `--models-max 0` so router mode does not impose an
-artificial model-count eviction cap alongside actual hardware memory limits.
+arguments. Native demand loading and idle sleep own weight residency. Inventory
+and health reads do not load weights; model-qualified property or adapter reads
+can load the selected worker. The service runs with `--models-max 0` so router
+mode does not impose an artificial model-count eviction cap alongside actual
+hardware memory limits.
 
 Native router mode spawns inference worker processes per loaded model. The
-adaptive-KV and cancellation patches live in
-[`shared-host-kv.patch`](../../external/llama.cpp/shared-host-kv.patch) (CUDA
-demand allocation applies to CUDA buffers; CPU presets use standard CPU
-allocation). The [number-sign schema patch](../../external/llama.cpp/json-schema-number-sign.patch)
-enforces nonzero signed numeric schema constraints used by Semi Auto activation
-adjustments.
+adaptive-KV, proxy-cancellation, and number-sign schema patches live in
+[`shared-host-kv.patch`](../../external/llama.cpp/shared-host-kv.patch),
+[`server-cancellation.patch`](../../external/llama.cpp/server-cancellation.patch), and
+[`json-schema-number-sign.patch`](../../external/llama.cpp/json-schema-number-sign.patch).
 
-Install the shared host service from the MetaHuman checkout:
+Install the shared host service from the Ainekio OS checkout:
 
 ```sh
 ./bin/llama-cpp-services install /absolute/path/to/llama-server \
@@ -469,18 +472,18 @@ changes.
    to admit actions and retain their identities.
 3. [Environment Bridge](../../brain/agents/environment-bridge/core.ts) consumes
    Core's stream and sends the action to the gateway's
-   [environment adapter](../../../Ainekio/Master/gateway/environment_adapter/server.py).
-   The adapter translates the semantic request and correlates its result.
+   [environment adapter](https://github.com/Greg-Aster/Ainekio-bot/blob/dev/Master/gateway/environment_adapter/server.py).
+   The adapter translates the semantic request (including direct `stop` with `detach: true` when requested) and correlates its result.
 4. For `requestMotion.description`,
-   [`GatewayService.request_motion`](../../../Ainekio/Master/gateway/server/service.py)
-   calls the [Freestyle executor](../../../Ainekio/experiments/freestyle/bridge.py).
-   Its [generator](../../../Ainekio/experiments/freestyle/generator.py) produces a
+   [`GatewayService.request_motion`](https://github.com/Greg-Aster/Ainekio-bot/blob/dev/Master/gateway/server/service.py)
+   calls the [Freestyle executor](https://github.com/Greg-Aster/Ainekio-bot/blob/dev/experiments/freestyle/bridge.py).
+   Its [generator](https://github.com/Greg-Aster/Ainekio-bot/blob/dev/experiments/freestyle/generator.py) produces a
    motion program from the request and observations. The executor compiles and
    submits targets through the same gateway connection.
-5. P4's [controller](../../../Ainekio/Slave/firmware/esp32p4-wifi6/main/controller.c)
-   receives the wire command. Its [body executor](../../../Ainekio/Slave/firmware/esp32p4-wifi6/main/body.c)
+5. P4's [controller](https://github.com/Greg-Aster/Ainekio-bot/blob/dev/Slave/firmware/esp32p4-wifi6/main/controller.c)
+   receives the wire command. Its [body executor](https://github.com/Greg-Aster/Ainekio-bot/blob/dev/Slave/firmware/esp32p4-wifi6/main/body.c)
    owns motion progress, calibrated output and measured target tracking; the
-   [PCA9685 driver](../../../Ainekio/Slave/firmware/esp32p4-wifi6/components/ainekio_pca9685/pca9685.c)
+   [PCA9685 driver](https://github.com/Greg-Aster/Ainekio-bot/blob/dev/Slave/firmware/esp32p4-wifi6/components/ainekio_pca9685/pca9685.c)
    writes servo signals. LLM token generation does not clock servo frames.
 6. Firmware receipts and telemetry return through GatewayService, adapter and
    Bridge to the same Core action/execution. Active Task consumes them; the
@@ -491,11 +494,11 @@ changes.
 **Motion ownership:** Freestyle owns description-based motion, startup/wake and
 stall correction requests. Inactivity rest/release is body-local, as defined in
 [the motion contract](BODY_CAPABILITIES.md#motion-and-posture). The manual Motion
-Library selector affects explicit manual controls without redirecting MetaHuman
-requests. Native motion and low-level manual controls remain available through
-the same P4 owners. An unavailable generator is reported rather than silently
-substituting a library movement. See the
-[Freestyle contract](../../../Ainekio/experiments/freestyle/README.md) for model,
+Library selector affects explicit manual controls without redirecting Ainekio OS
+requests. Native motion, onboard Microduck neural walking, and low-level manual
+controls remain available through the same P4 owners. An unavailable generator
+is reported rather than silently substituting a library movement. See the
+[Freestyle contract](https://github.com/Greg-Aster/Ainekio-bot/blob/dev/experiments/freestyle/README.md) for model,
 compiler, training and deployment details.
 
 ### Contracts at the handoffs
@@ -508,10 +511,10 @@ compiler, training and deployment details.
 | P4 → Core | Device and gateway evidence establishes progress and outcomes; Core correlates it to the originating work | Acceptance, termination, failure, unknown outcome and goal achievement remain distinguishable |
 | Core → UI / model context | UI projects state and models receive attributed evidence | Preserve source, speaker, time and uncertainty; displaying success cannot create a receipt |
 
-Executable schemas live in the [protocol](../../../Ainekio/Slave/software/protocol/README.md)
+Executable schemas live in the [protocol](https://github.com/Greg-Aster/Ainekio-bot/blob/dev/Slave/software/protocol/README.md)
 and [Core environment types](../../packages/core/src/environment-interface/types.ts);
 joint positions, socket mappings and electrical units live in the
-[V2 specifications](../../../Ainekio/docs/v2-12servo/SPECIFICATIONS.md#joints-units-and-calibration).
+[V2 specifications](https://github.com/Greg-Aster/Ainekio-bot/blob/dev/docs/v2-12servo/SPECIFICATIONS.md#joints-units-and-calibration).
 
 Core's durable execution/effect identity maps to Coordinator work and the adapter
 action; the gateway records the Freestyle job or robot session and sequence that
@@ -530,8 +533,8 @@ earlier movement's outcome. See
   and configured TTS → Bridge → gateway speech transport → selected robot or host
   playback. Playback receipts return to the originating work. Browser audio uses
   the existing browser delivery selection.
-- **Seeing:** P4 camera frames → gateway [camera plugin](../../../Ainekio/Master/gateway/plugins.py)
-  and configured [perception owner](../../../Ainekio/Master/gateway/perception.py) →
+- **Seeing:** P4 camera frames → gateway [camera plugin](https://github.com/Greg-Aster/Ainekio-bot/blob/dev/Master/gateway/plugins.py)
+  and configured [perception owner](https://github.com/Greg-Aster/Ainekio-bot/blob/dev/Master/gateway/perception.py) →
   adapter/Bridge → selected graph image or observation. Acquisition, recognition,
   metric estimates and retained image identity are separate contracts.
 - **Body events:** P4 IMU/feedback/device events → gateway event owner → Bridge →
@@ -544,14 +547,14 @@ Paths below are implementation owners, not proposed replacement services.
 
 | Responsibility | Existing owner |
 | --- | --- |
-| P4 initialization and peripheral composition | Ainekio [`main/app_main.c`](../../../Ainekio/Slave/firmware/esp32p4-wifi6/main/app_main.c), `board.c`, `controller.c`; `components/ainekio_p4_media/` (including `imu.c`), `main/servo_feedback.c`, `main/display.c` |
-| V2 kinematics, postures and native motion mathematics | Ainekio [`Slave/software/models/v2-12servo/`](../../../Ainekio/Slave/software/models/v2-12servo/); P4 `body.c` owns device execution |
-| Wire fields, joint order and compatibility | Ainekio [`Slave/software/protocol/`](../../../Ainekio/Slave/software/protocol/), including `joints_v2.py`; MetaHuman [`environment-interface/types.ts`](../../packages/core/src/environment-interface/types.ts) owns its semantic side |
-| Connections, authentication, command sequences and body receipts | Ainekio [`Master/gateway/server/`](../../../Ainekio/Master/gateway/server/); adapter `translation.py` and `action_receipts.py` own semantic translation/correlation |
-| Host gait recording, scoring and learning lifecycle | Ainekio [`gait_learning_service.py`](../../../Ainekio/Master/gateway/gait_learning_service.py); the gateway entrypoint constructs the service and the dashboard exposes its controls |
-| Authenticated robot maintenance HTTP | Ainekio [`robot_learning_transport.py`](../../../Ainekio/Master/gateway/robot_learning_transport.py); gait service owns its supplied persistent transport, while Freestyle owns its supplied sparse transport |
-| Learned movement generation and execution | Ainekio [`experiments/freestyle/`](../../../Ainekio/experiments/freestyle/), loaded by `dashboard/server.py`; this is an active runtime dependency despite the directory name |
-| Host selection, reconnect and tunnel lifecycle | MetaHuman [connection lifecycle](../../brain/agents/environment-bridge/), [`forwarder.ts`](../../brain/agents/environment-bridge/forwarder.ts) and Bridge `core.ts` |
+| P4 initialization and peripheral composition | Ainekio [`main/app_main.c`](https://github.com/Greg-Aster/Ainekio-bot/blob/dev/Slave/firmware/esp32p4-wifi6/main/app_main.c), `board.c`, `controller.c`; `components/ainekio_p4_media/` (including `imu.c`), `main/servo_feedback.c`, `main/display.c` |
+| V2 kinematics, postures, analytic gaits and onboard Microduck neural gait | Ainekio [`Slave/software/models/v2-12servo/`](https://github.com/Greg-Aster/Ainekio-bot/tree/dev/Slave/software/models/v2-12servo) (`motions/microduck/`); P4 `body.c` owns 50 Hz device execution |
+| Wire fields, joint order and compatibility | Ainekio [`Slave/software/protocol/`](https://github.com/Greg-Aster/Ainekio-bot/tree/dev/Slave/software/protocol), including `joints_v2.py`; Ainekio OS [`environment-interface/types.ts`](../../packages/core/src/environment-interface/types.ts) owns its semantic side |
+| Connections, authentication, command sequences and body receipts | Ainekio [`Master/gateway/server/`](https://github.com/Greg-Aster/Ainekio-bot/tree/dev/Master/gateway/server); adapter `translation.py` and `action_receipts.py` own semantic translation/correlation |
+| Host neural gait simulation, training and policy service | Ainekio [`Master/gateway/neural_gait/`](https://github.com/Greg-Aster/Ainekio-bot/tree/dev/Master/gateway/neural_gait) (`server.py` on port `8796`, `microduck.py`, `pupper_mjx_actor.py`) and [`gait_learning_service.py`](https://github.com/Greg-Aster/Ainekio-bot/blob/dev/Master/gateway/gait_learning_service.py) |
+| Authenticated robot maintenance HTTP | Ainekio [`robot_learning_transport.py`](https://github.com/Greg-Aster/Ainekio-bot/blob/dev/Master/gateway/robot_learning_transport.py); gait service owns its supplied persistent transport, while Freestyle owns its supplied sparse transport |
+| Learned movement generation and execution | Ainekio [`experiments/freestyle/`](https://github.com/Greg-Aster/Ainekio-bot/tree/dev/experiments/freestyle), loaded by `dashboard/server.py`; this is an active runtime dependency despite the directory name |
+| Host selection, reconnect and tunnel lifecycle | Ainekio OS [connection lifecycle](../../brain/agents/environment-bridge/), [`forwarder.ts`](../../brain/agents/environment-bridge/forwarder.ts) and Bridge `core.ts` |
 | Work admission and finite execution | Core [`queue/queue-system.ts`](../../packages/core/src/queue/queue-system.ts), `execution-engine.ts`; other processes submit through `work-submission.ts` |
 | Graph execution, suspension, results and recovery | Core [`graph-executor.ts`](../../packages/core/src/graph-executor.ts) and [`durable-execution/`](../../packages/core/src/durable-execution/) |
 | Task-selection schema, validation, context and planning-delegation contract | Core [`environment-interface/task-selection.ts`](../../packages/core/src/environment-interface/task-selection.ts); graph nodes and training-evidence readers consume this domain contract |
@@ -573,7 +576,7 @@ recording and retention; Maintenance and housekeeping use that policy.
 | State | Producer and consumer | Release / retention responsibility |
 | --- | --- | --- |
 | Device calibration, peripherals and Wi-Fi | P4 configuration/NVS → physical executor and device setup | Device-owned configuration survives host reconnect; replacing a model or clearing a host queue does not erase it |
-| Adapter action and delivery receipts | [ActionReceipts](../../../Ainekio/Master/gateway/environment_adapter/action_receipts.py) → Bridge/Core admission and evidence ingestion | Acknowledgement deletes the delivery copy. Action history remains until terminal, its observation is recorded, no delivery refers to it, and the existing age policy permits pruning. [Adapter recovery](../../../Ainekio/Master/gateway/environment_adapter/server.py) invokes that pruning; unresolved outcomes remain recoverable |
+| Adapter action and delivery receipts | [ActionReceipts](https://github.com/Greg-Aster/Ainekio-bot/blob/dev/Master/gateway/environment_adapter/action_receipts.py) → Bridge/Core admission and evidence ingestion | Acknowledgement deletes the delivery copy. Action history remains until terminal, its observation is recorded, no delivery refers to it, and the existing age policy permits pruning. [Adapter recovery](https://github.com/Greg-Aster/Ainekio-bot/blob/dev/Master/gateway/environment_adapter/server.py) invokes that pruning; unresolved outcomes remain recoverable |
 | Coordinator work and terminal results | [Queue manager](../../packages/core/src/queue/unified-queue-manager.ts) / [persister](../../packages/core/src/queue/queue-persister.ts) → executor and [durable receipt ingestion](../../packages/core/src/durable-execution/work-results.ts) | A terminal worker releases execution capacity. A durable result remains until its execution owner has committed the correlated receipt and acknowledges delivery; remaining terminal history follows the existing queue history policy |
 | Goals, checkpoints, effects and evidence references | [Execution store](../../packages/core/src/durable-execution/store.ts), profile `executions.sqlite` → graph resume, result consumers and history readers | Pending delivery, unresolved effects and live writers prevent retirement. [Checkpointer](../../packages/core/src/durable-execution/checkpointer.ts) retention removes eligible terminal history and then unreferenced observations/blobs; [recovery](../../packages/core/src/durable-execution/recovery.ts) supplies unfinished-work exclusions |
 | Conversation, persona and persistent experience | [Buffer admission](../../packages/core/src/buffer-admission.ts), [memory](../../packages/core/src/memory.ts) and profile owners → selected context and learning | Domain retention is independent of worker completion. Execution cleanup does not erase conversation or learned facts; attribution and deduplication belong to these owners |
@@ -596,7 +599,7 @@ contracts.
 ## Intended boundaries and remaining distribution work
 
 P4 owns local physical execution; Body Control owns the selected body and learned
-motion execution; MetaHuman owns cognition and durable objectives. Model-backed
+motion execution; Ainekio OS owns cognition and durable objectives. Model-backed
 behavior selection remains with the relevant models, while transport and UI
 layers report observations and outcomes.
 
@@ -622,7 +625,7 @@ a connected recipient.
 
 Cross-installation migration of active goals, replicated durable state, and
 control handoff remain design proposals in
-[DISTRIBUTED_ROBOT_FOUNDATION.md](../../../Ainekio/docs/DISTRIBUTED_ROBOT_FOUNDATION.md).
+[DISTRIBUTED_ROBOT_FOUNDATION.md](https://github.com/Greg-Aster/Ainekio-bot/blob/dev/docs/DISTRIBUTED_ROBOT_FOUNDATION.md).
 See [Maintained Surface](../technical/MAINTAINED_SURFACE.md) for runtime
 constraints, [Refactor Blueprint](../technical/REFACTOR_BLUEPRINT.md) for the
 repair method, and [qualification](QUALIFICATION.md) for acceptance checks.
