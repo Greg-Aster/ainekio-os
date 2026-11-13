@@ -80,4 +80,8 @@ pnpm validate:graphs   # Cognitive graph schema and executor validation
 
 ## License
 
-CC BY 4.0. See [LICENSE](LICENSE).
+Source-available for **non-commercial use only**:
+
+- **Software & Cognitive Workflows**: [PolyForm Noncommercial License 1.0.0](LICENSE) (`PolyForm-Noncommercial-1.0.0`)
+- **Documentation & Media**: [Creative Commons Attribution-NonCommercial-ShareAlike 4.0 International](LICENSE-DOCS) (`CC-BY-NC-SA-4.0`)
+- **Required Attribution & Commercial Licensing**: See [NOTICE](NOTICE).

@@ -1,0 +1,34 @@
+Required Notice: Copyright (c) 2025-2026 Gregory Aster (https://ainek.io | https://github.com/Greg-Aster)
+
+Ainekio OS — Non-Commercial Licensing & Attribution Notice
+==========================================================
+
+Commercial use by third parties is not permitted without a separate written
+commercial license from Gregory Aster.
+
+1. Software, Packages, Cognitive Workflows, Agents & Scripts
+   SPDX-License-Identifier: PolyForm-Noncommercial-1.0.0
+   All source code, packages, web and mobile applications, cognitive workflow
+   graphs, autonomous agents, and build/runtime scripts in this repository are
+   licensed under the PolyForm Noncommercial License 1.0.0 (see `LICENSE`).
+
+   Under the Notices section of the PolyForm Noncommercial License 1.0.0, any
+   distribution of any part of the software must retain a copy of `LICENSE` (or
+   its official URL) and the `Required Notice:` line at the top of this file.
+
+2. Documentation, Architecture Diagrams & Media Assets
+   SPDX-License-Identifier: CC-BY-NC-SA-4.0
+   All documentation, specifications, diagrams, and visual/media assets in this
+   repository are licensed under the Creative Commons
+   Attribution-NonCommercial-ShareAlike 4.0 International Public License
+   (see `LICENSE-DOCS`).
+
+3. Third-Party Components
+   External and third-party dependencies retain their respective upstream
+   open-source licenses.
+
+4. Trademarks & Commercial Licensing
+   "Ainekio", "Ainekio OS", and `ainek.io` are project identifiers of
+   Gregory Aster. Neither `LICENSE` nor `LICENSE-DOCS` grants trademark rights
+   or implies endorsement. For commercial licensing inquiries, contact
+   Gregory Aster via https://ainek.io or https://github.com/Greg-Aster.
