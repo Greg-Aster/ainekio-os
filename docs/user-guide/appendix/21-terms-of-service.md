@@ -1,14 +1,17 @@
 # Ainekio OS Terms of Service
 
-**Effective date:** 2026-08-31
-**Version:** 1.1
+**Effective date:** 2026-11-13
+**Version:** 1.2
 
 ## 1. Scope
 
-Ainekio OS is local-first, self-hosted software. The tracked repository
-`LICENSE` text governs copying, modification, and distribution. The license
-label in repository metadata and the current tracked `LICENSE` text disagree;
-the Installation Owner must resolve that conflict before redistribution. These
+Ainekio OS is local-first, self-hosted software made available for
+**non-commercial use only**. Copying, modification, and distribution of the
+software are governed by the tracked [PolyForm Noncommercial License 1.0.0](https://github.com/Greg-Aster/ainekio-os/blob/main/LICENSE)
+(`LICENSE`), documentation and media assets are governed by
+[CC BY-NC-SA 4.0](https://github.com/Greg-Aster/ainekio-os/blob/main/LICENSE-DOCS)
+(`LICENSE-DOCS`), and required attribution notices are specified in
+[`NOTICE`](https://github.com/Greg-Aster/ainekio-os/blob/main/NOTICE). These
 terms describe operator responsibilities and the account agreement shown by the
 Ainekio OS interface.
 
@@ -60,10 +63,12 @@ for your installation.
 
 The tracked
 [repository license](https://github.com/Greg-Aster/ainekio-os/blob/main/LICENSE)
-is the legal source for its warranty and liability terms. Do not rely on a
-package or README license label while it conflicts with that file. Third-party
-models, providers, services, and dependencies may have separate licenses and
-terms.
+(`PolyForm-Noncommercial-1.0.0`), [documentation license](https://github.com/Greg-Aster/ainekio-os/blob/main/LICENSE-DOCS)
+(`CC-BY-NC-SA-4.0`), and [`NOTICE`](https://github.com/Greg-Aster/ainekio-os/blob/main/NOTICE)
+are the legal source for permitted non-commercial use, attribution, warranty,
+and liability terms. Commercial use requires a separate written license from
+the project author. Third-party models, providers, services, and dependencies
+retain their respective upstream licenses and terms.
 
 ## 7. Changes
 

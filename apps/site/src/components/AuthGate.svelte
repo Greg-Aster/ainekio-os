@@ -614,7 +614,7 @@
 
           <div class="mt-8 pt-6 border-t border-white/10 [html:not(.dark)_&]:border-black/10">
             <p class="text-sm text-white/70 m-0 mb-2 text-center [html:not(.dark)_&]:text-black/70">
-              <strong class="text-white/90 [html:not(.dark)_&]:text-black/90">CC BY-NC</strong> — Attribution - Non-Commercial
+              <strong class="text-white/90 [html:not(.dark)_&]:text-black/90">PolyForm Noncommercial 1.0.0</strong> — Non-Commercial Use Only
             </p>
             <p class="text-xs leading-relaxed text-white/50 m-0 mb-4 text-center [html:not(.dark)_&]:text-black/50">
               The maker of this program lives in extreme poverty. Do not use the code of this project for profit.
