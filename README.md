@@ -2,6 +2,8 @@
 
 Ainekio OS is a local-first cognitive runtime and operating system for a persistent AI companion and personal counterpart. It pairs durable node-graph execution, attributed local memory, background agency, role-based model routing, local voice I/O, LoRA adapter training, and physical robot embodiment via [Ainekio](https://github.com/Greg-Aster/Ainekio-bot) ([ainek.io](https://ainek.io)).
 
+**[Project Site](https://ainek.io)** · **[Ainekio OS Guide](https://ainek.io/posts/ainekio-os/)** · **[Robot Capability & Spec Inventory](https://ainek.io/posts/what-ainekio-can-do/)** · **[Build Journal](https://ainek.io/updates/)** · **[Ainekio Hardware & Firmware Repo](https://github.com/Greg-Aster/Ainekio-bot)**
+
 ![Ainekio OS interface](docs/images/ainekio-os-ui.png)
 
 ## Core Capabilities
