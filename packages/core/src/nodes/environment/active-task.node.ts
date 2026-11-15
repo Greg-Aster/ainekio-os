@@ -1,9 +1,9 @@
 import { recognitionImageAssociation } from '../../environment-interface/perception.js'
 import { randomUUID } from 'node:crypto'
 import { defineNode, type NodeExecutionContext } from '../types.js'
-import { getLatestEnvironmentObservation, getEnvironmentPerception, prepareEnvironmentCommand } from '../../environment-interface/store.js'
+import { getLatestEnvironmentObservation, getEnvironmentPerception, prepareEnvironmentCommand, getActiveEnvironmentDepthConsumer } from '../../environment-interface/store.js'
 import type { EnvironmentTaskProgram, ActiveTaskState, ActiveTaskContinuation, EnvironmentTaskSteering } from '../../environment-interface/active-task.js'
-import { observeSinglePerson, personFrameKey, evaluateLocomotionGoal } from '../../environment-interface/active-task.js'
+import { observeSinglePerson, personFrameKey, evaluateLocomotionGoal, trackLocomotionProgress } from '../../environment-interface/active-task.js'
 import { environmentActionHasEnded } from '../../environment-interface/types.js'
 import type { EnvironmentAction, EnvironmentObservation, EnvironmentVisualFrame, EnvironmentLocomotionMeasurement } from '../../environment-interface/types.js'
 import type { EnvironmentTaskDecision } from '../../environment-interface/task-selection.js'
@@ -44,10 +44,15 @@ function releaseDepth(state: ActiveTaskState, context: NodeExecutionContext) {
   delete state.depthDemand
 }
 
+function stepNeedsDepth(step: EnvironmentTaskProgram['steps'][number] | undefined): boolean {
+  const goal = step?.kind === 'action' ? step.action.locomotionGoal : step?.kind === 'behavior' ? step.motion?.locomotionGoal : undefined
+  return goal?.kind === 'distance' || ((goal?.kind === 'approach' || goal?.kind === 'follow') && goal.proximity.kind === 'metric')
+}
+
 // A terminal receipt settles command identity before input may reuse a program.
 // Keep the receipt/failure as evidence, never as an active movement to adopt.
+// Retain depthDemand across step transitions so MoGe stays warm within the execution.
 function settleAction(state: ActiveTaskState, context: NodeExecutionContext) {
-  releaseDepth(state, context)
   clearDeadline(state, context)
   if (state.motionId) state.completedActionId = state.motionId
   for (const field of ['motionId', 'action', 'accepted', 'snapshotId', 'identificationEffectId', 'identificationRequest', 'image', 'identification', 'lastIdentifiedFrame', 'finishRequestedAt', 'cancellationRequestedAt', 'pendingControls', 'desiredControls', 'acknowledgedControls', 'retrySteering', 'steeringOffset', 'captureRequestedAt', 'captureCompleted', 'visionEffectId', 'locomotion', 'locomotionTargetAcquired'] as const) delete state[field]
@@ -121,14 +126,19 @@ export const environmentActiveTaskNode = defineNode({
         awaitingReplacement: true,
       }
     }
+    const targetSessionId = (inputs.sessionId ?? continuation?.state.observation?.sessionId ?? context.sessionId) as string | undefined
     if (continuation?.state.deadlineEffectId && initial?.deadlineEffectId !== continuation.state.deadlineEffectId)
-      clearDeadline({ ...continuation.state }, { ...context,
-        activeTaskSessionId: inputs.sessionId ?? continuation.state.observation?.sessionId ?? context.sessionId })
+      clearDeadline({ ...continuation.state }, { ...context, activeTaskSessionId: targetSessionId })
     if (continuation?.state.depthDemand) {
-      if (initial?.motionId === continuation.state.motionId && initial?.motionId) initial.depthDemand = continuation.state.depthDemand
-      else if (initial?.depthDemand?.consumerId !== continuation.state.depthDemand.consumerId)
-        releaseDepth({ ...continuation.state }, { ...context,
-          activeTaskSessionId: inputs.sessionId ?? continuation.state.observation?.sessionId ?? context.sessionId })
+      const sameSession = !continuation.state.observation?.sessionId || continuation.state.observation.sessionId === targetSessionId
+      const keepForMotion = initial?.motionId === continuation.state.motionId && Boolean(initial?.motionId)
+      const keepForProgram = sameSession && selected.steps.slice(initial?.stepIndex ?? 0).some(stepNeedsDepth)
+      if (sameSession && (keepForMotion || keepForProgram)) {
+        initial ??= { stepIndex: 0, evidence: [], updateRevision: 0 }
+        initial.depthDemand = continuation.state.depthDemand
+      } else if (initial?.depthDemand?.consumerId !== continuation.state.depthDemand.consumerId) {
+        releaseDepth({ ...continuation.state }, { ...context, activeTaskSessionId: targetSessionId })
+      }
     }
     if (initial?.identificationRequest) initial.identificationRequest = { ...initial.identificationRequest, stepIndex: initial.stepIndex }
     if (context.environmentInterpretation) {
@@ -150,7 +160,7 @@ export const environmentActiveTaskNode = defineNode({
     const child = await context.graphExecution!.callGraph(loaded.graph, { ...context, graphExecution: undefined,
       environmentObservation: undefined, activeProgram: inputs.program,
       activeTaskDecision: inputs.taskDecision ?? continuation?.decision, activeTaskSessionId: inputs.sessionId ?? continuation?.state.observation?.sessionId ?? context.sessionId,
-      activeTaskInitialState: initial, activeTaskContinuation: undefined, environmentInterpretation: undefined, pendingInstructionTurns: undefined })
+      activeTaskInitialState: initial, activeTaskContinuation: undefined, environmentInterpretation: undefined, precomputedEnvironmentPlan: undefined, pendingInstructionTurns: undefined })
     const result = requireGraphNodeOutput(child, 'environment_active_task_wait').state as ActiveTaskState
     const frames = (result.capturedFrameIds ?? []).map(id => context.graphExecution!.frame(id))
       .filter((frame): frame is EnvironmentVisualFrame => Boolean(frame));
@@ -193,7 +203,7 @@ export const environmentActiveTaskStepNode = defineNode({
     }
     const previous = execution.task()
     const record = () => {
-      if (state.done) releaseDepth(state, context)
+      if (state.done && state.objectiveComplete === true) releaseDepth(state, context)
       const feedback = (state.feedback?.type === 'outcome_unknown' ? state.feedback : state.failure) ?? (state.completedActionId && state.feedback?.actionId === state.completedActionId
         ? state.feedback : state.steeringResult ?? state.feedback)
       const loss = state.personLoss
@@ -454,19 +464,26 @@ export const environmentActiveTaskStepNode = defineNode({
       state.identificationError = 'Measured Crab movement requires negotiated lateral control'
       state.done = true; state.objectiveComplete = false; record(); return { state }
     }
-    const needsDepth = goal?.kind === 'distance'
-      || (goal?.kind === 'approach' || goal?.kind === 'follow') && goal.proximity.kind === 'metric'
+    const needsDepth = stepNeedsDepth(step)
     if (needsDepth && !state.depthDemand?.ready) {
       if (!state.depthDemand) {
-        const consumerId = `${execution.executionId}:${randomUUID()}`
-        state.depthDemand = { consumerId, ready: false,
-          effectId: execution.dispatch({ kind: 'coordinator_work', payload: {
-            type: 'generic', handler: 'environment.visual-read', resource: `environment-depth-acquire:${consumerId}`,
-            source: 'environment', username: context.username, maxAttempts: 1,
-            input: { sessionId, vision: { operation: 'depthDemand', consumerId, enabled: true } },
-          } }).effectId }
+        const existingConsumer = getActiveEnvironmentDepthConsumer(sessionId, execution.executionId)
+        const warmPosition = (observation?.state?.locomotionMeasurement as EnvironmentLocomotionMeasurement | undefined)?.position
+        if (existingConsumer && warmPosition?.available === true) {
+          state.depthDemand = { consumerId: existingConsumer, ready: true }
+        } else {
+          const consumerId = existingConsumer ?? `${execution.executionId}:${randomUUID()}`
+          state.depthDemand = { consumerId, ready: false,
+            effectId: execution.dispatch({ kind: 'coordinator_work', payload: {
+              type: 'generic', handler: 'environment.visual-read', resource: `environment-depth-acquire:${consumerId}`,
+              source: 'environment', username: context.username, maxAttempts: 1,
+              input: { sessionId, vision: { operation: 'depthDemand', consumerId, enabled: true } },
+            } }).effectId }
+        }
       }
-      record(); return { state }
+      if (!state.depthDemand.ready) {
+        record(); return { state }
+      }
     }
     if (goal?.kind === 'visual') {
       const measurement = observation?.state?.locomotionMeasurement as EnvironmentLocomotionMeasurement | undefined
@@ -541,8 +558,12 @@ export const environmentActiveTaskStepNode = defineNode({
       const result = evaluateLocomotionGoal(goal, measurement, initial, Date.now(), requestedMotion?.gait)
       const measuredSource = goal.kind === 'distance' ? measurement.position : goal.kind === 'relativeTurn' ? measurement.yaw : measurement.target
       if (!result.reason && !state.finishRequestedAt && measuredSource?.expiresAt) scheduleDeadline(Date.parse(measuredSource.expiresAt))
+      const stalled = state.motionId && state.accepted && !state.finishRequestedAt && !result.reached && !result.reason && !state.locomotion?.incomplete
+        ? trackLocomotionProgress(goal, result.progress, measurement, state.locomotion?.stall, Date.now())
+        : { tracker: state.locomotion?.stall }
       state.locomotion = { initial, latest: measurement, reached: state.locomotion?.reached || result.reached,
-        incomplete: state.locomotion?.incomplete ?? result.reason, progress: result.progress }
+        incomplete: state.locomotion?.incomplete ?? result.reason ?? stalled.stalledReason,
+        progress: result.progress, ...(stalled.tracker ? { stall: stalled.tracker } : {}) }
       locomotionControls = { forward: result.forward, turn: result.turn, lateral: result.lateral }
       if (state.locomotion.incomplete && !state.motionId) {
         state.identificationError = state.locomotion.incomplete; state.done = true; state.objectiveComplete = false; record(); return { state }

@@ -5,6 +5,7 @@
  * This module persists autonomy admission configuration and nothing else.
  */
 
+import { randomUUID } from 'node:crypto';
 import fs from 'node:fs';
 import path from 'node:path';
 import { systemPaths } from '../paths.js';
@@ -15,6 +16,11 @@ export const ACTIVE_OPERATOR_CONFIG_FILE = path.join(systemPaths.etc, 'active-op
 
 function normalizeConfig(loaded: Partial<ActiveOperatorConfig> & { semiInactivityMinutes?: number }): ActiveOperatorConfig {
   const interval = loaded.semiAssessmentMinutes ?? loaded.semiInactivityMinutes;
+  const boredomInactivityMinutes = typeof loaded.boredomInactivityMinutes === 'number'
+    && Number.isFinite(loaded.boredomInactivityMinutes)
+    && loaded.boredomInactivityMinutes > 0
+    ? loaded.boredomInactivityMinutes
+    : undefined;
   return {
     autonomyMode: ['reactive', 'semi', 'full'].includes(loaded.autonomyMode || '')
       ? loaded.autonomyMode!
@@ -22,6 +28,7 @@ function normalizeConfig(loaded: Partial<ActiveOperatorConfig> & { semiInactivit
     semiAssessmentMinutes: typeof interval === 'number'
       && Number.isFinite(interval) && interval > 0
       ? interval : DEFAULT_CONFIG.semiAssessmentMinutes,
+    ...(boredomInactivityMinutes !== undefined ? { boredomInactivityMinutes } : {}),
   };
 }
 
@@ -36,8 +43,19 @@ export function loadConfig(): ActiveOperatorConfig {
 }
 
 export function saveConfig(config: ActiveOperatorConfig): void {
-  fs.mkdirSync(path.dirname(ACTIVE_OPERATOR_CONFIG_FILE), { recursive: true });
-  fs.writeFileSync(ACTIVE_OPERATOR_CONFIG_FILE, JSON.stringify(config, null, 2));
+  const dir = path.dirname(ACTIVE_OPERATOR_CONFIG_FILE);
+  fs.mkdirSync(dir, { recursive: true });
+  const tempFile = path.join(
+    dir,
+    `.${path.basename(ACTIVE_OPERATOR_CONFIG_FILE)}.${process.pid}.${randomUUID()}.tmp`,
+  );
+  try {
+    fs.writeFileSync(tempFile, JSON.stringify(config, null, 2));
+    fs.renameSync(tempFile, ACTIVE_OPERATOR_CONFIG_FILE);
+  } catch (error) {
+    fs.rmSync(tempFile, { force: true });
+    throw error;
+  }
 }
 
 export function updateConfig(updates: Partial<ActiveOperatorConfig>): ActiveOperatorConfig {

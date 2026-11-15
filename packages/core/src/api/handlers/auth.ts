@@ -22,6 +22,8 @@ import { getProfilePaths } from '../../paths.js';
 import { importProfileSyncBundle, saveProfileSyncConfig, validateProfileSyncBundle, validateProfileSyncConfig } from '../../profile-sync.js';
 
 const profileSyncLogger = createLogger('profile-sync');
+// RFC 6265bis persistent cookie ceiling (400 days) so browser cookies survive restarts until explicit logout.
+const PERSISTENT_SESSION_COOKIE_MAX_AGE = 60 * 60 * 24 * 400;
 
 /**
  * POST /api/auth/login - Authenticate user
@@ -174,7 +176,7 @@ export async function handleLogin(req: UnifiedRequest): Promise<UnifiedResponse>
         httpOnly: true,
         sameSite: 'lax' as const,
         path: '/',
-        maxAge: 60 * 60 * 24, // 24 hours
+        maxAge: PERSISTENT_SESSION_COOKIE_MAX_AGE,
       },
     }],
   };
@@ -499,7 +501,7 @@ export async function handleRegister(req: UnifiedRequest): Promise<UnifiedRespon
         httpOnly: true,
         sameSite: 'lax' as const,
         path: '/',
-        maxAge: 60 * 60 * 24, // 24 hours
+        maxAge: PERSISTENT_SESSION_COOKIE_MAX_AGE,
       },
     }],
   };
@@ -655,7 +657,7 @@ export async function handleCreateSyncUser(req: UnifiedRequest): Promise<Unified
           httpOnly: true,
           sameSite: 'lax' as const,
           path: '/',
-          maxAge: 60 * 60 * 24 * 7, // 7 days
+          maxAge: PERSISTENT_SESSION_COOKIE_MAX_AGE,
         },
       }],
     };

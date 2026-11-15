@@ -222,6 +222,35 @@ function compactBridgeSummary(value: unknown, sessionId: string): Record<string,
   };
 }
 
+function summarizeSystemIssues(value: unknown): {
+  count: number;
+  highestPriority: string | null;
+  latestCreatedAt: string | null;
+} {
+  const issues = Array.isArray(value) ? value.filter(isRecord) : [];
+  const priorityRank: Record<string, number> = { critical: 0, high: 1, medium: 2, low: 3 };
+  let highestPriority: string | null = null;
+  let latestCreatedAt: string | null = null;
+  let latestTimestamp = -Infinity;
+  for (const issue of issues) {
+    const priority = cleanText(issue.priority);
+    if (priority && (highestPriority === null || (priorityRank[priority] ?? 99) < (priorityRank[highestPriority] ?? 99))) {
+      highestPriority = priority;
+    }
+    const createdAt = cleanText(issue.createdAt);
+    const ts = Date.parse(createdAt);
+    if (createdAt && (latestCreatedAt === null || (Number.isFinite(ts) && ts > latestTimestamp))) {
+      latestCreatedAt = createdAt;
+      if (Number.isFinite(ts)) latestTimestamp = ts;
+    }
+  }
+  return {
+    count: issues.length,
+    highestPriority,
+    latestCreatedAt,
+  };
+}
+
 /**
  * Turn canonical Robot Buffer records into a small, correlated action ledger.
  * This is action evidence; conversation and memories are intentionally absent.
@@ -346,7 +375,14 @@ async function buildRobotOperatorContext(
       if (outputContract !== 'autonomy_controller' && ![...selected].some(source => source.startsWith('persona.'))) delete inputs.personaText;
       if (!selected.has('environment')) {
         const observation = inputs.observation;
-        inputs.observation = observation ? { sessionId: observation.sessionId, timestamp: observation.timestamp, metadata: observation.metadata } : undefined;
+        inputs.observation = observation ? {
+          sessionId: observation.sessionId,
+          timestamp: observation.timestamp,
+          metadata: observation.metadata,
+          ...(isRecord(observation.state) && observation.state.spatialCuriosity !== undefined
+            ? { state: { spatialCuriosity: observation.state.spatialCuriosity } }
+            : {}),
+        } : undefined;
         delete inputs.bridgeSummary;
       }
     }
@@ -528,7 +564,14 @@ async function buildRobotOperatorContext(
         mode: inputs.activationState.mode, assessedAt: inputs.activationState.assessedAt,
         localTime: inputs.activationState.localTime, timeZone: inputs.activationState.timeZone,
         bodyConnection: inputs.activationState.bodyConnection,
-        systemIssues: inputs.activationState.systemIssues,
+        ...(inputs.activationState.inactivity !== undefined ? { inactivity: inputs.activationState.inactivity } : {}),
+        systemIssues: Array.isArray(inputs.activationState.systemIssues)
+          ? inputs.activationState.systemIssues.map((item: unknown) => {
+              if (!isRecord(item)) return item;
+              const { history: _history, ...issue } = item;
+              return issue;
+            })
+          : inputs.activationState.systemIssues,
         operations: inputs.activationState.operations?.map(({ lastAssessment, recordedActivity, ...operation }: Record<string, unknown>) => operation),
         ...(!selected || selected.has('activityHistory') ? { history: inputs.activationState.operations?.map(({ id, lastAssessment, recordedActivity }: Record<string, unknown>) => ({
           operationId: id, lastAssessment, ...(!selected ? { recordedActivity } : {}),
@@ -714,7 +757,9 @@ function fixedContextNode(
           mode: nodeInputs.activationState?.mode, localTime: nodeInputs.activationState?.localTime,
           timeZone: nodeInputs.activationState?.timeZone,
           bodyConnection: nodeInputs.activationState?.bodyConnection,
-          systemIssues: nodeInputs.activationState?.systemIssues,
+          ...(nodeInputs.activationState?.inactivity !== undefined ? { inactivity: nodeInputs.activationState.inactivity } : {}),
+          spatialCuriosity: nodeInputs.observation?.state?.spatialCuriosity ?? null,
+          systemIssues: summarizeSystemIssues(nodeInputs.activationState?.systemIssues),
           activePersona: typeof nodeInputs.personaText === 'string' ? nodeInputs.personaText.trim() || null : null,
           operations: nodeInputs.activationState?.operations?.map((operation: any) => ({ id: operation.id, name: operation.name,
             activation: operation.activation, assessedAt: operation.lastAssessment?.assessedAt })),

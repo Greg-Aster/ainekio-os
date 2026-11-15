@@ -14,7 +14,7 @@ import {
 } from './types.js'
 
 // Bump when the owned schema or migrations change. Publish only after migration commits.
-const EXECUTION_SCHEMA_VERSION = 1
+const EXECUTION_SCHEMA_VERSION = 2
 
 type ClaimedActionReceipt = Pick<import('../queue/types.js').QueuedTask,
   'id' | 'type' | 'handler' | 'state' | 'username' | 'input' | 'durable' | 'startedAt' | 'bodyLease'>
@@ -28,17 +28,102 @@ interface ActionResultEvidence {
   deliveryOnly?: boolean
 }
 
+const SORTED_KEY_CACHE_LIMIT = 4096
+const sortedKeyCache = new Map<string, { keys: string[]; jsonKeys: string[] }>()
+const BLOB_REF_PREFIX = '\u0000mh-blob:'
+const LITERAL_PREFIX = '\u0000mh-literal:'
+const BLOB_REF_JSON_LEN = JSON.stringify(`${BLOB_REF_PREFIX}${'0'.repeat(64)}`).length
+
+function jsonStringLiteral(value: string): string {
+  const len = value.length
+  if (len <= 256) {
+    for (let i = 0; i < len; i++) {
+      const code = value.charCodeAt(i)
+      if (code < 0x20 || code === 34 || code === 92 || (code >= 0xD800 && code <= 0xDFFF)) {
+        return JSON.stringify(value)
+      }
+    }
+    return `"${value}"`
+  }
+  return JSON.stringify(value)
+}
+
+function sortedKeysForCanonical(obj: Record<string, unknown>): { keys: string[]; jsonKeys: string[] } {
+  const rawKeys = Object.keys(obj)
+  if (rawKeys.length === 0) return { keys: [], jsonKeys: [] }
+  if (rawKeys.length === 1) {
+    const key = rawKeys[0]
+    return { keys: [key], jsonKeys: [jsonStringLiteral(key)] }
+  }
+  let hasNullByte = false
+  for (let i = 0; i < rawKeys.length; i++) {
+    if (rawKeys[i].indexOf('\0') !== -1) {
+      hasNullByte = true
+      break
+    }
+  }
+  if (!hasNullByte) {
+    const sig = rawKeys.join('\0')
+    const cached = sortedKeyCache.get(sig)
+    if (cached) return cached
+    const keys = rawKeys.slice().sort((a, b) => a.localeCompare(b))
+    const jsonKeys = new Array<string>(keys.length)
+    for (let i = 0; i < keys.length; i++) jsonKeys[i] = jsonStringLiteral(keys[i])
+    if (sortedKeyCache.size >= SORTED_KEY_CACHE_LIMIT) sortedKeyCache.clear()
+    const entry = { keys, jsonKeys }
+    sortedKeyCache.set(sig, entry)
+    return entry
+  }
+  const keys = rawKeys.slice().sort((a, b) => a.localeCompare(b))
+  const jsonKeys = new Array<string>(keys.length)
+  for (let i = 0; i < keys.length; i++) jsonKeys[i] = jsonStringLiteral(keys[i])
+  return { keys, jsonKeys }
+}
+
 /** Stable serialization for identity/conflict checks, not semantic interpretation. */
 export function canonicalJSON(value: unknown): string {
-  if (value === null || typeof value !== 'object') {
+  if (value === null) return 'null'
+  const kind = typeof value
+  if (kind === 'string') return jsonStringLiteral(value as string)
+  if (kind !== 'object') {
     const result = JSON.stringify(value)
     if (result === undefined) throw new Error('Durable values must be JSON serializable')
     return result
   }
-  if (Array.isArray(value)) return `[${value.map(canonicalJSON).join(',')}]`
-  return `{${Object.entries(value).filter(([, v]) => v !== undefined)
-    .sort(([a], [b]) => a.localeCompare(b))
-    .map(([key, v]) => `${JSON.stringify(key)}:${canonicalJSON(v)}`).join(',')}}`
+  if (Array.isArray(value)) {
+    const len = value.length
+    if (len === 0) return '[]'
+    let out = '[' + canonicalJSON(value[0])
+    for (let i = 1; i < len; i++) out += ',' + canonicalJSON(value[i])
+    return out + ']'
+  }
+  const obj = value as Record<string, unknown>
+  const { keys, jsonKeys } = sortedKeysForCanonical(obj)
+  if (keys.length === 0) return '{}'
+  let out = '{'
+  let first = true
+  for (let i = 0; i < keys.length; i++) {
+    const entry = obj[keys[i]]
+    if (entry === undefined) continue
+    if (!first) out += ','
+    first = false
+    out += jsonKeys[i] + ':' + canonicalJSON(entry)
+  }
+  return out + '}'
+}
+
+function jsonStringLength(value: string): number {
+  const len = value.length
+  if (len <= 256) {
+    for (let i = 0; i < len; i++) {
+      const code = value.charCodeAt(i)
+      if (code < 0x20 || code === 34 || code === 92 || (code >= 0xD800 && code <= 0xDFFF)) {
+        return JSON.stringify(value).length
+      }
+    }
+    return len + 2
+  }
+  return JSON.stringify(value).length
 }
 
 export function contentHash(value: unknown): string {
@@ -51,21 +136,41 @@ export function contentHash(value: unknown): string {
  * job lifecycle; its receipt is attached here by the idempotent relay.
  */
 export class ExecutionStore {
+  private static waitGeneration = 0
+
+  static currentWaitGeneration(): number {
+    return ExecutionStore.waitGeneration
+  }
+
+  private noteWaitStateChange(): void {
+    ExecutionStore.waitGeneration += 1
+  }
+
   readonly db: Database.Database
+  readonly hasCheckpointSchema: boolean
+  private readonly statements = new Map<string, Database.Statement>()
+  private readScope: { envelopes: Map<string, any>; blobs: Map<string, any> } | null = null
 
   constructor(filename: string, readonly codec = { encode: canonicalJSON, decode: JSON.parse as (text: string) => any },
     private readonly originRuntimeId?: string) {
     if (filename !== ':memory:') fs.mkdirSync(path.dirname(filename), { recursive: true, mode: 0o700 })
     this.db = new Database(filename)
-    if (filename !== ':memory:') fs.chmodSync(filename, 0o600)
-    this.db.pragma('journal_mode = WAL')
+    if (filename !== ':memory:' && (fs.statSync(filename).mode & 0o777) !== 0o600) {
+      fs.chmodSync(filename, 0o600)
+    }
+    if (this.db.pragma('journal_mode', { simple: true }) !== 'wal') {
+      this.db.pragma('journal_mode = WAL')
+    }
     // WAL retains committed work across application crashes without a disk
     // sync per node. Power loss may roll back recent commits.
     this.db.pragma('synchronous = NORMAL')
     this.db.pragma('foreign_keys = ON')
     this.db.pragma('busy_timeout = 5000')
     const schemaVersion = this.db.pragma('user_version', { simple: true }) as number
-    if (schemaVersion === EXECUTION_SCHEMA_VERSION) return
+    if (schemaVersion === EXECUTION_SCHEMA_VERSION) {
+      this.hasCheckpointSchema = true
+      return
+    }
     this.db.exec(`
       CREATE TABLE IF NOT EXISTS executions (
         execution_id TEXT PRIMARY KEY, username TEXT NOT NULL, definition TEXT NOT NULL,
@@ -152,6 +257,28 @@ export class ExecutionStore {
         ON execution_observations(username, environment_id, adapter, robot_id, interpreted_at);
       CREATE INDEX IF NOT EXISTS execution_blob_ref_hash ON execution_blob_refs(hash);
       CREATE INDEX IF NOT EXISTS execution_observation_ref_id ON execution_observation_refs(observation_id);
+      CREATE INDEX IF NOT EXISTS execution_user_updated ON executions(username, updated_at);
+      CREATE TABLE IF NOT EXISTS checkpoints (
+        thread_id TEXT NOT NULL,
+        checkpoint_ns TEXT NOT NULL DEFAULT '',
+        checkpoint_id TEXT NOT NULL,
+        parent_checkpoint_id TEXT,
+        type TEXT,
+        checkpoint BLOB,
+        metadata BLOB,
+        PRIMARY KEY (thread_id, checkpoint_ns, checkpoint_id)
+      );
+      CREATE TABLE IF NOT EXISTS writes (
+        thread_id TEXT NOT NULL,
+        checkpoint_ns TEXT NOT NULL DEFAULT '',
+        checkpoint_id TEXT NOT NULL,
+        task_id TEXT NOT NULL,
+        idx INTEGER NOT NULL,
+        channel TEXT NOT NULL,
+        type TEXT,
+        value BLOB,
+        PRIMARY KEY (thread_id, checkpoint_ns, checkpoint_id, task_id, idx)
+      );
     `)
     this.db.transaction(() => {
       const graphColumns = this.db.pragma('table_info(execution_graphs)') as { name: string }[]
@@ -213,9 +340,37 @@ export class ExecutionStore {
       this.db.exec('DROP INDEX IF EXISTS execution_work_receipt_pending')
       if (schemaVersion < EXECUTION_SCHEMA_VERSION) this.db.pragma(`user_version = ${EXECUTION_SCHEMA_VERSION}`)
     }).immediate()
+    this.hasCheckpointSchema = true
   }
 
-  close(): void { this.db.close() }
+  stmt(sql: string): Database.Statement {
+    let cached = this.statements.get(sql)
+    if (!cached) {
+      cached = this.db.prepare(sql)
+      this.statements.set(sql, cached)
+    }
+    return cached
+  }
+
+  /** Reuse decoded immutable checkpoint envelopes and blobs within one synchronous read pass. */
+  withDocumentReadScope<T>(fn: () => T): T {
+    if (this.readScope) return fn()
+    this.readScope = { envelopes: new Map(), blobs: new Map() }
+    try {
+      const result = fn()
+      if (result && typeof (result as unknown as { then?: unknown }).then === 'function') {
+        throw new Error('withDocumentReadScope requires a synchronous callback')
+      }
+      return result
+    } finally {
+      this.readScope = null
+    }
+  }
+
+  close(): void {
+    this.statements.clear()
+    this.db.close()
+  }
 
   retirements(): string[] {
     return (this.db.prepare('SELECT execution_id FROM execution_retirements').all() as { execution_id: string }[]).map(row => row.execution_id)
@@ -332,19 +487,18 @@ export class ExecutionStore {
         if (record.status !== status) throw new ExecutionConflictError('A terminal execution cannot be revived')
         return
       }
-      const pending = this.dispatches(lease.executionId).some(effect => effect.kind !== 'graph_resume'
-        && ['pending', 'admitted', 'accepted', 'outcome_unknown'].includes(effect.status)
-        && !(effect.kind === 'coordinator_work' && effect.status !== 'pending'
-          && (effect.payload as { executionScope?: string }).executionScope === 'independent'))
+      const pendingForCompleted = this.hasPendingEffectDelivery(lease.executionId, false)
+      const pendingForIdle = this.hasPendingEffectDelivery(lease.executionId, true)
       const pendingInput = this.hasPendingInput(lease.executionId)
       this.db.prepare('UPDATE executions SET status = ?, updated_at = ? WHERE execution_id = ?')
-        .run(status === 'completed' && (pending || pendingInput) ? 'waiting'
-          : status === 'waiting' && waitingReason === 'user_or_autonomy' && !pending && !pendingInput ? 'idle' : status,
+        .run(status === 'completed' && (pendingForCompleted || pendingInput) ? 'waiting'
+          : status === 'waiting' && waitingReason === 'user_or_autonomy' && !pendingForIdle && !pendingInput ? 'idle' : status,
           Date.now(), lease.executionId)
       if (['waiting', 'idle'].includes(this.get(lease.executionId).status)) {
         this.db.prepare('INSERT INTO execution_waits VALUES (?, ?) ON CONFLICT(execution_id) DO UPDATE SET reason=excluded.reason')
           .run(lease.executionId, waitingReason ?? (pendingInput ? 'pending_input' : 'effect_delivery'))
       } else this.db.prepare('DELETE FROM execution_waits WHERE execution_id=?').run(lease.executionId)
+      this.noteWaitStateChange()
       this.settleFinishedDispatches(lease.executionId)
     }).immediate()
   }
@@ -374,7 +528,7 @@ export class ExecutionStore {
   }
 
   find(executionId: string): ExecutionRecord | null {
-    const row = this.db.prepare('SELECT e.*, w.reason AS waiting_reason FROM executions e LEFT JOIN execution_waits w USING(execution_id) WHERE e.execution_id=?').get(executionId) as any
+    const row = this.stmt('SELECT e.*, w.reason AS waiting_reason FROM executions e LEFT JOIN execution_waits w USING(execution_id) WHERE e.execution_id=?').get(executionId) as any
     return row ? this.executionRecord(row) : null
   }
 
@@ -429,7 +583,7 @@ export class ExecutionStore {
 
   /** Resolve subscriptions before decoding; completed history is not sensor work. */
   waitingFor(username: string, reasons: string[]): ExecutionRecord[] {
-    const rows = this.db.prepare(`SELECT e.*, w.reason AS waiting_reason
+    const rows = this.stmt(`SELECT e.*, w.reason AS waiting_reason
       FROM execution_waits w JOIN executions e USING(execution_id)
       WHERE w.reason IN (SELECT value FROM json_each(?)) AND e.username=? AND e.status='waiting'
       ORDER BY e.created_at`).all(JSON.stringify(reasons), username)
@@ -608,7 +762,7 @@ export class ExecutionStore {
 
   assertLease(lease: ExecutionLease): void {
     const writer = this.writerLocation(lease)
-    const state = this.db.prepare(`SELECT owner, owner_generation, lease_until FROM ${writer.table} WHERE ${writer.where}`)
+    const state = this.stmt(`SELECT owner, owner_generation, lease_until FROM ${writer.table} WHERE ${writer.where}`)
       .get(...writer.keys) as any
     if (!state || state.owner !== lease.owner || state.owner_generation !== lease.generation || (state.lease_until ?? 0) <= Date.now()) {
       throw new ExecutionConflictError('Stale execution writer')
@@ -769,6 +923,7 @@ export class ExecutionStore {
     } else if (transition.dispatches?.length) throw new ExecutionCancelledError(executionId)
     this.db.prepare(`UPDATE executions SET processed_sequence = ?, status = ?, updated_at = ? WHERE execution_id = ?`)
       .run(sequence, state.cancelledAt !== null ? 'cancelled' : transition.status ?? state.status, Date.now(), executionId)
+    this.noteWaitStateChange()
     this.settleFinishedDispatches(executionId)
     this.db.prepare('INSERT INTO execution_transitions VALUES (?, ?, ?)').run(executionId, transition.transitionId, identity)
   }
@@ -791,7 +946,7 @@ export class ExecutionStore {
   }
 
   dispatch(effectId: string): DispatchRecord {
-    const row = this.db.prepare('SELECT * FROM execution_outbox WHERE effect_id = ?').get(effectId) as any
+    const row = this.stmt('SELECT * FROM execution_outbox WHERE effect_id = ?').get(effectId) as any
     if (!row) throw new Error(`Unknown dispatch ${effectId}`)
     return {
       effectId, executionId: row.execution_id, checkpointId: row.checkpoint_id, kind: row.kind,
@@ -802,7 +957,7 @@ export class ExecutionStore {
   }
 
   dispatches(executionId: string): DispatchRecord[] {
-    return (this.db.prepare('SELECT effect_id FROM execution_outbox WHERE execution_id = ? ORDER BY rowid')
+    return (this.stmt('SELECT effect_id FROM execution_outbox WHERE execution_id = ? ORDER BY rowid')
       .all(executionId) as { effect_id: string }[]).map(row => this.dispatch(row.effect_id))
   }
 
@@ -842,6 +997,7 @@ export class ExecutionStore {
       this.db.prepare(`UPDATE execution_outbox SET work_item_id = ?, status = 'cancelled'
         WHERE effect_id = ? AND (work_item_id IS NOT ? OR status != 'cancelled')`)
         .run(receipt.id, effectId, receipt.id)
+      this.settleEffectDelivery(effect.executionId)
       return event
     }).immediate()
   }
@@ -875,6 +1031,7 @@ export class ExecutionStore {
       this.db.prepare(`UPDATE execution_outbox SET work_item_id = ?, status = CASE
         WHEN status = 'pending' THEN 'admitted' ELSE status END
         WHERE effect_id = ? AND (work_item_id IS NOT ? OR status = 'pending')`).run(workItemId, effectId, workItemId)
+      this.settleEffectDelivery(dispatch.executionId)
       return this.dispatch(effectId)
     }).immediate()
   }
@@ -985,8 +1142,14 @@ export class ExecutionStore {
     receipt?: ClaimedActionReceipt, evidence?: ActionResultEvidence): ExecutionEvent {
     return this.db.transaction(() => {
       const result = this.recordResult(executionId, actionId, event, uncertain, notExecuted, receipt, evidence)
+      const row = this.stmt('SELECT effect_id FROM execution_outbox WHERE execution_id = ? AND action_id = ?')
+        .get(executionId, actionId) as { effect_id: string } | undefined
+      const dispatch = row ? this.dispatch(row.effect_id) : null
+      if (result.kind !== 'delivery_result' && !this.finishedEffectDelivery(executionId)
+        && !(dispatch && this.isUnawaitedDisplayDispatch(dispatch))) {
+        this.scheduleResume(result)
+      }
       this.settleEffectDelivery(executionId)
-      if (result.kind !== 'delivery_result' && !this.finishedEffectDelivery(executionId)) this.scheduleResume(result)
       return result
     }).immediate()
   }
@@ -998,7 +1161,14 @@ export class ExecutionStore {
         throw new ExecutionConflictError('Execution finished before input admission; the input was not delivered')
       }
       const result = this.insertEvent(executionId, event)
-      this.scheduleResume(result)
+      if (event.kind === 'action_accepted' || event.kind === 'observation_received') {
+        const dispatch = this.findDispatchForEvent(executionId, result)
+        if (!this.finishedEffectDelivery(executionId) && !(dispatch && this.isUnawaitedDisplayDispatch(dispatch))) {
+          this.scheduleResume(result)
+        }
+      } else {
+        this.scheduleResume(result)
+      }
       return result
     }).immediate()
   }
@@ -1034,6 +1204,34 @@ export class ExecutionStore {
       && payload.input?.type === 'faceExpression'
   }
 
+  private isUnawaitedDisplayDispatch(effect: DispatchRecord): boolean {
+    if (!this.isDisplayDispatch(effect)) return false
+    const input = (effect.payload as { input?: { displayBackground?: unknown; displayRelease?: unknown } }).input
+    return input?.displayBackground === true || input?.displayRelease === true
+  }
+
+  private hasPendingEffectDelivery(executionId: string, allowAdmittedUnawaitedDisplay = false): boolean {
+    return this.dispatches(executionId).some(effect => effect.kind !== 'graph_resume'
+      && ['pending', 'admitted', 'accepted', 'outcome_unknown'].includes(effect.status)
+      && !(effect.kind === 'coordinator_work' && effect.status !== 'pending'
+        && ((effect.payload as { executionScope?: string }).executionScope === 'independent'
+          || (allowAdmittedUnawaitedDisplay && this.isUnawaitedDisplayDispatch(effect)))))
+  }
+
+  private hasActiveGraphResume(executionId: string): boolean {
+    return this.dispatches(executionId).some(effect => effect.kind === 'graph_resume'
+      && ['pending', 'admitted', 'accepted'].includes(effect.status))
+  }
+
+  private findDispatchForEvent(executionId: string, event: { workItemId?: string | null; actionId?: string | null }): DispatchRecord | null {
+    const row = event.workItemId
+      ? this.stmt('SELECT effect_id FROM execution_outbox WHERE execution_id = ? AND work_item_id = ?').get(executionId, event.workItemId) as { effect_id: string } | undefined
+      : event.actionId
+        ? this.stmt('SELECT effect_id FROM execution_outbox WHERE execution_id = ? AND action_id = ?').get(executionId, event.actionId) as { effect_id: string } | undefined
+        : undefined
+    return row ? this.dispatch(row.effect_id) : null
+  }
+
   private finishedEffectDelivery(executionId: string): boolean {
     const record = this.get(executionId)
     if (record.status !== 'waiting' || record.waitingReason !== 'effect_delivery') return false
@@ -1045,22 +1243,29 @@ export class ExecutionStore {
     return Array.isArray(queue) && queue.length === 0
   }
 
-  /** Finish delivery of an already-exhausted graph without re-running its executable. */
+  /** Finish delivery of an already-exhausted or input-parked graph without re-running its executable. */
   settleEffectDelivery(executionId: string): boolean {
     return this.db.transaction(() => {
       const record = this.get(executionId)
-      if (!this.finishedEffectDelivery(executionId) || this.hasPendingInput(executionId)
-        || record.owner && (record.leaseUntil ?? 0) > Date.now()) return false
-      const pending = this.dispatches(executionId).some(effect => effect.kind !== 'graph_resume'
-        && ['pending', 'admitted', 'accepted', 'outcome_unknown'].includes(effect.status)
-        && !(effect.kind === 'coordinator_work' && effect.status !== 'pending'
-          && (effect.payload as { executionScope?: string }).executionScope === 'independent'))
-      if (pending) return false
-      this.db.prepare("UPDATE executions SET status='completed', updated_at=? WHERE execution_id=?")
-        .run(Date.now(), executionId)
-      this.db.prepare('DELETE FROM execution_waits WHERE execution_id=?').run(executionId)
-      this.settleFinishedDispatches(executionId)
-      return true
+      if (this.hasPendingInput(executionId) || (record.owner && (record.leaseUntil ?? 0) > Date.now())) return false
+      if (this.finishedEffectDelivery(executionId)) {
+        if (this.hasPendingEffectDelivery(executionId, false)) return false
+        this.db.prepare("UPDATE executions SET status='completed', updated_at=? WHERE execution_id=?")
+          .run(Date.now(), executionId)
+        this.db.prepare('DELETE FROM execution_waits WHERE execution_id=?').run(executionId)
+        this.noteWaitStateChange()
+        this.settleFinishedDispatches(executionId)
+        return true
+      }
+      if (record.status === 'waiting' && record.waitingReason === 'user_or_autonomy') {
+        this.settleFinishedDispatches(executionId)
+        if (this.hasPendingEffectDelivery(executionId, true) || this.hasActiveGraphResume(executionId)) return false
+        this.db.prepare("UPDATE executions SET status='idle', updated_at=? WHERE execution_id=?")
+          .run(Date.now(), executionId)
+        this.noteWaitStateChange()
+        return true
+      }
+      return false
     }).immediate()
   }
 
@@ -1072,6 +1277,7 @@ export class ExecutionStore {
       this.db.prepare("UPDATE executions SET status='running', updated_at=? WHERE execution_id=?")
         .run(Date.now(), event.executionId)
       this.db.prepare('DELETE FROM execution_waits WHERE execution_id=?').run(event.executionId)
+      this.noteWaitStateChange()
     }
     if (this.coalescePendingEventResumes(event.executionId, event.sequence)) return
     const effectId = `${event.executionId}:resume:${event.eventId}`
@@ -1188,6 +1394,7 @@ export class ExecutionStore {
             this.db.prepare("UPDATE executions SET status='failed', updated_at=? WHERE execution_id=?")
               .run(Date.now(), effect.executionId)
             this.db.prepare('DELETE FROM execution_waits WHERE execution_id=?').run(effect.executionId)
+            this.noteWaitStateChange()
             this.settleFinishedDispatches(effect.executionId)
           } else if ((effect.attemptGeneration === record.ownerGeneration && receipt.state === 'cancelled')
             || (effect.attemptGeneration === undefined && ['failed', 'expired', 'cancelled'].includes(receipt.state))) {
@@ -1199,6 +1406,7 @@ export class ExecutionStore {
                 .run(Date.now(), effect.executionId)
               this.db.prepare('INSERT INTO execution_waits VALUES (?, ?) ON CONFLICT(execution_id) DO UPDATE SET reason=excluded.reason')
                 .run(effect.executionId, 'interrupted')
+              this.noteWaitStateChange()
             }
             this.requestRecovery(effect.executionId, workItemId)
           }
@@ -1230,16 +1438,21 @@ export class ExecutionStore {
         work_result_identity = ? WHERE effect_id = ?
         AND (status NOT IN ('cancelled', 'completed') OR work_result_identity IS NOT ?)`)
         .run(contentHash(payload), effectId, contentHash(payload))
+      if (!this.finishedEffectDelivery(effect.executionId) && !this.isUnawaitedDisplayDispatch(effect)) {
+        this.scheduleResume(result)
+      }
       this.settleEffectDelivery(effect.executionId)
-      if (!this.finishedEffectDelivery(effect.executionId)) this.scheduleResume(result)
       return result
     }).immediate()
   }
 
   completeProjection(effectId: string): void {
-    const effect = this.dispatch(effectId)
-    if (!['robot_status', 'local_tts', 'buffer_entry', 'conversation_feed'].includes(effect.kind)) throw new ExecutionConflictError('Not a local output delivery')
-    this.db.prepare("UPDATE execution_outbox SET status = 'completed' WHERE effect_id = ? AND status != 'cancelled'").run(effectId)
+    this.db.transaction(() => {
+      const effect = this.dispatch(effectId)
+      if (!['robot_status', 'local_tts', 'buffer_entry', 'conversation_feed'].includes(effect.kind)) throw new ExecutionConflictError('Not a local output delivery')
+      this.db.prepare("UPDATE execution_outbox SET status = 'completed' WHERE effect_id = ? AND status != 'cancelled'").run(effectId)
+      this.settleEffectDelivery(effect.executionId)
+    }).immediate()
   }
 
   cancel(executionId: string, event: NewExecutionEvent): ExecutionEvent {
@@ -1249,6 +1462,7 @@ export class ExecutionStore {
       this.db.prepare(`UPDATE executions SET cancelled_at = COALESCE(cancelled_at, ?), status = 'cancelled', updated_at = ?
         WHERE execution_id = ?`).run(Date.now(), Date.now(), executionId)
       this.db.prepare('DELETE FROM execution_waits WHERE execution_id=?').run(executionId)
+      this.noteWaitStateChange()
       this.db.prepare(`UPDATE execution_outbox SET status = 'cancelled'
         WHERE execution_id = ? AND status IN ('pending', 'admitted')`).run(executionId)
       return result
@@ -1263,45 +1477,89 @@ export class ExecutionStore {
     // Share its encoding within this document without caching mutable values
     // across checkpoints or changing the independent values returned on read.
     const strings = new Map<string, string>()
-    const objects = new WeakMap<object, unknown>()
+    const objects = new WeakMap<object, { val: any; len: number }>()
     const reference = (item: unknown): string => {
       const hash = contentHash(item)
-      blobs.set(hash, this.codec.encode(item))
-      return `\u0000mh-blob:${hash}`
+      if (!blobs.has(hash)) blobs.set(hash, this.codec.encode(item))
+      return `${BLOB_REF_PREFIX}${hash}`
     }
-    const pack = (item: any): any => {
-      if (typeof item === 'string') {
+    const packNode = (item: any): { val: any; len: number } => {
+      if (item === null) return { val: null, len: 4 }
+      const kind = typeof item
+      if (kind === 'string') {
         if (item.length > 4096) {
-          if (!strings.has(item)) strings.set(item, reference(item))
-          return strings.get(item)
+          let ref = strings.get(item)
+          if (!ref) {
+            ref = reference(item)
+            strings.set(item, ref)
+          }
+          return { val: ref, len: BLOB_REF_JSON_LEN }
         }
-        return item.startsWith('\u0000mh-') ? `\u0000mh-literal:${item}` : item
+        const literal = item.startsWith('\u0000mh-') ? `${LITERAL_PREFIX}${item}` : item
+        return { val: literal, len: jsonStringLength(literal) }
       }
-      if (item && typeof item === 'object') {
-        if (objects.has(item)) return objects.get(item)
-        const packed = Array.isArray(item) ? item.map(pack)
-          : Object.fromEntries(Object.entries(item).filter(([, entry]) => entry !== undefined).map(([key, entry]) => [key, pack(entry)]))
+      if (kind === 'number') return { val: item, len: Number.isFinite(item) ? String(item).length : 4 }
+      if (kind === 'boolean') return { val: item, len: item ? 4 : 5 }
+      if (kind === 'undefined' || kind === 'function' || kind === 'symbol') return { val: item, len: 4 }
+      if (kind === 'bigint') throw new TypeError('Do not know how to serialize a BigInt')
+      if (kind === 'object') {
+        const cached = objects.get(item)
+        if (cached) return cached
+        let packed: any
+        let totalLen: number
+        if (Array.isArray(item)) {
+          const length = item.length
+          packed = new Array(length)
+          totalLen = length > 0 ? 2 + (length - 1) : 2
+          for (let i = 0; i < length; i++) {
+            const child = packNode(item[i])
+            packed[i] = child.val
+            totalLen += child.len
+          }
+        } else {
+          packed = {}
+          const keys = Object.keys(item)
+          let propCount = 0
+          totalLen = 2
+          for (let i = 0; i < keys.length; i++) {
+            const key = keys[i]
+            const entry = item[key]
+            if (entry === undefined || typeof entry === 'function' || typeof entry === 'symbol') continue
+            const child = packNode(entry)
+            if (key === '__proto__') {
+              Object.defineProperty(packed, key, { value: child.val, enumerable: true, configurable: true, writable: true })
+            } else {
+              packed[key] = child.val
+            }
+            totalLen += jsonStringLength(key) + 1 + child.len
+            propCount++
+          }
+          if (propCount > 1) totalLen += propCount - 1
+        }
         // Child references are formed first, so unchanged node outputs/context
         // are shared even when the surrounding scheduler state advances.
-        const result = JSON.stringify(packed).length > 4096 ? reference(packed) : packed
-        objects.set(item, result)
-        return result
+        const out = totalLen > 4096
+          ? { val: reference(packed), len: BLOB_REF_JSON_LEN }
+          : { val: packed, len: totalLen }
+        objects.set(item, out)
+        return out
       }
-      return item
+      return { val: item, len: 4 }
     }
-    const encoded = this.codec.encode(pack(value))
+    const encoded = this.codec.encode(packNode(value).val)
     return { encoded, blobs }
   }
 
   commitDocument(executionId: string, document: { blobs: Map<string, string> }): void {
     if (!this.db.inTransaction) throw new Error('Evidence writes require the owning transaction')
+    if (document.blobs.size === 0) return
+    const hasBlob = this.stmt('SELECT 1 FROM execution_blobs WHERE hash = ?')
+    const insertBlob = this.stmt('INSERT INTO execution_blobs VALUES (?, ?)')
+    const hasRef = this.stmt('SELECT 1 FROM execution_blob_refs WHERE execution_id = ? AND hash = ?')
+    const insertRef = this.stmt('INSERT INTO execution_blob_refs VALUES (?, ?)')
     for (const [hash, value] of document.blobs) {
-      if (!this.db.prepare('SELECT 1 FROM execution_blobs WHERE hash = ?').get(hash)) {
-        this.db.prepare('INSERT INTO execution_blobs VALUES (?, ?)').run(hash, value)
-      }
-      if (!this.db.prepare('SELECT 1 FROM execution_blob_refs WHERE execution_id = ? AND hash = ?').get(executionId, hash)) {
-        this.db.prepare('INSERT INTO execution_blob_refs VALUES (?, ?)').run(executionId, hash)
-      }
+      if (!hasBlob.get(hash)) insertBlob.run(hash, value)
+      if (!hasRef.get(executionId, hash)) insertRef.run(executionId, hash)
     }
   }
 
@@ -1312,33 +1570,70 @@ export class ExecutionStore {
   }
 
   decodeDocument(value: string, path: readonly (string | number)[] = []): any {
+    const scope = this.readScope
     const documents = new Map<string, any>()
+    let selectBlob: Database.Statement | undefined
     const dereference = (item: any): any => {
-      if (typeof item !== 'string' || !item.startsWith('\u0000mh-blob:')) return item
-      const hash = item.slice('\u0000mh-blob:'.length)
-      if (!documents.has(hash)) {
-        const row = this.db.prepare('SELECT value FROM execution_blobs WHERE hash = ?').get(hash) as any
-        if (!row) throw new Error('Execution evidence blob is missing')
-        documents.set(hash, this.codec.decode(row.value))
+      if (typeof item !== 'string' || !item.startsWith(BLOB_REF_PREFIX)) return item
+      const hash = item.slice(BLOB_REF_PREFIX.length)
+      if (documents.has(hash)) return documents.get(hash)
+      if (scope?.blobs.has(hash)) {
+        const cached = scope.blobs.get(hash)
+        documents.set(hash, cached)
+        return cached
       }
-      return documents.get(hash)
+      selectBlob ??= this.stmt('SELECT value FROM execution_blobs WHERE hash = ?')
+      const row = selectBlob.get(hash) as any
+      if (!row) throw new Error('Execution evidence blob is missing')
+      const decoded = this.codec.decode(row.value)
+      documents.set(hash, decoded)
+      scope?.blobs.set(hash, decoded)
+      return decoded
     }
     const unpack = (item: any): any => {
       if (typeof item === 'string') {
-        if (item.startsWith('\u0000mh-literal:')) return item.slice('\u0000mh-literal:'.length)
-        if (item.startsWith('\u0000mh-blob:')) {
+        if (item.startsWith(LITERAL_PREFIX)) return item.slice(LITERAL_PREFIX.length)
+        if (item.startsWith(BLOB_REF_PREFIX)) {
           const packed = dereference(item)
           return packed && typeof packed === 'object' ? unpack(packed) : packed
         }
         return item
       }
-      if (Array.isArray(item)) return item.map(unpack)
-      if (item && typeof item === 'object') return Object.fromEntries(Object.entries(item).map(([key, entry]) => [key, unpack(entry)]))
+      if (Array.isArray(item)) {
+        const len = item.length
+        const out = new Array(len)
+        for (let i = 0; i < len; i++) out[i] = unpack(item[i])
+        return out
+      }
+      if (item && typeof item === 'object') {
+        const keys = Object.keys(item)
+        const out: Record<string, any> = {}
+        for (let i = 0; i < keys.length; i++) {
+          const key = keys[i]
+          const val = unpack(item[key])
+          if (key === '__proto__') {
+            Object.defineProperty(out, key, { value: val, enumerable: true, configurable: true, writable: true })
+          } else {
+            out[key] = val
+          }
+        }
+        return out
+      }
       return item
     }
     // Status projections read only their owned checkpoint fields. Resolve the
     // path before expanding descendants; unrelated model context stays saved.
-    let selected = this.codec.decode(value)
+    let selected: any
+    if (scope) {
+      if (scope.envelopes.has(value)) {
+        selected = scope.envelopes.get(value)
+      } else {
+        selected = this.codec.decode(value)
+        scope.envelopes.set(value, selected)
+      }
+    } else {
+      selected = this.codec.decode(value)
+    }
     for (const key of path) selected = dereference(selected)?.[key]
     return unpack(selected)
   }

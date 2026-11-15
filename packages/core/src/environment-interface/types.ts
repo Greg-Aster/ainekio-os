@@ -261,6 +261,31 @@ export function environmentActionHasEnded(feedback: Pick<EnvironmentFeedback, 't
     || feedback.type === 'outcome_unknown' && feedback.data?.executionEnded === true;
 }
 
+export interface SpatialCuriositySector {
+  sector: number;
+  centerDeg: number;
+  lastSeenSecAgo: number | null;
+  freeFloorMeters: number | null;
+  objects: string[];
+}
+
+export interface SpatialTrackedObject {
+  trackId: string;
+  label: string;
+  sector: number;
+  inspected: boolean;
+  lastSeenSecAgo: number;
+}
+
+export interface SpatialCuriosityState {
+  headingDeg: number | null;
+  currentSector: number | null;
+  secondsStationary: number;
+  secondsSinceHumanActivity: number | null;
+  sectors: SpatialCuriositySector[];
+  trackedObjects: SpatialTrackedObject[];
+}
+
 export interface EnvironmentObservation {
   /** Stable adapter receipt identity for replay and acknowledgement. */
   id?: string;
@@ -270,7 +295,9 @@ export interface EnvironmentObservation {
   timestamp: string;
   capabilities: EnvironmentCapabilities;
   text?: EnvironmentTextEvent[];
-  state?: Record<string, unknown>;
+  state?: Record<string, unknown> & {
+    spatialCuriosity?: SpatialCuriosityState;
+  };
   location?: EnvironmentLocationData;
   map?: EnvironmentMapData;
   visual?: EnvironmentVisualFrame;
@@ -318,6 +345,8 @@ export interface EnvironmentAction {
   sessionId?: string;
   type: EnvironmentActionType;
   createdAt: string;
+  /** When type === 'stop' and detach === true, Body Control disarms servo PWM without invoking Freestyle. */
+  detach?: boolean;
   text?: string;
   vector?: { x?: number; y?: number; z?: number };
   direction?: 'forward' | 'back' | 'left' | 'right';

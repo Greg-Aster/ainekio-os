@@ -11,7 +11,6 @@ const streamHandler = read('packages/core/src/api/handlers/tts-stream.ts');
 const robotSpeech = read('packages/core/src/tts/robot-speech.ts');
 const browserPlayback = read('apps/site/src/lib/client/composables/useTTS.ts');
 const kokoroServer = read('external/kokoro/kokoro_server.py');
-const voiceIndex = read('packages/core/src/voice/index.ts');
 const voiceTemplate = read('etc/voice.json.template');
 
 assert.match(
@@ -69,10 +68,15 @@ assert.equal(
   false,
   'the simulated post-synthesis streaming integration must remain removed',
 );
+assert.equal(
+  fs.existsSync(path.join(ROOT, 'packages/core/src/voice')),
+  false,
+  'the retired voice wrapper directory must remain removed',
+);
 assert.doesNotMatch(
-  voiceIndex,
-  /TTSIntegration|tts-integration/,
-  'the voice module must not export the retired simulated streamer',
+  kokoroService,
+  /writeFileSync|writeFile\(|readdirSync/,
+  'KokoroService must delegate audio cache persistence to the canonical TTS cache owner',
 );
 
 console.log('tts-synthesis-ownership.spec.ts passed');

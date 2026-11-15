@@ -4,7 +4,9 @@ import { spawn } from 'node:child_process'
 import path from 'node:path'
 import fs from 'node:fs'
 import { systemCodeReviewAuthorization } from '../help-tickets/code-review.js'
-import { ROOT } from '../path-builder.js'
+import { ROOT, getProfilePaths, systemPaths } from '../path-builder.js'
+import { loadFreshOperatorConfig } from '../config.js'
+import { listUsers } from '../users.js'
 import { getBufferPathForUser } from '../conversation-buffer.js'
 import type { EscalationOptions } from '../escalation-backend.js'
 import { audit } from '../audit.js'
@@ -107,13 +109,21 @@ export class TerminalRuntime extends EventEmitter {
       const finished = provider === 'gemini' && options.modelRequest
         ? this.geminiAcp.executeTurn(options, combined, data => this.write(current, data), observe)
         : runProvider(provider, prompt, options, this.receipts, combined,
-            data => this.write(current, data), observe, release => { cleanup = release })
+            data => this.write(current, data), observe, release => { cleanup = release }).then(result => {
+              cleanup = undefined
+              return result
+            })
       current.close = async () => {
         cancellation.abort(new Error('Big Brother terminal closed'))
-        try { await finished } catch (error) {
-          if (!cleanup) throw error
-          // A failed stop retains the actual process owner for a later retry.
-          await cleanup()
+        try {
+          await finished
+        } catch {
+          // A failed stop retains the actual process owner for a later retry;
+          // a settled turn with no process cleanup obligation is safe to reap.
+          if (cleanup) {
+            await cleanup()
+            cleanup = undefined
+          }
         }
       }
       audit({ level: 'info', category: 'action', event: 'big_brother_session_started', actor: options.username || 'terminal', details: { provider, id, sessionId: options.sessionId } })
@@ -130,6 +140,57 @@ export class TerminalRuntime extends EventEmitter {
       if (session) { session.info.phase = 'failed'; session.info.error = (error as Error).message }
       throw error
     } finally { this.changed() }
+  }
+
+  async warmup(provider: TerminalProvider, options: EscalationOptions = {}): Promise<void> {
+    if (this.status !== 'running') throw new TerminalError('Terminal agent is stopping', 409)
+    if (provider === 'gemini') {
+      const { modelId } = await this.geminiAcp.warmup(options)
+      audit({
+        level: 'info',
+        category: 'action',
+        event: 'big_brother_provider_warmed',
+        actor: options.username || 'terminal',
+        details: { provider, model: modelId },
+      })
+    }
+  }
+
+  async warmupConfiguredProviders(): Promise<void> {
+    if (this.status !== 'running') return
+    const candidates = new Set<string>()
+    try {
+      for (const user of listUsers()) {
+        if (user.username) candidates.add(user.username)
+      }
+    } catch {}
+    if (fs.existsSync(systemPaths.profiles)) {
+      for (const entry of fs.readdirSync(systemPaths.profiles, { withFileTypes: true })) {
+        if (entry.isDirectory()) candidates.add(entry.name)
+      }
+    }
+    for (const username of candidates) {
+      if (this.status !== 'running') return
+      try {
+        const operatorConfigPath = path.join(getProfilePaths(username).etc, 'operator.json')
+        if (!fs.existsSync(operatorConfigPath)) continue
+        const bigBrother = loadFreshOperatorConfig(username).bigBrotherMode
+        if (!bigBrother?.enabled || bigBrother.provider !== 'gemini') continue
+        await this.warmup('gemini', {
+          username,
+          model: bigBrother.model,
+          reasoningEffort: bigBrother.reasoningEffort,
+        })
+      } catch (error) {
+        audit({
+          level: 'warn',
+          category: 'system',
+          event: 'big_brother_provider_warmup_failed',
+          actor: username,
+          details: { provider: 'gemini', error: error instanceof Error ? error.message : String(error) },
+        })
+      }
+    }
   }
 
   async submitDiagnostic(request: DiagnosticRequest, complete?: (result: BigBrotherSessionResult) => void): Promise<DiagnosticReceipt> {

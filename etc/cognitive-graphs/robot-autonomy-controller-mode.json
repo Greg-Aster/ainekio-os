@@ -244,9 +244,7 @@
             "inner-curiosity",
             "train-of-thought",
             "desire-agent",
-            "sleep-workflow",
-            "mood",
-            "system-code-review"
+            "mood"
           ],
           "includeActivityHistory": false
         }

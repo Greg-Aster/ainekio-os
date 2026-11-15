@@ -186,7 +186,7 @@ export * from './robot-operator';
 export { readActivationAssessments } from './active-operator/activation-history.js';
 export type { ActivationAssessment } from './active-operator/activation.js';
 
-// Persona session manager - rename Session and getSessionStats to avoid conflicts
+// Persona session manager - rename Session to avoid conflicts
 export type {
   Question,
   Answer,

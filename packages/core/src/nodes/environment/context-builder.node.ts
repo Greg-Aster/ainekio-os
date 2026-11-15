@@ -3,6 +3,7 @@ import { readRobotStatusLive } from '../../robot-status-live.js';
 import { serializeContext } from '../../context-serialization.js';
 import { selectedEnvironmentRoutes } from './context-routing.js';
 import { resolveMemoryWork } from '../memory/memory-router.node.js';
+import { compactLocomotionMeasurement } from '../utility/execution-context.node.js';
 import { defineNode } from '../types.js';
 import { withVisualObservationSchema } from '../../visual-observation.js';
 import type { EnvironmentObservation, EnvironmentVisualFrame } from '../../environment-interface/index.js';
@@ -146,10 +147,20 @@ export const environmentContextBuilderNode = defineNode({
   description: 'Builds independently selected task or conversation context from shared sources and correlated recall. Conversation includes the validated selection and returned evidence.',
   async execute(inputs, context, properties) {
 
+    const userTurnRequestsReply = Boolean(typeof inputs.userInstruction === 'string' && inputs.userInstruction.trim())
+      && (inputs.selectedTask?.taskDecision?.outcome === 'request_user'
+        || inputs.goalAssessment?.outcome === 'request_user');
+    const needsConversation = !isRecord(inputs.routingAnalysis)
+      || inputs.routingAnalysis.needsResponse !== false
+      || userTurnRequestsReply;
     // An interrupted program hands input to continuation before conversation recall.
     if (properties?.purpose === 'conversation'
-      && (inputs.continueHere === false || inputs.program && inputs.taskResult?.done !== true)) return {};
+      && (!needsConversation || inputs.continueHere === false || inputs.program && inputs.taskResult?.done !== true)) return {};
     const consumer = properties?.purpose === 'conversation' ? 'conversation' : 'task';
+    const useTaskSelectedContext = consumer === 'conversation'
+      && (!Array.isArray(inputs.routingAnalysis?.conversationContext)
+        || (inputs.routingAnalysis.needsResponse === false && userTurnRequestsReply
+          && inputs.routingAnalysis.conversationContext.length === 0 && isRecord(inputs.selectedContext)));
     const directlyConnectedContext = consumer === 'conversation' && !isRecord(inputs.routingAnalysis);
     const routingAnalysis = selectedEnvironmentRoutes(isRecord(inputs.routingAnalysis) ? inputs.routingAnalysis : {}, consumer);
     const recalled = routingAnalysis.needsMemory === true && inputs.memoryWork
@@ -201,7 +212,10 @@ export const environmentContextBuilderNode = defineNode({
       : '';
     const includeRecentHistory = routingAnalysis.needsConversationHistory === true
       && (directUserTurn || Boolean(plannerDecision));
-    const useImages = (directlyConnectedContext || routingAnalysis.needsVision === true)
+    const taskSelectedVision = useTaskSelectedContext
+      && Array.isArray(inputs.routingAnalysis?.taskContext)
+      && inputs.routingAnalysis.taskContext.includes('vision');
+    const useImages = (directlyConnectedContext || routingAnalysis.needsVision === true || taskSelectedVision)
       && images.length > 0;
     const selectedImages = useImages ? images : [];
     const selectedFrames = useImages && Array.isArray(inputs.frames)
@@ -277,7 +291,7 @@ export const environmentContextBuilderNode = defineNode({
       delegatedMemories: relevantMemoryItems(inputs.delegatedMemories),
     }) : taskEnvelope;
     if (properties?.purpose === 'conversation') {
-      const selected = Array.isArray(inputs.routingAnalysis?.conversationContext) ? JSON.parse(message) : (inputs.selectedContext ?? JSON.parse(message));
+      const selected = useTaskSelectedContext ? (inputs.selectedContext ?? JSON.parse(message)) : JSON.parse(message);
       const { capabilityRules: _rules, ...evidence } = selected;
       if (evidence.robotStatus?.live && liveStatus) evidence.robotStatus = { ...evidence.robotStatus, live: liveStatus };
       if (evidence.robotStatus) evidence.robotStatus = projectRobotStatusContext(evidence.robotStatus, false);
@@ -322,7 +336,7 @@ export const environmentContextBuilderNode = defineNode({
             ...restState
           } = env.state;
           let nextState: Record<string, unknown> = includeLocomotionMeasurement && env.state.locomotionMeasurement !== undefined
-            ? { ...restState, locomotionMeasurement: env.state.locomotionMeasurement }
+            ? { ...restState, locomotionMeasurement: compactLocomotionMeasurement(env.state.locomotionMeasurement) }
             : restState;
           if (isRecord(nextState.recognition)) {
             const {
@@ -342,7 +356,90 @@ export const environmentContextBuilderNode = defineNode({
         })() : env.state;
         return { ...env, capabilities, state };
       };
+      const compactEvidence = (items: unknown) => {
+        if (!Array.isArray(items)) return items;
+        return items.map(item => {
+          if (typeof item !== 'string' || !item.trimStart().startsWith('{')) return item;
+          try {
+            const parsed = JSON.parse(item);
+            if (!isRecord(parsed)) return item;
+            const next: Record<string, unknown> = { ...parsed };
+            if (next.initial !== undefined) next.initial = compactLocomotionMeasurement(next.initial);
+            if (next.latest !== undefined) next.latest = compactLocomotionMeasurement(next.latest);
+            if (isRecord(next.progress)) {
+              if (next.latest !== undefined && next.progress.measurement !== undefined) {
+                const { measurement: _duplicateLatest, ...restProgress } = next.progress;
+                if (Object.keys(restProgress).length > 0) next.progress = restProgress;
+                else delete next.progress;
+              } else if (next.progress.measurement !== undefined) {
+                next.progress = {
+                  ...next.progress,
+                  measurement: compactLocomotionMeasurement(next.progress.measurement),
+                };
+              }
+            }
+            return next;
+          } catch {
+            return item;
+          }
+        });
+      };
+      const hasCurrentEnvironment = Boolean(returned?.currentEnvironment || evidence.currentEnvironment);
+      const includeTelemetrySnapshots = inputs.routingAnalysis?.needsExecutionContext === true || !hasCurrentEnvironment;
+      const compactExecution = (exec: unknown) => {
+        if (!isRecord(exec) || !Array.isArray(exec.events)) return exec;
+        const events = exec.events
+          .filter(event => {
+            if (includeTelemetrySnapshots || !isRecord(event)) return true;
+            if (event.kind === 'perception_received') return false;
+            if (event.kind === 'observation_received') {
+              const payload = isRecord(event.payload) ? event.payload : undefined;
+              const obs = isRecord(payload?.environmentObservation) ? payload.environmentObservation : undefined;
+              const hasAction = Boolean(event.actionId);
+              const hasVisual = Boolean(obs && (obs.visual !== undefined || (Array.isArray(obs.visuals) && obs.visuals.length > 0)));
+              const hasFeedback = Boolean(obs && obs.feedback !== undefined);
+              return hasAction || hasVisual || hasFeedback;
+            }
+            return true;
+          })
+          .map(event => {
+            if (!isRecord(event) || !isRecord(event.payload)) return event;
+            const payload = event.payload;
+            if (event.kind === 'observation_received' && payload.environmentObservation !== undefined) {
+              return {
+                ...event,
+                payload: { ...payload, environmentObservation: compactEnvironment(payload.environmentObservation) },
+              };
+            }
+            if (event.kind === 'perception_received' && payload.locomotionMeasurement !== undefined) {
+              return {
+                ...event,
+                payload: { ...payload, locomotionMeasurement: compactLocomotionMeasurement(payload.locomotionMeasurement) },
+              };
+            }
+            if (event.kind === 'work_result' && isRecord(payload.result) && isRecord(payload.result.result)
+              && isRecord(payload.result.result.vision) && payload.result.result.vision.locomotionMeasurement !== undefined) {
+              const vision = payload.result.result.vision;
+              return {
+                ...event,
+                payload: {
+                  ...payload,
+                  result: {
+                    ...payload.result,
+                    result: {
+                      ...payload.result.result,
+                      vision: { ...vision, locomotionMeasurement: compactLocomotionMeasurement(vision.locomotionMeasurement) },
+                    },
+                  },
+                },
+              };
+            }
+            return event;
+          });
+        return { ...exec, events };
+      };
       if (evidence.currentEnvironment) evidence.currentEnvironment = compactEnvironment(evidence.currentEnvironment);
+      if (evidence.execution) evidence.execution = compactExecution(evidence.execution);
       const activePersona = isRecord(inputs.persona) ? (() => {
         const { $schema: _s, version: _v, lastUpdated: _u, learningProvenance: _l, notes: _n, decisionHeuristics: _d, ...rest } = inputs.persona;
         return rest;
@@ -359,9 +456,9 @@ export const environmentContextBuilderNode = defineNode({
           ? { toolWork: { state: 'selected', request: rawInstruction } } : {}),
         ...(returned ? { currentEnvironment: compactEnvironment(returned.currentEnvironment),
           evidenceAvailability: returned.evidenceAvailability } : {}),
-        ...(taskResult ? { execution: inputs.execution ?? evidence.execution,
+        ...(taskResult ? { execution: compactExecution(inputs.execution ?? evidence.execution),
           taskResult: { done: taskResult.done, objectiveComplete: taskResult.objectiveComplete,
-            stepIndex: taskResult.stepIndex, evidence: taskResult.evidence,
+            stepIndex: taskResult.stepIndex, evidence: compactEvidence(taskResult.evidence),
             failure: taskResult.failure, identificationError: taskResult.identificationError, capturedFrameIds: taskResult.capturedFrameIds,
             planningRequired: taskResult.planningRequired, acquisition: taskResult.acquisition,
             visionResult: taskResult.visionResult, queryId: taskResult.queryId,
@@ -423,6 +520,7 @@ export const environmentContextBuilderNode = defineNode({
       receivedInput: recalled?.receivedInput,
       selectedContext: JSON.parse(message),
       precomputedResponse: context.environmentInterpretation?.response
+        ?? context.precomputedEnvironmentPlan?.response
         ?? (routingAnalysis.needsToolUse === true && routingAnalysis.needsAction !== true
           ? JSON.stringify({ taskDecision: null, program: null }) : undefined),
       message,
@@ -432,7 +530,7 @@ export const environmentContextBuilderNode = defineNode({
         { role: 'system', content: delegation ? [selectorContext, PLANNING_DELEGATION_DESCRIPTION, specialistPrompt].filter(Boolean).join("\n\n") : selectorContext },
         {
           role: 'user',
-          content: renderedContent(modelMessage),
+          content: delegation ? modelMessage : renderedContent(modelMessage),
         },
       ],
       context: {

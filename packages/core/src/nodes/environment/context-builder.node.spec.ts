@@ -1,4 +1,6 @@
 import { projectRobotStatusContext } from '../../robot-status.js'
+import { parseContext } from '../../context-serialization.js'
+import { executionEventContext } from '../utility/execution-context.node.js'
 import assert from 'node:assert/strict'
 import { readFileSync } from 'node:fs'
 import test from 'node:test'
@@ -812,4 +814,182 @@ test('conversation context strips action catalogs, raw body status, and persona 
     objective: 'Earlier parked goal',
     updatedAt: '2026-10-26T17:10:00Z',
   }])
+})
+
+test('delegated task context keeps specialist messages text-only while preserving multimodal planningMessages', async () => {
+  const current = observation()
+  const frame = { id: 'cam-frame-1', timestamp: current.timestamp, dataUrl: 'data:image/jpeg;base64,/9j/2Q==' }
+  const result: any = await environmentContextBuilderNode.execute({
+    userInstruction: 'Are you sure? Can you see me? What model are you running now?',
+    observation: current,
+    frames: [frame],
+    images: [{ type: 'image_url', image_url: { url: frame.dataUrl } }],
+    routingAnalysis: {
+      needsVision: true,
+      needsAction: true,
+      taskPlanner: 'specialist',
+      taskContext: ['environment', 'vision'],
+      conversationContext: ['vision'],
+    },
+  }, {}, { purpose: 'task', planningDelegation: true, specialistPrompt: 'Delegate visual tasks.' })
+  assert.equal(typeof result.messages[1].content, 'string', 'text-only action selector must not receive image_url parts')
+  assert.ok(Array.isArray(result.planningMessages[1].content), 'delegated planner must still receive multimodal frames')
+  assert.ok(result.planningMessages[1].content.some((part: any) => part.type === 'image_url'))
+  assert.ok(result.jsonSchema.anyOf.some((branch: any) => branch.properties?.delegatePlanning?.const === true))
+})
+
+test('conversation context compacts locomotion telemetry and unrequested sensor ticks across execution, environment, and taskResult evidence', async () => {
+  const makeTelemetry = (xMetres: number, degrees: number, observedAt: string) => ({
+    position: {
+      available: true, source: 'camera_optical_flow_depth', scaleSource: 'calibrated',
+      xMetres, yMetres: 0.02, zMetres: 0, path_length_m: xMetres, headingDegrees: degrees,
+      depth: { available: true, minMetres: 0.5, centerMetres: 1.4 },
+      depthSpatial: { rows: 8, cols: 8, values: Array.from({ length: 64 }, (_, i) => i * 0.05), valid: Array(64).fill(true) },
+      attitude: { orientation_wxyz: [1, 0, 0, 0], bracket_us: [100, 200], bracket_quality: ['good', 'good'] },
+      intrinsics: { fx: 512, fy: 512, cx: 320, cy: 240 },
+      calibrationId: 'cal-v2-1', modelId: 'depth-anything-metric',
+      distanceDefinition: 'integrated_body_displacement',
+      motionClock: { tick: 42 }, receivedAtMonotonic: 9876543, inferenceMs: 14.2,
+      observedAt,
+    },
+    yaw: {
+      available: true, degrees, uncertaintyDegrees: 1.2, observedAt,
+      bootId: 42, timestampUs: 888888,
+      imu: { joint_feedback: Array.from({ length: 12 }, (_, i) => ({ id: i, raw_adc: 500 + i, mv: 7400 })) },
+    },
+    camera: { available: true, frameId: 'frame-1', observedAt, receivedAtMonotonic: 9876500 },
+  })
+  const initialMeasurement = makeTelemetry(0, 0, '2026-11-12T01:00:00Z')
+  const finalMeasurement = makeTelemetry(0.45, 2.5, '2026-11-12T01:00:08Z')
+  const obsWithTelemetry = {
+    environmentId: 'ainekio',
+    adapter: 'ainekio-gateway',
+    sessionId: 'robot-1',
+    timestamp: '2026-11-12T01:00:08Z',
+    capabilities: {
+      actions: ['getStatus', 'move', 'requestMotion'],
+      visual: true,
+      movement: true,
+      expressionLibrary: Array.from({ length: 20 }, (_, i) => ({ name: `expr-${i}`, description: 'Expression entry '.repeat(10) })),
+    },
+    state: {
+      body: { authenticated: true, robotId: 'body', posture: 'standing', voltage: 7.4 },
+      gateway: {
+        selectedRobot: {
+          model: 'v2-12servo', connection_state: 'online', posture: 'standing',
+          status: { imu: { roll: 0.1 }, servos: Array.from({ length: 12 }, (_, i) => ({ id: i, position: 500 })) },
+        },
+      },
+      freestyleMovement: { active: false, phase: 'idle' },
+      locomotionMeasurement: finalMeasurement,
+    },
+  }
+  const termination = {
+    type: 'completed', actionId: 'act-walk', motionId: 'motion-1',
+    reason: 'target_distance_reached', movedMetres: 0.45, timestamp: '2026-11-12T01:00:08Z',
+  }
+  const rawEvents: any[] = [
+    { eventId: 'e1', executionId: 'exec-walk', sequence: 1, createdAt: 1, kind: 'action_accepted', actionId: 'act-status', payload: { action: { type: 'getStatus' } } },
+    { eventId: 'e2', executionId: 'exec-walk', sequence: 2, createdAt: 2, kind: 'physical_result', actionId: 'act-status', payload: { feedback: { type: 'completed', actionId: 'act-status' } } },
+    { eventId: 'e3', executionId: 'exec-walk', sequence: 3, createdAt: 3, kind: 'work_result', actionId: 'act-status', payload: { effectId: 'eff-1', result: { state: 'completed' } } },
+    {
+      eventId: 'e4', executionId: 'exec-walk', sequence: 4, createdAt: 4, kind: 'observation_received', actionId: 'act-status',
+      payload: {
+        environmentObservation: {
+          ...structuredClone(obsWithTelemetry),
+          feedback: { type: 'completed', actionId: 'act-status' },
+          state: { ...structuredClone(obsWithTelemetry.state), locomotionMeasurement: initialMeasurement },
+        },
+      },
+    },
+    {
+      eventId: 'e5', executionId: 'exec-walk', sequence: 5, createdAt: 5, kind: 'work_result',
+      payload: { effectId: 'eff-depth', result: { state: 'completed', result: { vision: { operation: 'depthDemand', enabled: true, locomotionMeasurement: initialMeasurement } } } },
+    },
+    { eventId: 'e6', executionId: 'exec-walk', sequence: 6, createdAt: 6, kind: 'work_result', payload: { effectId: 'eff-2', result: { state: 'completed' } } },
+    { eventId: 'e7', executionId: 'exec-walk', sequence: 7, createdAt: 7, kind: 'action_accepted', actionId: 'act-walk', payload: { action: { type: 'move', goal: { forwardMetres: 0.45 } } } },
+    { eventId: 'e8', executionId: 'exec-walk', sequence: 8, createdAt: 8, kind: 'resume_result', payload: { status: 'waiting_for_motion' } },
+    { eventId: 'e9', executionId: 'exec-walk', sequence: 9, createdAt: 9, kind: 'resume_result', payload: { status: 'waiting_for_motion' } },
+    { eventId: 'e10', executionId: 'exec-walk', sequence: 10, createdAt: 10, kind: 'physical_result', actionId: 'act-walk', payload: { feedback: { type: 'started', actionId: 'act-walk' } } },
+    ...Array.from({ length: 8 }, (_, index) => ({
+      eventId: `ep-${index}`, executionId: 'exec-walk', sequence: 11 + index * 2, createdAt: 11 + index * 2,
+      kind: 'perception_received',
+      payload: { sessionId: 'robot-1', locomotionMeasurement: makeTelemetry((index + 1) * 0.05, index * 0.3, `2026-11-12T01:00:0${index}Z`) },
+    })),
+    { eventId: 'e12', executionId: 'exec-walk', sequence: 12, createdAt: 12, kind: 'resume_result', payload: { status: 'continuing' } },
+    { eventId: 'e15', executionId: 'exec-walk', sequence: 15, createdAt: 15, kind: 'physical_result', actionId: 'act-walk', payload: { feedback: { type: 'progress', movedMetres: 0.2 } } },
+    { eventId: 'e17', executionId: 'exec-walk', sequence: 17, createdAt: 17, kind: 'work_result', payload: { effectId: 'eff-3', result: { state: 'completed' } } },
+    { eventId: 'e19', executionId: 'exec-walk', sequence: 19, createdAt: 19, kind: 'resume_result', payload: { status: 'continuing' } },
+    { eventId: 'e21', executionId: 'exec-walk', sequence: 21, createdAt: 21, kind: 'resume_result', payload: { status: 'continuing' } },
+    { eventId: 'e23', executionId: 'exec-walk', sequence: 23, createdAt: 23, kind: 'physical_result', actionId: 'act-walk', payload: { feedback: termination } },
+    { eventId: 'e24', executionId: 'exec-walk', sequence: 24, createdAt: 24, kind: 'work_result', payload: { effectId: 'eff-4', result: { state: 'completed' } } },
+    { eventId: 'e26', executionId: 'exec-walk', sequence: 26, createdAt: 26, kind: 'work_result', payload: { effectId: 'eff-5', result: { state: 'completed' } } },
+    { eventId: 'e27', executionId: 'exec-walk', sequence: 27, createdAt: 27, kind: 'resume_result', payload: { status: 'completed' } },
+  ].sort((a, b) => a.sequence - b.sequence)
+
+  const execution = { executionId: 'exec-walk', latestEventSequence: 27, events: executionEventContext(rawEvents) }
+  const taskResult = {
+    done: true,
+    objectiveComplete: true,
+    stepIndex: 1,
+    evidence: [JSON.stringify({
+      locomotionGoal: { forwardMetres: 0.45 },
+      initial: initialMeasurement,
+      latest: finalMeasurement,
+      reached: true,
+      incomplete: false,
+      progress: { movedMetres: 0.45, rotatedDegrees: 2.5, stalled: false, measurement: finalMeasurement },
+      termination,
+    })],
+  }
+
+  const defaultResult = await environmentContextBuilderNode.execute({
+    userInstruction: 'Walk forward a little bit.',
+    routingAnalysis: {
+      needsExecutionContext: false, needsEnvironment: false, needsRobotStatus: false,
+      needsVision: false, needsAction: true, needsResponse: true, needsPersona: true,
+      conversationContext: [],
+    },
+    selectedTask: { action: 'move', program: { steps: [{ kind: 'action', action: { type: 'move' } }] } },
+    taskResult,
+    execution,
+    observation: obsWithTelemetry as unknown as EnvironmentObservation,
+  }, {}, { purpose: 'conversation' })
+
+  for (const rawField of ['depthSpatial', 'joint_feedback', 'bracket_us', 'calibrationId', 'intrinsics', 'receivedAtMonotonic', 'expressionLibrary', 'freestyleMovement']) {
+    assert.equal(defaultResult.message.includes(rawField), false, `conversation payload must omit ${rawField}`)
+  }
+
+  const parsedDefault = parseContext(defaultResult.message)
+  assert.equal(parsedDefault.execution.events.some((event: any) => event.kind === 'perception_received'), false)
+  assert.equal(parsedDefault.execution.events.length, 19, 'action, work, physical, resume, and action-linked observation events stay intact')
+  assert.equal(parsedDefault.currentEnvironment.state.locomotionMeasurement.position.xMetres, 0.45)
+  assert.equal(parsedDefault.currentEnvironment.state.locomotionMeasurement.yaw.degrees, 2.5)
+  assert.equal(parsedDefault.taskResult.evidence[0].progress.measurement, undefined, 'duplicate progress.measurement omitted when latest is present')
+  assert.equal(parsedDefault.taskResult.evidence[0].progress.movedMetres, 0.45)
+  assert.equal(parsedDefault.taskResult.evidence[0].initial.position.xMetres, 0)
+  assert.equal(parsedDefault.taskResult.evidence[0].latest.position.xMetres, 0.45)
+  assert.deepEqual(parsedDefault.taskResult.evidence[0].termination, termination)
+
+  const rawUncompactedSize = JSON.stringify({ execution: { executionId: 'exec-walk', events: rawEvents }, taskResult, currentEnvironment: obsWithTelemetry }).length
+  assert.ok(defaultResult.message.length < rawUncompactedSize * 0.45, `expected substantial payload reduction, got ${defaultResult.message.length} vs ${rawUncompactedSize}`)
+
+  const requestedExecResult = await environmentContextBuilderNode.execute({
+    userInstruction: 'Walk forward a little bit.',
+    routingAnalysis: {
+      needsExecutionContext: true, needsEnvironment: false, needsRobotStatus: false,
+      needsVision: false, needsAction: true, needsResponse: true, needsPersona: true,
+      conversationContext: ['execution'],
+    },
+    selectedTask: { action: 'move', program: { steps: [{ kind: 'action', action: { type: 'move' } }] } },
+    taskResult,
+    execution,
+    observation: obsWithTelemetry as unknown as EnvironmentObservation,
+  }, {}, { purpose: 'conversation' })
+
+  const parsedRequested = parseContext(requestedExecResult.message)
+  assert.equal(parsedRequested.execution.events.filter((event: any) => event.kind === 'perception_received').length, 8,
+    'requested executionContext keeps compacted/diffed trajectory ticks')
+  assert.equal(requestedExecResult.message.includes('depthSpatial'), false)
+  assert.equal(requestedExecResult.message.includes('joint_feedback'), false)
 })

@@ -117,22 +117,6 @@
       }
     },
     {
-      "id": "speech",
-      "type": "genericNode",
-      "position": {
-        "x": 2800,
-        "y": 0
-      },
-      "data": {
-        "nodeType": "tts",
-        "label": "Speak Review Report",
-        "properties": {
-          "source": "system-code-review",
-          "defaultMode": "conversation"
-        }
-      }
-    },
-    {
       "id": "output",
       "type": "genericNode",
       "position": {
@@ -234,13 +218,6 @@
       "sourceHandle": "results",
       "target": "record",
       "targetHandle": "memory"
-    },
-    {
-      "id": "record-response-speech-conversation",
-      "source": "record",
-      "sourceHandle": "response",
-      "target": "speech",
-      "targetHandle": "conversation"
     },
     {
       "id": "record-response-output-response",

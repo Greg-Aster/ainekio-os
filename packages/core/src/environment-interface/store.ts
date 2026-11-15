@@ -1,12 +1,13 @@
 import fs from 'node:fs';
 import path from 'node:path';
-import { systemPaths } from '../paths.js';
+import { getProfilePaths, systemPaths } from '../paths.js';
+import { resolveModelForCognitiveMode, type ModelProvider } from '../model-resolver.js';
 import { getQueueManager, type UnifiedQueueManager } from '../queue/unified-queue-manager.js';
-import type { QueuedTask } from '../queue/types.js';
-import type { TaskInput } from '../queue/types.js';
+import type { QueuedTask, ResourceLaneId, TaskInput } from '../queue/types.js';
 import { randomUUID } from 'node:crypto';
+import { resolvePath } from '../storage-client.js';
 import { openExecutionStore } from '../durable-execution/storage.js';
-import { contentHash } from '../durable-execution/store.js';
+import { ExecutionStore, contentHash } from '../durable-execution/store.js';
 import { ExecutionConflictError, type NewExecutionEvent } from '../durable-execution/types.js';
 import { executionWorkInput, relayExecutionOutbox, reconcileTerminatedExecutionWork } from '../durable-execution/coordinator-outbox.js';
 import type {
@@ -36,7 +37,7 @@ import {
   normalizeEnvironmentVisualInspectionTarget,
   normalizeEnvironmentVisualTarget,
 } from './visual-approach.js';
-import { currentEnvironmentPerception, normalizeEnvironmentPerception, projectCurrentEnvironmentPerception } from './perception.js';
+import { currentEnvironmentPerception, normalizeEnvironmentPerception, projectCurrentEnvironmentPerception, retainedEnvironmentPerception } from './perception.js';
 const STATE_FILE = path.join(systemPaths.run, 'environment-bridge-state.json');
 const STALE_AFTER_MS = 45_000;
 const FUTURE_CLOCK_SKEW_MS = 5_000;
@@ -46,6 +47,30 @@ const DEFAULT_MAX_ACTION_DURATION_MS = 1_500;
 const ACTION_TYPES = new Set<EnvironmentActionType>([
   'move', 'look', 'jump', 'interact', 'stop', 'captureImage', 'requestMotion', 'faceExpression', 'inspect', 'visualApproach', 'speak', 'sendText',
 ]);
+const REMOTE_LLM_PROVIDERS = new Set<ModelProvider>([
+  'big-brother',
+  'openai',
+  'openrouter',
+  'claude',
+  'gemini',
+  'runpod_serverless',
+  'huggingface',
+  'remote-server',
+]);
+
+function environmentObservationResource(username?: string): ResourceLaneId {
+  if (!username || !/^[a-zA-Z0-9_-]+$/.test(username) || username.length > 50) {
+    return 'local-llm';
+  }
+  try {
+    const modelsPath = path.join(getProfilePaths(username).etc, 'models.json');
+    if (!fs.existsSync(modelsPath)) return 'local-llm';
+    const resolved = resolveModelForCognitiveMode('environment', 'orchestrator', username);
+    return REMOTE_LLM_PROVIDERS.has(resolved.provider) ? 'remote-llm' : 'local-llm';
+  } catch {
+    return 'local-llm';
+  }
+}
 
 type ActionSubscriber = () => void;
 type BridgeStateSubscriber = () => void;
@@ -76,7 +101,7 @@ function carryEnvironmentState(
   existing: EnvironmentObservation | undefined,
 ): EnvironmentObservation {
   const state = { ...(observation.state ?? {}) };
-  const perception = currentEnvironmentPerception(observation, state.perception ?? existing?.state?.perception);
+  const perception = retainedEnvironmentPerception(observation, state.perception ?? existing?.state?.perception);
   delete state.perception;
   if (perception) state.perception = perception;
   return { ...observation, state };
@@ -211,17 +236,78 @@ export function commandView(task: QueuedTask): EnvironmentCommandWork {
   };
 }
 
+interface CachedEnvironmentBridgeState {
+  diskSignature: string;
+  state: EnvironmentBridgeState;
+}
+
+const MAX_EMPTY_SENSOR_WAIT_CACHE = 64;
+const emptySensorWaitSignatures = new Map<string, string>();
+const resolvedExecutionStorePaths = new Map<string, { usersSignature: string; path: string }>();
+let cachedBridgeState: CachedEnvironmentBridgeState | null = null;
+
+function cloneBridgeJson<T>(value: T): T {
+  if (value === null || typeof value !== 'object') return value;
+  if (Array.isArray(value)) {
+    const copy = new Array(value.length);
+    for (let index = 0; index < value.length; index += 1) copy[index] = cloneBridgeJson(value[index]);
+    return copy as T;
+  }
+  const source = value as Record<string, unknown>;
+  const copy: Record<string, unknown> = {};
+  for (const key of Object.keys(source)) copy[key] = cloneBridgeJson(source[key]);
+  return copy as T;
+}
+
+function bridgeDiskSignature(): string {
+  const stat = fs.statSync(STATE_FILE, { bigint: true, throwIfNoEntry: false });
+  return stat ? `${stat.dev}:${stat.ino}:${stat.mtimeNs}:${stat.ctimeNs}:${stat.size}` : 'missing';
+}
+
+function peekEnvironmentBridgeState(): EnvironmentBridgeState {
+  try {
+    const signature = bridgeDiskSignature();
+    if (cachedBridgeState && cachedBridgeState.diskSignature === signature) {
+      return cachedBridgeState.state;
+    }
+    if (signature === 'missing') {
+      const empty = defaultState();
+      cachedBridgeState = { diskSignature: 'missing', state: empty };
+      return empty;
+    }
+    const loaded = normalizeState(JSON.parse(fs.readFileSync(STATE_FILE, 'utf8')));
+    cachedBridgeState = { diskSignature: bridgeDiskSignature(), state: loaded };
+    return loaded;
+  } catch {
+    return defaultState();
+  }
+}
+
+function updateEnvironmentSensorObservation(sessionId: string, latestObservation: EnvironmentObservation): void {
+  const current = peekEnvironmentBridgeState();
+  const session = current.sessions[sessionId];
+  if (!session) return;
+  cachedBridgeState = {
+    diskSignature: bridgeDiskSignature(),
+    state: {
+      ...current,
+      sessions: {
+        ...current.sessions,
+        [sessionId]: {
+          ...session,
+          latestObservation,
+        },
+      },
+    },
+  };
+}
+
 export function getEnvironmentBridgeStatePath(): string {
   return STATE_FILE;
 }
 
 export function readEnvironmentBridgeState(): EnvironmentBridgeState {
-  try {
-    if (!fs.existsSync(STATE_FILE)) return defaultState();
-    return normalizeState(JSON.parse(fs.readFileSync(STATE_FILE, 'utf8')));
-  } catch {
-    return defaultState();
-  }
+  return cloneBridgeJson(peekEnvironmentBridgeState());
 }
 
 export function writeEnvironmentBridgeState(state: EnvironmentBridgeState): EnvironmentBridgeState {
@@ -229,29 +315,32 @@ export function writeEnvironmentBridgeState(state: EnvironmentBridgeState): Envi
   const next = normalizeState({ ...state, updatedAt: nowIso() });
   const temporary = `${STATE_FILE}.${process.pid}.${randomUUID()}.tmp`;
   try {
-    fs.writeFileSync(temporary, `${JSON.stringify(next, null, 2)}\n`);
+    fs.writeFileSync(temporary, `${JSON.stringify(next)}\n`);
     fs.renameSync(temporary, STATE_FILE);
   } catch (error) {
     try { fs.unlinkSync(temporary); } catch {}
     throw error;
   }
+  const stored = cloneBridgeJson(next);
+  cachedBridgeState = { diskSignature: bridgeDiskSignature(), state: stored };
   notifyEnvironmentBridgeStateSubscribers();
-  return next;
+  return cloneBridgeJson(stored);
 }
 
-export function summarizeEnvironmentBridgeState(state = readEnvironmentBridgeState()): EnvironmentBridgeSummary {
+export function summarizeEnvironmentBridgeState(state?: EnvironmentBridgeState): EnvironmentBridgeSummary {
+  const resolved = state ?? peekEnvironmentBridgeState();
   const now = Date.now();
   const pendingCommands = getQueueManager().getAllTasks()
     .filter(task => task.type === 'environment_command');
-  const sessions = Object.values(state.sessions).map(session => ({
-    ...session,
+  const sessions = Object.values(resolved.sessions).map(session => ({
+    ...cloneBridgeJson(session),
     status: sessionStatus(session, now),
     pendingCommandCount: pendingCommands.filter(task => task.input.sessionId === session.sessionId).length,
   }));
   const pendingCommandCount = pendingCommands.length;
   return {
-    enabled: state.enabled,
-    updatedAt: state.updatedAt,
+    enabled: resolved.enabled,
+    updatedAt: resolved.updatedAt,
     sessionCount: sessions.length,
     pendingCommandCount,
     sessions,
@@ -491,15 +580,61 @@ export function recordEnvironmentRobotStatus(
   return summarizeEnvironmentBridgeState(writeEnvironmentBridgeState(state));
 }
 
+function sqliteFileSignature(filePath: string): string {
+  const dbStat = fs.statSync(filePath, { bigint: true, throwIfNoEntry: false });
+  if (!dbStat) return 'missing';
+  const walStat = fs.statSync(`${filePath}-wal`, { bigint: true, throwIfNoEntry: false });
+  return `${dbStat.dev}:${dbStat.ino}:${dbStat.mtimeNs}:${dbStat.size}:${walStat ? `${walStat.ino}:${walStat.mtimeNs}:${walStat.size}` : 'nowal'}`;
+}
+
+function resolveCachedExecutionStorePath(username: string): string | null {
+  if (!username.trim()) return null;
+  const usersSig = sqliteFileSignature(systemPaths.usersDb);
+  const cached = resolvedExecutionStorePaths.get(username);
+  if (cached && cached.usersSignature === usersSig) return cached.path;
+  const resolved = resolvePath({ username, category: 'state', subcategory: 'sessions', relativePath: 'executions.sqlite' });
+  if (!resolved.success || !resolved.path) {
+    resolvedExecutionStorePaths.delete(username);
+    return null;
+  }
+  if (resolved.storageType === 'internal' && !resolved.error) {
+    if (resolvedExecutionStorePaths.size >= MAX_EMPTY_SENSOR_WAIT_CACHE) resolvedExecutionStorePaths.clear();
+    resolvedExecutionStorePaths.set(username, { usersSignature: usersSig, path: resolved.path });
+  } else {
+    resolvedExecutionStorePaths.delete(username);
+  }
+  return resolved.path;
+}
+
+function sensorWaitStateSignature(username: string): { exists: boolean; signature: string } | null {
+  const storePath = resolveCachedExecutionStorePath(username);
+  if (!storePath) return null;
+  const dbSig = sqliteFileSignature(storePath);
+  if (dbSig === 'missing') return { exists: false, signature: `missing:${ExecutionStore.currentWaitGeneration()}` };
+  return { exists: true, signature: `${ExecutionStore.currentWaitGeneration()}:${dbSig}` };
+}
+
 async function wakeEnvironmentSensorWaiters(sessionId: string, event: NewExecutionEvent,
   enqueue?: (input: TaskInput) => Promise<QueuedTask>, username?: string | null): Promise<void> {
   if (!username) return;
+  const locomotionOnly = isRecord(event.payload) && event.payload.locomotionMeasurement !== undefined;
+  const reasons = [`active_task:${sessionId}:perception:locomotion`,
+    ...(!locomotionOnly ? [`active_task:${sessionId}:perception`] : [])];
+  const cacheKey = `${username}\0${reasons.join('\0')}`;
+  const stateSignature = sensorWaitStateSignature(username);
+  if (stateSignature && (!stateSignature.exists || emptySensorWaitSignatures.get(cacheKey) === stateSignature.signature)) {
+    return;
+  }
+  let emptyResult = false;
   const executions = openExecutionStore(username);
   try {
-    const locomotionOnly = isRecord(event.payload) && event.payload.locomotionMeasurement !== undefined;
-    const reasons = [`active_task:${sessionId}:perception:locomotion`,
-      ...(!locomotionOnly ? [`active_task:${sessionId}:perception`] : [])];
-    for (const execution of executions.waitingFor(username, reasons)) {
+    const waiting = executions.waitingFor(username, reasons);
+    if (waiting.length === 0) {
+      emptyResult = true;
+      return;
+    }
+    emptySensorWaitSignatures.delete(cacheKey);
+    for (const execution of waiting) {
       // Sensor wakes read the latest state; retain one immutable outstanding event.
       if (!executions.events(execution.executionId, execution.lastProcessedSequence)
         .some(pending => pending.kind === 'perception_received')) {
@@ -507,14 +642,26 @@ async function wakeEnvironmentSensorWaiters(sessionId: string, event: NewExecuti
       }
       await relayExecutionOutbox(executions, execution.executionId, enqueue);
     }
-  } finally { executions.close(); }
+  } finally {
+    executions.close();
+    if (emptyResult) {
+      const afterSignature = sensorWaitStateSignature(username);
+      if (afterSignature?.exists) {
+        if (emptySensorWaitSignatures.size >= MAX_EMPTY_SENSOR_WAIT_CACHE) emptySensorWaitSignatures.clear();
+        emptySensorWaitSignatures.set(cacheKey, afterSignature.signature);
+        if (!locomotionOnly) {
+          emptySensorWaitSignatures.set(`${username}\0active_task:${sessionId}:perception:locomotion`, afterSignature.signature);
+        }
+      }
+    }
+  }
 }
 
 /** Preserve source measurements and wake only an existing sensor subscription. */
 export async function recordEnvironmentLocomotionMeasurement(sessionId: string, value: unknown,
   enqueue?: (input: TaskInput) => Promise<QueuedTask>, username?: string | null): Promise<boolean> {
   if (!isRecord(value)) throw new Error('Locomotion measurement must be an object');
-  const state = readEnvironmentBridgeState();
+  const state = peekEnvironmentBridgeState();
   const session = state.sessions[sessionId];
   const observation = session?.latestObservation;
   if (!session || sessionStatus(session) !== 'connected' || !observation) return false;
@@ -524,8 +671,10 @@ export async function recordEnvironmentLocomotionMeasurement(sessionId: string, 
     || typeof source.available !== 'boolean'
     || source.robotId !== body.robotId
     || (source.sessionId !== undefined && source.sessionId !== sessionId))) return false;
-  session.latestObservation = { ...observation, state: { ...observation.state, locomotionMeasurement: value } };
-  writeEnvironmentBridgeState(state);
+  updateEnvironmentSensorObservation(sessionId, {
+    ...observation,
+    state: { ...observation.state, locomotionMeasurement: cloneBridgeJson(value) },
+  });
   await wakeEnvironmentSensorWaiters(sessionId, {
     eventId: `locomotion:${sessionId}:${contentHash(value)}`,
     kind: 'perception_received', payload: { sessionId, locomotionMeasurement: value },
@@ -537,7 +686,7 @@ export async function recordEnvironmentLocomotionMeasurement(sessionId: string, 
 export async function recordEnvironmentPerception(sessionId: string, value: unknown,
   enqueue?: (input: TaskInput) => Promise<QueuedTask>, username?: string | null): Promise<boolean> {
   const perception = normalizeEnvironmentPerception(value);
-  const state = readEnvironmentBridgeState();
+  const state = peekEnvironmentBridgeState();
   const session = state.sessions[sessionId];
   const observation = session?.latestObservation;
   if (!session || sessionStatus(session) !== 'connected'
@@ -550,9 +699,11 @@ export async function recordEnvironmentPerception(sessionId: string, value: unkn
       if (advance === 0 || advance >= 0x80000000) return false;
     }
   }
-  session.latestObservation = { ...observation!, state: { ...(observation!.state ?? {}), perception } };
   // Recognition cannot renew the control session's heartbeat or erase a still.
-  writeEnvironmentBridgeState(state);
+  updateEnvironmentSensorObservation(sessionId, {
+    ...observation!,
+    state: { ...(observation!.state ?? {}), perception },
+  });
   // Sensor updates wake only phases subscribed to perception. A finite action
   // waiting for its receipt cannot make progress from another camera frame.
   // The execution ledger/outbox remains the single continuation owner.
@@ -566,10 +717,11 @@ export async function recordEnvironmentPerception(sessionId: string, value: unkn
 }
 
 export function getEnvironmentPerception(sessionId: string) {
-  const state = readEnvironmentBridgeState();
+  const state = peekEnvironmentBridgeState();
   const session = state.sessions[sessionId];
-  return session && sessionStatus(session) === 'connected'
+  const current = session && sessionStatus(session) === 'connected'
     ? currentEnvironmentPerception(session.latestObservation) : null;
+  return current ? cloneBridgeJson(current) : null;
 }
 
 export function publishEnvironmentObservation(
@@ -619,7 +771,7 @@ export function publishEnvironmentObservation(
   const work = getQueueManager().enqueue({
     type: 'environment_observation',
     handler: 'environment.observation',
-    resource: 'local-llm',
+    resource: environmentObservationResource(options.username),
     source: 'environment',
     priority: 'high',
     input: {
@@ -672,28 +824,31 @@ export function claimEnvironmentTextEvents(observation: EnvironmentObservation):
 }
 
 export function getLatestEnvironmentObservation(sessionId?: string): EnvironmentObservation | undefined {
-  const state = readEnvironmentBridgeState();
+  const state = peekEnvironmentBridgeState();
   if (sessionId) {
     const observation = state.sessions[sessionId]?.latestObservation;
-    return observation ? projectCurrentEnvironmentPerception(observation) : undefined;
+    return observation ? cloneBridgeJson(projectCurrentEnvironmentPerception(observation)) : undefined;
   }
   const now = Date.now();
   const observation = Object.values(state.sessions)
     .filter(session => sessionStatus(session, now) === 'connected')
     .sort((a, b) => sessionLastSeenMs(b) - sessionLastSeenMs(a))[0]
     ?.latestObservation;
-  return observation ? projectCurrentEnvironmentPerception(observation) : undefined;
+  return observation ? cloneBridgeJson(projectCurrentEnvironmentPerception(observation)) : undefined;
 }
 
 export function getLatestEnvironmentVisual(sessionId: string): EnvironmentVisualFrame | undefined {
-  return readEnvironmentBridgeState().sessions[sessionId]?.latestVisual;
+  const visual = peekEnvironmentBridgeState().sessions[sessionId]?.latestVisual;
+  return visual ? cloneBridgeJson(visual) : undefined;
 }
 
 export function getEnvironmentFeedback(options: { actionId?: string; limit?: number } = {}): EnvironmentFeedback[] {
-  const state = readEnvironmentBridgeState();
+  const state = peekEnvironmentBridgeState();
   const limit = Number.isFinite(options.limit) ? Math.max(1, Math.floor(options.limit!)) : 20;
-  return (options.actionId ? state.feedback.filter(item => item.actionId === options.actionId) : state.feedback)
-    .slice(-limit);
+  return cloneBridgeJson(
+    (options.actionId ? state.feedback.filter(item => item.actionId === options.actionId) : state.feedback)
+      .slice(-limit),
+  );
 }
 
 function normalizeAction(
@@ -720,6 +875,10 @@ function normalizeAction(
     durationMs = Math.min(maxDurationMs, Math.floor(options.defaultDurationMs!));
   }
   if (action.type === 'sendText' && !action.text?.trim()) throw new Error('Environment sendText action requires text');
+  if (action.detach !== undefined) {
+    if (typeof action.detach !== 'boolean') throw new Error('Invalid detach');
+    if (action.type !== 'stop') throw new Error('Environment detach is only valid for stop actions');
+  }
   if (action.type === 'requestMotion' && !action.description?.trim()) throw new Error('Environment requestMotion action requires a description');
   if (action.type === 'faceExpression') {
     if (action.displayRelease !== true && !action.expression?.trim()) throw new Error('Environment faceExpression action requires an expression identifier');
@@ -760,6 +919,7 @@ function normalizeAction(
   return {
     type,
     sessionId,
+    ...(type === 'stop' && action.detach !== undefined ? { detach: action.detach } : {}),
     text: action.text?.trim(),
     vector: action.vector,
     direction: action.direction,
@@ -830,14 +990,17 @@ export function enqueueConnectedEnvironmentStops(
   username: string,
   reason = 'Active Operator emergency stop',
   now = Date.now(),
+  options?: { detach?: boolean },
 ): EnvironmentCommandWork[] {
-  const state = readEnvironmentBridgeState();
+  const state = peekEnvironmentBridgeState();
   if (!state.enabled) return [];
+  const detach = options?.detach === true;
   return Object.values(state.sessions)
     .filter(session => session.status === 'connected')
     .map(session => enqueueEnvironmentAction(
       {
         type: 'stop',
+        ...(detach ? { detach: true } : {}),
         sessionId: session.sessionId,
         createdAt: new Date(now).toISOString(),
         metadata: { reason },
@@ -845,7 +1008,7 @@ export function enqueueConnectedEnvironmentStops(
       {
         username,
         source: 'user',
-        idempotencyKey: `operator-emergency-stop:${session.sessionId}:${Math.floor(now / 1_000)}`,
+        idempotencyKey: `operator-emergency-${detach ? 'release' : 'stop'}:${session.sessionId}:${Math.floor(now / 1_000)}`,
       },
     ));
 }
@@ -859,7 +1022,7 @@ export function pendingEnvironmentCancellations(sessionId: string): Record<strin
 }
 
 export function dispatchEnvironmentActions(sessionId: string, limit = 10, owner = `environment-adapter:${sessionId}`): EnvironmentCommandWork[] {
-  const state = readEnvironmentBridgeState();
+  const state = peekEnvironmentBridgeState();
   if (!state.enabled || !state.sessions[sessionId]) return [];
   const manager = getQueueManager();
   const claimed: EnvironmentCommandWork[] = [];
@@ -896,9 +1059,29 @@ export function dispatchEnvironmentActions(sessionId: string, limit = 10, owner 
   return claimed;
 }
 
+export function getActiveEnvironmentDepthConsumer(sessionId: string, executionId: string): string | undefined {
+  if (!sessionId || !executionId) return undefined;
+  const state = peekEnvironmentBridgeState();
+  const demands = state.sessions[sessionId]?.depthDemands;
+  if (!demands) return undefined;
+  const manager = getQueueManager();
+  for (const [consumerId, demand] of Object.entries(demands)) {
+    if (demand.executionId !== executionId) continue;
+    const releasing = manager.getAllTasks().some(task =>
+      task.handler === 'environment.visual-read'
+      && task.input.sessionId === sessionId
+      && task.input.vision?.operation === 'depthDemand'
+      && task.input.vision?.consumerId === consumerId
+      && task.input.vision?.enabled === false
+      && ['queued', 'leased', 'waiting'].includes(task.state));
+    if (!releasing) return consumerId;
+  }
+  return undefined;
+}
+
 /** Read requests use Coordinator work identity, without a physical command or body lease. */
 export function reconcileEnvironmentDepthDemands(executionId?: string): void {
-  const state = readEnvironmentBridgeState();
+  const state = peekEnvironmentBridgeState();
   const manager = getQueueManager();
   for (const session of Object.values(state.sessions)) {
     if (!getEnvironmentActionSubscriberCount(session.sessionId)) continue;
@@ -906,9 +1089,20 @@ export function reconcileEnvironmentDepthDemands(executionId?: string): void {
       if (executionId && demand.executionId !== executionId) continue;
       const store = openExecutionStore(demand.username);
       let ended: boolean;
-      try { const execution = store.find(demand.executionId); ended = !execution || ['completed', 'failed', 'cancelled'].includes(execution.status); }
-      finally { store.close(); }
+      try {
+        const execution = store.find(demand.executionId);
+        // Executions in 'running', 'waiting', or 'idle' (awaiting continuation input) retain warm depthDemand.
+        ended = !execution || ['completed', 'failed', 'cancelled'].includes(execution.status);
+      } finally { store.close(); }
       if (!ended) continue;
+      const alreadyReleasing = manager.getAllTasks().some(task =>
+        task.handler === 'environment.visual-read'
+        && task.input.sessionId === session.sessionId
+        && task.input.vision?.operation === 'depthDemand'
+        && task.input.vision?.consumerId === consumerId
+        && task.input.vision?.enabled === false
+        && ['queued', 'leased', 'waiting'].includes(task.state));
+      if (alreadyReleasing) continue;
       manager.enqueue({ type: 'generic', handler: 'environment.visual-read',
         resource: `environment-depth-release:${consumerId}`, username: demand.username,
         source: 'environment', maxAttempts: 1,
@@ -929,7 +1123,7 @@ export function dispatchEnvironmentVisualReads(sessionId: string, owner = `envir
     if (pending && ['queued', 'leased', 'waiting'].includes(pending.state)) continue;
     const store = openExecutionStore(demand.username);
     let active: boolean;
-    try { active = ['running', 'waiting'].includes(store.find(demand.executionId)?.status ?? ''); }
+    try { active = ['running', 'waiting', 'idle'].includes(store.find(demand.executionId)?.status ?? ''); }
     finally { store.close(); }
     if (active) manager.enqueue({ type: 'generic', handler: 'environment.visual-read',
       resource: `environment-depth-acquire:${consumerId}`, username: demand.username, source: 'environment', maxAttempts: 1,
@@ -994,7 +1188,7 @@ export function reconcileEnvironmentVisualRead(task: QueuedTask, manager: Unifie
   if (task.handler !== 'environment.visual-read' || task.input.vision?.operation === 'depthDemand'
     || !['queued', 'leased', 'waiting'].includes(task.state)) return;
   const sessionId = String(task.input.sessionId);
-  if (readEnvironmentBridgeState().enabled && getEnvironmentActionSubscriberCount(sessionId)) return;
+  if (peekEnvironmentBridgeState().enabled && getEnvironmentActionSubscriberCount(sessionId)) return;
   const message = 'Camera read requires the selected Environment Bridge connection';
   if (task.state === 'queued' && !manager.claim(task.id, `environment-adapter:${sessionId}`)) {
     manager.cancel(task.id, message);
@@ -1174,7 +1368,7 @@ getQueueManager().addEventListener(event => {
   }
   if (task.handler === 'environment.visual-read' && event.type === 'task_enqueued'
     && task.input.vision?.operation === 'depthDemand'
-    && (!readEnvironmentBridgeState().enabled || !getEnvironmentActionSubscriberCount(String(task.input.sessionId)))) {
+    && (!peekEnvironmentBridgeState().enabled || !getEnvironmentActionSubscriberCount(String(task.input.sessionId)))) {
     const manager = getQueueManager();
     if (manager.claim(task.id, `environment-adapter:${task.input.sessionId}`)) {
       manager.complete(task.id, false, { code: 'bridge_disconnected',

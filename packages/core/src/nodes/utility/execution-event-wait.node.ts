@@ -29,8 +29,12 @@ export const executionEventWaitNode = defineNode({
     // Body Event supplies its intention separately and clears these user fields.
     const hasUserInput = Boolean(context.userMessage)
       || (inputs.instructionEntry ?? context.userMessageEntry)?.role === 'user'
-    const finiteBodyEvent = Boolean(context.bodyEventDecision) && !hasUserInput
-    if (properties?.drain || finiteBodyEvent) {
+    const finiteAutonomousInvocation = (
+      Boolean(context.bodyEventDecision)
+      || context.robotOperatorContext?.embodiedCuriosityFiniteStep === true
+      || context.graphExecution.task?.()?.decision.continuationPolicy === 'none'
+    ) && !hasUserInput
+    if (properties?.drain || finiteAutonomousInvocation) {
       // Supplied input belongs to this graph pass. Later event-tail occurrences
       // consume only newly admitted events, never the earlier input again.
       const supplied = context._graphExecutorIteration === 1 ? inputs.receivedInput : null
@@ -56,11 +60,11 @@ export const executionEventWaitNode = defineNode({
         graph: properties?.resultGraph ?? 'environment',
         context: { ...workResult, executionEvents: events,
           userMessageEntry: inputs.instructionEntry ?? context.userMessageEntry,
-          environmentInterpretation: undefined, pendingInstructionTurns: undefined },
+          environmentInterpretation: undefined, precomputedEnvironmentPlan: undefined, pendingInstructionTurns: undefined },
       } }
       return { invocation: kind ? {
         graph: kind === 'user_steering' ? properties?.userGraph : properties?.autonomyGraph,
-        context: { ...payload, executionEvents: events },
+        context: { ...payload, precomputedEnvironmentPlan: undefined, executionEvents: events },
       } : null }
     }
     for (;;) {
@@ -70,7 +74,7 @@ export const executionEventWaitNode = defineNode({
       const payload = event.payload as Record<string, unknown>
       return { invocation: {
         graph: event.kind === 'user_steering' ? properties?.userGraph : properties?.autonomyGraph,
-        context: { ...payload, executionEvents: [event] },
+        context: { ...payload, precomputedEnvironmentPlan: undefined, executionEvents: [event] },
       } }
     }
   },

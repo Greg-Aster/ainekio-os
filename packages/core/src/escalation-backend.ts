@@ -117,6 +117,11 @@ export interface EscalationBackend {
   start(): Promise<boolean>;
 
   /**
+   * Pre-warm persistent provider daemons/sessions for the configured model before user turns arrive.
+   */
+  warmup?(options?: EscalationOptions): Promise<void>;
+
+  /**
    * Stop/cleanup the backend
    */
   stop(): void | Promise<void>;
@@ -325,6 +330,43 @@ export async function escalate(
   });
 
   return result;
+}
+
+/**
+ * Pre-warm a specific escalation backend and its provider session pool without blocking user turns.
+ */
+export async function warmEscalationBackend(
+  backendId: string,
+  options?: EscalationOptions,
+): Promise<boolean> {
+  await initializeBackends();
+  const backend = getBackend(backendId);
+  if (!backend) return false;
+  if (backend.isReady() && !backend.warmup) return true;
+  const available = await backend.isAvailable();
+  if (!available) return false;
+  if (!backend.isReady()) {
+    audit({
+      level: 'info',
+      category: 'action',
+      event: 'escalation_backend_prewarm_start',
+      details: { backendId: backend.id, model: options?.model },
+      actor: options?.username || 'escalation-backend',
+    });
+    const started = await backend.start();
+    if (!started) return false;
+  }
+  if (backend.warmup) {
+    await backend.warmup(options);
+  }
+  audit({
+    level: 'info',
+    category: 'action',
+    event: 'escalation_backend_prewarmed',
+    details: { backendId: backend.id, model: options?.model },
+    actor: options?.username || 'escalation-backend',
+  });
+  return true;
 }
 
 /**

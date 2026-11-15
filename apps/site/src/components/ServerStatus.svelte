@@ -747,7 +747,7 @@
       if (preset === 'bb-codex' || preset === 'bb-gemini' || hybridRemoteTarget === 'big-brother.gemini') {
         const bbPayload = preset === 'bb-codex'
           ? { enabled: true, provider: 'codex', model: 'gpt-6.1-sol', reasoningEffort: 'low' }
-          : { enabled: true, provider: 'gemini', model: 'gemini-3.8-flash-low', reasoningEffort: 'low' };
+          : { enabled: true, provider: 'gemini', model: 'gemini-4-hydrogen-low', reasoningEffort: 'low' };
         const bbRes = await apiFetch('/api/big-brother-config', {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
@@ -1610,7 +1610,7 @@
               class="py-1 px-1 rounded text-[0.65rem] font-semibold transition-all cursor-pointer border-0 truncate {activePreset === 'bb-gemini' ? 'bg-violet-600 text-white shadow-sm' : 'bg-transparent text-gray-600 dark:text-gray-300 hover:bg-black/5 dark:hover:bg-white/5'}"
               disabled={loadingModelRegistry || Boolean(savingModelRole)}
               on:click={() => applyModelPreset('bb-gemini')}
-              title="Route all roles to warm BB-Gemini ACP server on your paid Google subscription (gemini-3.8-flash-low)"
+              title="Route all roles to warm BB-Gemini ACP server on your paid Google subscription (gemini-4-hydrogen-low)"
             >
               BB-Gemini
             </button>

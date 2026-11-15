@@ -314,10 +314,31 @@ export async function handleQueueStream(req: UnifiedRequest): Promise<UnifiedRes
     const triggerListener = () => listener({ type: 'trigger-state' });
     const operatorListener = () => listener({ type: 'operator-state' });
     const controller = getModeController();
-    const snapshot = async () => {
-      const queue = { ...queueSnapshot(req.user), agencyChange };
-      try { return { ...queue, activeOperator: await readActiveOperatorStatus(req.user.username, req.user.role === 'owner') }; }
-      catch (error) { return { ...queue, activeOperatorError: (error as Error).message }; }
+    type StreamEvent = QueueEvent | { type: 'trigger-state' | 'operator-state' | 'agency-state' };
+    let lastQueueBase: ReturnType<typeof queueSnapshot> | undefined;
+    let lastOperatorState:
+      | { activeOperator: Awaited<ReturnType<typeof readActiveOperatorStatus>> }
+      | { activeOperatorError: string }
+      | undefined;
+    const snapshot = async (events?: StreamEvent[]) => {
+      const needsQueue = !lastQueueBase || !events || events.some(
+        event => event.type !== 'task_output' && event.type !== 'agency-state',
+      );
+      if (needsQueue) {
+        lastQueueBase = queueSnapshot(req.user);
+      }
+      const queue = { ...lastQueueBase!, agencyChange };
+      const needsOperator = !lastOperatorState || !events || events.some(
+        event => event.type !== 'task_output' && event.type !== 'trigger-state' && event.type !== 'agency-state',
+      );
+      if (needsOperator) {
+        try {
+          lastOperatorState = { activeOperator: await readActiveOperatorStatus(req.user.username, req.user.role === 'owner') };
+        } catch (error) {
+          lastOperatorState = { activeOperatorError: (error as Error).message };
+        }
+      }
+      return { ...queue, ...lastOperatorState };
     };
     const watchers: ReturnType<typeof watch>[] = [];
     let observationError: Error | undefined;
@@ -344,7 +365,7 @@ export async function handleQueueStream(req: UnifiedRequest): Promise<UnifiedRes
         if (pending.length > 0) {
           const events = pending.splice(0);
           let current: Awaited<ReturnType<typeof snapshot>>;
-          try { current = await snapshot(); }
+          try { current = await snapshot(events); }
           catch (error) {
             yield sse({ type: 'error', error: (error as Error).message });
             return;

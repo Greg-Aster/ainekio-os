@@ -392,6 +392,7 @@ function normalizeAction(value: unknown, sessionId?: string): Partial<Environmen
   }
 
   if (type === 'requestMotion' && (typeof record.description !== 'string' || !record.description.trim())) return null;
+  if (record.detach !== undefined && (type !== 'stop' || typeof record.detach !== 'boolean')) return null;
   if (type === 'sendText' && (typeof record.text !== 'string' || !record.text.trim())) {
     return null;
   }
@@ -432,6 +433,7 @@ function normalizeAction(value: unknown, sessionId?: string): Partial<Environmen
     id: typeof record.id === 'string' ? record.id : undefined,
     sessionId: typeof record.sessionId === 'string' ? record.sessionId : sessionId,
     ...(type === 'faceExpression' ? { expression: (record.expression as string).trim() } : {}),
+    ...(type === 'stop' && typeof record.detach === 'boolean' ? { detach: record.detach } : {}),
     type: type as EnvironmentActionType,
     locomotionGoal,
     ...(type === 'requestMotion' ? { description: (record.description as string).trim() } : {}),
@@ -850,6 +852,7 @@ const SELECTOR_ACTION_FIELDS = new Set([
   'id',
   'sessionId',
   'type',
+  'detach',
   'text',
   'direction',
   'units',

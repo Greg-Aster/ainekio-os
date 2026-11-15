@@ -378,7 +378,7 @@ test('Robot Operator owns scheduling while Robot Status and boredom children own
   assert.doesNotMatch(observerHandler, /type: 'robotCommand'|chooseBoredomMovementCommand/)
   assert.match(controller, /isSleepRuntimeActive\(\)/)
   assert.match(controller, /getQueueStateDir\(\)/)
-  assert.match(controller, /fs\.watch\(getQueueStateDir\(\)/)
+  assert.match(controller, /(?:fs\.watch|watchDirectory)\(getQueueStateDir\(\)/)
   assert.match(controller, /\$\{SERVICE_ID\}:assessment:/)
   assert.match(controller, /execution.stimulusAgent === CONTROLLER/)
   assert.doesNotMatch(controller, /cooldownMs|lastFullCycleCompletedAt|robotOperatorFullDueAt|FULL_IDLE_CONFIRMATIONS|cycle-settling/)

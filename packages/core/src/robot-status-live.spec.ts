@@ -652,3 +652,41 @@ test('periodic status API retains motor and power evidence without refreshing it
     else process.env.MH_ENVIRONMENT_BRIDGE_TOKEN = previousToken
   }
 })
+
+test('status stays stale (not unavailable) across non-visual observations and accounts for slow frame cadence', async () => {
+  const base = Date.now()
+  const initial = observation(base)
+  initial.state.gateway.robots.p4.camera_frames = { received: 20, counter: 1, age_ms: 18_400 }
+  initial.state.recognition = {
+    enabled: true, maxFrameAgeMs: 1000, reportedAt: new Date(base).toISOString(),
+    observationAgeMs: 500, processedFps: 0.59, freshFps: 0.4, receivedFrames: 20, processedFrames: 20, errors: 0,
+  } as any
+  initial.state.perception = {
+    ...initial.state.perception,
+    frameCounter: 77,
+    observedAt: new Date(base - 1300).toISOString(),
+    expiresAt: new Date(base - 300).toISOString(),
+  }
+  reset(initial)
+  // Simulate a subsequent non-visual observation (e.g. expression command receipt) after perception expired
+  recordEnvironmentObservation({
+    ...initial,
+    timestamp: new Date(base).toISOString(),
+    state: {
+      body: initial.state.body,
+      gateway: { robots: { p4: { ...initial.state.gateway.robots.p4, camera_frames: { received: 20, counter: 1, age_ms: 18_400 } } } },
+      activeMovementUpdates: initial.state.activeMovementUpdates,
+      recognition: initial.state.recognition,
+    },
+  })
+
+  const statusDuringGap = await readRobotStatusLive('status-user', 'robot-session', base)
+  assert.equal(statusDuringGap.recognition.status, 'stale', 'expired same-epoch perception must report stale, not unavailable')
+  assert.equal(statusDuringGap.camera.lastFrameAgeMs, 1300)
+  assert.equal(statusDuringGap.camera.frameCounter, 77)
+  assert.equal(statusDuringGap.camera.receivingFrames, true, '1.3s gap under ~0.59 processedFps cadence is still actively receiving')
+
+  const stalled = await readRobotStatusLive('status-user', 'robot-session', base + 4000)
+  assert.equal(stalled.recognition.status, 'stale')
+  assert.equal(stalled.camera.receivingFrames, false, 'stalling well past frame cadence must report receivingFrames: false')
+})

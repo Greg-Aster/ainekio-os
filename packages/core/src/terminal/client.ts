@@ -85,6 +85,22 @@ export async function submitBigBrotherDiagnostic(request: DiagnosticRequest): Pr
   return terminalCall('/diagnostic', request)
 }
 
+export async function warmBigBrotherSession(provider: TerminalProvider,
+  options: EscalationOptions = {}): Promise<void> {
+  options.signal?.throwIfAborted()
+  if ((await getTerminalState()).status === 'stopped') await startTerminalService(options.username)
+  options.signal?.throwIfAborted()
+  const { onReasoningStep: _r, onChunk: _c, onWaitingForInput: _w, signal, ...serializable } = options
+  const response = await terminalRequest('/warmup', { provider, options: serializable }, signal)
+  let body = ''
+  for await (const chunk of response) {
+    body += chunk
+    if (body.length > 4 * 1024 * 1024) { response.destroy(); throw new TerminalError('Terminal response is too large') }
+  }
+  const value = JSON.parse(body)
+  if (response.statusCode !== 200) throw new TerminalError(value.error || 'Terminal warmup failed', response.statusCode)
+}
+
 export async function executeInBigBrotherSession(provider: TerminalProvider, prompt: string,
   options: EscalationOptions = {}): Promise<BigBrotherSessionResult> {
   options.signal?.throwIfAborted()

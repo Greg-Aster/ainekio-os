@@ -303,3 +303,91 @@ test('locomotion telemetry shares the sensor wake and preserves loss evidence wi
     store.close();
   }
 });
+
+test('non-visual observations retain expired same-session perception in store while hiding it from current reads', async () => {
+  const source = observation();
+  core.recordEnvironmentObservation(source);
+  const pastObservedAt = new Date(Date.now() - 1500).toISOString();
+  const pastExpiresAt = new Date(Date.now() - 500).toISOString();
+  const state = core.readEnvironmentBridgeState();
+  state.sessions[source.sessionId].latestObservation!.state!.perception = perception(42, {
+    observedAt: pastObservedAt,
+    expiresAt: pastExpiresAt,
+  });
+  core.writeEnvironmentBridgeState(state);
+
+  // Subsequent non-visual observation (e.g. expression receipt / status update) on the same session/epoch
+  core.recordEnvironmentObservation({ ...observation(), visual: undefined, timestamp: new Date().toISOString() });
+  const stored = core.readEnvironmentBridgeState().sessions[source.sessionId].latestObservation?.state?.perception as any;
+  assert.equal(stored?.frameCounter, 42, 'raw same-session perception must survive non-visual observations after expiry');
+  assert.equal(stored?.observedAt, pastObservedAt);
+  assert.equal(core.getEnvironmentPerception(source.sessionId), null, 'expired perception must not be returned as current');
+  assert.equal(core.getLatestEnvironmentObservation(source.sessionId)?.state?.perception, undefined,
+    'live observation projection must still filter expired perception');
+
+  // Epoch change clears prior-epoch perception even under retention
+  core.recordEnvironmentObservation({ ...observation(8), visual: undefined });
+  assert.equal(core.readEnvironmentBridgeState().sessions[source.sessionId].latestObservation?.state?.perception, undefined);
+});
+
+test('idle sensor frames avoid bridge file rewrites and execution store churn while waking new subscriptions immediately', async () => {
+  const { openExecutionStore } = await import('../durable-execution/storage.js');
+  const { ExecutionStore } = await import('../durable-execution/store.js');
+  const username = 'idle-sensor-churn-owner';
+  const initialStore = openExecutionStore(username);
+  initialStore.close();
+
+  const source = observation();
+  core.recordEnvironmentObservation(source);
+  await Promise.resolve();
+
+  const statePath = core.getEnvironmentBridgeStatePath();
+  const initialStat = fs.statSync(statePath, { bigint: true });
+  let stateNotifications = 0;
+  const unsubscribe = core.subscribeEnvironmentBridgeState(() => { stateNotifications += 1; });
+  const waitingForSpy = mock.method(ExecutionStore.prototype, 'waitingFor');
+  const yaw = { available: true, robotId: 'robot', sessionId: source.sessionId, referenceId: 'boot-1',
+    observedAt: new Date().toISOString(), source: 'body-imu', degrees: 45, uncertaintyDegrees: null };
+
+  try {
+    for (let frame = 1; frame <= 10; frame += 1) {
+      assert.equal(await core.recordEnvironmentPerception(source.sessionId, perception(frame), undefined, username), true);
+      assert.equal(await core.recordEnvironmentLocomotionMeasurement(source.sessionId, {
+        yaw: { ...yaw, degrees: frame },
+      }, undefined, username), true);
+    }
+    await Promise.resolve();
+
+    const afterIdleStat = fs.statSync(statePath, { bigint: true });
+    assert.equal(afterIdleStat.ino, initialStat.ino, '10Hz sensor frames must not rewrite environment-bridge-state.json');
+    assert.equal(afterIdleStat.mtimeNs, initialStat.mtimeNs);
+    assert.equal(stateNotifications, 0, 'ephemeral sensor frames must not wake bridge state subscribers');
+    assert.ok(waitingForSpy.mock.callCount() <= 2, `expected empty waiter cache to avoid per-frame ExecutionStore queries, got ${waitingForSpy.mock.callCount()}`);
+    assert.equal(core.getEnvironmentPerception(source.sessionId)?.frameCounter, 10);
+    assert.equal((core.getLatestEnvironmentObservation(source.sessionId)?.state?.locomotionMeasurement as any)?.yaw?.degrees, 10);
+
+    // Settling a new perception waiter must invalidate the empty-waiter cache immediately (even in the same tick).
+    const waiterStore = openExecutionStore(username);
+    const queue = getQueueManager();
+    const definition = { graphId: 'perception-wait', graphHash: 'fixture', runtimeVersion: 'fixture', checkpointSchemaVersion: 1, nodeVersions: {} };
+    const execution = waiterStore.create(username, definition);
+    const lease = waiterStore.claim(execution.executionId, definition);
+    waiterStore.settle(lease, 'waiting', `active_task:${source.sessionId}:perception`);
+    waiterStore.release(lease);
+    const wakes: any[] = [];
+    try {
+      assert.equal(await core.recordEnvironmentPerception(source.sessionId, perception(11), async input => {
+        wakes.push(input);
+        return queue.enqueue(input);
+      }, username), true);
+      assert.equal(wakes.length, 1, 'new perception subscription must wake on the very next frame');
+    } finally {
+      for (const task of queue.getAllTasks().filter(task => task.username === username)) queue.cancel(task.id, 'Fixture complete');
+      waiterStore.cancel(execution.executionId, { eventId: 'cleanup', kind: 'user_cancelled', payload: {} });
+      waiterStore.close();
+    }
+  } finally {
+    waitingForSpy.mock.restore();
+    unsubscribe();
+  }
+});

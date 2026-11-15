@@ -26,6 +26,91 @@ export * from './types.js';
 
 const TICKETS_DIR = 'help-tickets';
 
+interface CachedTicketFile {
+  mtimeMs: number;
+  ctimeMs: number;
+  size: number;
+  ino: number;
+  ticket: HelpTicket | null;
+}
+
+interface CachedTicketDir {
+  mtimeMs: number;
+  ctimeMs: number;
+  ino: number;
+  filenames: string[];
+  files: Map<string, CachedTicketFile>;
+}
+
+const ticketDirCache = new Map<string, CachedTicketDir>();
+
+function getOrCreateDirCache(dir: string): CachedTicketDir {
+  let entry = ticketDirCache.get(dir);
+  if (!entry) {
+    entry = { mtimeMs: -1, ctimeMs: -1, ino: -1, filenames: [], files: new Map() };
+    ticketDirCache.set(dir, entry);
+  }
+  return entry;
+}
+
+function cacheWrittenTicket(dir: string, filename: string, ticketPath: string, ticket: HelpTicket): void {
+  try {
+    const fileStat = fs.statSync(ticketPath);
+    const entry = getOrCreateDirCache(dir);
+    entry.files.set(filename, {
+      mtimeMs: fileStat.mtimeMs,
+      ctimeMs: fileStat.ctimeMs,
+      size: fileStat.size,
+      ino: fileStat.ino,
+      ticket: structuredClone(ticket),
+    });
+    if (!entry.filenames.includes(filename)) {
+      entry.mtimeMs = -1;
+    }
+  } catch {
+    ticketDirCache.delete(dir);
+  }
+}
+
+function readCachedTicketFile(dir: string, filename: string, entry: CachedTicketDir): HelpTicket | null {
+  const filePath = path.join(dir, filename);
+  let stat: fs.Stats;
+  try {
+    stat = fs.statSync(filePath);
+  } catch {
+    entry.files.delete(filename);
+    return null;
+  }
+  const cached = entry.files.get(filename);
+  if (
+    cached
+    && cached.mtimeMs === stat.mtimeMs
+    && cached.ctimeMs === stat.ctimeMs
+    && cached.size === stat.size
+    && cached.ino === stat.ino
+  ) {
+    return cached.ticket;
+  }
+  let parsed: HelpTicket | null = null;
+  try {
+    parsed = JSON.parse(fs.readFileSync(filePath, 'utf-8')) as HelpTicket;
+  } catch {
+    parsed = null;
+  }
+  entry.files.set(filename, {
+    mtimeMs: stat.mtimeMs,
+    ctimeMs: stat.ctimeMs,
+    size: stat.size,
+    ino: stat.ino,
+    ticket: parsed,
+  });
+  return parsed;
+}
+
+export function buildSystemErrorTicketId(evidence: Pick<SystemErrorEvidence, 'source' | 'eventId'>): string {
+  return `ticket-${createHash('sha256').update(JSON.stringify([evidence.source, evidence.eventId])).digest('hex')}`;
+}
+
 /**
  * Get the directory path for help tickets
  */
@@ -81,8 +166,10 @@ export function createHelpTicket(
     }],
   };
 
-  const ticketPath = path.join(dir, `${id}.json`);
+  const filename = `${id}.json`;
+  const ticketPath = path.join(dir, filename);
   fs.writeFileSync(ticketPath, JSON.stringify(ticket, null, 2));
+  cacheWrittenTicket(dir, filename, ticketPath, ticket);
 
   audit({
     category: 'action',
@@ -105,7 +192,7 @@ export function recordSystemError(username: string, evidence: SystemErrorEvidenc
     || !Number.isFinite(Date.parse(evidence.occurredAt))) {
     throw new Error('System error evidence requires a source, event identity, message and timestamp');
   }
-  const id = `ticket-${createHash('sha256').update(JSON.stringify([evidence.source, evidence.eventId])).digest('hex')}`;
+  const id = buildSystemErrorTicketId(evidence);
   const previous = getTicket(username, id);
   if (previous) return previous;
   const now = new Date().toISOString();
@@ -116,7 +203,11 @@ export function recordSystemError(username: string, evidence: SystemErrorEvidenc
     category: 'system_error', priority: 'medium', errorEvidence: { ...evidence },
     history: [{ timestamp: now, action: 'system_error_recorded', actor: 'system', details: { evidence } }],
   };
-  fs.writeFileSync(path.join(ensureTicketsDir(username), `${id}.json`), JSON.stringify(ticket, null, 2));
+  const dir = ensureTicketsDir(username);
+  const filename = `${id}.json`;
+  const ticketPath = path.join(dir, filename);
+  fs.writeFileSync(ticketPath, JSON.stringify(ticket, null, 2));
+  cacheWrittenTicket(dir, filename, ticketPath, ticket);
   return ticket;
 }
 
@@ -130,17 +221,10 @@ export function getPendingTechnicalTickets(username: string): HelpTicket[] {
  */
 export function getTicket(username: string, ticketId: string): HelpTicket | null {
   const dir = getTicketsDir(username);
-  const ticketPath = path.join(dir, `${ticketId}.json`);
-
-  if (!fs.existsSync(ticketPath)) {
-    return null;
-  }
-
-  try {
-    return JSON.parse(fs.readFileSync(ticketPath, 'utf-8'));
-  } catch {
-    return null;
-  }
+  const filename = `${ticketId}.json`;
+  const entry = getOrCreateDirCache(dir);
+  const cached = readCachedTicketFile(dir, filename, entry);
+  return cached ? structuredClone(cached) : null;
 }
 
 /**
@@ -177,8 +261,10 @@ export function updateTicket(
   };
 
   const dir = getTicketsDir(username);
-  const ticketPath = path.join(dir, `${ticketId}.json`);
+  const filename = `${ticketId}.json`;
+  const ticketPath = path.join(dir, filename);
   fs.writeFileSync(ticketPath, JSON.stringify(updated, null, 2));
+  cacheWrittenTicket(dir, filename, ticketPath, updated);
 
   return updated;
 }
@@ -195,34 +281,43 @@ export function listTickets(
   },
 ): HelpTicket[] {
   const dir = getTicketsDir(username);
-
-  if (!fs.existsSync(dir)) {
+  let dirStat: fs.Stats;
+  try {
+    dirStat = fs.statSync(dir);
+  } catch {
+    ticketDirCache.delete(dir);
     return [];
   }
 
-  const tickets: HelpTicket[] = [];
-  const files = fs.readdirSync(dir).filter(f => f.endsWith('.json'));
-
-  for (const file of files) {
-    try {
-      const ticket: HelpTicket = JSON.parse(
-        fs.readFileSync(path.join(dir, file), 'utf-8')
-      );
-
-      // Apply filters
-      if (filter) {
-        if (filter.status) {
-          const statuses = Array.isArray(filter.status) ? filter.status : [filter.status];
-          if (!statuses.includes(ticket.status)) continue;
-        }
-        if (filter.category && ticket.category !== filter.category) continue;
-        if (filter.priority && ticket.priority !== filter.priority) continue;
-      }
-
-      tickets.push(ticket);
-    } catch {
-      // Skip invalid files
+  const entry = getOrCreateDirCache(dir);
+  if (
+    entry.mtimeMs !== dirStat.mtimeMs
+    || entry.ctimeMs !== dirStat.ctimeMs
+    || entry.ino !== dirStat.ino
+  ) {
+    const filenames = fs.readdirSync(dir).filter(f => f.endsWith('.json'));
+    const present = new Set(filenames);
+    for (const existing of entry.files.keys()) {
+      if (!present.has(existing)) entry.files.delete(existing);
     }
+    entry.filenames = filenames;
+    entry.mtimeMs = dirStat.mtimeMs;
+    entry.ctimeMs = dirStat.ctimeMs;
+    entry.ino = dirStat.ino;
+  }
+
+  const statuses = filter?.status
+    ? (Array.isArray(filter.status) ? filter.status : [filter.status])
+    : null;
+  const tickets: HelpTicket[] = [];
+
+  for (const file of entry.filenames) {
+    const ticket = readCachedTicketFile(dir, file, entry);
+    if (!ticket) continue;
+    if (statuses && !statuses.includes(ticket.status)) continue;
+    if (filter?.category && ticket.category !== filter.category) continue;
+    if (filter?.priority && ticket.priority !== filter.priority) continue;
+    tickets.push(structuredClone(ticket));
   }
 
   // Sort by priority (critical > high > medium > low) then by date

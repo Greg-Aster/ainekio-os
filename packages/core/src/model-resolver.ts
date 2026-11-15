@@ -117,7 +117,7 @@ export function bigBrotherModelDefinition(modelId: string, username?: string): M
     };
   }
   if (modelId === BIG_BROTHER_GEMINI_MODEL_ID) {
-    const model = (config?.provider === 'gemini' && config?.model) ? config.model : 'gemini-3.8-flash-low';
+    const model = (config?.provider === 'gemini' && config?.model) ? config.model : 'gemini-4-hydrogen-low';
     const reasoningEffort = (config?.provider === 'gemini' && config?.reasoningEffort) ? config.reasoningEffort : 'low';
     return {
       provider: 'big-brother',

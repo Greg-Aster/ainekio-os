@@ -1,12 +1,254 @@
 import { setImmediate as yieldToIO } from 'node:timers/promises'
 import { SqliteSaver } from '@langchain/langgraph-checkpoint-sqlite'
-import { WRITES_IDX_MAP, type Checkpoint, type CheckpointListOptions, type CheckpointMetadata, type CheckpointTuple, type PendingWrite } from '@langchain/langgraph-checkpoint'
+import { DeltaSnapshot, TASKS, WRITES_IDX_MAP, type Checkpoint, type CheckpointListOptions, type CheckpointMetadata, type CheckpointTuple, type PendingWrite, type SerializerProtocol } from '@langchain/langgraph-checkpoint'
 import type { CheckpointTransition, ExecutionLease } from './types.js'
 import { ExecutionConflictError } from './types.js'
 import { canonicalJSON, ExecutionStore } from './store.js'
 import type { QueuedTask } from '../queue/types.js'
 
 export type CheckpointConfig = Parameters<SqliteSaver['put']>[0]
+
+function checkpointSelectSql(byId: boolean): string {
+  return `
+  SELECT
+    thread_id,
+    checkpoint_ns,
+    checkpoint_id,
+    parent_checkpoint_id,
+    type,
+    checkpoint,
+    metadata,
+    (
+      SELECT
+        json_group_array(
+          json_object(
+            'task_id', pw.task_id,
+            'channel', pw.channel,
+            'type', pw.type,
+            'value', CAST(pw.value AS TEXT)
+          )
+        )
+      FROM writes as pw
+      WHERE pw.thread_id = checkpoints.thread_id
+        AND pw.checkpoint_ns = checkpoints.checkpoint_ns
+        AND pw.checkpoint_id = checkpoints.checkpoint_id
+    ) as pending_writes,
+    (
+      SELECT
+        json_group_array(
+          json_object(
+            'type', ps.type,
+            'value', CAST(ps.value AS TEXT)
+          )
+        )
+      FROM writes as ps
+      WHERE ps.thread_id = checkpoints.thread_id
+        AND ps.checkpoint_ns = checkpoints.checkpoint_ns
+        AND ps.checkpoint_id = checkpoints.parent_checkpoint_id
+        AND ps.channel = '${TASKS}'
+      ORDER BY ps.idx
+    ) as pending_sends
+  FROM checkpoints
+  WHERE thread_id = ? AND checkpoint_ns = ? ${byId ? 'AND checkpoint_id = ?' : 'ORDER BY checkpoint_id DESC LIMIT 1'}`
+}
+
+function encodeJsonPlusValue(value: unknown, ancestors: Set<object>): unknown {
+  if (value === undefined) return { lc: 2, type: 'undefined' }
+  if (value === null) return null
+  const kind = typeof value
+  if (kind === 'string' || kind === 'boolean') return value
+  if (kind === 'number') return Number.isFinite(value) ? value : null
+  if (kind === 'function' || kind === 'symbol') return undefined
+  if (kind === 'bigint') throw new TypeError('Do not know how to serialize a BigInt')
+  const obj = value as Record<string, unknown>
+  if (ancestors.has(obj)) return '[Circular]'
+  ancestors.add(obj)
+  try {
+    if (typeof (obj as { toJSON?: unknown }).toJSON === 'function') {
+      return encodeJsonPlusValue((obj as { toJSON: () => unknown }).toJSON(), ancestors)
+    }
+    if (obj instanceof DeltaSnapshot) {
+      return { lc: 2, type: 'delta_snapshot', value: encodeJsonPlusValue(obj.value, ancestors) }
+    }
+    if (obj instanceof Set || obj instanceof Map) {
+      return {
+        lc: 2,
+        type: 'constructor',
+        id: [obj.constructor.name],
+        method: null,
+        args: [encodeJsonPlusValue(Array.from(obj), ancestors)],
+        kwargs: {},
+      }
+    }
+    if (obj instanceof RegExp) {
+      return { lc: 2, type: 'constructor', id: ['RegExp'], method: null, args: [obj.source, obj.flags], kwargs: {} }
+    }
+    if (obj instanceof Error) {
+      return { lc: 2, type: 'constructor', id: ['Error'], method: null, args: [obj.message], kwargs: {} }
+    }
+    if ((obj as { lg_name?: unknown }).lg_name === 'Send') {
+      const send = obj as { node: unknown; args: unknown; timeout?: unknown }
+      const out: Record<string, unknown> = {
+        node: encodeJsonPlusValue(send.node, ancestors),
+        args: encodeJsonPlusValue(send.args, ancestors),
+      }
+      if (send.timeout !== undefined) out.timeout = encodeJsonPlusValue(send.timeout, ancestors)
+      return out
+    }
+    if (obj instanceof Uint8Array) {
+      return { lc: 2, type: 'constructor', id: ['Uint8Array'], method: 'from', args: [Array.from(obj)], kwargs: {} }
+    }
+    if (Array.isArray(obj)) {
+      const len = obj.length
+      let copy: unknown[] | null = null
+      for (let i = 0; i < len; i++) {
+        const raw = obj[i]
+        const encoded = encodeJsonPlusValue(raw, ancestors)
+        const slot = encoded === undefined && raw !== undefined ? null : encoded
+        if (copy) {
+          copy.push(slot)
+        } else if (slot !== raw) {
+          copy = obj.slice(0, i)
+          copy.push(slot)
+        }
+      }
+      return copy ?? obj
+    }
+    const keys = Object.keys(obj)
+    let copy: Record<string, unknown> | null = null
+    for (let i = 0; i < keys.length; i++) {
+      const key = keys[i]
+      const raw = obj[key]
+      const omitted = typeof raw === 'function' || typeof raw === 'symbol'
+      const encoded = omitted ? undefined : encodeJsonPlusValue(raw, ancestors)
+      const skip = omitted || (encoded === undefined && raw !== undefined)
+      if (!copy) {
+        if (!skip && encoded === raw) continue
+        copy = {}
+        for (let j = 0; j < i; j++) {
+          const prevKey = keys[j]
+          if (prevKey === '__proto__') {
+            Object.defineProperty(copy, prevKey, { value: obj[prevKey], enumerable: true, configurable: true, writable: true })
+          } else {
+            copy[prevKey] = obj[prevKey]
+          }
+        }
+      }
+      if (skip) continue
+      if (key === '__proto__') {
+        Object.defineProperty(copy, key, { value: encoded, enumerable: true, configurable: true, writable: true })
+      } else {
+        copy[key] = encoded
+      }
+    }
+    return copy ?? obj
+  } finally {
+    ancestors.delete(obj)
+  }
+}
+
+function toJsonPlusDocument(value: unknown): { type: 'bytes'; bytes: string } | { type: 'json'; json: unknown } {
+  if (value instanceof Uint8Array) {
+    return { type: 'bytes', bytes: Buffer.from(value).toString('base64') }
+  }
+  return { type: 'json', json: encodeJsonPlusValue(value, new Set()) }
+}
+
+function reviveConstructorRecord(record: Record<string, any>): unknown {
+  const id = record.id
+  const hasId = Array.isArray(id) && id.length === 1
+  const noMethod = record.method === undefined || record.method === null
+  const singleArrayArg = Array.isArray(record.args) && record.args.length === 1 && Array.isArray(record.args[0])
+  if (hasId && id[0] === 'Set' && noMethod) {
+    return singleArrayArg ? new Set(record.args[0]) : undefined
+  }
+  if (hasId && id[0] === 'Map' && noMethod) {
+    if (!singleArrayArg || !record.args[0].every((entry: unknown) => Array.isArray(entry) && entry.length === 2)) return undefined
+    return new Map(record.args[0])
+  }
+  if (hasId && id[0] === 'RegExp' && noMethod) {
+    if (!Array.isArray(record.args) || record.args.length !== 2 || typeof record.args[0] !== 'string' || typeof record.args[1] !== 'string') return undefined
+    try {
+      return new RegExp(record.args[0], record.args[1])
+    } catch {
+      return undefined
+    }
+  }
+  if (hasId && id[0] === 'Error' && noMethod) {
+    if (!Array.isArray(record.args) || record.args.length !== 1 || typeof record.args[0] !== 'string') return undefined
+    return new Error(record.args[0])
+  }
+  if (hasId && id[0] === 'Uint8Array' && (noMethod || record.method === 'from')) {
+    if (!singleArrayArg || !record.args[0].every((item: unknown) => typeof item === 'number' && Number.isInteger(item) && item >= 0 && item <= 255)) return undefined
+    return new Uint8Array(record.args[0])
+  }
+  return undefined
+}
+
+function reviveJsonPlus(value: unknown, baseLoadsTyped: SerializerProtocol['loadsTyped']): any {
+  let asyncLoads: Array<() => Promise<void>> | undefined
+  const addAsyncLoad = (fn: () => Promise<void>): void => {
+    (asyncLoads ??= []).push(fn)
+  }
+  const revive = (node: unknown): unknown => {
+    if (!node || typeof node !== 'object') return node
+    if (Array.isArray(node)) {
+      const len = node.length
+      const out = new Array(len)
+      for (let i = 0; i < len; i++) {
+        const idx = i
+        const revived = revive(node[idx])
+        if (revived && typeof revived === 'object' && (revived as Record<string, unknown>).__lc1Pending) {
+          const pending = revived as { __lc1Pending: Record<string, unknown> }
+          addAsyncLoad(async () => {
+            out[idx] = await baseLoadsTyped('json', Buffer.from(JSON.stringify(pending.__lc1Pending)))
+          })
+        } else {
+          out[idx] = revived
+        }
+      }
+      return out
+    }
+    const obj = node as Record<string, unknown>
+    const keys = Object.keys(obj)
+    const revivedObj: Record<string, unknown> = {}
+    for (let i = 0; i < keys.length; i++) {
+      const key = keys[i]
+      const revived = revive(obj[key])
+      if (revived && typeof revived === 'object' && (revived as Record<string, unknown>).__lc1Pending) {
+        const pending = revived as { __lc1Pending: Record<string, unknown> }
+        addAsyncLoad(async () => {
+          const loaded = await baseLoadsTyped('json', Buffer.from(JSON.stringify(pending.__lc1Pending)))
+          if (key === '__proto__') {
+            Object.defineProperty(revivedObj, key, { value: loaded, enumerable: true, configurable: true, writable: true })
+          } else {
+            revivedObj[key] = loaded
+          }
+        })
+      } else if (key === '__proto__') {
+        Object.defineProperty(revivedObj, key, { value: revived, enumerable: true, configurable: true, writable: true })
+      } else {
+        revivedObj[key] = revived
+      }
+    }
+    if (revivedObj.lc === 2) {
+      if (revivedObj.type === 'undefined') return undefined
+      if (revivedObj.type === 'delta_snapshot' && Object.prototype.hasOwnProperty.call(revivedObj, 'value')) {
+        return new DeltaSnapshot(revivedObj.value)
+      }
+      if (revivedObj.type === 'constructor') return reviveConstructorRecord(revivedObj) ?? revivedObj
+    } else if (revivedObj.lc === 1 && revivedObj.type === 'constructor' && Array.isArray(revivedObj.id)) {
+      return { __lc1Pending: revivedObj }
+    }
+    return revivedObj
+  }
+  const root = revive(value)
+  if (root && typeof root === 'object' && (root as Record<string, unknown>).__lc1Pending) {
+    return baseLoadsTyped('json', Buffer.from(JSON.stringify((root as { __lc1Pending: Record<string, unknown> }).__lc1Pending)))
+  }
+  if (asyncLoads) return Promise.all(asyncLoads.map(fn => fn())).then(() => root)
+  return root
+}
 
 /**
  * Uses LangGraph's SQLite format and read/replay implementation. The write
@@ -22,10 +264,7 @@ export class ExecutionCheckpointer extends SqliteSaver {
     this.checkpointSerde = base
     this.serde = {
       dumpsTyped: async (value) => {
-        const [type, bytes] = await base.dumpsTyped(value)
-        const document = type === 'json'
-          ? { type, json: JSON.parse(Buffer.from(bytes).toString('utf8')) }
-          : { type, bytes: Buffer.from(bytes).toString('base64') }
+        const document = toJsonPlusDocument(value)
         const staged = store.stageDocument(document)
         const encoded = Buffer.from(staged.encoded)
         this.documents.set(encoded, staged)
@@ -34,11 +273,23 @@ export class ExecutionCheckpointer extends SqliteSaver {
       loadsTyped: async (type, bytes) => {
         if (type !== 'metahuman-v1') throw new ExecutionConflictError('Unknown checkpoint encoding')
         const document = store.decodeDocument(Buffer.from(bytes).toString('utf8'))
-        return base.loadsTyped(document.type, 'json' in document
-          ? Buffer.from(JSON.stringify(document.json)) : Buffer.from(document.bytes, 'base64'))
+        if (document.type === 'bytes') return base.loadsTyped('bytes', Buffer.from(document.bytes, 'base64'))
+        if (document.type === 'json') return reviveJsonPlus(document.json, base.loadsTyped.bind(base))
+        throw new Error(`Unknown serialization type: ${document.type}`)
       },
     }
     this.setup()
+  }
+
+  protected override setup(): void {
+    if (this.isSetup) return
+    if (this.store.hasCheckpointSchema) {
+      this.withoutCheckpoint = this.store.stmt(checkpointSelectSql(false))
+      this.withCheckpoint = this.store.stmt(checkpointSelectSql(true))
+      this.isSetup = true
+      return
+    }
+    super.setup()
   }
 
   // LangGraph owns checkpoint_ns and resets it for a top-level invocation. A
@@ -73,20 +324,29 @@ export class ExecutionCheckpointer extends SqliteSaver {
   /** Read-only view of the existing active behavior checkpoint; never resumes it. */
   async activeBehaviorSnapshot(sessionId: string) {
     if (!['running', 'waiting'].includes(this.store.get(this.lease.executionId).status)) return null
-    const heads = this.store.db.prepare(`SELECT c.checkpoint FROM execution_heads h
+    const heads = this.store.stmt(`SELECT c.checkpoint FROM execution_heads h
       JOIN checkpoints c ON c.thread_id = h.execution_id AND c.checkpoint_ns = h.namespace AND c.checkpoint_id = h.checkpoint_id
       WHERE h.execution_id = ?`).all(this.lease.executionId) as Array<{ checkpoint: Uint8Array }>
     const candidates: Array<{ at: number; state: import('../environment-interface/active-task.js').ActiveTaskState;
       program: import('../environment-interface/active-task.js').EnvironmentTaskProgram }> = []
-    for (const head of heads) {
-      const encoded = Buffer.from(head.checkpoint).toString('utf8')
-      const channels = ['json', 'channel_values']
-      if (this.store.decodeDocument(encoded, [...channels, 'contextSnapshot', 'activeTaskSessionId']) !== sessionId) continue
-      const program = this.store.decodeDocument(encoded, [...channels, 'contextSnapshot', 'activeProgram'])
-      if (!program) continue
-      const values = await this.checkpointSerde.loadsTyped('json', Buffer.from(JSON.stringify({
-        program, nodeEntries: this.store.decodeDocument(encoded, [...channels, 'nodeEntries']),
-      })))
+    const baseLoads = this.checkpointSerde.loadsTyped.bind(this.checkpointSerde)
+    const rawHeads = this.store.withDocumentReadScope(() => {
+      const collected: Array<{ program: unknown; nodeEntries: unknown }> = []
+      for (const head of heads) {
+        const encoded = Buffer.from(head.checkpoint).toString('utf8')
+        const channels = ['json', 'channel_values']
+        if (this.store.decodeDocument(encoded, [...channels, 'contextSnapshot', 'activeTaskSessionId']) !== sessionId) continue
+        const program = this.store.decodeDocument(encoded, [...channels, 'contextSnapshot', 'activeProgram'])
+        if (!program) continue
+        collected.push({
+          program,
+          nodeEntries: this.store.decodeDocument(encoded, [...channels, 'nodeEntries']),
+        })
+      }
+      return collected
+    })
+    for (const raw of rawHeads) {
+      const values = await reviveJsonPlus(raw, baseLoads)
       for (const [, node] of (values.nodeEntries ?? []) as Array<[string, import('../graph-executor.js').NodeExecutionState]>) {
         if (!['environment_active_task_step', 'environment_active_task_wait'].includes(node.definition?.type ?? '') || !node.outputs?.state) continue
         candidates.push({ at: node.endTime ?? node.startTime ?? 0, state: node.outputs.state, program: values.program })
@@ -97,34 +357,54 @@ export class ExecutionCheckpointer extends SqliteSaver {
 
   /** Read selected completed node outputs without loading unrelated channels or pending writes. */
   async completedNodeOccurrences(outputFields: Record<string, readonly string[]>) {
-    const rows = this.store.db.prepare(`SELECT checkpoint_ns, checkpoint_id, checkpoint FROM checkpoints
+    const rows = this.store.stmt(`SELECT checkpoint_ns, checkpoint_id, checkpoint FROM checkpoints
       WHERE thread_id = ? ORDER BY checkpoint_id DESC`).all(this.lease.executionId) as Array<{
         checkpoint_ns: string; checkpoint_id: string; checkpoint: Uint8Array;
       }>
-    const occurrences = new Set<string>()
+    const baseLoads = this.checkpointSerde.loadsTyped.bind(this.checkpointSerde)
+    const rawSnapshots = this.store.withDocumentReadScope(() => {
+      const occurrences = new Set<string>()
+      const collected: Array<{ namespace: string; checkpointId: string; nodes: Array<[string, {
+        definition: { type: string }; status: string; startTime?: number; endTime?: number; rawOutputs: Record<string, unknown>
+      }]> }> = []
+      for (const row of rows) {
+        const encoded = Buffer.from(row.checkpoint).toString('utf8')
+        const entries = ['json', 'channel_values', 'nodeEntries']
+        const count = this.store.decodeDocument(encoded, [...entries, 'length']) ?? 0
+        const nodes: Array<[string, { definition: { type: string }; status: string; startTime?: number;
+          endTime?: number; rawOutputs: Record<string, unknown> }]> = []
+        for (let index = 0; index < count; index++) {
+          const nodePath = [...entries, index, 1]
+          const read = (...path: (string | number)[]) => this.store.decodeDocument(encoded, [...nodePath, ...path])
+          const type = read('definition', 'type')
+          if (!Object.hasOwn(outputFields, type) || read('status') !== 'completed') continue
+          const nodeId = this.store.decodeDocument(encoded, [...entries, index, 0])
+          const startTime = read('startTime')
+          const identity = JSON.stringify([row.checkpoint_ns, nodeId, startTime])
+          if (occurrences.has(identity)) continue
+          occurrences.add(identity)
+          const rawOutputs = Object.fromEntries(outputFields[type].map(field => [field, read('outputs', field)]))
+          nodes.push([nodeId, { definition: { type }, status: 'completed', startTime, endTime: read('endTime'), rawOutputs }])
+        }
+        if (nodes.length) collected.push({ namespace: row.checkpoint_ns, checkpointId: row.checkpoint_id, nodes })
+      }
+      return collected
+    })
     const snapshots = []
-    for (const row of rows) {
-      const encoded = Buffer.from(row.checkpoint).toString('utf8')
-      const entries = ['json', 'channel_values', 'nodeEntries']
-      const count = this.store.decodeDocument(encoded, [...entries, 'length']) ?? 0
+    for (const snapshot of rawSnapshots) {
       const nodes: Array<[string, { definition: { type: string }; status: string; startTime?: number;
         endTime?: number; outputs: Record<string, any> }]> = []
-      for (let index = 0; index < count; index++) {
-        const nodePath = [...entries, index, 1]
-        const read = (...path: (string | number)[]) => this.store.decodeDocument(encoded, [...nodePath, ...path])
-        const type = read('definition', 'type')
-        if (!Object.hasOwn(outputFields, type) || read('status') !== 'completed') continue
-        const nodeId = this.store.decodeDocument(encoded, [...entries, index, 0])
-        const startTime = read('startTime')
-        const identity = JSON.stringify([row.checkpoint_ns, nodeId, startTime])
-        if (occurrences.has(identity)) continue
-        occurrences.add(identity)
-        const outputs = Object.fromEntries(outputFields[type].map(field => [field, read('outputs', field)]))
-        const values = await this.checkpointSerde.loadsTyped('json', Buffer.from(JSON.stringify(outputs)))
-        nodes.push([nodeId, { definition: { type }, status: 'completed', startTime,
-          endTime: read('endTime'), outputs: values }])
+      for (const [nodeId, entry] of snapshot.nodes) {
+        const values = await reviveJsonPlus(entry.rawOutputs, baseLoads)
+        nodes.push([nodeId, {
+          definition: entry.definition,
+          status: entry.status,
+          startTime: entry.startTime,
+          endTime: entry.endTime,
+          outputs: values,
+        }])
       }
-      if (nodes.length) snapshots.push({ namespace: row.checkpoint_ns, checkpointId: row.checkpoint_id, nodes })
+      snapshots.push({ namespace: snapshot.namespace, checkpointId: snapshot.checkpointId, nodes })
     }
     return snapshots
   }
@@ -198,9 +478,9 @@ export class ExecutionCheckpointer extends SqliteSaver {
     if (type !== metadataType) throw new Error('Checkpoint and metadata serialization types differ')
     this.store.db.transaction(() => {
       this.store.assertLease(this.lease)
-      const head = this.store.db.prepare(`SELECT checkpoint_id FROM execution_heads WHERE execution_id = ? AND namespace = ?`)
+      const head = this.store.stmt(`SELECT checkpoint_id FROM execution_heads WHERE execution_id = ? AND namespace = ?`)
         .get(executionId, namespace) as any
-      const existing = this.store.db.prepare(`SELECT checkpoint, metadata, parent_checkpoint_id FROM checkpoints
+      const existing = this.store.stmt(`SELECT checkpoint, metadata, parent_checkpoint_id FROM checkpoints
         WHERE thread_id = ? AND checkpoint_ns = ? AND checkpoint_id = ?`).get(executionId, namespace, checkpoint.id) as any
       if (!existing && (head?.checkpoint_id ?? null) !== parentId) throw new ExecutionConflictError('Stale checkpoint parent')
       this.store.commitDocument(executionId, this.documents.get(serializedCheckpoint)!)
@@ -213,15 +493,15 @@ export class ExecutionCheckpointer extends SqliteSaver {
         }
         return
       }
-      this.store.db.prepare(`INSERT INTO checkpoints
+      this.store.stmt(`INSERT INTO checkpoints
         (thread_id, checkpoint_ns, checkpoint_id, parent_checkpoint_id, type, checkpoint, metadata)
         VALUES (?, ?, ?, ?, ?, ?, ?)`).run(executionId, namespace, checkpoint.id, parentId, type, serializedCheckpoint, serializedMetadata)
-      this.store.db.prepare(`INSERT INTO execution_heads VALUES (?, ?, ?)
+      this.store.stmt(`INSERT INTO execution_heads VALUES (?, ?, ?)
         ON CONFLICT(execution_id, namespace) DO UPDATE SET checkpoint_id = excluded.checkpoint_id`)
         .run(executionId, namespace, checkpoint.id)
       const transition = checkpoint.channel_values.executionTransition as CheckpointTransition | undefined
       if (transition) this.store.commitTransition(executionId, checkpoint.id, transition)
-      this.store.db.prepare(`UPDATE executions SET checkpoint_version = checkpoint_version + 1, updated_at = ?
+      this.store.stmt(`UPDATE executions SET checkpoint_version = checkpoint_version + 1, updated_at = ?
         WHERE execution_id = ?`).run(Date.now(), executionId)
     }).immediate()
     await this.afterCommit?.()
@@ -241,26 +521,26 @@ export class ExecutionCheckpointer extends SqliteSaver {
     }))
     this.store.db.transaction(() => {
       this.store.assertLease(this.lease)
-      const head = this.store.db.prepare('SELECT checkpoint_id FROM execution_heads WHERE execution_id = ? AND namespace = ?')
+      const head = this.store.stmt('SELECT checkpoint_id FROM execution_heads WHERE execution_id = ? AND namespace = ?')
         .get(executionId, namespace) as any
       if (head?.checkpoint_id !== parentId) throw new ExecutionConflictError('Pending writes target a stale checkpoint')
+      const selectExisting = this.store.stmt(`SELECT channel, type, value FROM writes
+        WHERE thread_id = ? AND checkpoint_ns = ? AND checkpoint_id = ? AND task_id = ? AND idx = ?`)
+      const updateWrite = this.store.stmt(`UPDATE writes SET channel = ?, type = ?, value = ?
+        WHERE thread_id = ? AND checkpoint_ns = ? AND checkpoint_id = ? AND task_id = ? AND idx = ?`)
+      const insertWrite = this.store.stmt(`INSERT INTO writes
+        (thread_id, checkpoint_ns, checkpoint_id, task_id, idx, channel, type, value) VALUES (?, ?, ?, ?, ?, ?, ?, ?)`)
       for (const row of rows) {
         this.store.commitDocument(executionId, this.documents.get(row.serialized)!)
-        const existing = this.store.db.prepare(`SELECT channel, type, value FROM writes
-          WHERE thread_id = ? AND checkpoint_ns = ? AND checkpoint_id = ? AND task_id = ? AND idx = ?`)
-          .get(executionId, namespace, parentId, taskId, row.index) as any
+        const existing = selectExisting.get(executionId, namespace, parentId, taskId, row.index) as any
         if (existing) {
           if (existing.channel === row.channel && existing.type === row.type && this.sameDocument(existing.value, row.serialized)) continue
           // LangGraph revises diagnostic/error/interrupt slots when a task resumes.
           // Successful ordinary task output is immutable, never INSERT OR IGNORE.
           if (!(row.channel in WRITES_IDX_MAP)) throw new ExecutionConflictError('Task output conflicts with a committed result')
-          this.store.db.prepare(`UPDATE writes SET channel = ?, type = ?, value = ?
-            WHERE thread_id = ? AND checkpoint_ns = ? AND checkpoint_id = ? AND task_id = ? AND idx = ?`)
-            .run(row.channel, row.type, row.serialized, executionId, namespace, parentId, taskId, row.index)
+          updateWrite.run(row.channel, row.type, row.serialized, executionId, namespace, parentId, taskId, row.index)
         } else {
-          this.store.db.prepare(`INSERT INTO writes
-            (thread_id, checkpoint_ns, checkpoint_id, task_id, idx, channel, type, value) VALUES (?, ?, ?, ?, ?, ?, ?, ?)`)
-            .run(executionId, namespace, parentId, taskId, row.index, row.channel, row.type, row.serialized)
+          insertWrite.run(executionId, namespace, parentId, taskId, row.index, row.channel, row.type, row.serialized)
         }
       }
     }).immediate()

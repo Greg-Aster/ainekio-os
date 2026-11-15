@@ -139,11 +139,11 @@ test('Lightweight remains independently selectable and shows its configured body
 test('BB-Codex and BB-Gemini remain distinct choices in role model dropdowns', () => {
   const choices = buildBaseModelChoices([
     { id: 'big-brother.codex', provider: 'big-brother', model: 'gpt-6.1-sol', baseModel: 'BB-Codex', capabilities: ['text', 'image'] },
-    { id: 'big-brother.gemini', provider: 'big-brother', model: 'gemini-3.8-flash-low', baseModel: 'BB-Gemini', capabilities: ['text'] },
+    { id: 'big-brother.gemini', provider: 'big-brother', model: 'gemini-4-hydrogen-low', baseModel: 'BB-Gemini', capabilities: ['text', 'image'] },
   ]);
   assert.equal(choices.length, 2);
   assert.equal(choices[0].label, 'BB-Codex (gpt-6.1-sol)');
-  assert.equal(choices[1].label, 'BB-Gemini (gemini-3.8-flash-low)');
+  assert.equal(choices[1].label, 'BB-Gemini (gemini-4-hydrogen-low)');
   assert.equal(modelChoiceForAssignment(choices, 'big-brother.codex')?.base.id, 'big-brother.codex');
   assert.equal(modelChoiceForAssignment(choices, 'big-brother.gemini')?.base.id, 'big-brother.gemini');
 });

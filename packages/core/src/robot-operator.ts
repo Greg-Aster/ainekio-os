@@ -4,6 +4,7 @@ import { systemPaths } from './path-builder.js'
 import type { EnvironmentObservation } from './environment-interface/types.js'
 import { summarizeEnvironmentBridgeState } from './environment-interface/store.js'
 import type { AutonomyMode, QueuedTask } from './queue/types.js'
+import { canonicalJSON } from './durable-execution/store.js'
 import { openExecutionStore } from './durable-execution/storage.js'
 
 const SERVICES_CONFIG_PATH = path.join(systemPaths.etc, 'services.json')
@@ -205,12 +206,16 @@ export function robotOperatorChildGraph(
 export function activeRobotExecutions(username: string) {
   const store = openExecutionStore(username)
   try {
-    return store.active(username).filter(record => store.entry(record.executionId).context?.cognitiveMode === 'environment')
-      .map(record => ({ executionId: record.executionId, status: record.status,
-        stimulusAgent: store.entry(record.executionId).context?.robotOperatorContext?.stimulusAgent,
+    return store.withDocumentReadScope(() => store.active(username).flatMap(record => {
+      if (store.entryOrNull(record.executionId, ['context', 'cognitiveMode']) !== 'environment') return []
+      return [{ executionId: record.executionId, status: record.status,
+        sessionId: store.entryOrNull(record.executionId, ['context', 'robotOperatorContext', 'sessionId'])
+          ?? store.entryOrNull(record.executionId, ['context', 'sessionId']),
+        stimulusAgent: store.entryOrNull(record.executionId, ['context', 'robotOperatorContext', 'stimulusAgent']),
         waitingReason: record.waitingReason, checkpointVersion: record.checkpointVersion,
         resumePending: store.dispatches(record.executionId).some(effect => effect.kind === 'graph_resume'
-          && ['pending', 'admitted', 'accepted'].includes(effect.status)) }))
+          && ['pending', 'admitted', 'accepted'].includes(effect.status)) }]
+    }))
   } finally { store.close() }
 }
 
@@ -232,46 +237,62 @@ export function isRobotAutonomyWorkItem(
     || hasRobotObserverMetadata(task.input)
 }
 
+function parseRobotOperatorRuntimeRecord(parsed: Record<string, any>): RobotOperatorRuntimeState | null {
+  if (parsed?.version !== 1 || parsed.serviceId !== 'robot-operator') return null
+  if (!['reactive', 'semi', 'full'].includes(parsed.mode)) return null
+  if (!['starting', 'armed', 'dormant', 'admitting', 'failed', 'stopped'].includes(parsed.lifecycle)) return null
+  const childIds: RobotOperatorStimulusAgent[] = [
+    'robot-autonomy-controller',
+    'robot-status',
+    'robot-goal-review',
+    'boredom-observer',
+    'boredom-movement',
+    'boredom-reflection',
+  ]
+  const optionalText = (value: unknown, maxLength: number): string | undefined => (
+    typeof value === 'string' && value.trim() ? value.trim().slice(0, maxLength) : undefined
+  )
+  const children = {} as Record<RobotOperatorStimulusAgent, RobotOperatorChildRuntimeState>
+  for (const id of childIds) {
+    const child = parsed.children?.[id]
+    if (!child || typeof child !== 'object' || Array.isArray(child)) return null
+    const lastAdmittedAt = optionalText(child.lastAdmittedAt, 50)
+    const lastTaskId = optionalText(child.lastTaskId, 200)
+    const lastOutcome = optionalText(child.lastOutcome, 500)
+    children[id] = {
+      id,
+      enabled: child.enabled === true,
+      handler: optionalText(child.handler, 100) ?? `workflow.${id}`,
+      graph: configuredGraph(child.graph, robotOperatorChildGraph(DEFAULT_CONFIG, id)),
+      ...(lastAdmittedAt ? { lastAdmittedAt } : {}),
+      ...(lastTaskId ? { lastTaskId } : {}),
+      ...(lastOutcome ? { lastOutcome } : {}),
+    }
+  }
+  return {
+    version: 1,
+    serviceId: 'robot-operator',
+    updatedAt: typeof parsed.updatedAt === 'string' ? parsed.updatedAt.slice(0, 50) : '',
+    mode: parsed.mode,
+    lifecycle: parsed.lifecycle,
+    reason: typeof parsed.reason === 'string' ? parsed.reason.slice(0, 200) : '',
+    children,
+  }
+}
+
+function runtimeSemanticSignature(state: Pick<RobotOperatorRuntimeState, 'mode' | 'lifecycle' | 'reason' | 'children'>): string {
+  return canonicalJSON({
+    mode: state.mode,
+    lifecycle: state.lifecycle,
+    reason: state.reason,
+    children: state.children,
+  })
+}
+
 export function readRobotOperatorRuntimeState(): RobotOperatorRuntimeState | null {
   try {
     const parsed = JSON.parse(fs.readFileSync(ROBOT_OPERATOR_RUNTIME_FILE, 'utf8')) as Record<string, any>
-    if (parsed?.version !== 1 || parsed.serviceId !== 'robot-operator') return null
-    if (!['reactive', 'semi', 'full'].includes(parsed.mode)) return null
-    if (!['starting', 'armed', 'dormant', 'admitting', 'failed', 'stopped'].includes(parsed.lifecycle)) return null
-    const childIds: RobotOperatorStimulusAgent[] = [
-      'robot-autonomy-controller',
-      'robot-status',
-      'robot-goal-review',
-      'boredom-observer',
-      'boredom-movement',
-      'boredom-reflection',
-    ]
-    const children = {} as Record<RobotOperatorStimulusAgent, RobotOperatorChildRuntimeState>
-    for (const id of childIds) {
-      const child = parsed.children?.[id]
-      if (!child || typeof child !== 'object' || Array.isArray(child)) return null
-      const optionalText = (value: unknown, maxLength: number): string | undefined => (
-        typeof value === 'string' && value.trim() ? value.trim().slice(0, maxLength) : undefined
-      )
-      children[id] = {
-        id,
-        enabled: child.enabled === true,
-        handler: optionalText(child.handler, 100) ?? `workflow.${id}`,
-        graph: configuredGraph(child.graph, robotOperatorChildGraph(DEFAULT_CONFIG, id)),
-        ...(optionalText(child.lastAdmittedAt, 50) ? { lastAdmittedAt: optionalText(child.lastAdmittedAt, 50) } : {}),
-        ...(optionalText(child.lastTaskId, 200) ? { lastTaskId: optionalText(child.lastTaskId, 200) } : {}),
-        ...(optionalText(child.lastOutcome, 500) ? { lastOutcome: optionalText(child.lastOutcome, 500) } : {}),
-      }
-    }
-    return {
-      version: 1,
-      serviceId: 'robot-operator',
-      updatedAt: typeof parsed.updatedAt === 'string' ? parsed.updatedAt.slice(0, 50) : '',
-      mode: parsed.mode,
-      lifecycle: parsed.lifecycle,
-      reason: typeof parsed.reason === 'string' ? parsed.reason.slice(0, 200) : '',
-      children,
-    }
+    return parseRobotOperatorRuntimeRecord(parsed)
   } catch {
     return null
   }
@@ -280,11 +301,16 @@ export function readRobotOperatorRuntimeState(): RobotOperatorRuntimeState | nul
 export function writeRobotOperatorRuntimeState(
   state: Omit<RobotOperatorRuntimeState, 'version' | 'serviceId' | 'updatedAt'>,
 ): RobotOperatorRuntimeState {
-  const next: RobotOperatorRuntimeState = {
+  const rawNext: RobotOperatorRuntimeState = {
     version: 1,
     serviceId: 'robot-operator',
     updatedAt: new Date().toISOString(),
     ...state,
+  }
+  const next = parseRobotOperatorRuntimeRecord(rawNext) ?? rawNext
+  const existing = readRobotOperatorRuntimeState()
+  if (existing && runtimeSemanticSignature(existing) === runtimeSemanticSignature(next)) {
+    return existing
   }
   fs.mkdirSync(path.dirname(ROBOT_OPERATOR_RUNTIME_FILE), { recursive: true })
   const temporary = `${ROBOT_OPERATOR_RUNTIME_FILE}.${process.pid}.tmp`

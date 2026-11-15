@@ -6,10 +6,30 @@
 
 import type { UnifiedRequest, UnifiedResponse } from '../types.js';
 import { audit } from '../../audit.js';
+import { isAgentRunning } from '../../agent-monitor-registry.js';
+import { startAgentProcess } from '../../agent-process-runner.js';
 import { getModeController, loadActiveOperatorConfig, updateActiveOperatorConfig } from '../../active-operator/index.js';
 import { getQueueManager } from '../../queue/index.js';
 import type { AutonomyMode } from '../../queue/types.js';
-import { isRobotAutonomyWorkItem, readRobotOperatorRuntimeState } from '../../robot-operator.js';
+import { isRobotAutonomyWorkItem, loadRobotOperatorConfig, readRobotOperatorRuntimeState } from '../../robot-operator.js';
+
+const ROBOT_OPERATOR_SERVICE = 'robot-operator';
+
+async function ensureRobotOperatorRunning(actor: string, source: string): Promise<void> {
+  if (!loadRobotOperatorConfig().enabled) return;
+  if (isAgentRunning(ROBOT_OPERATOR_SERVICE)) return;
+  const started = await startAgentProcess(ROBOT_OPERATOR_SERVICE, {
+    actor,
+    source,
+    useBootstrap: true,
+    detached: true,
+    waitForMs: 5000,
+    checkLock: true,
+  });
+  if (!started.started && !started.alreadyRunning) {
+    throw new Error(started.error || 'Failed to start Active Operator service');
+  }
+}
 
 type ControlAction = 'start' | 'stop' | 'set-mode' | 'emergency-stop' | 'reset';
 
@@ -81,16 +101,8 @@ export async function readActiveOperatorStatus(username?: string, includeConfigu
   let operations: unknown[] = []
   let assessments: unknown[] = []
   if (username) {
-    const [{ robotAutonomyTaskCatalogNode }, { readActivationAssessments }, { loadGraphForMode }, { loadRobotOperatorConfig }] = await Promise.all([
-      import('../../nodes/robot-operator/task-catalog.node.js'), import('../../active-operator/activation-history.js'),
-      import('../../graph-streaming.js'), import('../../robot-operator.js'),
-    ])
-    const loaded = await loadGraphForMode(loadRobotOperatorConfig().robotAutonomyControllerGraph, username)
-    const catalogNode = loaded.graph.nodes.find(node => node.data.nodeType === 'robot_autonomy_task_catalog')
-    const catalog = await robotAutonomyTaskCatalogNode.execute({}, { username },
-      { ...catalogNode?.data.properties, includeActivityHistory: true })
-    operations = catalog.activationState.operations
-    assessments = await readActivationAssessments(username, 12)
+    const { readActiveOperatorCatalogStatus } = await import('../../nodes/robot-operator/task-catalog.node.js');
+    ({ operations, assessments } = await readActiveOperatorCatalogStatus(username, allWork, 12));
   }
   return {
     ...(includeConfiguration ? { configuration: loadActiveOperatorConfig() } : {}),
@@ -164,6 +176,7 @@ export async function handleUpdateActiveOperatorConfig(req: UnifiedRequest): Pro
     const body = {
       ...(input.autonomyMode !== undefined ? { autonomyMode: input.autonomyMode } : {}),
       ...(input.semiAssessmentMinutes !== undefined ? { semiAssessmentMinutes: input.semiAssessmentMinutes } : {}),
+      ...(input.boredomInactivityMinutes !== undefined ? { boredomInactivityMinutes: input.boredomInactivityMinutes } : {}),
     };
     const requestedMode = body.autonomyMode as AutonomyMode | undefined;
     if (requestedMode && !['reactive', 'semi', 'full'].includes(requestedMode)) {
@@ -173,8 +186,17 @@ export async function handleUpdateActiveOperatorConfig(req: UnifiedRequest): Pro
       || !Number.isFinite(body.semiAssessmentMinutes) || body.semiAssessmentMinutes <= 0)) {
       return { status: 400, error: 'semiAssessmentMinutes must be a positive number' };
     }
+    if (body.boredomInactivityMinutes !== undefined && (typeof body.boredomInactivityMinutes !== 'number'
+      || !Number.isFinite(body.boredomInactivityMinutes) || body.boredomInactivityMinutes <= 0)) {
+      return { status: 400, error: 'boredomInactivityMinutes must be a positive number' };
+    }
     const config = updateActiveOperatorConfig(body);
-    if (requestedMode) await getModeController().setMode(requestedMode, req.user.username);
+    if (requestedMode) {
+      await getModeController().setMode(requestedMode, req.user.username);
+      if (requestedMode === 'semi' || requestedMode === 'full') {
+        await ensureRobotOperatorRunning(req.user.username, 'api/active-operator/config');
+      }
+    }
 
     return {
       status: 200,
@@ -218,6 +240,7 @@ export async function handleActiveOperatorControl(req: UnifiedRequest): Promise<
     switch (action) {
       case 'start': {
         await controller.setMode('full', req.user.username);
+        await ensureRobotOperatorRunning(req.user.username, 'api/active-operator/control');
         result = {
           success: true,
           mode: 'full',
@@ -242,16 +265,20 @@ export async function handleActiveOperatorControl(req: UnifiedRequest): Promise<
           return { status: 400, error: 'mode must be reactive, semi, or full' };
         }
         await controller.setMode(mode, req.user.username);
+        if (mode === 'semi' || mode === 'full') {
+          await ensureRobotOperatorRunning(req.user.username, 'api/active-operator/control');
+        }
         result = { success: true, mode, message: `${mode} mode enabled` };
         break;
       }
 
       case 'emergency-stop': {
-        await controller.emergencyStop(req.user.username);
+        const detach = body.detach === true;
+        await controller.emergencyStop(req.user.username, detach ? { detach: true } : undefined);
         result = {
           success: true,
           mode: 'reactive',
-          message: 'Active Operator emergency stopped',
+          message: detach ? 'Active Operator emergency stopped and released servo PWM' : 'Active Operator emergency stopped',
         };
         break;
       }

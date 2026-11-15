@@ -154,7 +154,7 @@ export function normalizeEnvironmentPerception(value: unknown): EnvironmentPerce
 }
 
 /** Camera readiness and control identity come from the adapter, never the model. */
-export function currentEnvironmentPerception(
+export function retainedEnvironmentPerception(
   observation: EnvironmentObservation | undefined,
   value: unknown = observation?.state?.perception,
   now = Date.now(),
@@ -168,7 +168,16 @@ export function currentEnvironmentPerception(
   return body?.authenticated === true && body.cameraReady === true && body.robotId === perception.robotId
     && updates?.gatewayInstance === perception.gatewayInstance && robot?.epoch === perception.epoch
     && robot.connection_state === 'online' && Date.parse(perception.observedAt) <= now
-    && now < Date.parse(perception.expiresAt) ? perception : null;
+    ? perception : null;
+}
+
+export function currentEnvironmentPerception(
+  observation: EnvironmentObservation | undefined,
+  value: unknown = observation?.state?.perception,
+  now = Date.now(),
+): EnvironmentPerception | null {
+  const perception = retainedEnvironmentPerception(observation, value, now);
+  return perception && now < Date.parse(perception.expiresAt) ? perception : null;
 }
 
 /** Filter the live read view without changing saved observations or their images. */

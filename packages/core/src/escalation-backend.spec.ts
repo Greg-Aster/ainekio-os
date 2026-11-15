@@ -301,7 +301,7 @@ test('status-widget assignments route Persona to Big Brother and preserve indepe
       assert.equal((await assign('persona', 'big-brother.gemini')).status, 200);
       const geminiSelected = resolveModelForCognitiveMode('environment', 'persona', 'fixture');
       assert.equal(geminiSelected.provider, 'big-brother');
-      assert.equal(geminiSelected.model, 'gemini-3.8-flash-low');
+      assert.equal(geminiSelected.model, 'gemini-4-hydrogen-low');
       assert.equal(geminiSelected.metadata?.cliProvider, 'gemini');
       assert.deepEqual(geminiSelected.capabilities, ['text', 'image']);
       const geminiResult = await callLLM({
@@ -317,7 +317,7 @@ test('status-widget assignments route Persona to Big Brother and preserve indepe
         }],
       });
       assert.equal(geminiResult.provider, 'big-brother');
-      assert.equal(geminiResult.model, 'gemini-3.8-flash-low');
+      assert.equal(geminiResult.model, 'gemini-4-hydrogen-low');
       assert.equal(calls.at(-1), 'execute:gemini');
       assert.deepEqual(receivedOptions?.modelRequest?.messages, [{
         role: 'user',
@@ -346,4 +346,110 @@ test('Big Brother forwards per-call reasoning without changing its configured de
       assert.equal(receivedOptions?.enableThinking, enableThinking);
     }
   });
+});
+
+test('handleSetBigBrotherConfig pre-warms enabled/switched Big Brother provider in background without blocking HTTP response', async () => {
+  const { saveUserConfig } = await import('./config.js');
+  const { handleSetBigBrotherConfig } = await import('./api/handlers/big-brother-config.js');
+  const { registerBackend } = await import('./escalation-backend.js');
+
+  const events: string[] = [];
+  let ready = false;
+  let releaseWarmup!: () => void;
+  let failNextWarmup = false;
+
+  registerBackend({
+    id: 'gemini',
+    name: 'gemini',
+    description: 'gemini',
+    supportsStreaming: true,
+    async isAvailable() {
+      events.push('available:gemini');
+      return true;
+    },
+    isReady() {
+      return ready;
+    },
+    async start() {
+      events.push('start:gemini');
+      ready = true;
+      return true;
+    },
+    async warmup(options) {
+      events.push(`warmup:gemini:${options?.model}:${options?.reasoningEffort ?? 'default'}`);
+      if (failNextWarmup) {
+        failNextWarmup = false;
+        throw new Error('fixture warmup failure');
+      }
+      await new Promise<void>(resolve => { releaseWarmup = resolve; });
+      events.push('warmup-settled:gemini');
+    },
+    stop() {
+      ready = false;
+    },
+    async execute() {
+      return { success: true, output: 'gemini' };
+    },
+  });
+
+  saveUserConfig('operator.json', {
+    bigBrotherMode: { enabled: false, provider: 'gemini', model: 'gemini-4-hydrogen-low', reasoningEffort: 'low', delegateAll: false },
+  }, 'prewarm-user');
+
+  const user = { username: 'prewarm-user', role: 'owner', isAuthenticated: true };
+
+  // Enabling Big Brother returns 200 immediately while background warmup is still in flight
+  const enableResponse = await handleSetBigBrotherConfig({
+    method: 'POST',
+    path: '/api/big-brother-config',
+    user,
+    body: { enabled: true, provider: 'gemini', model: 'gemini-4-hydrogen-low', delegateAll: true },
+  } as any);
+  assert.equal(enableResponse.status, 200);
+  assert.equal(events.includes('warmup-settled:gemini'), false, 'HTTP response must not block on warmup completion');
+
+  for (let i = 0; i < 20 && !releaseWarmup; i++) {
+    await new Promise(resolve => setTimeout(resolve, 5));
+  }
+  assert.deepEqual(events, [
+    'available:gemini',
+    'start:gemini',
+    'warmup:gemini:gemini-4-hydrogen-low:low',
+  ]);
+  releaseWarmup();
+  await new Promise(resolve => setTimeout(resolve, 10));
+  assert.equal(events.at(-1), 'warmup-settled:gemini');
+
+  // Updating unrelated flags while already enabled does not re-run warmup
+  const countBeforeFlagChange = events.length;
+  const flagResponse = await handleSetBigBrotherConfig({
+    method: 'POST',
+    path: '/api/big-brother-config',
+    user,
+    body: { maxRetries: 2 },
+  } as any);
+  assert.equal(flagResponse.status, 200);
+  await new Promise(resolve => setTimeout(resolve, 15));
+  assert.equal(events.length, countBeforeFlagChange);
+
+  // Switching reasoningEffort while already enabled triggers warmup for the new target without unhandled rejection on error
+  failNextWarmup = true;
+  let unhandledError: unknown;
+  const onUnhandled = (reason: unknown) => { unhandledError = reason; };
+  process.once('unhandledRejection', onUnhandled);
+  try {
+    const switchResponse = await handleSetBigBrotherConfig({
+      method: 'POST',
+      path: '/api/big-brother-config',
+      user,
+      body: { reasoningEffort: 'high' },
+    } as any);
+    assert.equal(switchResponse.status, 200);
+    await new Promise(resolve => setTimeout(resolve, 20));
+    assert.equal(events.at(-1), 'warmup:gemini:gemini-4-hydrogen-low:high');
+    assert.equal(unhandledError, undefined, 'Failed background prewarm must be caught and audited without unhandledRejection');
+  } finally {
+    process.off('unhandledRejection', onUnhandled);
+    installFixtureBackends();
+  }
 });

@@ -33,8 +33,18 @@ export async function submitCoordinatorWork(input: TaskInput): Promise<QueuedTas
     },
     body: JSON.stringify(input),
   });
-  const body = await response.json() as { task?: QueuedTask; error?: string };
-  if (!response.ok || !body.task) throw new Error(body.error || `Coordinator submission failed (${response.status})`);
+  const text = await response.text();
+  let body: { task?: QueuedTask; error?: string } | undefined;
+  if (text) {
+    try {
+      body = JSON.parse(text) as { task?: QueuedTask; error?: string };
+    } catch {
+      body = undefined;
+    }
+  }
+  if (!response.ok || !body?.task) {
+    throw new Error(body?.error || `Coordinator submission failed (${response.status})`);
+  }
   return body.task;
 }
 

@@ -171,11 +171,37 @@ export async function executeRobotAutonomyTriggerWork(
 
   const config = loadRobotOperatorConfig()
   if (agentId === 'robot-autonomy-controller') {
+    const requestedSession = requestedSessionId(task, config.sessionId)
+    if (mode === 'full') {
+      const { tryRunEmbodiedCuriosityFromTrigger } = await import('../active-operator/embodied-curiosity.js')
+      const curiosityResult = await tryRunEmbodiedCuriosityFromTrigger({
+        task,
+        config,
+        requestedSession,
+        signal: context.signal,
+      })
+      if (curiosityResult) {
+        audit({
+          level: 'info',
+          category: 'action',
+          event: 'robot_embodied_curiosity_completed',
+          actor: agentId,
+          details: {
+            taskId: task.id,
+            mode,
+            sessionId: curiosityResult.sessionId,
+            executionId: curiosityResult.executionId,
+            skipped: curiosityResult.skipped === true,
+          },
+        })
+        return curiosityResult
+      }
+    }
     const result = await executeRobotAutonomyControllerGraph(
       task,
       robotOperatorChildGraph(config, agentId),
       config.environmentGraph,
-      requestedSessionId(task, config.sessionId),
+      requestedSession,
       context.signal,
     )
     audit({

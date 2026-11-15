@@ -86,7 +86,11 @@ export async function runTerminalService(): Promise<void> {
         if (typeof data.message !== 'string') throw new TerminalError('Invalid diagnostic message', 400)
         result = await owner.diagnosticInput(data.id, data.message)
       }
-      else if (req.method === 'POST' && url.pathname === '/execute') {
+      else if (req.method === 'POST' && url.pathname === '/warmup') {
+        if (!['claude-code', 'codex', 'gemini'].includes(data.provider)) throw new TerminalError('Invalid provider request', 400)
+        await owner.warmup(data.provider, data.options || {})
+        result = { success: true }
+      } else if (req.method === 'POST' && url.pathname === '/execute') {
         if (!['claude-code', 'codex', 'gemini'].includes(data.provider) || typeof data.prompt !== 'string') throw new TerminalError('Invalid provider request', 400)
         stream(res)
         const execution = await owner.execute(data.provider, data.prompt, data.options || {}, abort.signal,
@@ -137,7 +141,10 @@ export async function runTerminalService(): Promise<void> {
     })
     process.on('SIGTERM', onSignal)
     process.on('SIGINT', onSignal)
-    console.log('[terminal] Ready; no provider sessions started')
+    console.log('[terminal] Ready; checking configured provider warmup')
+    void runtime.warmupConfiguredProviders().catch(error => {
+      console.error('[terminal] Provider warmup failed:', error)
+    })
     await done
   } finally {
     process.off('SIGTERM', onSignal)

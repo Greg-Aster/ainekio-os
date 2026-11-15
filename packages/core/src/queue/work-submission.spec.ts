@@ -1,12 +1,22 @@
 import assert from 'node:assert/strict'
-import test from 'node:test'
+import fs from 'node:fs'
+import os from 'node:os'
+import path from 'node:path'
+import { after, test } from 'node:test'
 
-import {
+const root = fs.mkdtempSync(path.join(os.tmpdir(), 'metahuman-work-submission-'))
+process.env.METAHUMAN_ROOT = root
+fs.mkdirSync(path.join(root, 'brain/agents/train-of-thought'), { recursive: true })
+fs.writeFileSync(path.join(root, 'brain/agents/train-of-thought/index.ts'), 'export {};\n')
+after(() => fs.rmSync(root, { recursive: true, force: true }))
+
+const {
   buildAgentFollowOnTaskInput,
   buildDesireAgentTaskInput,
   buildMemoryIndexRefreshTaskInput,
-} from './work-submission.js'
-import { UnifiedQueueManager } from './unified-queue-manager.js'
+  submitCoordinatorWork,
+} = await import('./work-submission.js')
+const { UnifiedQueueManager } = await import('./unified-queue-manager.js')
 
 test('Agent follow-on submission builds one coordinator-owned finite task contract', () => {
   const seed = 'Original cause. ' + 'x'.repeat(12_100) + ' Full final evidence. 🤖'
@@ -200,4 +210,39 @@ test('Work Coordinator rejects Desire lifecycle bypasses', () => {
     username: 'profile-one',
     input: { agentId: 'desire-agent' },
   }), /must be admitted by the Desire Agent/)
+})
+
+test('submitCoordinatorWork surfaces clean HTTP error on non-JSON startup responses and parses valid task JSON', async () => {
+  const tokenFile = path.join(root, 'logs/run/queue/service-token')
+  fs.mkdirSync(path.dirname(tokenFile), { recursive: true })
+  fs.writeFileSync(tokenFile, 'fixture-service-token\n')
+
+  const originalFetch = globalThis.fetch
+  let nextResponse!: () => Response
+  globalThis.fetch = async () => nextResponse()
+  try {
+    const input = { type: 'generic' as const, handler: 'workflow.robot-autonomy-controller', source: 'autonomy' as const, username: 'owner', input: {} }
+
+    nextResponse = () => new Response('<title>Middleware Error</title>', { status: 503, headers: { 'content-type': 'text/html' } })
+    await assert.rejects(
+      () => submitCoordinatorWork(input),
+      (error: unknown) => error instanceof Error && !(error instanceof SyntaxError) && error.message === 'Coordinator submission failed (503)',
+    )
+
+    nextResponse = () => new Response('<title>Middleware Ready</title>', { status: 200, headers: { 'content-type': 'text/html' } })
+    await assert.rejects(
+      () => submitCoordinatorWork(input),
+      (error: unknown) => error instanceof Error && !(error instanceof SyntaxError) && error.message === 'Coordinator submission failed (200)',
+    )
+
+    nextResponse = () => new Response(JSON.stringify({ error: 'Coordinator busy' }), { status: 429, headers: { 'content-type': 'application/json' } })
+    await assert.rejects(() => submitCoordinatorWork(input), /Coordinator busy/)
+
+    const expectedTask = { id: 'task-1', ...input, state: 'queued', createdAt: new Date().toISOString(), attempt: 0 }
+    nextResponse = () => new Response(JSON.stringify({ task: expectedTask }), { status: 200, headers: { 'content-type': 'application/json' } })
+    const admitted = await submitCoordinatorWork(input)
+    assert.deepEqual(admitted, expectedTask)
+  } finally {
+    globalThis.fetch = originalFetch
+  }
 })

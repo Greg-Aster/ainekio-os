@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict'
 import { test } from 'node:test'
-import { normalizeLocomotionGoal, evaluateLocomotionGoal } from './active-task.js'
+import { normalizeLocomotionGoal, evaluateLocomotionGoal, summarizeDepthSpatialClearance, trackLocomotionProgress } from './active-task.js'
 import type { EnvironmentLocomotionMeasurement } from './types.js'
 import { buildEnvironmentSelectorJsonSchema } from './task-selection.js'
 
@@ -98,4 +98,64 @@ test('Crab body projection stays within the transport percentage range at floati
   const result = evaluateLocomotionGoal(goal, { position }, { position }, Date.now(), 'crab')
   assert.equal(result.forward, 100)
   assert.ok(Math.abs(result.lateral!) <= 100)
+})
+
+test('MoGe depthSpatial corridor range permits open 0.45m step and halts forward walk before wall with openTurnDirection', () => {
+  const goal = normalizeLocomotionGoal({ kind: 'distance', direction: 'forward', metres: 0.45, tolerance: 0.08 })
+  const makeGrid = (center: number, left: number, right: number) => {
+    const values = new Array(64).fill(0.8)
+    for (const r of [2, 3, 4]) {
+      for (const c of [0, 1, 2]) values[r * 8 + c] = left
+      for (const c of [2, 3, 4, 5]) values[r * 8 + c] = center
+      for (const c of [5, 6, 7]) values[r * 8 + c] = right
+    }
+    return { schema: 'ainekio-depth-grid-v1', available: true, rows: 8, columns: 8, values, valid: new Array(64).fill(true) }
+  }
+  const openPos = { ...start.position!, depthSpatial: makeGrid(0.85, 0.72, 1.25) } as any
+  const openEval = evaluateLocomotionGoal(goal, { position: openPos }, start)
+  assert.equal(openEval.reached, false)
+  assert.equal(openEval.reason, undefined)
+  assert.equal(openEval.forward, 100)
+  assert.equal((openEval.progress.clearance as any).openTurnDirection, 'right')
+
+  const blockedPos = { ...start.position!, depthSpatial: makeGrid(0.22, 1.15, 0.34) } as any
+  const blockedSummary = summarizeDepthSpatialClearance(blockedPos)!
+  assert.equal(blockedSummary.openTurnDirection, 'left')
+  const blockedEval = evaluateLocomotionGoal(goal, { position: blockedPos }, start)
+  assert.equal(blockedEval.reached, false)
+  assert.equal(blockedEval.forward, 0)
+  assert.match(blockedEval.reason!, /Forward path blocked at 0\.22m.*suggestedTurn=left/)
+})
+
+test('trackLocomotionProgress ignores duplicate frames, resets on metric progress, and flags stalled progress after 4 fresh samples over 3s', () => {
+  const goal = normalizeLocomotionGoal({ kind: 'distance', direction: 'forward', metres: 0.45, tolerance: 0.08 })
+  const baseMs = Date.parse('2026-11-12T19:00:00.000Z')
+  const stepSample = (frameCounter: number, offsetMs: number, yMetres: number, stalledJoints = 0) => {
+    const measurement: EnvironmentLocomotionMeasurement = {
+      position: { ...start.position!, yMetres, frameCounter, frameId: `frame-${frameCounter}`, observedAt: new Date(baseMs + offsetMs).toISOString() } as any,
+      yaw: { ...evidence, source: 'body-imu', degrees: 0, uncertaintyDegrees: null, imu: { joint_feedback: { stalled_joints: stalledJoints } } } as any,
+    }
+    const evalRes = evaluateLocomotionGoal(goal, measurement, start, baseMs + offsetMs)
+    return { measurement, evalRes, nowMs: baseMs + offsetMs }
+  }
+
+  const s0 = stepSample(1, 0, 3.0)
+  let tracked = trackLocomotionProgress(goal, s0.evalRes.progress, s0.measurement, undefined, s0.nowMs)
+  assert.equal(tracked.stalledReason, undefined)
+
+  // Duplicate read of frame-1 does not increment stalledSamples
+  tracked = trackLocomotionProgress(goal, s0.evalRes.progress, s0.measurement, tracked.tracker, s0.nowMs + 500)
+  assert.equal(tracked.tracker?.stalledSamples, 0)
+
+  // Genuine progress (+6 cm) resets tracker
+  const s1 = stepSample(2, 1000, 3.06)
+  tracked = trackLocomotionProgress(goal, s1.evalRes.progress, s1.measurement, tracked.tracker, s1.nowMs)
+  assert.equal(tracked.tracker?.stalledSamples, 0)
+
+  // Four consecutive fresh frames over >3s stuck at y=3.06m with stalled_joints=4
+  for (const [fc, dt] of [[3, 1800], [4, 2600], [5, 3400], [6, 4200]] as const) {
+    const stuck = stepSample(fc, dt, 3.065, 4)
+    tracked = trackLocomotionProgress(goal, stuck.evalRes.progress, stuck.measurement, tracked.tracker, stuck.nowMs)
+  }
+  assert.match(tracked.stalledReason!, /Locomotion progress stalled \(4 consecutive measurements.*stalledJointsMask=4/)
 })

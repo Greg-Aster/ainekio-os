@@ -125,17 +125,24 @@ function resolveUsername(username?: string): string | null {
   return null
 }
 
-function isAesEncryptionEnabled(username: string): boolean {
-  const storageConfig = getProfileStorageConfig(username)
+function isAesEncryptionEnabled(
+  username: string,
+  storageConfig: ProfileStorageConfig | undefined = getProfileStorageConfig(username)
+): boolean {
   return storageConfig?.encryption?.type === 'aes256'
 }
 
-function isProfileReady(username: string): { ready: boolean; error?: string } {
-  const storageConfig = getProfileStorageConfig(username)
+function isProfileReady(
+  username: string,
+  storageConfig: ProfileStorageConfig | undefined = getProfileStorageConfig(username)
+): { ready: boolean; error?: string } {
   const encType = storageConfig?.encryption?.type
 
   if (encType === 'aes256') {
-    if (isProfileUnlocked(pathBuilderResolveProfileRoot(username).root)) {
+    const root = storageConfig?.path
+      ? pathBuilderResolveProfileRoot(username).root
+      : getDefaultProfilePath(username)
+    if (isProfileUnlocked(root)) {
       return { ready: true }
     }
     return { ready: false, error: 'Profile is locked. Please unlock with your encryption password.' }
@@ -251,11 +258,33 @@ export function profileDataCodec(username: string): {
   encode(value: unknown): string
   decode(value: string): unknown
 } {
+  let cachedDbPath: string | undefined
+  let cachedStatKey: string | undefined
+  let cachedStorageConfig: ProfileStorageConfig | undefined
+  let cachedAesRoot: string | undefined
+
+  const getAesRoot = (): string | null => {
+    const dbPath = systemPaths.usersDb
+    const stat = fs.statSync(dbPath, { bigint: true, throwIfNoEntry: false })
+    const statKey = stat ? `${stat.dev}:${stat.ino}:${stat.mtimeNs}:${stat.ctimeNs}:${stat.size}` : 'missing'
+    if (dbPath !== cachedDbPath || statKey !== cachedStatKey) {
+      cachedDbPath = dbPath
+      cachedStatKey = statKey
+      cachedStorageConfig = getProfileStorageConfig(username)
+      cachedAesRoot = cachedStorageConfig?.encryption?.type === 'aes256'
+        ? (cachedStorageConfig.path ? pathBuilderResolveProfileRoot(username).root : getDefaultProfilePath(username))
+        : undefined
+    }
+    return cachedAesRoot ?? null
+  }
+
   const keyForOperation = () => {
-    const ready = isProfileReady(username)
-    if (!ready.ready) throw new Error(ready.error)
-    if (!isAesEncryptionEnabled(username)) return null
-    const key = getCachedKey(pathBuilderResolveProfileRoot(username).root)
+    const root = getAesRoot()
+    if (!root) return null
+    if (!isProfileUnlocked(root)) {
+      throw new Error('Profile is locked. Please unlock with your encryption password.')
+    }
+    const key = getCachedKey(root)
     if (!key) throw new Error('Profile is locked. Please unlock first.')
     return key
   }
@@ -298,8 +327,9 @@ export function writeFileSync(request: WriteRequest): WriteResult {
     }
   }
 
+  const storageConfig = resolvedUsername ? getProfileStorageConfig(resolvedUsername) : undefined
   if (resolvedUsername) {
-    const readyStatus = isProfileReady(resolvedUsername)
+    const readyStatus = isProfileReady(resolvedUsername, storageConfig)
     if (!readyStatus.ready) {
       return {
         success: false,
@@ -309,7 +339,7 @@ export function writeFileSync(request: WriteRequest): WriteResult {
   }
 
   let filePath = pathResponse.path!
-  const useAesEncryption = Boolean(resolvedUsername && isAesEncryptionEnabled(resolvedUsername))
+  const useAesEncryption = Boolean(resolvedUsername && isAesEncryptionEnabled(resolvedUsername, storageConfig))
 
   try {
     const dir = path.dirname(filePath)
@@ -401,8 +431,9 @@ export function readFileSync(request: ReadRequest): ReadResult {
     }
   }
 
+  const storageConfig = resolvedUsername ? getProfileStorageConfig(resolvedUsername) : undefined
   if (resolvedUsername) {
-    const readyStatus = isProfileReady(resolvedUsername)
+    const readyStatus = isProfileReady(resolvedUsername, storageConfig)
     if (!readyStatus.ready) {
       return {
         success: false,
@@ -412,7 +443,7 @@ export function readFileSync(request: ReadRequest): ReadResult {
   }
 
   const filePath = pathResponse.path!
-  const useAesEncryption = Boolean(resolvedUsername && isAesEncryptionEnabled(resolvedUsername))
+  const useAesEncryption = Boolean(resolvedUsername && isAesEncryptionEnabled(resolvedUsername, storageConfig))
 
   try {
     if (useAesEncryption) {
@@ -492,11 +523,12 @@ export async function deleteFile(request: StorageRequest): Promise<WriteResult> 
   const filePath = pathResponse.path!
 
   try {
+    const storageConfig = resolvedUsername ? getProfileStorageConfig(resolvedUsername) : undefined
     if (resolvedUsername) {
-      const readyStatus = isProfileReady(resolvedUsername)
+      const readyStatus = isProfileReady(resolvedUsername, storageConfig)
       if (!readyStatus.ready) return { success: false, error: readyStatus.error }
     }
-    const candidates = resolvedUsername && isAesEncryptionEnabled(resolvedUsername)
+    const candidates = resolvedUsername && isAesEncryptionEnabled(resolvedUsername, storageConfig)
       ? [filePath + ENCRYPTED_EXTENSION, filePath]
       : [filePath]
     const existing = candidates.filter(candidate => fs.existsSync(candidate))

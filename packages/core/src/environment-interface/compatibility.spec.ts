@@ -707,20 +707,58 @@ try {
 
   resetState();
   const observationTimestamp = new Date().toISOString();
-  const unboundObservation = await handleEnvironmentBridgeObservation(bridgeRequest({
-    Authorization: 'Bearer bridge-secret',
-    'X-MetaHuman-Environment-User': 'forged-profile',
-    'X-MetaHuman-Environment-Graph': 'environment',
-  }, {
-    environmentId: 'ainekio',
-    adapter: 'ainekio-gateway',
-    sessionId: 'robot-1',
-    timestamp: observationTimestamp,
-    capabilities: { actions: ['requestMotion'] },
-  }), () => null);
-  assert.equal(unboundObservation.status, 200);
-  assert.equal(unboundObservation.data.graphQueued, false);
-  assert.equal(unboundObservation.data.reason, 'no_active_authorized_user');
+  setAuditEnabled(true);
+  try {
+    const auditLogFile = path.join(systemPaths.logs, 'audit', `${new Date().toISOString().slice(0, 10)}.ndjson`);
+    const readNotAdmittedEvents = () => fs.existsSync(auditLogFile)
+      ? fs.readFileSync(auditLogFile, 'utf8').trim().split('\n').filter(Boolean)
+          .map(line => JSON.parse(line))
+          .filter(entry => entry.event === 'environment_observation_not_admitted')
+      : [];
+    const beforeStateOnly = readNotAdmittedEvents().length;
+    const unboundObservation = await handleEnvironmentBridgeObservation(bridgeRequest({
+      Authorization: 'Bearer bridge-secret',
+      'X-MetaHuman-Environment-User': 'forged-profile',
+      'X-MetaHuman-Environment-Graph': 'environment',
+    }, {
+      environmentId: 'ainekio',
+      adapter: 'ainekio-gateway',
+      sessionId: 'robot-1',
+      timestamp: observationTimestamp,
+      capabilities: { actions: ['requestMotion'] },
+    }), () => null);
+    assert.equal(unboundObservation.status, 200);
+    assert.equal(unboundObservation.data.graphQueued, false);
+    assert.equal(unboundObservation.data.reason, 'no_active_authorized_user');
+    assert.equal(readNotAdmittedEvents().length, beforeStateOnly, 'state-only observations must not emit dropped-turn warnings');
+
+    const unauthenticatedSpeech = await handleEnvironmentBridgeObservation(bridgeRequest({
+      Authorization: 'Bearer bridge-secret',
+      'X-MetaHuman-Environment-Graph': 'environment',
+    }, {
+      environmentId: 'ainekio',
+      adapter: 'ainekio-gateway',
+      sessionId: 'robot-1',
+      timestamp: observationTimestamp,
+      capabilities: { actions: ['requestMotion'] },
+      text: [{
+        id: 'unauthenticated-speech-1',
+        source: 'player',
+        text: 'Hello, can you hear me?',
+        timestamp: observationTimestamp,
+      }],
+    }), () => null);
+    assert.equal(unauthenticatedSpeech.status, 200);
+    assert.equal(unauthenticatedSpeech.data.graphQueued, false);
+    assert.equal(unauthenticatedSpeech.data.reason, 'no_active_authorized_user');
+    const notAdmitted = readNotAdmittedEvents();
+    assert.equal(notAdmitted.length, beforeStateOnly + 1);
+    assert.equal(notAdmitted.at(-1)?.level, 'warn');
+    assert.equal(notAdmitted.at(-1)?.details?.reason, 'no_active_authorized_user');
+    assert.equal(notAdmitted.at(-1)?.details?.sessionId, 'robot-1');
+  } finally {
+    setAuditEnabled(false);
+  }
   assert.equal(manager.getAllTasks().length, 0, 'an observation without an active user must not enter a profile graph');
   assert.equal(readEnvironmentBridgeState().sessions['robot-1']?.status, 'connected');
 
@@ -751,6 +789,98 @@ try {
   assert.equal(observationWork?.username, 'active-profile');
   assert.equal(observationWork?.input.graph, 'environment');
   assert.equal(observationWork?.input.observation.sessionId, 'robot-1');
+
+  await test('environment.observation routes to remote-llm when environment orchestrator uses a remote/CLI provider and keeps local-llm by default', async () => {
+    const { getProfilePaths } = await import('../paths.js');
+    const { invalidateModelCache } = await import('../model-resolver.js');
+    const savedQueue = manager.exportState();
+    const profileUsername = 'remote-env-profile';
+    const profilePaths = getProfilePaths(profileUsername);
+    try {
+      const defaultPublished = publishEnvironmentObservation({
+        environmentId: 'ainekio',
+        adapter: 'ainekio-gateway',
+        sessionId: 'robot-1',
+        id: 'obs-default-lane',
+        timestamp: new Date().toISOString(),
+        capabilities: { actions: ['requestMotion'] },
+      }, { username: profileUsername, graph: 'environment' });
+      assert.equal(manager.getTask(defaultPublished.workId!)?.resource, 'local-llm');
+
+      fs.mkdirSync(profilePaths.etc, { recursive: true });
+      fs.writeFileSync(path.join(profilePaths.etc, 'models.json'), JSON.stringify({
+        version: '1.0.0',
+        description: 'Fixture model registry',
+        defaults: {
+          orchestrator: 'local-orchestrator',
+        },
+        models: {
+          'local-orchestrator': {
+            provider: 'llama-cpp',
+            model: 'Qwen3-4B.gguf',
+            adapters: [],
+            roles: ['orchestrator'],
+            description: 'Local orchestrator',
+            options: {},
+          },
+        },
+        cognitiveModeMappings: {
+          environment: {
+            orchestrator: 'big-brother.gemini',
+          },
+        },
+      }));
+      invalidateModelCache();
+
+      const remotePublished = publishEnvironmentObservation({
+        environmentId: 'ainekio',
+        adapter: 'ainekio-gateway',
+        sessionId: 'robot-1',
+        id: 'obs-remote-lane',
+        timestamp: new Date().toISOString(),
+        capabilities: { actions: ['requestMotion'] },
+      }, { username: profileUsername, graph: 'environment' });
+      assert.equal(manager.getTask(remotePublished.workId!)?.resource, 'remote-llm');
+
+      fs.writeFileSync(path.join(profilePaths.etc, 'models.json'), JSON.stringify({
+        version: '1.0.0',
+        description: 'Fixture model registry',
+        defaults: {
+          orchestrator: 'local-orchestrator',
+        },
+        models: {
+          'local-orchestrator': {
+            provider: 'llama-cpp',
+            model: 'Qwen3-4B.gguf',
+            adapters: [],
+            roles: ['orchestrator'],
+            description: 'Local orchestrator',
+            options: {},
+          },
+        },
+        cognitiveModeMappings: {
+          environment: {
+            orchestrator: 'local-orchestrator',
+          },
+        },
+      }));
+      invalidateModelCache();
+
+      const localPublished = publishEnvironmentObservation({
+        environmentId: 'ainekio',
+        adapter: 'ainekio-gateway',
+        sessionId: 'robot-1',
+        id: 'obs-local-lane',
+        timestamp: new Date().toISOString(),
+        capabilities: { actions: ['requestMotion'] },
+      }, { username: profileUsername, graph: 'environment' });
+      assert.equal(manager.getTask(localPublished.workId!)?.resource, 'local-llm');
+    } finally {
+      invalidateModelCache();
+      manager.importState(savedQueue);
+      fs.rmSync(profilePaths.root, { recursive: true, force: true });
+    }
+  });
 
   const connectionObservation: EnvironmentObservation = {
     environmentId: 'ainekio',

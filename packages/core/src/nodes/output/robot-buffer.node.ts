@@ -54,7 +54,9 @@ export function createRobotBufferMessage(record: RobotBridgeRecord) {
     ? record.action as Record<string, unknown> : null;
   const actionLabel = action?.type === 'faceExpression'
     ? `display ${action.displayRelease === true ? 'release' : typeof action.expression === 'string' ? action.expression : 'update'}`
-    : `action${typeof action?.type === 'string' ? ` ${action.type}` : ''}`;
+    : action?.type === 'stop' && action.detach === true
+      ? 'action stop (release)'
+      : `action${typeof action?.type === 'string' ? ` ${action.type}` : ''}`;
 
   return {
     role: 'robot' as const,

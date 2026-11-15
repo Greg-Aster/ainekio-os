@@ -75,7 +75,7 @@ export async function interpretInstructions(input: {
     const read: GraphNodeExecution = {
       executionId: id, occurrenceId: `interpretation:${id}:${input.identity.revision}`,
       task: () => store.task(id), events: () => store.events(id), pendingEvents: () => [],
-      activeExecutions: () => store.list(username).filter(record => record.executionId !== id && ['waiting', 'running'].includes(record.status))
+      activeExecutions: () => store.active(username).filter(record => record.executionId !== id)
         .map(record => ({ executionId: record.executionId, status: record.status, graphId: record.definition.graphId,
           waitingReason: record.waitingReason, task: store.task(record.executionId),
           instruction: store.entry(record.executionId).context.userMessage ?? '',
@@ -94,7 +94,7 @@ export async function interpretInstructions(input: {
     const state = await executeGraph(graph, { ...input.context, username, userId: username,
       // Structured turn data preserves exact text and attribution; no new prompt directives.
       userMessage: input.turns.length === 1 ? input.turns[0].userMessage : JSON.stringify({ pendingTurns: input.turns }),
-      environmentInterpretation: undefined, graphExecution: undefined,
+      environmentInterpretation: undefined, precomputedEnvironmentPlan: undefined, graphExecution: undefined,
     }, undefined, signal, undefined, read)
     signal.throwIfAborted()
     if (state.status !== 'completed') throw state.error ?? new Error('Instruction interpretation did not complete')

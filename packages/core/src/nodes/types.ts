@@ -214,6 +214,11 @@ export interface NodeExecutionContext {
   emitEvent?: (type: string, data: any) => void;
   /** Persisted consumer feedback for this model occurrence, absent on normal calls. */
   modelOutputFeedback?: ModelOutputFeedback;
+  /** Precomputed single-hop environment routing and task plan without an interpretationFence. */
+  precomputedEnvironmentPlan?: {
+    route: Record<string, unknown>;
+    response: string;
+  };
   [key: string]: any;
 }
 

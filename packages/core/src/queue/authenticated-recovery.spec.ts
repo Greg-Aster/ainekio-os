@@ -24,6 +24,7 @@ const { recoverDurableExecutions } = await import('../durable-execution/recovery
 const { UnifiedQueueManager } = await import('./unified-queue-manager.js')
 const { handleHttpRequest } = await import('../api/adapters/http.js')
 const { createUser, updateUserMetadata } = await import('../users.js')
+const { lockProfile, unlockProfile } = await import('../encryption-manager.js')
 const { getProfilePaths } = await import('../paths.js')
 const { ExecutionCheckpointer } = await import('../durable-execution/checkpointer.js')
 const { executionWorkInput, relayExecutionOutbox } = await import('../durable-execution/coordinator-outbox.js')
@@ -143,22 +144,35 @@ test('authentication owns recovery selection across startup, profile switches an
       assert.equal(manager.claim(autonomous.id), null, 'A durable continuation cannot bypass logout')
     })
 
-    await t.test('a locked profile is not selected; canonical locking and session expiry revoke readiness', async () => {
+    await t.test('a locked profile is not selected; canonical locking and logout revoke readiness while owner sessions do not expire', async () => {
       assert.equal((await request('/api/auth/me', storedSession.id)).status, 200)
       const profile = getProfilePaths(users[0].username).root
       updateUserMetadata(users[0].id, { profileStorage: {
         path: profile, type: 'encrypted', encryption: { type: 'aes256', unlocked: false },
       } })
-      assert.equal((await request('/api/encryption/lock', storedSession.id, {})).status, 200)
+      assert.equal((await lockProfile(users[0].id)).success, true)
       assert.equal(activeUsername(), null)
       assert.equal((await request('/api/auth/me', storedSession.id)).status, 401)
       await recoverDurableExecutions(manager, 30)
       assert.equal(manager.getNextExecutable(), null)
       updateUserMetadata(users[0].id, { profileStorage: { path: profile, type: 'internal', encryption: { type: 'none' } } })
-      assert.equal((await request('/api/encryption/unlock', storedSession.id, { password: 'fixture' })).status, 200)
+      assert.equal((await unlockProfile(users[0].id, 'fixture')).success, true)
+      sessions.selectAuthenticatedSession(storedSession.id)
       assert.equal(activeUsername(), users[0].username)
       const session = sessions.getSession(storedSession.id)!
-      sessions.updateSession({ ...session, expiresAt: new Date(Date.now() - 1).toISOString() })
+      assert.equal(session.expiresAt, undefined)
+      sessions.updateSession({
+        ...session,
+        createdAt: new Date(Date.now() - 30 * 24 * 60 * 60 * 1000).toISOString(),
+        expiresAt: new Date(Date.now() - 1).toISOString(),
+      })
+      assert.equal(activeUsername(), users[0].username)
+      assert.equal((await request('/api/auth/me', storedSession.id)).status, 200)
+      const guest = sessions.createSession(users[0].id, 'guest')
+      assert.ok(guest.expiresAt)
+      sessions.updateSession({ ...guest, expiresAt: new Date(Date.now() - 1).toISOString() })
+      assert.equal(sessions.validateSession(guest.id), null)
+      assert.equal(sessions.deleteSession(storedSession.id), true)
       assert.equal(activeUsername(), null)
       assert.equal(manager.claim(oldWork[0].id), null)
       assert.equal((await request('/api/auth/me', storedSession.id)).status, 401)

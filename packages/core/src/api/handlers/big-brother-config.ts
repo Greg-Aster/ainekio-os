@@ -11,6 +11,7 @@ import { loadFreshOperatorConfig, saveUserConfig, invalidateOperatorConfig } fro
 import { getBigBrotherSessionState, stopBigBrotherSession } from '../../terminal/client.js';
 import { audit } from '../../audit.js';
 import { isBackendId } from '../../escalation-constants.js';
+import { warmEscalationBackend } from '../../escalation-backend.js';
 
 const DEFAULT_CONFIG = {
   enabled: false,
@@ -110,17 +111,19 @@ export async function handleSetBigBrotherConfig(req: UnifiedRequest): Promise<Un
 
     const previousProvider = config.bigBrotherMode?.provider || 'claude-code';
     const previousEnabled = config.bigBrotherMode?.enabled ?? false;
+    const previousModel = config.bigBrotherMode?.model;
+    const previousEffort = config.bigBrotherMode?.reasoningEffort;
     const nextProvider = provider ?? previousProvider;
     if (!isBackendId(nextProvider)) {
       return { status: 400, error: 'The saved Big Brother provider is unavailable. Choose a supported provider in Settings.' };
     }
 
     // Update Big Brother mode settings (preserve model if not provided)
-    const existingModel = config.bigBrotherMode?.model;
+    const existingModel = previousModel;
     const defaultModelForProvider = nextProvider === 'claude-code'
       ? 'sonnet'
       : nextProvider === 'gemini'
-        ? 'gemini-3.8-flash-low'
+        ? 'gemini-4-hydrogen-low'
         : 'gpt-6.1-sol';
     config.bigBrotherMode = {
       enabled: enabled ?? config.bigBrotherMode?.enabled ?? false,
@@ -166,6 +169,34 @@ export async function handleSetBigBrotherConfig(req: UnifiedRequest): Promise<Un
       },
       actor: user.username,
     });
+
+    const shouldPrewarm = nextEnabled && (
+      !previousEnabled
+      || previousProvider !== nextProvider
+      || previousModel !== config.bigBrotherMode.model
+      || previousEffort !== config.bigBrotherMode.reasoningEffort
+    );
+    if (shouldPrewarm) {
+      const prewarmModel = config.bigBrotherMode.model;
+      const prewarmEffort = config.bigBrotherMode.reasoningEffort;
+      void warmEscalationBackend(nextProvider, {
+        username: user.username,
+        model: prewarmModel,
+        reasoningEffort: prewarmEffort,
+      }).catch(error => {
+        audit({
+          level: 'warn',
+          category: 'system',
+          event: 'big_brother_prewarm_failed',
+          details: {
+            provider: nextProvider,
+            model: prewarmModel,
+            error: error instanceof Error ? error.message : String(error),
+          },
+          actor: user.username,
+        });
+      });
+    }
 
     return successResponse({
       success: true,

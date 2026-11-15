@@ -16,7 +16,8 @@ const { getQueueManager } = await import('../queue/index.js');
 const manager = getQueueManager();
 const { dispatchEnvironmentVisualReads, recordEnvironmentVisualReadResult, releaseEnvironmentStreamWork,
   subscribeEnvironmentActions, writeEnvironmentBridgeState, readEnvironmentBridgeState,
-  recordEnvironmentObservation, reconcileEnvironmentDepthDemands } = await import('./store.js');
+  recordEnvironmentObservation, reconcileEnvironmentDepthDemands, getActiveEnvironmentDepthConsumer,
+  prepareEnvironmentCommand, enqueueConnectedEnvironmentStops, dispatchEnvironmentActions } = await import('./store.js');
 const { environmentImageInputNode } = await import('../nodes/environment/image-input.node.js');
 const { nodeRegistry, nodeExecutors, nodeSchemas, extractSchema } = await import('../nodes/index.js');
 const { runDurableGraph, withGraphWork } = await import('../durable-execution/runtime.js');
@@ -315,4 +316,71 @@ test('evaluateLocomotionGoal tracks optical-flow ground contact across frames an
   assert.equal(step.reason, undefined);
   assert.equal(step.forward, 100);
   assert.equal(step.turn, 12);
+});
+
+test('depth registration stays warm across idle continuation, reconnects while idle, and stop detach disarms PWM without Freestyle', async () => {
+  const disconnect = connect();
+  const store = openExecutionStore(username);
+  const record = store.create(username, { graphId: 'depth-idle-fixture', graphHash: 'depth-idle-v1', runtimeVersion: 'fixture',
+    checkpointSchemaVersion: 1, nodeVersions: {} });
+  store.db.prepare("UPDATE executions SET status='idle' WHERE execution_id=?").run(record.executionId);
+  const observed = { environmentId: 'fixture', adapter: 'ainekio-gateway', sessionId,
+    timestamp: new Date().toISOString(), capabilities: { actions: ['stop' as const] }, state: {} };
+  try {
+    recordEnvironmentObservation(observed);
+    manager.enqueue({ type: 'generic', handler: 'environment.visual-read', resource: 'environment-depth-acquire:idle-consumer',
+      source: 'environment', username, input: { sessionId, depthExecutionId: record.executionId,
+        vision: { operation: 'depthDemand', consumerId: 'idle-consumer', enabled: true } } });
+    const [acquired] = dispatchEnvironmentVisualReads(sessionId, 'conn-a');
+    assert.equal(acquired.consumerId, 'idle-consumer');
+    recordEnvironmentVisualReadResult({ ...acquired, vision: { enabled: true } });
+
+    assert.equal(getActiveEnvironmentDepthConsumer(sessionId, record.executionId), 'idle-consumer');
+    reconcileEnvironmentDepthDemands(record.executionId);
+    assert.deepEqual(dispatchEnvironmentVisualReads(sessionId, 'conn-a'), [], 'idle execution must retain warm depthDemand');
+
+    releaseEnvironmentStreamWork(sessionId, 'conn-a');
+    const [reconnectedIdle] = dispatchEnvironmentVisualReads(sessionId, 'conn-b');
+    assert.equal(reconnectedIdle.consumerId, 'idle-consumer');
+    assert.equal(reconnectedIdle.enabled, true, 'reconnect while execution is idle must re-acquire depthDemand');
+    recordEnvironmentVisualReadResult({ ...reconnectedIdle, vision: { enabled: true } });
+
+    const preparedRelease = prepareEnvironmentCommand({ type: 'stop', detach: true, sessionId });
+    assert.equal(preparedRelease.input.type, 'stop');
+    assert.equal(preparedRelease.input.detach, true);
+    assert.throws(() => prepareEnvironmentCommand({ type: 'captureImage', detach: true as any, sessionId }), /only valid for stop/);
+
+    const releases = enqueueConnectedEnvironmentStops(username, 'Disarm stalled servos', Date.now(), { detach: true });
+    assert.equal(releases.length, 1);
+    assert.equal(releases[0]?.type, 'stop');
+    assert.equal(releases[0]?.detach, true);
+    const [dispatchedStop] = dispatchEnvironmentActions(sessionId);
+    assert.equal(dispatchedStop.type, 'stop');
+    assert.equal(dispatchedStop.detach, true);
+
+    const { validateEnvironmentSelectorOutput } = await import('./task-selection.js');
+    const parsedStop = validateEnvironmentSelectorOutput(JSON.stringify({
+      response: '',
+      taskDecision: {
+        objective: 'Release servo torque',
+        completionCriteria: 'PWM outputs are disarmed',
+        outcome: 'act',
+        reason: 'Owner requested release',
+        continuationPolicy: 'none',
+        requiredCompletionBasis: 'action_result',
+      },
+      program: { steps: [{ kind: 'action', action: { type: 'stop', detach: true } }] },
+    }), sessionId);
+    assert.equal(parsedStop.valid, true, parsedStop.errors.join('; '));
+    assert.equal((parsedStop.value?.program?.steps[0] as any)?.action?.detach, true);
+
+    store.db.prepare("UPDATE executions SET status='completed' WHERE execution_id=?").run(record.executionId);
+    reconcileEnvironmentDepthDemands(record.executionId);
+    reconcileEnvironmentDepthDemands(record.executionId);
+    assert.equal(getActiveEnvironmentDepthConsumer(sessionId, record.executionId), undefined);
+    const releaseReads = dispatchEnvironmentVisualReads(sessionId, 'conn-b');
+    assert.equal(releaseReads.length, 1, 'duplicate reconcile calls must not enqueue duplicate depth releases');
+    assert.equal(releaseReads[0].enabled, false);
+    recordEnvironmentVisualReadResult({ ...releaseReads[0], vision: { enabled: false } });
+  } finally { store.close(); disconnect(); }
 });

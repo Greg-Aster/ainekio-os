@@ -209,10 +209,20 @@ test('report delivery recovery preserves the original prepared report and never 
   });
 });
 
-test('Active Operator receives the registered coding operation and unresolved issue evidence', async () => {
+test('Active Operator receives the registered coding operation and unresolved issue evidence when explicitly enabled', async () => {
   fs.mkdirSync(path.join(root, 'brain/agents/system-code-review'), { recursive: true });
   fs.writeFileSync(path.join(root, 'brain/agents/system-code-review/cli.ts'), 'export {};');
-  fs.copyFileSync(new URL('../../../../etc/agents.json', import.meta.url), path.join(root, 'etc/agents.json'));
+  const agentsPath = path.join(root, 'etc/agents.json');
+  fs.copyFileSync(new URL('../../../../etc/agents.json', import.meta.url), agentsPath);
+  const shippedAgents = JSON.parse(fs.readFileSync(agentsPath, 'utf8'));
+  assert.equal(shippedAgents.agents['system-code-review']?.enabled, false);
+  const shippedReviewGraph = JSON.parse(fs.readFileSync(new URL('../../../../etc/cognitive-graphs/system-code-review-mode.json', import.meta.url), 'utf8'));
+  assert.equal(shippedReviewGraph.nodes.some((node: any) => node.data?.nodeType === 'tts'), false);
+  const { DEFAULT_ROBOT_AUTONOMY_TASK_IDS } = await import('../nodes/robot-operator/autonomy-task-options.js');
+  assert.equal((DEFAULT_ROBOT_AUTONOMY_TASK_IDS as readonly string[]).includes('system-code-review'), false);
+  assert.equal((DEFAULT_ROBOT_AUTONOMY_TASK_IDS as readonly string[]).includes('sleep-workflow'), false);
+  shippedAgents.agents['system-code-review'].enabled = true;
+  fs.writeFileSync(agentsPath, JSON.stringify(shippedAgents, null, 2));
   const { robotAutonomyTaskCatalogNode } = await import('../nodes/robot-operator/task-catalog.node.js');
   const pending = issue('operator-visible');
   const result = await robotAutonomyTaskCatalogNode.execute!({}, { username }, { taskIds: ['system-code-review'], includeActivityHistory: false });
@@ -221,7 +231,20 @@ test('Active Operator receives the registered coding operation and unresolved is
   const { nodeRegistry } = await import('../nodes/index.js');
   const contextNode = nodeRegistry.get('robot_autonomy_controller_context')!;
   const selection = await contextNode.execute!({ activationState: result.activationState }, { username }, { contextPurpose: 'selection' });
-  assert.ok(selection.request.includes(pending.id));
+  const parsedSelection = JSON.parse(selection.request);
+  assert.equal(parsedSelection.systemIssues.count, result.activationState.systemIssues.length);
+  assert.equal(parsedSelection.systemIssues.highestPriority, result.activationState.systemIssues[0]?.priority ?? null);
+  assert.equal(selection.request.includes(pending.id), false);
+  const assessment = await contextNode.execute!(
+    { activationState: result.activationState, instruction: 'Assess operations.', fullInstruction: 'Assess operations.' },
+    { username },
+    { contextPurpose: 'assessment' },
+  );
+  const envelope = JSON.parse(assessment.messages[1].content);
+  const projected = envelope.activeOperator.systemIssues.find((item: any) => item.id === pending.id);
+  assert.ok(projected);
+  assert.deepEqual(projected.errorEvidence, pending.errorEvidence);
+  assert.equal('history' in projected, false);
 });
 
 test('the terminal receives explicit array field types and its multi-issue report retains every outcome', async () => {

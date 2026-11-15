@@ -20,7 +20,8 @@ const { getQueueManager } = await import('../queue/unified-queue-manager.js')
 const { openExecutionStore } = await import('../durable-execution/storage.js')
 const { deliverDurableWorkReceipt } = await import('../durable-execution/work-results.js')
 const { writeEnvironmentBridgeState, subscribeEnvironmentActions, recordEnvironmentActionResult,
-  readEnvironmentBridgeState } = await import('./store.js')
+  readEnvironmentBridgeState, publishEnvironmentObservation } = await import('./store.js')
+const { submitDisplayFeedback, displayFeedbackToken } = await import('./display-feedback.js')
 const { handleEnvironmentBridgeStatus } = await import('../api/handlers/environment-bridge.js')
 const { validateSvelteFlowGraph } = await import('../cognitive-graph-schema.js')
 const manager = getQueueManager()
@@ -253,4 +254,180 @@ test('The model contract exposes only advertised expressions and keeps display a
   assert.equal(rejected.valid, false)
   assert.equal(rejected.program, null)
   assert.match(rejected.error, /expression library/)
+})
+
+test('Environment Mode thinking/response-thinking/release dispatches do not block or trigger spurious graph_resume wakes', async () => {
+  const timestamp = new Date().toISOString()
+  writeEnvironmentBridgeState({ enabled: true, updatedAt: timestamp, feedback: [], sessions: {
+    body: { sessionId: 'body', environmentId: 'fixture', adapter: 'ainekio-gateway', status: 'connected',
+      firstSeenAt: timestamp, lastSeenAt: timestamp,
+      latestObservation: { sessionId: 'body', environmentId: 'fixture', adapter: 'ainekio-gateway', timestamp,
+        capabilities: { actions: ['faceExpression'], expressionLibrary: [{ name: 'thinking', label: 'Thinking' }] },
+        state: { body: { authenticated: true } } } },
+  } })
+  const unsubscribe = subscribeEnvironmentActions('body', () => {})
+  try {
+    const graph = validateSvelteFlowGraph({ name: 'Environment expression lifecycle fixture', version: '1.0', format: 'svelte-flow',
+      scheduler: { version: 1, activation: 'demand', skippedState: 'explicit', sideEffectOrder: 'serial-topological', maxLoopIterations: 0 },
+      nodes: [
+        { id: 'input', type: 'inputNode', position: { x: 0, y: 0 }, data: { nodeType: 'user_input', properties: {} } },
+        { id: 'thinking-on', type: 'environmentNode', position: { x: 1, y: 0 },
+          data: { nodeType: 'environment_expression_feedback', properties: { operation: 'set', expression: 'thinking', timeoutMs: 60000, background: true } } },
+        { id: 'thinking-out', type: 'environmentNode', position: { x: 2, y: 0 },
+          data: { nodeType: 'environment_face_expression', properties: { operation: 'set', timeoutMs: 60000, background: true, sessionId: 'body' } } },
+        { id: 'json', type: 'utilityNode', position: { x: 3, y: 0 }, data: { nodeType: 'json_parser', properties: {} } },
+        { id: 'wait', type: 'utilityNode', position: { x: 4, y: 0 }, data: { nodeType: 'work_result_wait', properties: {} } },
+        { id: 'response-thinking', type: 'environmentNode', position: { x: 5, y: 0 },
+          data: { nodeType: 'environment_expression_feedback', properties: { operation: 'set', expression: 'thinking', timeoutMs: 60000, background: true },
+            activation: { mode: 'required-inputs', requiredInputs: ['control'] } } },
+        { id: 'response-thinking-out', type: 'environmentNode', position: { x: 6, y: 0 },
+          data: { nodeType: 'environment_face_expression', properties: { operation: 'set', timeoutMs: 60000, background: true, sessionId: 'body' } } },
+        { id: 'thinking-off', type: 'environmentNode', position: { x: 7, y: 0 },
+          data: { nodeType: 'environment_expression_feedback', properties: { operation: 'release', timeoutMs: 60000, background: true },
+            activation: { mode: 'required-inputs', requiredInputs: ['control'] } } },
+        { id: 'thinking-off-out', type: 'environmentNode', position: { x: 8, y: 0 },
+          data: { nodeType: 'environment_face_expression', properties: { operation: 'set', timeoutMs: 60000, background: false, sessionId: 'body' } } },
+      ],
+      edges: [
+        { id: 'in-on', source: 'input', sourceHandle: 'message', target: 'thinking-on', targetHandle: 'control' },
+        { id: 'on-ctrl', source: 'thinking-on', sourceHandle: 'control', target: 'thinking-out', targetHandle: 'control' },
+        { id: 'on-fb', source: 'thinking-on', sourceHandle: 'feedback', target: 'thinking-out', targetHandle: 'feedback' },
+        { id: 'out-json', source: 'thinking-out', sourceHandle: 'control', target: 'json', targetHandle: 'text' },
+        { id: 'json-wait', source: 'json', sourceHandle: 'data', target: 'wait', targetHandle: 'work' },
+        { id: 'wait-resp', source: 'wait', sourceHandle: 'result', target: 'response-thinking', targetHandle: 'control' },
+        { id: 'on-resp-tok', source: 'thinking-on', sourceHandle: 'token', target: 'response-thinking', targetHandle: 'token' },
+        { id: 'resp-ctrl', source: 'response-thinking', sourceHandle: 'control', target: 'response-thinking-out', targetHandle: 'control' },
+        { id: 'resp-fb', source: 'response-thinking', sourceHandle: 'feedback', target: 'response-thinking-out', targetHandle: 'feedback' },
+        { id: 'resp-off', source: 'response-thinking-out', sourceHandle: 'control', target: 'thinking-off', targetHandle: 'control' },
+        { id: 'on-off-tok', source: 'thinking-on', sourceHandle: 'token', target: 'thinking-off', targetHandle: 'token' },
+        { id: 'off-ctrl', source: 'thinking-off', sourceHandle: 'control', target: 'thinking-off-out', targetHandle: 'control' },
+        { id: 'off-fb', source: 'thinking-off', sourceHandle: 'feedback', target: 'thinking-off-out', targetHandle: 'feedback' },
+      ],
+    })
+    const work1 = manager.enqueue({ type: 'generic', handler: 'graph.resume', username: 'fixture', source: 'user', input: {} })
+    assert.ok(manager.claim(work1.id))
+    let executionId = ''
+    try {
+      const pass1 = await withGraphWork(work1, id => manager.attachExecution(work1.id, id),
+        () => runDurableGraph({ graph, context: { username: 'fixture', userMessage: '{"effectId":"work-1"}' } }),
+        async input => manager.enqueue(input))
+      executionId = pass1.executionId!
+      assert.equal(pass1.status, 'waiting')
+    } finally { manager.complete(work1.id, true) }
+
+    const finishDisplay = async (task: any, tag: string) => {
+      assert.equal(task.input.type, 'faceExpression')
+      assert.ok(manager.claim(task.id), `claim ${tag}`)
+      recordEnvironmentActionResult({ id: `${tag}-accepted`, actionId: String(task.input.id), timestamp, type: 'accepted', message: 'Accepted' })
+      publishEnvironmentObservation({ id: `obs-${tag}`, sessionId: 'body', environmentId: 'fixture', adapter: 'ainekio-gateway', timestamp,
+        metadata: { actionId: String(task.input.id) },
+        capabilities: { actions: ['faceExpression'], expressionLibrary: [{ name: 'thinking', label: 'Thinking' }] },
+        state: { body: { authenticated: true } } }, { username: 'fixture' })
+      recordEnvironmentActionResult({ id: `${tag}-completed`, actionId: String(task.input.id), timestamp, type: 'completed', message: 'Applied' })
+      await deliverDurableWorkReceipt(task, manager)
+    }
+
+    const thinkingTask = manager.getAllTasks().find(t => t.type === 'environment_command' && t.durable?.executionId === executionId)!
+    assert.equal(thinkingTask.input.displayBackground, true)
+    assert.equal(thinkingTask.input.displayRelease, false)
+    await finishDisplay(thinkingTask, 'thinking')
+
+    const store = openExecutionStore('fixture')
+    try {
+      assert.equal(store.dispatches(executionId).filter(d => d.kind === 'graph_resume').length, 0,
+        'thinking-out accepted/observation/completed/work_result must not enqueue graph_resume')
+      assert.equal(store.get(executionId).status, 'waiting')
+      store.deliverEvent(executionId, { eventId: 'work-1-done', kind: 'work_result',
+        payload: { effectId: 'work-1', result: { state: 'completed', result: null, error: null } } })
+    } finally { store.close() }
+
+    const work2 = manager.enqueue({ type: 'generic', handler: 'graph.resume', username: 'fixture', source: 'user', input: { executionId } })
+    assert.ok(manager.claim(work2.id))
+    try {
+      const pass2 = await withGraphWork(work2, id => manager.attachExecution(work2.id, id),
+        () => runDurableGraph({ graph, executionId, context: { username: 'fixture' } }),
+        async input => manager.enqueue(input))
+      assert.equal(pass2.status, 'waiting')
+    } finally { manager.complete(work2.id, true) }
+
+    const ledger = manager.exportState()
+    const pass2Commands = [...new Map([...(ledger.items ?? []), ...(ledger.history ?? []), ...(ledger.durableReceipts ?? [])].map(task => [task.id, task])).values()]
+      .filter(t => t.type === 'environment_command' && t.durable?.executionId === executionId && t.id !== thinkingTask.id)
+    const respTask = pass2Commands.find(t => t.input.displayRelease === false)!
+    const releaseTask = pass2Commands.find(t => t.input.displayRelease === true)!
+    assert.equal(respTask.input.displayToken, thinkingTask.input.displayToken)
+    assert.equal(respTask.input.displayBackground, true)
+    assert.equal(respTask.state, 'cancelled', 'queued response-thinking SET is superseded by matching release')
+    await deliverDurableWorkReceipt(respTask, manager)
+    assert.equal(releaseTask.input.displayToken, thinkingTask.input.displayToken)
+    assert.equal(releaseTask.input.displayRelease, true)
+    await finishDisplay(releaseTask, 'thinking-off')
+
+    const store2 = openExecutionStore('fixture')
+    try {
+      assert.equal(store2.get(executionId).status, 'completed')
+      assert.deepEqual(
+        store2.dispatches(executionId).filter(d => d.kind === 'graph_resume').map(d => d.effectId),
+        [`${executionId}:resume:work-1-done`],
+        'only the work-1-done resume may be scheduled; display accepted/observation/completed/work_result must enqueue zero graph_resume dispatches',
+      )
+    } finally { store2.close() }
+  } finally { unsubscribe() }
+})
+
+test('Environment Mode static thinking-out properties and Robot Display Feedback settle without spurious graph_resume', async () => {
+  const envGraph = JSON.parse(fs.readFileSync(new URL('../../../../etc/cognitive-graphs/environment-mode.json', import.meta.url), 'utf8'))
+  const feedbackGraphDef = validateSvelteFlowGraph(JSON.parse(
+    fs.readFileSync(new URL('../../../../etc/cognitive-graphs/robot-display-feedback-mode.json', import.meta.url), 'utf8')))
+  for (const nodeId of ['thinking-out', 'response-thinking-out']) {
+    const node = envGraph.nodes.find((n: any) => n.id === nodeId)
+    assert.equal(node.data.properties.background, true, `${nodeId} static background property must be true`)
+  }
+  const timestamp = new Date().toISOString()
+  writeEnvironmentBridgeState({ enabled: true, updatedAt: timestamp, feedback: [], sessions: {
+    body: { sessionId: 'body', environmentId: 'fixture', adapter: 'ainekio-gateway', status: 'connected',
+      firstSeenAt: timestamp, lastSeenAt: timestamp,
+      latestObservation: { sessionId: 'body', environmentId: 'fixture', adapter: 'ainekio-gateway', timestamp,
+        capabilities: { actions: ['faceExpression'], expressionLibrary: [{ name: 'thinking', label: 'Thinking' }, { name: 'confused', label: 'Confused' }] },
+        state: { body: { authenticated: true } } } },
+  } })
+  const unsubscribe = subscribeEnvironmentActions('body', () => {})
+  try {
+    const bgToken = displayFeedbackToken('bg-turn')
+    const errToken = displayFeedbackToken('err-turn')
+    for (const scenario of [
+      { id: 'bg', feedback: { token: bgToken, operation: 'set' as const, expression: 'thinking', timeoutMs: 60000, background: true, sessionId: 'body' } },
+      { id: 'err', feedback: { token: errToken, ifToken: errToken, operation: 'set' as const, expression: 'confused', timeoutMs: 5000, background: false, sessionId: 'body' } },
+    ]) {
+      const work = await submitDisplayFeedback('fixture', scenario.feedback, `fb-${scenario.id}`)
+      assert.ok(manager.claim(work.id))
+      let executionId = ''
+      try {
+        const res = await withGraphWork(work, id => manager.attachExecution(work.id, id),
+          () => runDurableGraph({ graph: feedbackGraphDef, context: { username: 'fixture', environmentDisplayFeedback: scenario.feedback } }),
+          async input => manager.enqueue(input))
+        executionId = res.executionId!
+      } finally { manager.complete(work.id, true) }
+
+      const action = manager.getAllTasks().find(t => t.type === 'environment_command' && t.durable?.executionId === executionId)!
+      assert.equal(action.input.displayToken, scenario.feedback.token)
+      assert.equal(action.input.displayIfToken, scenario.feedback.ifToken)
+      assert.equal(action.input.displayBackground, scenario.feedback.background)
+      assert.ok(manager.claim(action.id))
+      recordEnvironmentActionResult({ id: `fb-${scenario.id}-accepted`, actionId: String(action.input.id), timestamp, type: 'accepted', message: 'Accepted' })
+      publishEnvironmentObservation({ id: `obs-fb-${scenario.id}`, sessionId: 'body', environmentId: 'fixture', adapter: 'ainekio-gateway', timestamp,
+        metadata: { actionId: String(action.input.id) },
+        capabilities: { actions: ['faceExpression'], expressionLibrary: [{ name: 'thinking', label: 'Thinking' }, { name: 'confused', label: 'Confused' }] },
+        state: { body: { authenticated: true } } }, { username: 'fixture' })
+      recordEnvironmentActionResult({ id: `fb-${scenario.id}-completed`, actionId: String(action.input.id), timestamp, type: 'completed', message: 'Applied' })
+      await deliverDurableWorkReceipt(action, manager)
+
+      const store = openExecutionStore('fixture')
+      try {
+        assert.equal(store.get(executionId).status, 'completed', `${scenario.id} display feedback must settle to completed`)
+        assert.equal(store.dispatches(executionId).filter(d => d.kind === 'graph_resume').length, 0,
+          `${scenario.id} display feedback must enqueue zero graph_resume dispatches`)
+      } finally { store.close() }
+    }
+  } finally { unsubscribe() }
 })

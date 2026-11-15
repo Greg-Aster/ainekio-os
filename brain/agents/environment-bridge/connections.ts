@@ -17,12 +17,32 @@ export interface BodyConnection {
 
 export interface BridgeEndpoint { url: string; remote?: boolean }
 
-function reconnect(signal: AbortSignal): Promise<void> {
+const DEFAULT_RECONNECT_BASE_MS = 2000;
+const DEFAULT_RECONNECT_MAX_MS = 60_000;
+
+function backoffDelayMs(failures: number, baseMs: number, maxMs: number): number {
+  const exponent = Math.max(0, failures - 1);
+  return Math.min(maxMs, baseMs * (2 ** Math.min(exponent, 10)));
+}
+
+function reconnect(
+  signal: AbortSignal,
+  delayMs = DEFAULT_RECONNECT_BASE_MS,
+  wakeRegistry?: Set<() => void>,
+  onWake?: () => void,
+): Promise<void> {
   if (signal.aborted) return Promise.resolve();
   return new Promise(resolve => {
-    const done = () => { clearTimeout(timer); signal.removeEventListener('abort', done); resolve(); };
-    const timer = setTimeout(done, 2000);
-    signal.addEventListener('abort', done, { once: true });
+    const cleanup = () => {
+      clearTimeout(timer);
+      signal.removeEventListener('abort', finish);
+      wakeRegistry?.delete(wake);
+    };
+    const finish = () => { cleanup(); resolve(); };
+    const wake = () => { onWake?.(); finish(); };
+    const timer = setTimeout(finish, delayMs);
+    signal.addEventListener('abort', finish, { once: true });
+    wakeRegistry?.add(wake);
   });
 }
 
@@ -33,7 +53,11 @@ export async function runBodyConnection(options: {
   robotId?: string;
   connect: (url: string, signal: AbortSignal, ready: () => void) => Promise<void>;
   changed: (connections: BodyConnection[]) => Promise<void>;
+  reconnectBaseMs?: number;
+  reconnectMaxMs?: number;
 }, signal: AbortSignal): Promise<void> {
+  const reconnectBaseMs = options.reconnectBaseMs ?? DEFAULT_RECONNECT_BASE_MS;
+  const reconnectMaxMs = Math.max(reconnectBaseMs, options.reconnectMaxMs ?? DEFAULT_RECONNECT_MAX_MS);
   const states: BodyConnection[] = options.endpoints.map(endpoint => ({
     endpoint: endpoint.url, adapterConnected: false, connected: false, active: false, ready: false,
   }));
@@ -41,11 +65,31 @@ export async function runBodyConnection(options: {
   let active: { identity: string; controller: AbortController; done: Promise<void> } | undefined;
   let selection = Promise.resolve();
   let publication = Promise.resolve();
+  let lastAvailabilityError: string | undefined;
+  let hasActiveRobot = false;
+  const wakeWatchers = new Set<() => void>();
   const report = createCoalescedTaskRunner(async () => {
-    try { await options.changed(states.map(state => ({ ...state }))); }
-    catch (error) { console.error(`[environment-bridge] availability reporting failed: ${(error as Error).message}`); }
+    try {
+      await options.changed(states.map(state => ({ ...state })));
+      lastAvailabilityError = undefined;
+    } catch (error) {
+      const message = (error as Error).message;
+      if (message !== lastAvailabilityError) {
+        lastAvailabilityError = message;
+        console.error(`[environment-bridge] availability reporting failed: ${message}`);
+      }
+    }
   });
   const publish = () => { publication = report(); };
+  const notifyRobotAvailability = () => {
+    const nowHasActiveRobot = states.some(state => state.active && state.connected);
+    const lostActiveRobot = hasActiveRobot && !nowHasActiveRobot;
+    hasActiveRobot = nowHasActiveRobot;
+    publish();
+    if (lostActiveRobot) {
+      for (const wake of [...wakeWatchers]) wake();
+    }
+  };
   const choose = () => {
     if (signal.aborted) return undefined;
     const available = states.filter(state => state.adapterConnected
@@ -60,7 +104,7 @@ export async function runBodyConnection(options: {
       const selected = choose();
       if (states.length > 1 && selected?.connected) followedRobot ??= selected.robotId;
       const identity = selected && `${selected.endpoint}\n${selected.gatewayInstance}`;
-      if (active?.identity === identity) { publish(); return; }
+      if (active?.identity === identity) { notifyRobotAvailability(); return; }
       if (active) { active.controller.abort(); await active.done; active = undefined; }
       for (const state of states) { state.active = false; state.ready = false; }
       const next = choose();
@@ -70,11 +114,13 @@ export async function runBodyConnection(options: {
         if (states.length > 1 && next.connected) followedRobot ??= next.robotId;
         next.active = true;
         const controller = new AbortController();
+        let lastConnectionError: string | undefined;
         const done = (async () => {
           while (!controller.signal.aborted) {
             try {
               await options.connect(next.endpoint, controller.signal, () => {
                 if (controller.signal.aborted) return;
+                lastConnectionError = undefined;
                 next.ready = true;
                 next.error = undefined;
                 publish();
@@ -83,17 +129,20 @@ export async function runBodyConnection(options: {
             catch (error) {
               if (!controller.signal.aborted) {
                 next.error = (error as Error).message;
-                console.error(`[environment-bridge] connection failed: ${next.error}`);
+                if (next.error !== lastConnectionError) {
+                  lastConnectionError = next.error;
+                  console.error(`[environment-bridge] connection failed: ${next.error}`);
+                }
               }
             }
             next.ready = false;
             publish();
-            if (!controller.signal.aborted) await reconnect(controller.signal);
+            if (!controller.signal.aborted) await reconnect(controller.signal, reconnectBaseMs);
           }
         })();
         active = { identity: `${next.endpoint}\n${next.gatewayInstance}`, controller, done };
       }
-      publish();
+      notifyRobotAvailability();
     });
   };
   const stop = () => { active?.controller.abort(); reconcile(); };
@@ -101,6 +150,7 @@ export async function runBodyConnection(options: {
   publish();
   async function watch(endpoint: BridgeEndpoint, state: BodyConnection) {
     let forwarder: ReturnType<typeof startRemoteForwarder> | undefined;
+    let consecutiveFailures = 0;
     try {
       while (!signal.aborted) {
         let socket: WebSocket | undefined;
@@ -111,6 +161,7 @@ export async function runBodyConnection(options: {
             forwarder ??= startRemoteForwarder(endpoint.url, signal);
             connectionSignal = forwarder.signal;
             if (forwarder.failure()) throw forwarder.failure();
+            forwarder.clearDetail();
           }
           await new Promise<void>((resolve, reject) => {
             socket = new WebSocket(endpoint.url, { maxPayload: 0, perMessageDeflate: false });
@@ -125,6 +176,8 @@ export async function runBodyConnection(options: {
               try {
                 const message = JSON.parse(raw.toString());
                 if (message.type !== 'bridge.availability' || message.version !== 1) throw new Error('Expected bridge.availability version 1');
+                consecutiveFailures = 0;
+                forwarder?.clearDetail();
                 Object.assign(state, { sessionId: message.sessionId, gatewayInstance: message.gatewayInstance,
                   robotId: message.robotId || undefined, adapterConnected: true, connected: message.connected === true });
                 if (!state.active) state.error = undefined;
@@ -135,7 +188,15 @@ export async function runBodyConnection(options: {
           });
           if (forwarder?.failure()) throw forwarder.failure();
         } catch (error) {
-          if (!signal.aborted) state.error = (error as Error).message;
+          consecutiveFailures += 1;
+          if (!signal.aborted) {
+            let message = (error as Error).message;
+            if (forwarder && !forwarder.signal.aborted) {
+              const detail = forwarder.detail();
+              if (detail && !message.includes(detail)) message = `${message} (${detail})`;
+            }
+            state.error = message;
+          }
         } finally {
           connectionSignal.removeEventListener('abort', close);
           socket?.terminate();
@@ -145,7 +206,24 @@ export async function runBodyConnection(options: {
           reconcile();
           if (forwarder?.signal.aborted) { await forwarder.stop(); forwarder = undefined; }
         }
-        if (!signal.aborted) await reconnect(signal);
+        if (!signal.aborted) {
+          const watchedForwarder = forwarder;
+          const onForwarderAbort = () => {
+            const failure = watchedForwarder?.failure();
+            if (failure && !signal.aborted && state.error !== failure.message) {
+              state.error = failure.message;
+              publish();
+            }
+          };
+          watchedForwarder?.signal.addEventListener('abort', onForwarderAbort, { once: true });
+          try {
+            const delayMs = backoffDelayMs(Math.max(1, consecutiveFailures), reconnectBaseMs, reconnectMaxMs);
+            await reconnect(signal, delayMs, wakeWatchers, () => { consecutiveFailures = 0; });
+          } finally {
+            watchedForwarder?.signal.removeEventListener('abort', onForwarderAbort);
+          }
+          if (forwarder?.signal.aborted) { await forwarder.stop(); forwarder = undefined; }
+        }
       }
     } finally { await forwarder?.stop(); }
   }

@@ -87,7 +87,7 @@ test('input received during recall reaches active-task initial state before any 
 
 async function run(request: string, selected: string[], response = { response: 'Hello.', program: null, taskDecision: null } as any, options: {
   routing?: Record<string, any>; memoryWork?: boolean; memoryFailure?: boolean; delegatedPlan?: any; failSpeech?: boolean; beforeSpeech?: (reads: string[]) => void;
-  awaitTask?: boolean; taskResult?: any; observation?: any; returnedObservation?: any; execution?: any;
+  awaitTask?: boolean; cameraFrame?: any; taskResult?: any; observation?: any; returnedObservation?: any; execution?: any;
 } = {}) {
   calls.length = 0
   routing = options.routing ? { needsGoalReview: false, ...options.routing } : routes(selected)
@@ -96,7 +96,9 @@ async function run(request: string, selected: string[], response = { response: '
   choice = taskChoice
   speech = conversation ?? 'Hello.'
   const parentCalls = 1 + (routing.needsAction ? taskChoice.delegatePlanning ? 2 : 1 : 0)
-  const expectedCalls = parentCalls + (selected.includes('needsResponse') && response.executionDisposition !== 'steer'
+  const requestsUserReply = taskChoice.taskDecision?.outcome === 'request_user'
+    || delegatedPlan?.taskDecision?.outcome === 'request_user'
+  const expectedCalls = parentCalls + ((routing.needsResponse === true || requestsUserReply) && response.executionDisposition !== 'steer'
     && options.taskResult?.done !== false ? 1 : 0)
   const reads: string[] = []
   const deliveredResponses: string[] = []
@@ -143,13 +145,13 @@ async function run(request: string, selected: string[], response = { response: '
     let result = await executeGraph(graph, { username: 'routing-fixture', userMessage: request, cognitiveMode: 'environment', memoryTimestamp: 123, ttsGeneration: 7,
       conversationHistory: [{ role: 'user', content: 'implicit-history-must-not-leak' }],
     }, undefined, undefined, { store, lease })
-    if (options.awaitTask && routing.taskContext.includes('vision')) {
+    if ((options.awaitTask || options.cameraFrame) && routing.taskContext.includes('vision')) {
       // The current graph first joins its finite camera read. This fixture has
       // no initial image; the later capture phase supplies the returned image.
       const camera = store.pendingDispatches().find(item => (item.payload as any)?.handler === 'environment.visual-read')!
       assert.ok(camera)
       const event = store.appendEvent(execution.executionId, { eventId: 'initial-camera-read', kind: 'work_result',
-        payload: { effectId: camera.effectId, result: { state: 'completed', result: { visual: null } } } })
+        payload: { effectId: camera.effectId, result: { state: 'completed', result: { visual: options.cameraFrame ?? null } } } })
       result = await executeGraph(graph, {}, undefined, undefined, { store, lease, resumeEventId: event.eventId })
     }
     if (options.memoryWork) {
@@ -816,4 +818,73 @@ test('recorded spoken response has one Persona output even when Intent also sele
     const taskSchema = JSON.stringify(calls[1].options.jsonSchema)
     assert.equal(taskSchema.includes('"const":"speech"'), false)
   }
+})
+
+test('specialist task routing with visual frames keeps Node 4 text-only and passes images only on delegation to Node 6', async () => {
+  const frame = { id: 'cam-now', timestamp: '2026-10-07T12:00:00Z', dataUrl: 'data:image/jpeg;base64,/9j/2gAI/9k=' }
+  const result = await run('Are you sure? Can you see me? What model are you running now?',
+    ['needsResponse', 'needsAction', 'needsEnvironment', 'needsVision'],
+    { response: 'I can see you now.', delegatePlanning: true },
+    {
+      cameraFrame: frame,
+      routing: {
+        needsResponse: true, needsAction: true, needsToolUse: false,
+        taskContext: ['environment', 'vision'], conversationContext: ['vision'],
+        taskPlanner: 'specialist',
+      },
+      delegatedPlan: { taskDecision: null, program: null },
+    })
+  assert.deepEqual(calls.map(call => call.role), ['orchestrator', 'environmentActionSelector', 'planner', 'persona'])
+  assert.equal(typeof calls[1].messages[1].content, 'string', 'Node 4 text-only specialist must never receive image_url parts')
+  assert.ok(Array.isArray(calls[2].messages[1].content), 'Node 6 delegated planner must receive multimodal frames')
+  assert.ok(calls[2].messages[1].content.some((part: any) => part.type === 'image_url'))
+  assert.deepEqual(result.deliveredResponses, ['I can see you now.'])
+})
+
+test('human turn with needsResponse false and task outcome request_user speaks using task-retrieved context while autonomous turn stays silent', async () => {
+  const question = 'Remember what some of the guests said or what was happening during the party?'
+  const reply = 'I do not have any recorded memories from the party yet—could you remind me when it happened?'
+  const result = await run(
+    question,
+    ['needsAction', 'needsMemory'],
+    {
+      response: reply,
+      program: null,
+      taskDecision: {
+        objective: 'Answer the user about party memories',
+        completionCriteria: 'User provides clarifying context or relevant memories are found',
+        outcome: 'request_user',
+        reason: 'Memory search returned no matching party records; clarification from the user is needed.',
+        continuationPolicy: 'bounded',
+        requiredCompletionBasis: 'user_input',
+      },
+    },
+    {
+      routing: {
+        needsResponse: false,
+        needsAction: true,
+        needsToolUse: false,
+        taskContext: ['memory'],
+        conversationContext: [],
+        taskPlanner: 'specialist',
+      },
+    },
+  )
+
+  assert.deepEqual(calls.map(call => call.role), ['orchestrator', 'environmentActionSelector', 'persona'])
+  assert.deepEqual(result.deliveredResponses, [reply])
+  assert.equal(result.reads.filter(r => r === 'memory').length, 1, 'Task memory recall is reused without a duplicate lookup')
+  const personaEnvelope = JSON.parse(calls[2].messages[1].content)
+  assert.equal(personaEnvelope.selectedTask.taskDecision.outcome, 'request_user')
+  assert.deepEqual(personaEnvelope.memories, [{ content: 'retrieved-memory' }])
+
+  const { environmentContextBuilderNode } = await import('./context-builder.node.js')
+  const autonomousSkipped = await environmentContextBuilderNode.execute({
+    userInstruction: '',
+    plannerDecision: { instruction: 'Inspect quiet room', observed: 'Room quiet', reason: 'Curiosity' },
+    routingAnalysis: { needsResponse: false, needsAction: true, taskContext: ['environment'], conversationContext: [] },
+    selectedContext: { currentInstruction: 'Inspect quiet room' },
+    selectedTask: { taskDecision: { outcome: 'request_user', continuationPolicy: 'none', requiredCompletionBasis: 'action_result' } },
+  }, {}, { purpose: 'conversation', autonomySystemPrompt: 'Autonomous prompt' })
+  assert.deepEqual(autonomousSkipped, {}, 'Autonomous request_user without needsResponse must not invent unsolicited speech')
 })

@@ -693,12 +693,20 @@ async function connectOnce(config: BridgeConfig, signal: AbortSignal, ready?: ()
             return;
           }
           if (localAbort.signal.aborted) return;
-          await postJson(
+          const admission = await postJson(
             config,
             '/api/environment-bridge/observation',
             observation as unknown as Record<string, unknown>,
             localAbort.signal,
           );
+          if (admission?.graphQueued === false) {
+            const reason = typeof admission.reason === 'string' ? admission.reason : 'not_admitted';
+            throw new Error(
+              reason === 'no_active_authorized_user'
+                ? 'Sign in to MetaHuman as the owner to process spoken input'
+                : `Utterance was not admitted (${reason})`,
+            );
+          }
           diagnostics.transcriptionStatus = 'completed';
           diagnostics.transcript = observation.text?.[0]?.text;
           diagnosticEvent({
@@ -780,7 +788,11 @@ async function connectOnce(config: BridgeConfig, signal: AbortSignal, ready?: ()
           if (feedback) pendingFeedback = structuredClone(feedback);
           const receiptActionId = feedback?.actionId
             ?? (message.type === 'environment.action.update.result' ? message.actionId : undefined);
-          orderingKey = typeof receiptActionId === 'string' ? `action:${receiptActionId}` : undefined;
+          orderingKey = typeof receiptActionId === 'string'
+            ? `action:${receiptActionId}`
+            : message.type === 'behavior.settings'
+              ? 'behavior.settings'
+              : undefined;
           const observation = message.type === 'environment.observation' ? environmentObservation(message.observation) : undefined;
           correlatedObservation = observation && pendingFeedback
             ? attachCorrelatedFeedback(observation, pendingFeedback) : observation;
@@ -789,9 +801,10 @@ async function connectOnce(config: BridgeConfig, signal: AbortSignal, ready?: ()
           }
           const observationActionId = correlatedObservation?.metadata?.actionId ?? correlatedObservation?.visual?.metadata?.actionId
             ?? correlatedObservation?.feedback?.find(item => item.actionId)?.actionId;
-          // One connection queue, ordered per action for receipts and in receive
-          // order for observations. A result's observation follows its receipts;
-          // unrelated observations and face results cannot hold admission ACKs.
+          // One connection queue, ordered per action for receipts, on its own lane
+          // for behavior.settings RPCs, and in receive order for observations.
+          // A result's observation follows its receipts; slow observations or
+          // transcriptions cannot hold admission ACKs or settings requests.
           dependency = orderingKey ? connectionReady
             : typeof observationActionId === 'string' ? inboundMessages?.pending(`action:${observationActionId}`) : undefined;
         } catch (error) {

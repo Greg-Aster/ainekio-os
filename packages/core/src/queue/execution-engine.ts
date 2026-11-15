@@ -299,6 +299,14 @@ export class ExecutionEngine {
       const { identifyActiveTaskImage } = await import('../environment-interface/active-task.js');
       return identifyActiveTaskImage(task.input as Parameters<typeof identifyActiveTaskImage>[0], context.signal);
     }));
+    this.registerHandler('environment.curiosity-escalation', (task, context) => withTaskUserContext(task, async () => {
+      const { runEmbodiedCuriosityEscalation } = await import('../active-operator/embodied-curiosity.js');
+      return runEmbodiedCuriosityEscalation(
+        task.input as unknown as Parameters<typeof runEmbodiedCuriosityEscalation>[0],
+        task.username!,
+        context.signal,
+      );
+    }));
     this.registerHandler('graph.resume', async (task, context) => {
       const { openExecutionStore } = await import('../durable-execution/storage.js');
       const { runGraph } = await import('../graph-runtime.js');
@@ -313,6 +321,15 @@ export class ExecutionEngine {
           signal: context.signal,
         });
         if (state.status === 'failed') throw state.error ?? new Error('Resumed workflow failed');
+        if (task.username && (state.status === 'completed' || state.nodes.get('active-task')?.outputs?.finished === true)) {
+          const { maybeScheduleEmbodiedCuriosityEscalation } = await import('../active-operator/embodied-curiosity.js');
+          await maybeScheduleEmbodiedCuriosityEscalation({
+            username: task.username,
+            executionId,
+            context: entry.context as Record<string, unknown> | undefined,
+            state,
+          });
+        }
         return { executionId, status: state.status, effect: summarizeEnvironmentGraphEffect(state) };
       });
     });

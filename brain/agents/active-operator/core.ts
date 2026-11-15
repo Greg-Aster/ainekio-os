@@ -28,18 +28,24 @@ export async function run(): Promise<void> {
   let previousMode: ReturnType<typeof getOperatorMode> | undefined
   let assessmentWasActive = false
   let assessmentTimer: ReturnType<typeof setTimeout> | undefined
+  let lastPublishedKey: string | undefined
+  let lastBodyConnectionKey: string | undefined
   const clearAssessmentTimer = () => {
     if (assessmentTimer) clearTimeout(assessmentTimer)
     assessmentTimer = undefined
   }
   const publish = (lifecycle: 'armed' | 'dormant' | 'admitting' | 'failed' | 'stopped', reason: string) => {
     const config = loadRobotOperatorConfig()
+    const mode = getOperatorMode()
     const children = Object.fromEntries(CHILDREN.map(id => [id, {
       id, enabled: config.enabled && isRobotOperatorChildEnabled(id), handler: `workflow.${id}`,
       graph: robotOperatorChildGraph(config, id),
       ...(id === CONTROLLER ? { lastTaskId, lastAdmittedAt, lastOutcome: reason } : {}),
     }])) as Record<RobotOperatorStimulusAgent, RobotOperatorChildRuntimeState>
-    writeRobotOperatorRuntimeState({ mode: getOperatorMode(), lifecycle, reason, children })
+    const key = JSON.stringify({ mode, lifecycle, reason, children })
+    if (key === lastPublishedKey) return
+    lastPublishedKey = key
+    writeRobotOperatorRuntimeState({ mode, lifecycle, reason, children })
   }
   const waitForSemiAssessment = () => {
     const mode = getOperatorMode()
@@ -74,10 +80,14 @@ export async function run(): Promise<void> {
       const user = getCurrentlyActiveUser()
       if (!user || user.role !== 'owner') { semiAssessmentSince = Date.now(); publish('dormant', 'No active installation owner'); return }
       const connection = readRobotOperatorBodyConnection(config.sessionId)
+      lastBodyConnectionKey = JSON.stringify(connection)
       const queue = readActiveQueueItems()
       const evaluating = queue.some(task => task.username === user.username && task.handler === `workflow.${CONTROLLER}`
         && ['queued', 'leased', 'waiting'].includes(task.state))
-        || activeRobotExecutions(user.username).some(execution => execution.stimulusAgent === CONTROLLER)
+        || activeRobotExecutions(user.username).some(
+          execution => execution.stimulusAgent === CONTROLLER
+            && (execution.waitingReason !== 'user_or_autonomy' || execution.resumePending)
+        )
       if (evaluating) { assessmentWasActive = true; publish('armed', 'Assessing operation activation'); return }
       if (assessmentWasActive) { assessmentWasActive = false; semiAssessmentSince = Date.now() }
       if (waitForSemiAssessment()) return
@@ -100,11 +110,28 @@ export async function run(): Promise<void> {
       publish('armed', 'Assessing operation activation')
     } catch (error) {
       console.error(`[${SERVICE_ID}] Activation assessment admission failed:`, error)
+      if (stopped) return
+      const config = loadRobotOperatorConfig()
+      const mode = getOperatorMode()
+      if (!config.enabled || mode === 'reactive' || isSleepRuntimeActive() || !isRobotOperatorChildEnabled(CONTROLLER)) {
+        publish('dormant', mode === 'reactive' ? 'Reactive mode' : 'Active Operator is inactive')
+        return
+      }
       publish('failed', (error as Error).message)
     } finally {
       checking = false
       if (pending) { pending = false; void assess() }
     }
+  }
+  const watchers: fs.FSWatcher[] = []
+  const watchDirectory = (dir: string, listener: fs.WatchListener<string>) => {
+    fs.mkdirSync(dir, { recursive: true })
+    const watcher = fs.watch(dir, listener)
+    watcher.on('error', error => {
+      console.error(`[${SERVICE_ID}] File watcher error for ${dir}:`, error)
+    })
+    watchers.push(watcher)
+    return watcher
   }
   const configurationVersions = new Map<string, string | null>()
   const readConfiguration = (file: string) => fs.existsSync(file) ? fs.readFileSync(file, 'utf8') : null
@@ -114,26 +141,46 @@ export async function run(): Promise<void> {
     configurationVersions.set(file, current)
     void assess()
   }
-  const watchFile = (file: string) => {
-    configurationVersions.set(file, readConfiguration(file))
-    return fs.watch(path.dirname(file), (_event, name) => {
-      if (name?.toString() === path.basename(file)) configurationChanged(file)
+  const watchFilesInDir = (dir: string, filenames: string[]) => {
+    const targets = new Map(filenames.map(name => [name, path.join(dir, name)]))
+    for (const file of targets.values()) configurationVersions.set(file, readConfiguration(file))
+    watchDirectory(dir, (_event, name) => {
+      const target = name ? targets.get(name.toString()) : undefined
+      if (target) configurationChanged(target)
     })
   }
-  const watchers = [
-    fs.watch(systemPaths.run, { recursive: true }, (_event, name) => {
-      const file = name?.toString()
-      if (file === 'environment-bridge-state.json' || file?.startsWith('buffer-notifications/')) void assess()
-    }),
-    watchFile(SLEEP_RUNTIME_FILE),
-    ...['active-operator.json', 'services.json', 'agents.json'].map(file => watchFile(path.join(systemPaths.etc, file))),
-    fs.watch(getQueueStateDir(), () => void assess()),
-    fs.watch(path.join(systemPaths.etc, 'cognitive-graphs'), { recursive: true }, (_event, name) => {
-      if (name && path.basename(name.toString()) === `${loadRobotOperatorConfig().robotAutonomyControllerGraph}-mode.json`) {
-        configurationChanged(path.join(systemPaths.etc, 'cognitive-graphs', name.toString()))
-      }
-    }),
-  ]
+  const bufferNotificationsDir = path.join(systemPaths.run, 'buffer-notifications')
+  const cognitiveGraphsDir = path.join(systemPaths.etc, 'cognitive-graphs')
+  const customGraphsDir = path.join(cognitiveGraphsDir, 'custom')
+  const handleGraphChange = (dir: string): fs.WatchListener<string> => (_event, name) => {
+    const filename = name?.toString()
+    if (filename === `${loadRobotOperatorConfig().robotAutonomyControllerGraph}-mode.json`) {
+      configurationChanged(path.join(dir, filename))
+    }
+  }
+  watchDirectory(systemPaths.run, (_event, name) => {
+    if (name?.toString() !== 'environment-bridge-state.json') return
+    const config = loadRobotOperatorConfig()
+    if (!config.enabled || getOperatorMode() === 'reactive' || isSleepRuntimeActive() || !isRobotOperatorChildEnabled(CONTROLLER)) return
+    const currentKey = JSON.stringify(readRobotOperatorBodyConnection(config.sessionId))
+    if (currentKey === lastBodyConnectionKey) return
+    lastBodyConnectionKey = currentKey
+    void assess()
+  })
+  watchDirectory(bufferNotificationsDir, () => void assess())
+  watchFilesInDir(path.dirname(SLEEP_RUNTIME_FILE), [path.basename(SLEEP_RUNTIME_FILE)])
+  watchFilesInDir(systemPaths.etc, ['active-operator.json', 'services.json', 'agents.json'])
+  watchDirectory(getQueueStateDir(), () => void assess())
+  let customGraphsWatcher: fs.FSWatcher | undefined
+  if (fs.existsSync(customGraphsDir)) {
+    customGraphsWatcher = watchDirectory(customGraphsDir, handleGraphChange(customGraphsDir))
+  }
+  watchDirectory(cognitiveGraphsDir, (event, name) => {
+    if (name?.toString() === 'custom' && !customGraphsWatcher && fs.existsSync(customGraphsDir)) {
+      customGraphsWatcher = watchDirectory(customGraphsDir, handleGraphChange(customGraphsDir))
+    }
+    handleGraphChange(cognitiveGraphsDir)(event, name)
+  })
   const unsubscribe = onAuthenticatedSessionChange(() => { void assess() })
   let finish!: () => void
   const ended = new Promise<void>(resolve => { finish = resolve })
@@ -143,7 +190,10 @@ export async function run(): Promise<void> {
   void assess()
   try { await ended } finally {
     unsubscribe()
-    watchers.forEach(watcher => watcher.close())
+    for (const watcher of watchers) {
+      watcher.removeAllListeners()
+      try { watcher.close() } catch {}
+    }
     process.removeListener('SIGINT', shutdown)
     process.removeListener('SIGTERM', shutdown)
     lock.release()

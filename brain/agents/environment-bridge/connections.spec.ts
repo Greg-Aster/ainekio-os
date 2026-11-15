@@ -181,3 +181,58 @@ test('a failed Core action stream stays visibly not ready while its gateway is a
     assert.deepEqual(f.admissions, [f.local.url]);
   } finally { await f.close(); }
 });
+
+test('unreachable secondary host backs off and deduplicates availability failure logs while keeping primary active', { timeout: 10000 }, async () => {
+  const local = await host('robot-a');
+  const failingServer = new WebSocketServer({ port: 0 });
+  await new Promise<void>(resolve => failingServer.once('listening', resolve));
+  const deadPort = (failingServer.address() as { port: number }).port;
+  const attemptTimes: number[] = [];
+  failingServer.on('connection', socket => {
+    attemptTimes.push(Date.now());
+    socket.terminate();
+  });
+
+  const controller = new AbortController();
+  let snapshot: BodyConnection[] = [];
+  const originalConsoleError = console.error;
+  const loggedErrors: string[] = [];
+  console.error = (...args: unknown[]) => { loggedErrors.push(args.map(String).join(' ')); };
+  const run = runBodyConnection({
+    endpoints: [
+      { url: local.url },
+      { url: `ws://127.0.0.1:${deadPort}/environment` },
+    ],
+    robotId: 'robot-a',
+    token: 'fixture',
+    reconnectBaseMs: 30,
+    reconnectMaxMs: 240,
+    async connect(_url, connSignal, ready) {
+      ready();
+      await new Promise<void>(resolve => {
+        if (connSignal.aborted) resolve();
+        else connSignal.addEventListener('abort', () => resolve(), { once: true });
+      });
+    },
+    async changed(value) {
+      snapshot = value;
+      throw new Error('Core telemetry offline');
+    },
+  }, controller.signal);
+
+  try {
+    await new Promise(resolve => setTimeout(resolve, 420));
+    assert.equal(snapshot[0]?.ready, true);
+    assert.equal(snapshot[0]?.connected, true);
+    assert.match(snapshot[1]?.error ?? '', /closed|ECONNRESET|ECONNREFUSED/i);
+    assert.ok(attemptTimes.length >= 3 && attemptTimes.length <= 5, `Expected backed-off retries (3..5), got ${attemptTimes.length}`);
+    assert.ok(attemptTimes.at(-1)! - attemptTimes.at(-2)! > attemptTimes[1] - attemptTimes[0], 'Retry interval must grow under backoff');
+    assert.equal(loggedErrors.filter(line => line.includes('availability reporting failed')).length, 1, 'Identical availability reporting errors must be deduplicated');
+  } finally {
+    console.error = originalConsoleError;
+    controller.abort();
+    await run;
+    await new Promise<void>(resolve => failingServer.close(() => resolve()));
+    await local.close();
+  }
+});

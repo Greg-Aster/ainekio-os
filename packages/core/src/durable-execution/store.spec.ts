@@ -8,7 +8,7 @@ import { execFile } from 'node:child_process'
 import { promisify } from 'node:util'
 import Database from 'better-sqlite3'
 import { Annotation, Command, END, START, StateGraph, interrupt } from '@langchain/langgraph'
-import { contentHash, ExecutionStore } from './store.js'
+import { canonicalJSON, contentHash, ExecutionStore } from './store.js'
 import { ExecutionCheckpointer, type CheckpointConfig } from './checkpointer.js'
 import { type CheckpointTransition, type ExecutionDefinition } from './types.js'
 import type { VisualObservationRecord } from '../visual-observation.js'
@@ -1489,5 +1489,245 @@ test('opening an initialized execution store for reading does not claim the data
     if (writer.db.inTransaction) writer.db.exec('ROLLBACK')
     writer.close()
     fs.rmSync(directory, { recursive: true, force: true })
+  }
+})
+
+test('unawaited display feedback and exhausted effect_delivery executions do not enqueue spurious graph_resume dispatches', () => {
+  const store = new ExecutionStore(':memory:')
+  try {
+    // 1. In-flight graph with background/release faceExpression dispatches: no resume on accept/observation/result.
+    const inFlight = store.create('test-user', definition)
+    const lease = store.claim(inFlight.executionId, definition)
+    store.db.transaction(() => {
+      store.commitTransition(inFlight.executionId, 'cp-1', {
+        transitionId: 'tx-bg',
+        status: 'waiting',
+        dispatches: [
+          {
+            effectId: `${inFlight.executionId}:thinking-out`,
+            kind: 'coordinator_work',
+            actionId: 'action-bg',
+            payload: { type: 'environment_command', input: { type: 'faceExpression', displayBackground: true } },
+          },
+          {
+            effectId: `${inFlight.executionId}:release-out`,
+            kind: 'coordinator_work',
+            actionId: 'action-rel',
+            payload: { type: 'environment_command', input: { type: 'faceExpression', displayRelease: true } },
+          },
+          {
+            effectId: `${inFlight.executionId}:planned-face`,
+            kind: 'coordinator_work',
+            actionId: 'action-planned',
+            payload: { type: 'environment_command', input: { type: 'faceExpression', displayBackground: false } },
+          },
+        ],
+      })
+    }).immediate()
+    store.release(lease)
+
+    store.acknowledgeAdmission(`${inFlight.executionId}:thinking-out`, 'work-bg')
+    store.acceptAction(`${inFlight.executionId}:thinking-out`)
+    store.deliverEvent(inFlight.executionId, {
+      eventId: 'accept-bg', kind: 'action_accepted', actionId: 'action-bg', workItemId: 'work-bg', payload: {},
+    })
+    store.deliverEvent(inFlight.executionId, {
+      eventId: 'obs-bg', kind: 'observation_received', actionId: 'action-bg', workItemId: 'work-bg', payload: {},
+    })
+    store.deliverActionResult(inFlight.executionId, 'action-bg', {
+      eventId: 'phys-bg', kind: 'physical_result', actionId: 'action-bg', workItemId: 'work-bg', payload: { ok: true },
+    })
+    store.deliverWorkResult(`${inFlight.executionId}:thinking-out`, 'work-bg', { state: 'completed' })
+
+    store.acknowledgeAdmission(`${inFlight.executionId}:release-out`, 'work-rel')
+    store.acceptAction(`${inFlight.executionId}:release-out`)
+    store.deliverEvent(inFlight.executionId, {
+      eventId: 'accept-rel', kind: 'action_accepted', actionId: 'action-rel', workItemId: 'work-rel', payload: {},
+    })
+    store.deliverWorkResult(`${inFlight.executionId}:release-out`, 'work-rel', { state: 'completed' })
+
+    assert.equal(
+      store.dispatches(inFlight.executionId).filter(d => d.kind === 'graph_resume').length,
+      0,
+      'Unawaited background/release faceExpression lifecycle must not enqueue graph_resume',
+    )
+
+    // Explicit planned faceExpression (displayBackground: false) while graph is awaiting interrupt STILL resumes.
+    store.acknowledgeAdmission(`${inFlight.executionId}:planned-face`, 'work-planned')
+    store.deliverEvent(inFlight.executionId, {
+      eventId: 'accept-planned', kind: 'action_accepted', actionId: 'action-planned', workItemId: 'work-planned', payload: {},
+    })
+    assert.equal(
+      store.dispatches(inFlight.executionId).filter(d => d.kind === 'graph_resume').length,
+      1,
+      'Explicit planned faceExpression must still schedule graph_resume when graph is not in finishedEffectDelivery',
+    )
+
+    // 2. Exhausted graph waiting only on effect_delivery (empty queue) skips resume on action_accepted / observation_received.
+    const f = fixture()
+    try {
+      const doneExec = f.execution
+      f.store.db.transaction(() => {
+        const emptyCp = f.store.encodeDocument(doneExec.executionId, { type: 'json', json: { channel_values: { queue: [] } } })
+        f.store.stmt(`INSERT INTO checkpoints (thread_id, checkpoint_ns, checkpoint_id, type, checkpoint, metadata)
+          VALUES (?, '', 'cp-done', 'metahuman-v1', ?, ?)`).run(doneExec.executionId, Buffer.from(emptyCp), Buffer.from(emptyCp))
+        f.store.stmt("INSERT INTO execution_heads VALUES (?, '', 'cp-done')").run(doneExec.executionId)
+        f.store.commitTransition(doneExec.executionId, 'cp-done', {
+          transitionId: 'tx-done',
+          status: 'waiting',
+          dispatches: [{
+            effectId: `${doneExec.executionId}:fb`,
+            kind: 'coordinator_work',
+            actionId: 'action-fb',
+            payload: { type: 'environment_command', input: { type: 'faceExpression', displayBackground: false } },
+          }],
+        })
+      }).immediate()
+      f.store.settle(f.lease, 'waiting', 'effect_delivery')
+      f.store.release(f.lease)
+      f.store.acknowledgeAdmission(`${doneExec.executionId}:fb`, 'work-fb')
+      f.store.deliverEvent(doneExec.executionId, {
+        eventId: 'accept-fb', kind: 'action_accepted', actionId: 'action-fb', workItemId: 'work-fb', payload: {},
+      })
+      f.store.deliverEvent(doneExec.executionId, {
+        eventId: 'obs-fb', kind: 'observation_received', actionId: 'action-fb', workItemId: 'work-fb', payload: {},
+      })
+      assert.equal(
+        f.store.dispatches(doneExec.executionId).filter(d => d.kind === 'graph_resume').length,
+        0,
+        'action_accepted and observation_received must not wake an exhausted effect_delivery graph',
+      )
+    } finally {
+      f.store.close()
+      fs.rmSync(f.directory, { recursive: true, force: true })
+    }
+  } finally { store.close() }
+})
+
+test('canonicalJSON preserves localeCompare key order and JsonPlus serde roundtrips special values', async () => {
+  // '_' sorts before 'a' under localeCompare but after 'B' and before 'a' differently in ASCII/UTF-16.
+  const keys = ['_z', 'a', 'B', 'm', 'A']
+  const expectedOrder = keys.slice().sort((a, b) => a.localeCompare(b))
+  const sample = Object.fromEntries(keys.map((k, idx) => [k, idx]))
+  const expectedJson = `{${expectedOrder.map(k => `${JSON.stringify(k)}:${sample[k]}`).join(',')}}`
+  assert.equal(canonicalJSON(sample), expectedJson)
+  assert.equal(canonicalJSON(sample), expectedJson, 'cached key order must stay consistent')
+
+  const f = fixture()
+  try {
+    const complex = {
+      undef: undefined,
+      arr: [1, undefined, 'x'],
+      set: new Set(['alpha', 'beta']),
+      map: new Map([['k1', 42], ['k2', 99]]),
+      regex: /hello\s+world/gi,
+      err: new Error('synthetic error'),
+      bytes: new Uint8Array([1, 2, 255]),
+      nested: { safe: true },
+    }
+    const [type, encoded] = await f.saver.serde.dumpsTyped(complex)
+    assert.equal(type, 'metahuman-v1')
+    const restored = await f.saver.serde.loadsTyped(type, encoded)
+    assert.equal('undef' in restored, true)
+    assert.equal(restored.undef, undefined)
+    assert.deepEqual(restored.arr, [1, undefined, 'x'])
+    assert.deepEqual([...restored.set], ['alpha', 'beta'])
+    assert.deepEqual([...restored.map.entries()], [['k1', 42], ['k2', 99]])
+    assert.equal(restored.regex instanceof RegExp, true)
+    assert.equal(restored.regex.source, complex.regex.source)
+    assert.equal(restored.regex.flags, complex.regex.flags)
+    assert.equal(restored.err instanceof Error, true)
+    assert.equal(restored.err.message, 'synthetic error')
+    assert.deepEqual(restored.bytes, new Uint8Array([1, 2, 255]))
+  } finally {
+    f.store.close()
+    fs.rmSync(f.directory, { recursive: true, force: true })
+  }
+})
+
+test('user_or_autonomy waits settle to idle across admitted and delayed unawaited display dispatches while awaited effects stay waiting', async () => {
+  const store = new ExecutionStore(':memory:')
+  try {
+    // 1. Admitted displayRelease / displayBackground at settle() projects idle immediately without blocking dispatch completion.
+    const immediate = store.enter('test-user', definition, 'turn-immediate', { context: { userMessage: 'Ask me' } })
+    const lease1 = store.claim(immediate.executionId, definition)
+    store.db.transaction(() => {
+      store.commitTransition(immediate.executionId, 'cp-imm', {
+        transitionId: 'tx-imm',
+        status: 'waiting',
+        dispatches: [
+          {
+            effectId: `${immediate.executionId}:thinking-off`,
+            kind: 'coordinator_work',
+            actionId: 'rel-1',
+            payload: { type: 'environment_command', input: { type: 'faceExpression', displayRelease: true } },
+          },
+          {
+            effectId: `${immediate.executionId}:thinking-bg`,
+            kind: 'coordinator_work',
+            actionId: 'bg-1',
+            payload: { type: 'environment_command', input: { type: 'faceExpression', displayBackground: true } },
+          },
+        ],
+      })
+    }).immediate()
+    store.acknowledgeAdmission(`${immediate.executionId}:thinking-off`, 'work-rel-1')
+    store.acknowledgeAdmission(`${immediate.executionId}:thinking-bg`, 'work-bg-1')
+    store.settle(lease1, 'waiting', 'user_or_autonomy')
+    store.release(lease1)
+
+    assert.equal(store.get(immediate.executionId).status, 'idle', 'Admitted unawaited display dispatches must not hold user_or_autonomy in waiting')
+    assert.equal(store.get(immediate.executionId).waitingReason, 'user_or_autonomy')
+    assert.deepEqual(store.summaries('test-user', 0), [], 'Idle parked execution must not appear as active unfinished queue work')
+    assert.equal(store.acceptAction(`${immediate.executionId}:thinking-off`).status, 'accepted')
+    store.deliverWorkResult(`${immediate.executionId}:thinking-off`, 'work-rel-1', { state: 'completed' })
+    assert.equal(store.get(immediate.executionId).status, 'idle')
+    assert.equal(store.dispatches(immediate.executionId).filter(d => d.kind === 'graph_resume').length, 0)
+
+    // 2. Unadmitted ('pending') unawaited display keeps waiting until admission, then settles to idle once admitted.
+    const delayed = store.enter('test-user', definition, 'turn-delayed', { context: { userMessage: 'Delayed' } })
+    const lease2 = store.claim(delayed.executionId, definition)
+    store.db.transaction(() => {
+      store.commitTransition(delayed.executionId, 'cp-del', {
+        transitionId: 'tx-del',
+        status: 'waiting',
+        dispatches: [{
+          effectId: `${delayed.executionId}:pending-release`,
+          kind: 'coordinator_work',
+          actionId: 'rel-2',
+          payload: { type: 'environment_command', input: { type: 'faceExpression', displayRelease: true } },
+        }],
+      })
+    }).immediate()
+    store.settle(lease2, 'waiting', 'user_or_autonomy')
+    store.release(lease2)
+    assert.equal(store.get(delayed.executionId).status, 'waiting', 'Pending unadmitted outbox intent stays recoverable in waiting')
+    store.acknowledgeAdmission(`${delayed.executionId}:pending-release`, 'work-rel-2')
+    assert.equal(store.get(delayed.executionId).status, 'idle', 'Acknowledging admission of the sole unawaited display settles waiting -> idle')
+    assert.equal(store.get(delayed.executionId).waitingReason, 'user_or_autonomy')
+
+    // 3. Awaited coordinator work (tts.robot-speech) keeps waiting and schedules graph_resume on completion rather than prematurely idling.
+    const awaited = store.enter('test-user', definition, 'turn-awaited', { context: { userMessage: 'Speak first' } })
+    const lease3 = store.claim(awaited.executionId, definition)
+    store.db.transaction(() => {
+      store.commitTransition(awaited.executionId, 'cp-await', {
+        transitionId: 'tx-await',
+        status: 'waiting',
+        dispatches: [{
+          effectId: `${awaited.executionId}:speech`,
+          kind: 'coordinator_work',
+          payload: { type: 'generic', handler: 'tts.robot-speech', input: { text: 'Hello' } },
+        }],
+      })
+    }).immediate()
+    store.acknowledgeAdmission(`${awaited.executionId}:speech`, 'work-speech')
+    store.settle(lease3, 'waiting', 'user_or_autonomy')
+    store.release(lease3)
+    assert.equal(store.get(awaited.executionId).status, 'waiting')
+    store.deliverWorkResult(`${awaited.executionId}:speech`, 'work-speech', { state: 'completed' })
+    assert.equal(store.get(awaited.executionId).status, 'waiting', 'Awaited speech schedules graph_resume before idling')
+    assert.equal(store.dispatches(awaited.executionId).filter(d => d.kind === 'graph_resume' && d.status === 'pending').length, 1)
+  } finally {
+    store.close()
   }
 })

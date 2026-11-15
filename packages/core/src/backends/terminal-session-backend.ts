@@ -7,6 +7,7 @@ import {
   getBigBrotherSessionState,
   startTerminalService,
   stopBigBrotherSession,
+  warmBigBrotherSession,
   executeInBigBrotherSession,
 } from '../terminal/client.js'
 import { isTerminalBigBrotherProviderInstalled, type TerminalBigBrotherProvider } from '../terminal/providers/cli.js'
@@ -37,6 +38,13 @@ export function createTerminalSessionBackend(definition: TerminalBackendDefiniti
       await startTerminalService()
       ready = true
       return ready
+    },
+
+    async warmup(options?: EscalationOptions): Promise<void> {
+      if (!await this.start()) {
+        throw new Error(`Backend ${definition.name} is not available. Check installation.`)
+      }
+      await warmBigBrotherSession(definition.id, options)
     },
 
     async stop(): Promise<void> {

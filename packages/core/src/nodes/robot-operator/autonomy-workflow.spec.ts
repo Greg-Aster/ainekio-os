@@ -576,3 +576,85 @@ test('selected inactive persona remains an attributed completed read in the hand
   assert.equal(result.valid, true)
   assert.deepEqual(result.selectedContext.sources.persona, { value: null, scope: {} })
 })
+
+test('controller selection summarizes systemIssues compactly while assessment preserves all tickets without redundant history', async () => {
+  const context = nodeRegistry.get('robot_autonomy_controller_context')!
+  const largeIssues = Array.from({ length: 200 }, (_, index) => {
+    const createdAt = new Date(Date.UTC(2026, 10, 13, 12, 0, index)).toISOString()
+    const errorEvidence = {
+      source: 'system',
+      eventId: `evt-${index}`,
+      message: `Unhandled subsystem failure #${index}: ${'stack-frame '.repeat(40)}`,
+      stack: `Error: failure #${index}\n${'    at worker.ts:42:9\n'.repeat(12)}`,
+      occurredAt: createdAt,
+      taskId: `task-${index}`,
+    }
+    return {
+      id: `ticket-${index}`,
+      origin: 'system',
+      createdAt,
+      updatedAt: createdAt,
+      status: 'new',
+      feedbackTargetType: 'task',
+      feedbackTargetId: `task-${index}`,
+      category: 'system_error',
+      priority: index === 37 ? 'critical' : index % 5 === 0 ? 'high' : 'medium',
+      title: `Ticket ${index}`,
+      description: `Detailed issue description ${index}`,
+      errorEvidence,
+      history: [{
+        timestamp: createdAt,
+        action: 'system_error_recorded',
+        actor: 'system',
+        details: { evidence: errorEvidence },
+      }],
+    }
+  })
+  const activationState = {
+    mode: 'full',
+    assessedAt: timestamp,
+    localTime: '12:05:00',
+    timeZone: 'America/Los_Angeles',
+    bodyConnection: { connected: true, sessionId: observation.sessionId },
+    systemIssues: largeIssues,
+    operations: [],
+  }
+
+  const selection = await context.execute({ activationState, observation }, {} as any, { contextPurpose: 'selection' })
+  assert.ok(selection.request.length < 2_000, `Selection request must remain compact (got ${selection.request.length} chars)`)
+  const parsedSelection = JSON.parse(selection.request)
+  assert.deepEqual(parsedSelection.systemIssues, {
+    count: 200,
+    highestPriority: 'critical',
+    latestCreatedAt: largeIssues[199].createdAt,
+  })
+  assert.equal(selection.request.includes('ticket-0'), false)
+  assert.equal(selection.request.includes('system_error_recorded'), false)
+
+  const assessment = await context.execute({
+    instruction: 'Assess operations.',
+    fullInstruction: 'Assess Full Autonomy operations.',
+    observation,
+    activationState,
+  }, {} as any, { contextPurpose: 'assessment' })
+  assert.equal(assessment.valid, true)
+  const envelope = parseContext(assessment.messages[1].content)
+  assert.equal(envelope.activeOperator.systemIssues.length, 200)
+  for (let i = 0; i < 200; i++) {
+    const projected = envelope.activeOperator.systemIssues[i]
+    const source = largeIssues[i]
+    assert.equal(projected.id, source.id)
+    assert.equal(projected.origin, source.origin)
+    assert.equal(projected.createdAt, source.createdAt)
+    assert.equal(projected.updatedAt, source.updatedAt)
+    assert.equal(projected.status, source.status)
+    assert.equal(projected.feedbackTargetType, source.feedbackTargetType)
+    assert.equal(projected.feedbackTargetId, source.feedbackTargetId)
+    assert.equal(projected.category, source.category)
+    assert.equal(projected.priority, source.priority)
+    assert.equal(projected.title, source.title)
+    assert.equal(projected.description, source.description)
+    assert.deepEqual(projected.errorEvidence, source.errorEvidence)
+    assert.equal('history' in projected, false)
+  }
+})

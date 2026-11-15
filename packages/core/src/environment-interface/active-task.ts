@@ -40,6 +40,127 @@ export function normalizeLocomotionGoal(value: unknown): EnvironmentLocomotionGo
   throw new Error('Invalid locomotionGoal')
 }
 
+const MIN_FORWARD_CLEARANCE_METRES = 0.30
+
+export interface DepthSpatialClearance {
+  centerMetres: number
+  leftMetres: number
+  rightMetres: number
+  nearFloorMetres: number | null
+  openTurnDirection: 'left' | 'right'
+}
+
+export function summarizeDepthSpatialClearance(
+  position: EnvironmentLocomotionMeasurement['position'],
+): DepthSpatialClearance | null {
+  const spatial = (position as Record<string, any> | undefined)?.depthSpatial
+  if (!spatial || typeof spatial !== 'object' || spatial.available !== true
+    || spatial.schema !== 'ainekio-depth-grid-v1' || spatial.rows !== 8 || spatial.columns !== 8
+    || !Array.isArray(spatial.values) || !Array.isArray(spatial.valid)
+    || spatial.values.length < 64 || spatial.valid.length < 64) {
+    return null
+  }
+  const medianRegion = (rows: number[], cols: number[]): number | null => {
+    const samples: number[] = []
+    for (const r of rows) {
+      for (const c of cols) {
+        const idx = r * 8 + c
+        const val = spatial.values[idx]
+        if (spatial.valid[idx] === true && typeof val === 'number' && Number.isFinite(val) && val > 0) {
+          samples.push(val)
+        }
+      }
+    }
+    if (!samples.length) return null
+    samples.sort((a, b) => a - b)
+    const mid = Math.floor(samples.length / 2)
+    return samples.length % 2 === 1 ? samples[mid] : (samples[mid - 1] + samples[mid]) / 2
+  }
+  const centerMetres = medianRegion([2, 3, 4], [2, 3, 4, 5])
+  const leftMetres = medianRegion([2, 3, 4], [0, 1, 2])
+  const rightMetres = medianRegion([2, 3, 4], [5, 6, 7])
+  const nearFloorMetres = medianRegion([5, 6], [2, 3, 4, 5])
+  if (centerMetres === null || leftMetres === null || rightMetres === null) return null
+  return {
+    centerMetres,
+    leftMetres,
+    rightMetres,
+    nearFloorMetres,
+    openTurnDirection: leftMetres >= rightMetres ? 'left' : 'right',
+  }
+}
+
+export interface LocomotionStallTracker {
+  bestRemaining: number
+  lastSampleKey: string
+  stalledSamples: number
+  startedAtMs: number
+}
+
+export function trackLocomotionProgress(
+  goal: EnvironmentLocomotionGoal,
+  progress: Record<string, unknown>,
+  measurement: EnvironmentLocomotionMeasurement,
+  previous: LocomotionStallTracker | undefined,
+  nowMs = Date.now(),
+): { tracker?: LocomotionStallTracker; stalledReason?: string } {
+  let remaining: number
+  let epsilon: number
+  let source: Record<string, any> | undefined
+  if (goal.kind === 'distance') {
+    remaining = Number(progress.remainingMetres)
+    epsilon = 0.025
+    source = measurement.position as Record<string, any> | undefined
+  } else if (goal.kind === 'relativeTurn') {
+    remaining = Math.abs(Number(progress.remainingDegrees))
+    epsilon = 3.0
+    source = measurement.yaw as Record<string, any> | undefined
+  } else if (goal.kind === 'approach') {
+    remaining = goal.proximity.kind === 'metric'
+      ? Math.abs(Number(progress.proximity) - goal.proximity.metres)
+      : Math.abs(goal.proximity.boxHeight - Number(progress.proximity))
+    epsilon = goal.proximity.kind === 'metric' ? 0.025 : 0.02
+    source = measurement.target as Record<string, any> | undefined
+  } else {
+    return {}
+  }
+
+  const sampleKey = String(source?.frameId ?? source?.frameCounter ?? source?.timestampUs ?? source?.observedAt ?? '')
+  if (!sampleKey || !Number.isFinite(remaining)) return { tracker: previous }
+  const parsedSampleMs = Date.parse(String(source?.observedAt ?? ''))
+  const sampleMs = Number.isFinite(parsedSampleMs) ? parsedSampleMs : nowMs
+
+  if (!previous) {
+    return { tracker: { bestRemaining: remaining, lastSampleKey: sampleKey, stalledSamples: 0, startedAtMs: sampleMs } }
+  }
+  if (sampleKey === previous.lastSampleKey) {
+    return { tracker: previous }
+  }
+  if (remaining <= previous.bestRemaining - epsilon) {
+    return { tracker: { bestRemaining: remaining, lastSampleKey: sampleKey, stalledSamples: 0, startedAtMs: sampleMs } }
+  }
+
+  const stalledSamples = previous.stalledSamples + 1
+  const tracker: LocomotionStallTracker = {
+    bestRemaining: Math.min(previous.bestRemaining, remaining),
+    lastSampleKey: sampleKey,
+    stalledSamples,
+    startedAtMs: previous.startedAtMs,
+  }
+  const elapsedMs = Math.max(nowMs, sampleMs) - previous.startedAtMs
+  if (stalledSamples >= 4 && elapsedMs >= 3_000) {
+    const stalledJoints = (measurement.yaw as Record<string, any> | undefined)?.imu?.joint_feedback?.stalled_joints
+    const jointNote = typeof stalledJoints === 'number' && stalledJoints !== 0 ? `; stalledJointsMask=${stalledJoints}` : ''
+    const clearance = progress.clearance as DepthSpatialClearance | undefined
+    const clearanceNote = clearance ? `; suggestedTurn=${clearance.openTurnDirection}` : ''
+    return {
+      tracker,
+      stalledReason: `Locomotion progress stalled (${stalledSamples} consecutive measurements over ${(elapsedMs / 1000).toFixed(1)}s without progress; remaining=${remaining.toFixed(3)}${jointNote}${clearanceNote})`,
+    }
+  }
+  return { tracker }
+}
+
 export function evaluateLocomotionGoal(goal: EnvironmentLocomotionGoal, measurement: EnvironmentLocomotionMeasurement,
   initial: EnvironmentLocomotionMeasurement = measurement, now = Date.now(), gait?: EnvironmentAction['gait']): {
     reached: boolean; reason?: string; forward?: number; turn?: number; lateral?: number; progress: Record<string, unknown>
@@ -55,19 +176,30 @@ export function evaluateLocomotionGoal(goal: EnvironmentLocomotionGoal, measurem
     const angle = (start.headingDegrees + ({ forward: 0, back: 180, left: 90, right: -90 }[goal.direction])) * Math.PI / 180
     const targetX = start.xMetres + Math.cos(angle) * goal.metres, targetY = start.yMetres + Math.sin(angle) * goal.metres
     const dx = targetX - p!.xMetres, dy = targetY - p!.yMetres, remainingMetres = Math.hypot(dx, dy)
+    const clearance = summarizeDepthSpatialClearance(p)
+    const progress = { remainingMetres, targetX, targetY, ...(clearance ? { clearance } : {}), measurement }
+    if (goal.direction === 'forward' && remainingMetres > goal.tolerance && clearance && clearance.centerMetres < MIN_FORWARD_CLEARANCE_METRES) {
+      return {
+        reached: false,
+        reason: `Forward path blocked at ${clearance.centerMetres.toFixed(2)}m (left=${clearance.leftMetres.toFixed(2)}m, right=${clearance.rightMetres.toFixed(2)}m; suggestedTurn=${clearance.openTurnDirection})`,
+        forward: 0,
+        turn: 0,
+        progress,
+      }
+    }
     if (gait === 'crab') {
       const heading = p!.headingDegrees * Math.PI / 180
       const scale = remainingMetres ? 100 / remainingMetres : 0
       return { reached: remainingMetres <= goal.tolerance,
         forward: Math.max(-100, Math.min(100, (dx * Math.cos(heading) + dy * Math.sin(heading)) * scale)),
         lateral: Math.max(-100, Math.min(100, (-dx * Math.sin(heading) + dy * Math.cos(heading)) * scale)), turn: 0,
-        progress: { remainingMetres, targetX, targetY, measurement } }
+        progress }
     }
     const bearing = Math.atan2(dy, dx) * 180 / Math.PI
     const reverse = goal.direction === 'back'
     const headingError = ((bearing - p!.headingDegrees - (reverse ? 180 : 0) + 540) % 360) - 180
     return { reached: remainingMetres <= goal.tolerance, forward: (reverse ? -1 : 1) * Math.cos(headingError * Math.PI / 180) * 100,
-      turn: Math.max(-100, Math.min(100, headingError)), progress: { remainingMetres, targetX, targetY, measurement } }
+      turn: Math.max(-100, Math.min(100, headingError)), progress }
   }
   if (goal.kind === 'relativeTurn') {
     const y = measurement.yaw, start = initial.yaw
@@ -125,7 +257,7 @@ export interface ActiveTaskState {
   depthDemand?: { consumerId: string; effectId?: string; ready: boolean };
   locomotionTargetAcquired?: boolean;
   locomotion?: { initial: EnvironmentLocomotionMeasurement; latest: EnvironmentLocomotionMeasurement;
-    reached: boolean; incomplete?: string; progress?: Record<string, unknown> };
+    reached: boolean; incomplete?: string; progress?: Record<string, unknown>; stall?: LocomotionStallTracker };
 
   personLoss?: {
     startedAt: number

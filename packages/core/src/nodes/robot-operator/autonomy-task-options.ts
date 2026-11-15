@@ -19,10 +19,17 @@ export const DEFAULT_ROBOT_AUTONOMY_TASK_IDS = [
   'inner-curiosity',
   'train-of-thought',
   'desire-agent',
-  'sleep-workflow',
   'mood',
-  'system-code-review',
 ] as const
+
+export const BOREDOM_ENRICHMENT_TASK_IDS = new Set([
+  'reflector',
+  'daydreamer',
+  'curiosity',
+  'curiosity-researcher',
+  'inner-curiosity',
+  'train-of-thought',
+])
 
 export const ROBOT_AUTONOMY_TASK_OPTIONS = [
   {

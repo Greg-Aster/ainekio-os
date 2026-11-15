@@ -590,3 +590,85 @@ test('monitor delivers Coordinator lease transitions without rebuilding for toke
   assert.equal(listeners.size, 0);
   assert.ok(io.watchers.every(watcher => watcher.closed));
 });
+
+test('coordinator stream reuses activeOperator and queue projections across unrelated events while refreshing on real queue and operator transitions', async () => {
+  const controller = new EventEmitter();
+  const system = Object.assign(new EventEmitter(), { triggers: new EventEmitter() });
+  const busListeners = new Set<(event: any) => void>();
+  let queueReads = 0;
+  let operatorReads = 0;
+  const owner = load('./unified-queue.ts', ['handleQueueStream', 'sse'], {
+    getQueueSystem: () => system,
+    getModeController: () => controller,
+    eventBus: {
+      subscribe: (listener: (event: any) => void) => {
+        busListeners.add(listener);
+        return () => busListeners.delete(listener);
+      },
+    },
+    queueSnapshot: () => ({ queueRevision: ++queueReads }),
+    readActiveOperatorStatus: async () => ({ operatorRevision: ++operatorReads }),
+  });
+
+  const abort = new AbortController();
+  const response = await owner.handleQueueStream({ user, signal: abort.signal });
+  const iterator = response.stream[Symbol.asyncIterator]();
+  const initial = parse((await iterator.next()).value);
+  assert.equal(initial.snapshot.queueRevision, 1);
+  assert.equal(initial.snapshot.activeOperator.operatorRevision, 1);
+  assert.equal(queueReads, 1);
+  assert.equal(operatorReads, 1);
+
+  for (let i = 0; i < 5; i++) {
+    system.emit('queue', { type: 'task_output', taskId: 'task-1', details: { chunk: `chunk-${i}` } });
+  }
+  for (let i = 0; i < 5; i++) {
+    const packet = parse((await iterator.next()).value);
+    assert.equal(packet.type, 'task_output');
+    if (i === 4) {
+      assert.equal(packet.snapshot.queueRevision, 1);
+      assert.equal(packet.snapshot.activeOperator.operatorRevision, 1);
+    }
+  }
+  assert.equal(queueReads, 1, 'streaming task output chunks must not rebuild queue snapshots');
+  assert.equal(operatorReads, 1, 'streaming task output chunks must not recompute activeOperator');
+
+  const triggerNext = iterator.next();
+  system.triggers.emit('stateChange', { reason: 'triggerUpdated' });
+  const triggerPacket = parse((await triggerNext).value);
+  assert.equal(triggerPacket.type, 'trigger-state');
+  assert.equal(triggerPacket.snapshot.queueRevision, 2, 'trigger-state refreshes queue/trigger snapshot');
+  assert.equal(triggerPacket.snapshot.activeOperator.operatorRevision, 1, 'trigger-state preserves activeOperator without recomputing it');
+  assert.equal(operatorReads, 1);
+
+  const agencyNext = iterator.next();
+  for (const listener of busListeners) {
+    listener({ event: 'agency.changed', data: { username: user.username, revision: 'agency-rev-1', desireId: 'desire-1' } });
+  }
+  const agencyPacket = parse((await agencyNext).value);
+  assert.equal(agencyPacket.type, 'agency-state');
+  assert.equal(agencyPacket.snapshot.agencyChange.revision, 'agency-rev-1');
+  assert.equal(agencyPacket.snapshot.queueRevision, 2);
+  assert.equal(agencyPacket.snapshot.activeOperator.operatorRevision, 1);
+  assert.equal(queueReads, 2);
+  assert.equal(operatorReads, 1);
+
+  const taskNext = iterator.next();
+  system.emit('queue', { type: 'task_started', taskId: 'task-2' });
+  const taskPacket = parse((await taskNext).value);
+  assert.equal(taskPacket.type, 'task_started');
+  assert.equal(taskPacket.snapshot.queueRevision, 3);
+  assert.equal(taskPacket.snapshot.activeOperator.operatorRevision, 2, 'real queue lifecycle events refresh activeOperator');
+  assert.equal(operatorReads, 2);
+
+  const modeNext = iterator.next();
+  controller.emit('modeChanged', 'full');
+  const modePacket = parse((await modeNext).value);
+  assert.equal(modePacket.type, 'operator-state');
+  assert.equal(modePacket.snapshot.activeOperator.operatorRevision, 3, 'operator-state events refresh activeOperator');
+  assert.equal(operatorReads, 3);
+
+  const doneNext = iterator.next();
+  abort.abort();
+  assert.equal((await doneNext).done, true);
+});

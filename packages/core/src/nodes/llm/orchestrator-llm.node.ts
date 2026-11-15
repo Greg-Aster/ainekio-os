@@ -331,6 +331,7 @@ export const OrchestratorLLMNode: NodeDefinition = defineNode({
 
   execute: async (inputs, context, properties) => {
     if (context.environmentInterpretation?.route) return context.environmentInterpretation.route;
+    if (context.precomputedEnvironmentPlan?.route) return context.precomputedEnvironmentPlan.route;
     // Named inputs from graph edges with array fallbacks
     const autonomyContext = properties?.outputContract === 'autonomy-context';
     const requestOnly = properties?.outputContract === 'environment-request' || autonomyContext;

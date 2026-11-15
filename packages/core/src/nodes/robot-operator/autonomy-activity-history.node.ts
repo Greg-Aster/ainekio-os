@@ -6,7 +6,38 @@ import type { ExecutionStore } from '../../durable-execution/store.js'
 import { ExecutionCheckpointer } from '../../durable-execution/checkpointer.js'
 import type { DispatchRecord, ExecutionRecord } from '../../durable-execution/types.js'
 import { executionEventContext } from '../utility/execution-context.node.js'
-import { readActivationAssessment } from '../../active-operator/activation-history.js'
+import { readActivationAssessment, storeCacheIdentity } from '../../active-operator/activation-history.js'
+
+const TERMINAL_EXECUTION_STATUSES = new Set<ExecutionRecord['status']>(['completed', 'failed', 'cancelled'])
+const OBSERVER_CACHE_LIMIT = 1024
+const OUTCOME_CACHE_LIMIT = 512
+
+const robotObserverEntryCache = new Map<string, { requestedBy?: unknown; triggerSource?: unknown } | null>()
+const terminalExecutionOutcomeCache = new Map<string, Record<string, unknown>>()
+
+function setBoundedMap<V>(map: Map<string, V>, key: string, value: V, limit: number): void {
+  if (map.has(key)) map.delete(key)
+  else if (map.size >= limit) {
+    const oldest = map.keys().next().value
+    if (oldest !== undefined) map.delete(oldest)
+  }
+  map.set(key, value)
+}
+
+function readParentRobotObserver(
+  store: ExecutionStore,
+  storeId: string,
+  parent: Pick<ExecutionRecord, 'executionId' | 'createdAt'>,
+): { requestedBy?: unknown; triggerSource?: unknown } | null {
+  const key = `${storeId}:${parent.executionId}:${parent.createdAt}`
+  if (robotObserverEntryCache.has(key)) return robotObserverEntryCache.get(key) ?? null
+  const raw = store.entryOrNull(parent.executionId, ['context', 'robotOperatorContext', 'robotObserver'])
+  const observer = isRecord(raw)
+    ? { requestedBy: raw.requestedBy, triggerSource: raw.triggerSource }
+    : null
+  setBoundedMap(robotObserverEntryCache, key, observer, OBSERVER_CACHE_LIMIT)
+  return observer
+}
 
 export interface RobotAutonomyActivityRecord {
   taskId?: string
@@ -73,29 +104,54 @@ function workActivity(task: Pick<QueuedTask, 'id' | 'input' | 'metadata' | 'hand
 
 /** Current execution facts replace initial admission claims, preserving attributed work receipts. */
 function projectAutonomyActivityOutcomes(history: RobotAutonomyActivityRecord[], store: ExecutionStore) {
+  const storeId = storeCacheIdentity(store)
   const records = new Map([...new Set(history.flatMap(activity => activity.executionIds ?? []))]
     .map(executionId => [executionId, store.find(executionId)] as const))
+  const outcomeByExecutionId = new Map<string, Record<string, unknown>>()
+  for (const [executionId, record] of records) {
+    if (!record) continue
+    let cacheKey: string | null = null
+    if (TERMINAL_EXECUTION_STATUSES.has(record.status)) {
+      const meta = store.stmt(
+        `SELECT (SELECT checkpoint_id FROM execution_task WHERE execution_id = ?) AS task_ckpt,
+          COALESCE(MAX(sequence), 0) AS max_seq, COUNT(*) AS cnt
+         FROM execution_events WHERE execution_id = ?`,
+      ).get(executionId, executionId) as { task_ckpt: string | null; max_seq: number; cnt: number }
+      cacheKey = `${storeId}:${executionId}:${record.status}:${record.createdAt}:${record.updatedAt}:${record.checkpointVersion}:${meta.task_ckpt ?? ''}:${meta.cnt}:${meta.max_seq}`
+      const cached = terminalExecutionOutcomeCache.get(cacheKey)
+      if (cached) {
+        outcomeByExecutionId.set(executionId, structuredClone(cached))
+        continue
+      }
+    }
+    const task = store.task(executionId)
+    const results = executionEventContext(store.activityResults(executionId, task?.actionId)).map(event => {
+      const payload = isRecord(event.payload) ? event.payload : null
+      const feedback = isRecord(payload?.feedback) ? payload.feedback : null
+      return { eventId: event.eventId, executionId: event.executionId, sequence: event.sequence,
+        kind: event.kind, actionId: event.actionId, workItemId: event.workItemId,
+        parentEventId: event.parentEventId, receivedAt: new Date(event.createdAt).toISOString(),
+        timestamp: feedback?.timestamp ?? null,
+        requested: payload?.action ?? null,
+        ...(feedback ? { feedback } : { result: payload?.result }) }
+    })
+    const projected = { executionId, status: record.status, waitingReason: record.waitingReason,
+      objective: task ? { objectiveId: task.objectiveId, instruction: task.instruction, source: task.source,
+        updatedAt: task.updatedAt,
+        objective: task.objective, completionCriteria: task.completionCriteria, decision: task.decision,
+        selectedAction: task.selectedAction, actionId: task.actionId, actionStatus: task.actionStatus } : null,
+      results }
+    if (cacheKey) {
+      setBoundedMap(terminalExecutionOutcomeCache, cacheKey, projected, OUTCOME_CACHE_LIMIT)
+      outcomeByExecutionId.set(executionId, structuredClone(projected))
+    } else {
+      outcomeByExecutionId.set(executionId, projected)
+    }
+  }
   return history.map(activity => {
     const executions = (activity.executionIds ?? []).flatMap(executionId => {
-      const record = records.get(executionId)
-      if (!record) return [] // The retained receipt does not recreate a pruned execution.
-      const task = store.task(executionId)
-      const results = executionEventContext(store.activityResults(executionId, task?.actionId)).map(event => {
-        const payload = isRecord(event.payload) ? event.payload : null
-        const feedback = isRecord(payload?.feedback) ? payload.feedback : null
-        return { eventId: event.eventId, executionId: event.executionId, sequence: event.sequence,
-          kind: event.kind, actionId: event.actionId, workItemId: event.workItemId,
-          parentEventId: event.parentEventId, receivedAt: new Date(event.createdAt).toISOString(),
-          timestamp: feedback?.timestamp ?? null,
-          requested: payload?.action ?? null,
-          ...(feedback ? { feedback } : { result: payload?.result }) }
-      })
-      return [{ executionId, status: record.status, waitingReason: record.waitingReason,
-        objective: task ? { objectiveId: task.objectiveId, instruction: task.instruction, source: task.source,
-          updatedAt: task.updatedAt,
-          objective: task.objective, completionCriteria: task.completionCriteria, decision: task.decision,
-          selectedAction: task.selectedAction, actionId: task.actionId, actionStatus: task.actionStatus } : null,
-        results }]
+      const projected = outcomeByExecutionId.get(executionId)
+      return projected ? [projected] : [] // The retained receipt does not recreate a pruned execution.
     })
     return executions.length ? { ...activity, result: {
       ...(activity.result?.decision ? { decision: activity.result.decision } : {}),
@@ -157,16 +213,18 @@ export async function readRobotAutonomyActivity(store: ExecutionStore, username:
     add(task.id, workActivity(task, executionIds))
   }
 
+  const storeId = storeCacheIdentity(store)
   for (const parent of store.iterateNodeExecutions(username, 'active_operator_dispatch', true,
     capabilityIds ? { originatingAgent: 'robot-autonomy-controller', includeExecutionEvents: true } : undefined)) {
-    const entry = store.entryOrNull(parent.executionId)
-    const observer = entry?.context?.robotOperatorContext?.robotObserver
+    const observer = readParentRobotObserver(store, storeId, parent)
     if (observer?.requestedBy !== 'robot-autonomy-controller' || observer.triggerSource !== 'autonomy') continue
     const dispatches = store.dispatches(parent.executionId)
     for (const dispatch of dispatches) readDispatch(dispatch, parent)
     const continuations = dispatches.filter(dispatch => dispatch.kind === 'execution_event'
       && isRecord(dispatch.payload) && dispatch.payload.kind === 'autonomy_trigger')
-    const assessment = !capabilityIds || continuations.length ? await readActivationAssessment(reader, parent.executionId) : null
+    const assessment = !capabilityIds || continuations.length
+      ? await readActivationAssessment(reader, parent.executionId, parent)
+      : null
     for (const dispatch of continuations) {
       const payload = dispatch.payload as { executionId: string; kind: string }
       const update = assessment?.selected.find(item => item.target?.kind === 'execution' && item.target.executionId === payload.executionId)

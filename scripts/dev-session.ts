@@ -47,10 +47,8 @@ if (!user) {
 deleteUserSessions(user.id);
 const session = createSession(user.id, user.role);
 const sessionId = session.id;
-const expiresAt = new Date(Date.now() + 30 * 24 * 60 * 60 * 1000); // 30 days
 updateSession({
   ...session,
-  expiresAt: expiresAt.toISOString(),
   metadata: {
     source: 'dev-session-helper',
   },
@@ -60,7 +58,7 @@ console.log('✅ Dev session created successfully!\n');
 console.log('Session Details:');
 console.log(`  User: ${user.username} (${user.role})`);
 console.log(`  Session ID: ${sessionId}`);
-console.log(`  Expires: ${expiresAt.toISOString()}\n`);
+console.log(`  Expires: ${session.expiresAt ?? 'persistent until logout'}\n`);
 
 console.log('🍪 Copy this cookie value into your browser:\n');
 console.log(`  Cookie Name:  mh_session`);

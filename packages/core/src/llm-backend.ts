@@ -340,6 +340,24 @@ async function resolveAutoBackend(config: BackendConfig): Promise<BackendStatus>
   };
 }
 
+async function isOllamaInstalled(): Promise<boolean> {
+  const searchDirs = [
+    ...(process.env.PATH || '').split(path.delimiter).filter(Boolean),
+    '/usr/local/bin',
+    '/usr/bin',
+  ];
+  for (const dir of searchDirs) {
+    const candidate = path.join(dir, 'ollama');
+    try {
+      if (fs.statSync(candidate).isFile()) {
+        fs.accessSync(candidate, fs.constants.X_OK);
+        return true;
+      }
+    } catch {}
+  }
+  return false;
+}
+
 /**
  * Detect which backends are available on this system
  */
@@ -352,17 +370,7 @@ export async function detectAvailableBackends(): Promise<AvailableBackends> {
     getLlamaCppStatus(config.llamaCpp),
   ]);
 
-  // Check if Ollama is installed (by checking if it's running or if ollama command exists)
-  let ollamaInstalled = ollamaRunning;
-  if (!ollamaInstalled) {
-    try {
-      const { execFileSync } = await import('node:child_process');
-      execFileSync('which', ['ollama'], { stdio: 'ignore', timeout: 2000 });
-      ollamaInstalled = true;
-    } catch {
-      ollamaInstalled = false;
-    }
-  }
+  const ollamaInstalled = ollamaRunning || await isOllamaInstalled();
 
   // Get loaded models if running
   let ollamaModel: string | undefined;

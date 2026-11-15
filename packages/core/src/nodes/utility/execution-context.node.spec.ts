@@ -208,3 +208,97 @@ test('Intent alone selects review eligibility; replies and actions do not select
   assert.equal(reportOnly.hasActiveTask, false, 'A completed one-off report does not remain an active goal')
   assert.equal(reportOnly.awaitContext, false, 'A completed one-off report does not park waiting for user input')
 })
+
+test('executionEventContext strips raw telemetry grids and diffs repeated perception measurements without dropping events', () => {
+  const makeMeasurement = (xMetres: number, degrees: number) => ({
+    position: {
+      available: true, source: 'camera_optical_flow_depth', scaleSource: 'calibration',
+      xMetres, yMetres: 0, zMetres: 0, path_length_m: xMetres, headingDegrees: degrees,
+      depth: { available: true, minMetres: 0.4, centerMetres: 1.2 },
+      depthSpatial: { rows: 8, cols: 8, values: Array.from({ length: 64 }, (_, i) => i * 0.1) },
+      attitude: { orientation_wxyz: [1, 0, 0, 0], bracket_us: [1, 2], bracket_quality: ['good'] },
+      intrinsics: { fx: 500, fy: 500 }, calibrationId: 'cal-1', modelId: 'model-1',
+      distanceDefinition: 'integrated', motionClock: { tick: 1 }, receivedAtMonotonic: 12345, inferenceMs: 12.4,
+      observedAt: '2026-11-12T00:00:01Z',
+    },
+    yaw: {
+      available: true, degrees, uncertaintyDegrees: 1.5, observedAt: '2026-11-12T00:00:01Z',
+      bootId: 99, timestampUs: 99999, imu: { joint_feedback: Array.from({ length: 12 }, (_, i) => ({ id: i, raw_adc: 512 })) },
+    },
+    camera: { available: true, frameId: 'frame-1', observedAt: '2026-11-12T00:00:01Z', receivedAtMonotonic: 12340 },
+  })
+  const events: any[] = [
+    {
+      eventId: 'ev-obs', executionId: 'exec-1', sequence: 1, createdAt: 1, kind: 'observation_received',
+      payload: { environmentObservation: { state: { body: { voltage: 7.4 }, locomotionMeasurement: makeMeasurement(0, 0) } } },
+    },
+    {
+      eventId: 'ev-work', executionId: 'exec-1', sequence: 2, createdAt: 2, kind: 'work_result',
+      payload: { result: { result: { vision: { operation: 'depthDemand', locomotionMeasurement: makeMeasurement(0.1, 1) } } } },
+    },
+    {
+      eventId: 'ev-p1', executionId: 'exec-1', sequence: 3, createdAt: 3, kind: 'perception_received',
+      payload: { sessionId: 'robot-1', locomotionMeasurement: makeMeasurement(0.2, 2) },
+    },
+    {
+      eventId: 'ev-p2', executionId: 'exec-1', sequence: 4, createdAt: 4, kind: 'perception_received',
+      payload: { sessionId: 'robot-1', locomotionMeasurement: makeMeasurement(0.5, 4) },
+    },
+  ]
+  const original = structuredClone(events)
+  const projected = executionEventContext(events)
+  const text = JSON.stringify(projected)
+
+  assert.equal(projected.length, 4)
+  for (const field of ['depthSpatial', 'joint_feedback', 'bracket_us', 'calibrationId', 'intrinsics', 'receivedAtMonotonic', 'timestampUs']) {
+    assert.equal(text.includes(field), false, `raw telemetry ${field} should be stripped`)
+  }
+  assert.equal((projected[0].payload as any).environmentObservation.state.locomotionMeasurement.position.xMetres, 0)
+  assert.equal((projected[1].payload as any).result.result.vision.locomotionMeasurement.position.xMetres, 0.1)
+  assert.equal((projected[2].payload as any).locomotionMeasurement.position.xMetres, 0.2)
+  assert.equal((projected[3].payload as any).locomotionMeasurement, undefined)
+  assert.ok((projected[3].payload as any).observationChanges.some((change: any) =>
+    change.path.join('.') === 'position.xMetres' && change.value === 0.5))
+  assert.deepEqual(events, original, 'durable input events are not mutated')
+})
+
+test('one-shot autonomous invocations with continuationPolicy none drain without parking while bounded and human goals still wait', async () => {
+  const pending: any[] = []
+  let task: any = {
+    source: 'autonomy',
+    decision: { outcome: 'request_user', objectiveComplete: false, continuationPolicy: 'none', requiredCompletionBasis: 'action_result' },
+  }
+  const waits: string[] = []
+  const graphExecution = {
+    task: () => task,
+    pendingEvents: () => pending,
+    waitForEvent: (reason: string) => {
+      waits.push(reason)
+      if (!pending.length) throw new Error('waiting for ' + reason)
+      return pending.shift()
+    },
+  }
+  const properties = { drain: false, userGraph: 'environment', autonomyGraph: 'robot-autonomy-controller' }
+  const autonomousCtx = { graphExecution, _graphExecutorIteration: 1, robotObserver: { triggerSource: 'autonomy' } } as any
+
+  assert.deepEqual(await executionEventWaitNode.execute({}, autonomousCtx, properties), { invocation: null })
+  assert.deepEqual(waits, [], 'One-shot autonomous step with continuationPolicy=none finishes instead of parking on user_or_autonomy')
+
+  const takeover = { userMessage: 'Actually come here.', userMessageEntry: { role: 'user', content: 'Actually come here.', timestamp: 1 } }
+  pending.push({ kind: 'user_steering', payload: takeover })
+  const handedOff = await executionEventWaitNode.execute({}, autonomousCtx, properties)
+  assert.equal(handedOff.invocation.graph, 'environment')
+  assert.equal(handedOff.invocation.context.userMessage, 'Actually come here.')
+  assert.deepEqual(waits, ['pending_input'])
+
+  for (const continuationPolicy of ['bounded', undefined]) {
+    waits.length = 0
+    task = { source: 'autonomy', decision: { outcome: 'wait', objectiveComplete: false, continuationPolicy } }
+    await assert.rejects(executionEventWaitNode.execute({}, autonomousCtx, properties), /waiting for user_or_autonomy/)
+  }
+
+  waits.length = 0
+  task = { source: 'user', decision: { outcome: 'request_user', objectiveComplete: false, continuationPolicy: 'none', requiredCompletionBasis: 'user_input' } }
+  await assert.rejects(executionEventWaitNode.execute({}, { ...autonomousCtx, userMessage: 'Keep talking with me.' }, properties),
+    /waiting for user_or_autonomy/, 'Human conversational objectives with continuationPolicy=none still wait for user replies')
+})

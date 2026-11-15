@@ -24,3 +24,6 @@ export {
   getModeController,
   getOperatorMode,
 } from './mode-controller.js';
+
+// Embodied curiosity (System 1 single-hop & System 2 discovery escalation)
+export * from './embodied-curiosity.js';

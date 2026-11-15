@@ -43,6 +43,21 @@ interface KokoroSynthesisResult {
   cacheHit: boolean;
 }
 
+const verifiedReadyServerUrls = new Set<string>();
+
+function isLoopbackServerUrl(serverUrl: string): boolean {
+  try {
+    const { hostname } = new URL(serverUrl);
+    return hostname === '127.0.0.1' || hostname === 'localhost' || hostname === '::1' || hostname === '[::1]';
+  } catch {
+    return false;
+  }
+}
+
+export function resetKokoroServerReadinessCache(): void {
+  verifiedReadyServerUrls.clear();
+}
+
 export class KokoroService implements ITextToSpeechService {
   constructor(
     private config: KokoroConfig,
@@ -206,9 +221,9 @@ export class KokoroService implements ITextToSpeechService {
         skipReadinessCheck,
       );
 
-      // Cache for future use
+      // Persist synthesized WAV asynchronously (non-blocking) while backgrounding directory index/eviction maintenance
       const cacheStartedAt = performance.now();
-      cacheAudio(this.cacheConfig, text, resolved.cacheKey, resolved.speed, audioBuffer);
+      await cacheAudio(this.cacheConfig, text, resolved.cacheKey, resolved.speed, audioBuffer);
       const cacheWriteMs = performance.now() - cacheStartedAt;
 
       const duration = Date.now() - startTime;
@@ -291,41 +306,72 @@ export class KokoroService implements ITextToSpeechService {
     skipReadinessCheck = false,
   ): Promise<{ audio: Buffer; readinessMs: number; requestMs: number }> {
     const serverUrl = getVoiceServiceUrl('kokoro');
-
-    // Ensure server is ready (auto-start if needed)
     let readinessMs = 0;
-    if (!skipReadinessCheck) {
+
+    const ensureReady = async (): Promise<void> => {
       const readinessStartedAt = performance.now();
       const serverReady = await this._ensureServerReady();
-      readinessMs = performance.now() - readinessStartedAt;
+      readinessMs += performance.now() - readinessStartedAt;
       if (!serverReady) {
         throw new Error(`Kokoro server could not be started at ${serverUrl}`);
       }
+      verifiedReadyServerUrls.add(serverUrl);
+    };
+
+    let ensuredBeforeRequest = false;
+    if (!skipReadinessCheck && !verifiedReadyServerUrls.has(serverUrl) && !isLoopbackServerUrl(serverUrl)) {
+      await ensureReady();
+      ensuredBeforeRequest = true;
     }
 
     // Prepare request payload
-    const payload = {
+    const body = JSON.stringify({
       text,
       lang_code: langCode,
       voice: voice,
       speed,
       custom_voicepack: useCustom ? customPath : null,
       normalize: useCustom ? (this.config.normalizeCustomVoicepacks ?? true) : false,
-    };
+    });
 
-    const requestStartedAt = performance.now();
-    const response = await fetch(`${serverUrl}/synthesize`, {
+    const sendSynthesize = () => fetch(`${serverUrl}/synthesize`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify(payload),
+      body,
       signal,
     });
 
+    let requestStartedAt = performance.now();
+    let response: Response;
+    try {
+      response = await sendSynthesize();
+    } catch (error) {
+      if (signal?.aborted || (error as Error)?.name === 'AbortError' || ensuredBeforeRequest) {
+        verifiedReadyServerUrls.delete(serverUrl);
+        throw error;
+      }
+      verifiedReadyServerUrls.delete(serverUrl);
+      await ensureReady();
+      requestStartedAt = performance.now();
+      response = await sendSynthesize();
+    }
+
+    if (response.status === 503 && !ensuredBeforeRequest && !signal?.aborted) {
+      verifiedReadyServerUrls.delete(serverUrl);
+      await ensureReady();
+      requestStartedAt = performance.now();
+      response = await sendSynthesize();
+    }
+
     if (!response.ok) {
+      if (response.status === 503) {
+        verifiedReadyServerUrls.delete(serverUrl);
+      }
       const errorText = await response.text();
       throw new Error(`Kokoro server error (${response.status}): ${errorText}`);
     }
 
+    verifiedReadyServerUrls.add(serverUrl);
     const arrayBuffer = await response.arrayBuffer();
     // Request time includes transport and client scheduling, not just inference.
     return { audio: Buffer.from(arrayBuffer), readinessMs, requestMs: performance.now() - requestStartedAt };
@@ -397,6 +443,7 @@ export class KokoroService implements ITextToSpeechService {
    */
   async shutdown(): Promise<void> {
     console.log('[KokoroService] Shutting down Kokoro server...');
+    verifiedReadyServerUrls.delete(getVoiceServiceUrl('kokoro'));
     await stopVoiceService('kokoro');
 
     // Publish server stopped event

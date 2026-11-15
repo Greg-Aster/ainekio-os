@@ -375,7 +375,7 @@ export function buildBigBrotherCLIInvocation(
     ensureArg(args, '--input-format', 'stream-json')
     ensureArg(args, '--output-format', 'stream-json')
     ensureArg(args, '--disable-slash-commands')
-    setModelArg(args, model || 'gemini-3.8-flash-low')
+    setModelArg(args, model || 'gemini-4-hydrogen-low')
     const geminiEffort = !reasoning || reasoning === 'none' ? 'low' : reasoning
     args.push('--effort', geminiEffort)
     const threadId = options.session?.threadId || options.diagnostic?.threadId
@@ -408,7 +408,7 @@ export function buildBigBrotherCLIInvocation(
       stdin: `${JSON.stringify({ event: 'user', message: { content: geminiPrompt } })}\n`,
       tempDir,
       cwd: options.workingDirectory || (options.diagnostic ? undefined : tempDir),
-      timeout: options.diagnostic || options.session ? 0 : options.timeout || backend.timeout || 120000,
+      timeout: options.diagnostic || options.session || options.modelRequest ? 0 : options.timeout || 0,
     }
   }
 

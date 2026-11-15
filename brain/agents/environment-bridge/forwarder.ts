@@ -4,11 +4,21 @@ import path from 'node:path';
 import { parseEnv } from 'node:util';
 import { ROOT } from '@metahuman/core/paths';
 
+const MAX_FORWARDER_STDERR_BYTES = 4096;
+
+export interface RemoteForwarder {
+  signal: AbortSignal;
+  failure: () => Error | undefined;
+  detail: () => string | undefined;
+  clearDetail: () => void;
+  stop: () => Promise<void>;
+}
+
 /** The bridge reconnect owner retains a live tunnel across WebSocket attempts. */
 export function startRemoteForwarder(
   adapterUrl: string,
   signal: AbortSignal,
-): { signal: AbortSignal; failure: () => Error | undefined; stop: () => Promise<void> } {
+): RemoteForwarder {
   const controller = new AbortController();
   const services = JSON.parse(fs.readFileSync(path.join(ROOT, 'etc/services.json'), 'utf8'));
   const service = services.services?.['environment-bridge'] ?? {};
@@ -38,17 +48,39 @@ export function startRemoteForwarder(
   }
   const child = spawn(command, args, {
     env: { ...process.env, ...credentials },
-    stdio: ['ignore', 'inherit', 'inherit'],
+    stdio: ['ignore', 'pipe', 'pipe'],
   });
+  child.stdout?.resume();
+  let stderrTail = '';
+  child.stderr?.on('data', (chunk: Buffer | string) => {
+    stderrTail += typeof chunk === 'string' ? chunk : chunk.toString('utf8');
+    if (stderrTail.length > MAX_FORWARDER_STDERR_BYTES) {
+      stderrTail = stderrTail.slice(-MAX_FORWARDER_STDERR_BYTES);
+    }
+  });
+  const detail = () => stderrTail
+    .split(/\r?\n/)
+    .map(line => line.trim())
+    .filter(Boolean)
+    .at(-1);
   let forwarderError: Error | undefined;
   const exited = new Promise<void>(resolve => {
-    child.once('error', error => { forwarderError = error; controller.abort(); resolve(); });
-    child.once('exit', (code, signal) => {
+    let settled = false;
+    const finish = () => {
+      if (settled) return;
+      settled = true;
+      resolve();
+    };
+    child.once('error', error => { forwarderError = error; controller.abort(); finish(); });
+    child.once('close', (code, exitSignal) => {
       if (!controller.signal.aborted) {
-        forwarderError = new Error(`${transport} forwarder exited (${signal ?? code})`);
+        const reason = detail();
+        forwarderError = new Error(reason
+          ? `${transport} forwarder exited (${exitSignal ?? code}): ${reason}`
+          : `${transport} forwarder exited (${exitSignal ?? code})`);
         controller.abort();
       }
-      resolve();
+      finish();
     });
   });
   const stop = () => child.kill('SIGTERM');
@@ -59,6 +91,8 @@ export function startRemoteForwarder(
   return {
     signal: controller.signal,
     failure: () => forwarderError,
+    detail,
+    clearDetail: () => { stderrTail = ''; },
     async stop() {
       signal.removeEventListener('abort', abort);
       controller.abort();

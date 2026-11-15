@@ -1,5 +1,5 @@
 import { readEnvironmentBridgeState, summarizeEnvironmentBridgeState } from './environment-interface/store.js'
-import { currentEnvironmentPerception, type EnvironmentPerception } from './environment-interface/perception.js'
+import { currentEnvironmentPerception, retainedEnvironmentPerception, type EnvironmentPerception } from './environment-interface/perception.js'
 import { getEnvironmentBridgeDiagnosticsSnapshot } from './environment-interface/diagnostics.js'
 import { getQueueManager } from './queue/index.js'
 import { openExecutionStore } from './durable-execution/storage.js'
@@ -55,17 +55,30 @@ export async function readRobotStatusLive(username: string, requestedSessionId?:
   // full gateway snapshot. Expired recognition still records a received frame;
   // validate its session at receipt time, then age that evidence at read time.
   const receivedPerception = perception ?? (connected && raw
-    ? currentEnvironmentPerception(observation, raw, Date.parse(raw.observedAt)) : null)
+    ? retainedEnvironmentPerception(observation, raw, now) : null)
   const recognitionFrameAgeMs = age(receivedPerception?.observedAt, now)
   const newerRecognitionFrame = recognitionFrameAgeMs !== null
     && (snapshotFrameAgeMs === null || recognitionFrameAgeMs < snapshotFrameAgeMs)
   const receivingAgeMs = newerRecognitionFrame ? recognitionFrameAgeMs : snapshotFrameAgeMs
+  const maxFrameAgeMs = number(health.maxFrameAgeMs)
+  const configuredFps = number(cameraFrames.fps) ?? number(health.cameraFps)
+  const processedFps = number(processing.processedFps) ?? number(health.processedFps)
+  const processedCount = number(processing.processedFrames) ?? number(health.processedFrames)
+    ?? number(processing.receivedFrames) ?? number(health.receivedFrames)
+  const reportedObservationAgeMs = number(processing.observationAgeMs) ?? number(health.observationAgeMs) ?? 0
+  const configuredIntervalMs = configuredFps !== null && configuredFps > 0 ? 1000 / configuredFps : 0
+  const activeSpanMs = processedFps !== null && processedFps > 0 && processedCount !== null && processedCount >= 2
+    ? Math.max(0, (processedCount * 1000) / processedFps - reportedObservationAgeMs) : 0
+  const observedIntervalMs = activeSpanMs > 0 && processedCount !== null && processedCount >= 2
+    ? activeSpanMs / (processedCount - 1) : 0
+  const receivingWindowMs = maxFrameAgeMs === null ? null
+    : Math.max(maxFrameAgeMs, Math.max(configuredIntervalMs, observedIntervalMs) * 2)
   const enabled = typeof health.enabled === 'boolean' ? health.enabled : null
   const failure = record(observation?.metadata?.recognitionFailure)
   const failureCurrent = failure.gatewayInstance === gatewayInstance && failure.robotId === body.robotId && failure.epoch === robot.epoch
     && (!raw || Date.parse(observation!.timestamp) >= Date.parse(raw.observedAt))
   const recognitionState = !connected ? 'disconnected' : enabled === false ? 'disabled'
-    : failureCurrent ? 'error' : perception ? 'fresh' : raw ? 'stale' : 'unavailable'
+    : failureCurrent ? 'error' : perception ? 'fresh' : receivedPerception ? 'stale' : 'unavailable'
   const objects = perception && enabled !== false && !failureCurrent
     ? perception.objects.map(item => ({
       label: item.label, box: item.box ?? null, ...(item.trackId ? { trackId: item.trackId } : {}), detectionConfidence: item.score ?? null, identity: item.identity ? {
@@ -135,8 +148,8 @@ export async function readRobotStatusLive(username: string, requestedSessionId?:
       robotId: body.robotId ?? null, gatewayInstance, epoch: robot.epoch ?? null,
       connection: session?.status ?? 'unavailable', sourceObservationAt: observation?.timestamp ?? null,
       camera: { enabled: null, ready: typeof body.cameraReady === 'boolean' ? body.cameraReady : null,
-        receivingFrames: connected && receivingAgeMs !== null && number(health.maxFrameAgeMs) !== null
-          ? receivingAgeMs < health.maxFrameAgeMs : null, lastFrameAgeMs: receivingAgeMs, receivedFrames: number(cameraFrames.received),
+        receivingFrames: connected && receivingAgeMs !== null && receivingWindowMs !== null
+          ? receivingAgeMs < receivingWindowMs : null, lastFrameAgeMs: receivingAgeMs, receivedFrames: number(cameraFrames.received),
         frameCounter: newerRecognitionFrame ? receivedPerception!.frameCounter : cameraFrames.counter ?? null },
       recognition: { enabled, status: recognitionState, observedAt: raw?.observedAt ?? null,
         sourceFrame: raw ? { robotId: raw.robotId, gatewayInstance: raw.gatewayInstance,

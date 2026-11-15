@@ -32,24 +32,89 @@ export function executionPayloadContext(value: any): any {
     .map(([key, child]) => [key, executionPayloadContext(child)]))
 }
 
+const RAW_POSITION_TELEMETRY_KEYS = new Set([
+  'depthSpatial', 'depthPreview', 'attitude', 'intrinsics',
+  'calibrationId', 'modelId', 'distanceDefinition',
+  'motionClock', 'receivedAtMonotonic', 'inferenceMs',
+])
+const RAW_YAW_TELEMETRY_KEYS = new Set(['imu', 'bootId', 'timestampUs'])
+const RAW_CAMERA_TELEMETRY_KEYS = new Set(['receivedAtMonotonic'])
+
+function omitKeys(value: unknown, keys: Set<string>): unknown {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) return value
+  return Object.fromEntries(Object.entries(value as Record<string, unknown>).filter(([key]) => !keys.has(key)))
+}
+
+/**
+ * Strips raw sensor grids, IMU/servo buffers, and camera calibration metadata
+ * from a locomotion measurement while retaining semantic pose, heading,
+ * validity, uncertainty, and provenance fields.
+ */
+export function compactLocomotionMeasurement(measurement: unknown): unknown {
+  if (!measurement || typeof measurement !== 'object' || Array.isArray(measurement)) return measurement
+  const record = measurement as Record<string, unknown>
+  return {
+    ...record,
+    ...(record.position !== undefined ? { position: omitKeys(record.position, RAW_POSITION_TELEMETRY_KEYS) } : {}),
+    ...(record.yaw !== undefined ? { yaw: omitKeys(record.yaw, RAW_YAW_TELEMETRY_KEYS) } : {}),
+    ...(record.camera !== undefined ? { camera: omitKeys(record.camera, RAW_CAMERA_TELEMETRY_KEYS) } : {}),
+  }
+}
+
 export function executionEventContext(events: ExecutionEvent[]) {
   let previousObservation: unknown
+  let previousMeasurement: unknown
   return events.map(event => {
     let payload = executionPayloadContext(event.payload) as Record<string, any>
     event = { ...event, payload }
-    if (event.kind === 'work_result' && payload?.result?.graphResults?.length) {
-      // Worker stdout remains in the work receipt. Actual graph returns, not
-      // terminal logging, are the specialist's semantic result.
-      const processResult = payload.result.result
-      payload = { ...payload, result: { ...payload.result, result:
-        processResult && typeof processResult === 'object'
-          ? Object.fromEntries(Object.entries(processResult).filter(([key]) => key !== 'stdout' && key !== 'stderr'))
-          : processResult } }
-      event = { ...event, payload }
+    if (event.kind === 'work_result') {
+      const processResult = payload?.result?.result
+      if (payload?.result?.graphResults?.length && processResult && typeof processResult === 'object') {
+        // Worker stdout remains in the work receipt. Actual graph returns, not
+        // terminal logging, are the specialist's semantic result.
+        payload = {
+          ...payload,
+          result: {
+            ...payload.result,
+            result: Object.fromEntries(Object.entries(processResult).filter(([key]) => key !== 'stdout' && key !== 'stderr')),
+          },
+        }
+        event = { ...event, payload }
+      }
+      const vision = payload?.result?.result?.vision
+      if (vision && typeof vision === 'object' && vision.locomotionMeasurement !== undefined) {
+        payload = {
+          ...payload,
+          result: {
+            ...payload.result,
+            result: {
+              ...payload.result.result,
+              vision: {
+                ...vision,
+                locomotionMeasurement: compactLocomotionMeasurement(vision.locomotionMeasurement),
+              },
+            },
+          },
+        }
+        event = { ...event, payload }
+      }
+    }
+    if (event.kind === 'perception_received' && payload?.locomotionMeasurement !== undefined) {
+      const current = compactLocomotionMeasurement(payload.locomotionMeasurement)
+      const projected = previousMeasurement
+        ? { ...payload, locomotionMeasurement: undefined, observationChanges: observationChanges(previousMeasurement, current) }
+        : { ...payload, locomotionMeasurement: current }
+      previousMeasurement = current
+      return { ...event, payload: projected }
     }
     const observation = payload?.environmentObservation
     if (!observation) return event
-    const current = { ...observation, state: projectSelectorState(observation.state) }
+    const projectedState = projectSelectorState(observation.state)
+    const state = projectedState && typeof projectedState === 'object'
+      && 'locomotionMeasurement' in projectedState && projectedState.locomotionMeasurement !== undefined
+      ? { ...projectedState, locomotionMeasurement: compactLocomotionMeasurement(projectedState.locomotionMeasurement) }
+      : projectedState
+    const current = { ...observation, state }
     const projected = previousObservation
       ? { ...payload, environmentObservation: undefined, observationChanges: observationChanges(previousObservation, current) }
       : { ...payload, environmentObservation: current }

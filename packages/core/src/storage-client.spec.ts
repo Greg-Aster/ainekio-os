@@ -66,3 +66,59 @@ test('storage uses the resolved profile key for encrypted files, captures and ro
   assert.throws(() => codec.decode(row), /locked/i)
   assert.throws(() => codec.encode({}), /locked/i)
 })
+
+test('profileDataCodec reuses unchanged users config without repeated disk reads and reacts to config changes', t => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'metahuman-codec-cache-'))
+  const username = 'codec-cache-test'
+  const usersDb = systemPaths.usersDb
+  const customDb = path.join(root, 'users.json')
+  systemPaths.usersDb = customDb
+  fs.writeFileSync(customDb, JSON.stringify({
+    version: 1,
+    users: [{ id: 'test-owner', username, role: 'owner' }],
+  }))
+  registerProfileStorageConfigGetter(getProfileStorageConfig)
+  t.after(() => {
+    lockProfile(root)
+    systemPaths.usersDb = usersDb
+    fs.rmSync(root, { recursive: true, force: true })
+  })
+
+  const origReadFileSync = fs.readFileSync.bind(fs)
+  let usersReads = 0
+  t.mock.method(fs, 'readFileSync', ((filePath: fs.PathOrFileDescriptor, ...rest: any[]) => {
+    if (String(filePath) === customDb) usersReads++
+    return (origReadFileSync as any)(filePath, ...rest)
+  }) as typeof fs.readFileSync)
+
+  const codec = profileDataCodec(username)
+  const first = codec.encode({ n: 1 })
+  assert.equal(usersReads, 1)
+  for (let i = 0; i < 10; i++) {
+    assert.deepEqual(codec.decode(codec.encode({ n: i })), { n: i })
+  }
+  assert.equal(usersReads, 1, 'Repeated encode/decode with unchanged users.json must not re-read users.json')
+
+  // Updating users.json to enable aes256 invalidates immediately via file stat change.
+  initializeEncryption(root, 'synthetic-test-password')
+  fs.writeFileSync(customDb, JSON.stringify({
+    version: 1,
+    users: [{
+      id: 'test-owner',
+      username,
+      role: 'owner',
+      metadata: { profileStorage: { path: root, type: 'encrypted', encryption: { type: 'aes256' } } },
+    }],
+  }))
+  assert.throws(() => codec.decode(first), /unencrypted/i)
+  const encrypted = codec.encode({ n: 2 })
+  assert.deepEqual(codec.decode(encrypted), { n: 2 })
+  assert.equal(usersReads, 3, 'Changing users.json reloads profile storage config once (plus one path resolution)')
+  for (let i = 0; i < 10; i++) {
+    assert.deepEqual(codec.decode(codec.encode({ n: i })), { n: i })
+  }
+  assert.equal(usersReads, 3, 'Repeated encrypted encode/decode must not re-read users.json')
+
+  lockProfile(root)
+  assert.throws(() => codec.encode({ n: 3 }), /locked/i)
+})

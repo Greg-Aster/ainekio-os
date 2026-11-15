@@ -27,6 +27,7 @@ let sent = 0;
 let behaviorSettingsResults: Record<string, any>[] = [];
 let wireUpdates: Record<string, any>[] = [];
 let acknowledgements: Record<string, unknown>[] = [];
+let audioResults: Record<string, any>[] = [];
 let finishFixture = () => {};
 let audioFinished = () => {};
 let observationAcknowledged = () => {};
@@ -57,11 +58,11 @@ class FakeWebSocket extends EventEmitter {
         ...(scenario === 'computer-speech' ? { observation: { environmentId: 'ainekio', adapter: 'ainekio-gateway',
           sessionId: 'robot-session', timestamp: new Date().toISOString(), capabilities: { actions: ['speak'] },
           state: { adapterConnected: true, body: { authenticated: false, speakerReady: true, speechPlaybackTarget: 'computer' } } } } : {}),
-        ...((scenario === 'perception' || scenario === 'audio' || scenario.startsWith('update')) ? { observation: { environmentId: 'ainekio', adapter: 'ainekio-gateway',
-          sessionId: 'robot-session', timestamp: new Date().toISOString(), capabilities: { actions: ['captureImage'], visual: true },
+        ...((scenario === 'perception' || scenario === 'audio' || scenario === 'audio-unauthenticated' || scenario.startsWith('update')) ? { observation: { environmentId: 'ainekio', adapter: 'ainekio-gateway',
+          sessionId: 'robot-session', timestamp: new Date().toISOString(), capabilities: { actions: ['captureImage'], visual: true, ...(scenario === 'audio-unauthenticated' ? { expressionFeedback: true } : {}) },
           state: { activeMovementUpdates: { version: 1, available: true, gatewayInstance: 'gateway-fixture', robotId: 'body-fixture', epoch: 7, maxValidityMs: 1000 } } } } : {}) }), false));
     } else if (message.type === 'audio.utterance.result') {
-      assert.equal(message.status, 'completed');
+      audioResults.push(message);
       audioFinished();
     } else if (message.type === 'environment.observation.ack') {
       observationAcknowledged();
@@ -250,6 +251,7 @@ test('speech reaches Core before its camera frame, and late frames remain separa
   try {
     run = runEnvironmentBridgeAgent(controller.signal, config);
     await completed;
+    assert.equal(audioResults.at(-1)?.status, 'completed');
     assert.equal(controller.signal.aborted, false, 'Speech must not wait for the legacy five-second image deadline');
     const transcripts = observations.filter(observation => observation.text?.length);
     assert.equal(transcripts.length, 1, 'Completion acknowledges a transcript already delivered to Core');
@@ -263,6 +265,65 @@ test('speech reaches Core before its camera frame, and late frames remain separa
     await acknowledged;
     assert.equal(observations.filter(observation => observation.text?.length).length, 1);
     assert.deepEqual(observations.at(-1)?.visual, frame.visual, 'The late frame is delivered independently before its ACK');
+  } finally {
+    controller.abort(); clearTimeout(timeout); await run;
+    globalThis.fetch = originalFetch;
+  }
+});
+
+test('spoken utterance rejected by Core when no owner is signed in fails explicitly instead of reporting completed', async () => {
+  scenario = 'audio-unauthenticated';
+  audioResults = [];
+  const controller = new AbortController();
+  const displayStages: string[] = [];
+  let displayFinished = () => {};
+  const displayDone = new Promise<void>(resolve => { displayFinished = resolve; });
+  const originalFetch = globalThis.fetch;
+  let run: Promise<void> | undefined;
+  const completed = new Promise<void>(resolve => { audioFinished = resolve; });
+  const metadata = Buffer.from(JSON.stringify({ type: 'audio.utterance', version: 1,
+    sessionId: 'robot-session', utteranceId: 'audio-unauth-fixture', robotId: 'body-fixture', epoch: 7,
+    startedAt: '2026-10-08T12:01:00.000Z', endedAt: '2026-10-08T12:01:00.020Z',
+    firstCounter: 1, lastCounter: 1, frameCount: 1, missingFrames: 0, durationMs: 20,
+    wakeTriggered: true, truncated: false, format: 'wav', sampleRateHz: 16000, channels: 1, bitsPerSample: 16 }));
+  const header = Buffer.alloc(12);
+  header.write('AIKAUD01'); header.writeUInt32LE(metadata.length, 8);
+  const wav = Buffer.alloc(684);
+  wav.write('RIFF'); wav.writeUInt32LE(676, 4); wav.write('WAVEfmt ', 8);
+  wav.writeUInt32LE(16, 16); wav.writeUInt16LE(1, 20); wav.writeUInt16LE(1, 22);
+  wav.writeUInt32LE(16000, 24); wav.writeUInt32LE(32000, 28);
+  wav.writeUInt16LE(2, 32); wav.writeUInt16LE(16, 34);
+  wav.write('data', 36); wav.writeUInt32LE(640, 40);
+  globalThis.fetch = async (url, options) => {
+    const pathname = new URL(String(url)).pathname;
+    if (pathname === '/api/environment-bridge/stream') return new Response(new ReadableStream<Uint8Array>({ start(stream) {
+      options?.signal?.addEventListener('abort', () => stream.close(), { once: true });
+      setImmediate(() => fixtureSocket.emit('message', Buffer.concat([header, metadata, wav]), true));
+    } }), { headers: { 'Content-Type': 'text/event-stream' } });
+    if (pathname === '/api/environment-bridge/observation') {
+      const payload = JSON.parse(String(options?.body));
+      if (payload.text?.length) {
+        return Response.json({ success: true, graphQueued: false, reason: 'no_active_authorized_user' });
+      }
+      return Response.json({ success: true, graphQueued: false, reason: 'state_only_observation' });
+    }
+    if (pathname === '/api/environment-bridge/telemetry') {
+      const payload = JSON.parse(String(options?.body));
+      if (payload.displayLifecycle?.stage) {
+        displayStages.push(payload.displayLifecycle.stage);
+        if (payload.displayLifecycle.stage === 'failed') displayFinished();
+      }
+    }
+    return Response.json({ success: true });
+  };
+  const timeout = setTimeout(() => { controller.abort(); audioFinished(); displayFinished(); }, 2000);
+  try {
+    run = runEnvironmentBridgeAgent(controller.signal, config);
+    await Promise.all([completed, displayDone]);
+    assert.equal(audioResults.length, 1);
+    assert.equal(audioResults[0].status, 'failed');
+    assert.equal(audioResults[0].message, 'Sign in to MetaHuman as the owner to process spoken input');
+    assert.deepEqual(displayStages, ['processing', 'failed']);
   } finally {
     controller.abort(); clearTimeout(timeout); await run;
     globalThis.fetch = originalFetch;
@@ -702,6 +763,119 @@ test('Robot control requests use the authenticated Core API and preserve correla
   } finally {
     controller.abort(); clearTimeout(timeout); globalThis.fetch = originalFetch;
     keys.forEach((key, index) => { if (previous[index] === undefined) delete process.env[key]; else process.env[key] = previous[index]; });
+  }
+});
+
+test('behavior.settings resolves promptly while slow inbound observations and audio transcriptions are blocked in flight', async () => {
+  scenario = 'audio';
+  behaviorSettingsResults = [];
+  finishFixture = () => {};
+  const originalFetch = globalThis.fetch;
+  const controller = new AbortController();
+  const deliveredObservations: string[] = [];
+  let releaseObservation!: () => void;
+  let observationReleased = false;
+  const heldObservation = new Promise<void>(resolve => {
+    releaseObservation = () => {
+      observationReleased = true;
+      resolve();
+    };
+  });
+  let observationInFlight = false;
+  let audioTranscriptInFlight = false;
+
+  const metadata = Buffer.from(JSON.stringify({
+    type: 'audio.utterance', version: 1,
+    sessionId: 'robot-session', utteranceId: 'slow-audio-fixture', robotId: 'body-fixture', epoch: 7,
+    startedAt: '2026-10-08T12:00:00.000Z', endedAt: '2026-10-08T12:00:00.020Z',
+    firstCounter: 1, lastCounter: 1, frameCount: 1, missingFrames: 0, durationMs: 20,
+    wakeTriggered: true, truncated: false, format: 'wav', sampleRateHz: 16000, channels: 1, bitsPerSample: 16,
+  }));
+  const header = Buffer.alloc(12);
+  header.write('AIKAUD01'); header.writeUInt32LE(metadata.length, 8);
+  const wav = Buffer.alloc(684);
+  wav.write('RIFF'); wav.writeUInt32LE(676, 4); wav.write('WAVEfmt ', 8);
+  wav.writeUInt32LE(16, 16); wav.writeUInt16LE(1, 20); wav.writeUInt16LE(1, 22);
+  wav.writeUInt32LE(16000, 24); wav.writeUInt32LE(32000, 28);
+  wav.writeUInt16LE(2, 32); wav.writeUInt16LE(16, 34);
+  wav.write('data', 36); wav.writeUInt32LE(640, 40);
+
+  const until = async (condition: () => boolean) => {
+    const deadline = Date.now() + 2000;
+    while (!condition()) {
+      assert.ok(Date.now() < deadline, 'behavior.settings waited behind blocked inbound observation or audio');
+      await new Promise(resolve => setTimeout(resolve, 5));
+    }
+  };
+
+  globalThis.fetch = async (url, options) => {
+    const pathname = new URL(String(url)).pathname;
+    if (pathname === '/api/environment-bridge/stream') {
+      return new Response(new ReadableStream<Uint8Array>({
+        start(stream) {
+          options?.signal?.addEventListener('abort', () => stream.close(), { once: true });
+          setImmediate(() => {
+            fixtureSocket.emit('message', JSON.stringify({
+              type: 'environment.observation',
+              observation: {
+                id: 'slow-obs-1', environmentId: 'ainekio', adapter: 'ainekio-gateway',
+                sessionId: 'robot-session', timestamp: new Date().toISOString(), capabilities: { actions: [] },
+              },
+            }), false);
+            fixtureSocket.emit('message', JSON.stringify({
+              type: 'environment.observation',
+              observation: {
+                id: 'slow-obs-2', environmentId: 'ainekio', adapter: 'ainekio-gateway',
+                sessionId: 'robot-session', timestamp: new Date().toISOString(), capabilities: { actions: [] },
+              },
+            }), false);
+            fixtureSocket.emit('message', Buffer.concat([header, metadata, wav]), true);
+          });
+        },
+      }), { headers: { 'Content-Type': 'text/event-stream' } });
+    }
+    if (pathname === '/api/environment-bridge/observation') {
+      const body = JSON.parse(String(options?.body));
+      if (body.id === 'slow-obs-1') {
+        observationInFlight = true;
+        await heldObservation;
+      }
+      if (body.text?.length) {
+        audioTranscriptInFlight = true;
+        await heldObservation;
+      }
+      if (body.id) deliveredObservations.push(body.id);
+      return Response.json({ success: true });
+    }
+    if (pathname === '/api/environment-bridge/behavior-settings') {
+      const body = JSON.parse(String(options?.body));
+      return Response.json({ enabled: body.enabled ?? false, username: 'fixture-owner' });
+    }
+    return Response.json({ success: true });
+  };
+
+  const running = runEnvironmentBridgeAgent(controller.signal, config);
+  try {
+    await until(() => observationInFlight && audioTranscriptInFlight);
+    fixtureSocket.emit('message', JSON.stringify({
+      type: 'behavior.settings',
+      requestId: 'urgent-settings-1',
+      enabled: false,
+    }), false);
+
+    await until(() => behaviorSettingsResults.length === 1);
+    assert.equal(observationReleased, false, 'behavior.settings must complete while slow observation and audio remain blocked');
+    assert.equal(deliveredObservations.length, 0, 'Queued inbound observations are still blocked when behavior.settings completes');
+    assert.equal(behaviorSettingsResults[0].requestId, 'urgent-settings-1');
+    assert.equal(behaviorSettingsResults[0].enabled, false);
+
+    releaseObservation();
+    await until(() => deliveredObservations.includes('slow-obs-2'));
+  } finally {
+    releaseObservation();
+    controller.abort();
+    await running;
+    globalThis.fetch = originalFetch;
   }
 });
 

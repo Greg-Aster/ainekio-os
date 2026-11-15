@@ -367,3 +367,5 @@ export async function writeBufferEntry(
   }
   return result !== null;
 }
+
+export const appendToBuffer = writeBufferEntry;

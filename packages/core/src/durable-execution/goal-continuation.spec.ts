@@ -269,7 +269,7 @@ async function probe(label: string, entry: string, action: boolean, response: bo
   const needsTask = action || Boolean(taskDecision)
   replies.push(intent(needsTask, response))
   if (needsTask) replies.push(choice)
-  if (response) replies.push('A fixture response.')
+  if (response || (entry === 'environment' && taskDecision?.outcome === 'request_user')) replies.push('A fixture response.')
   if (!action && !response && taskDecision && !['wait', 'request_user'].includes(taskDecision.outcome)) replies.push(goalReview('wait'))
   let state = await run({ graph: graph(entry === 'autonomy' ? 'environment' : entry), context: ctx })
   assert.notEqual(state.status, 'failed', state.error?.stack)
@@ -493,14 +493,15 @@ test('finite Body Event receives a pending human turn without draining its conti
         ...presetChoice().taskDecision, objective: humanText, outcome: 'request_user',
         completionCriteria: 'The participant concludes the conversation.',
         requiredCompletionBasis: 'user_input', continuationPolicy: 'none',
-      } })
-    const state = await run({ graph: graph('body-event-trigger'), context: ctx })
+      } }, 'A fixture response.')
+    let state = await run({ graph: graph('body-event-trigger'), context: ctx })
+    state = await settleSpeech(state, 'body-event-trigger', ctx)
     assert.equal(state.status, 'waiting', state.error?.stack)
     const saved = snapshot(state.executionId!)
     assert.equal(saved.record.waitingReason, 'user_or_autonomy')
     assert.equal(saved.task?.objective, humanText)
     assert.equal(saved.task?.decision.objectiveComplete, false)
-    assert.equal(calls.length - before, 5, 'The admitted human turn receives its own Intent and Task decisions')
+    assert.equal(calls.length - before, 6, 'The admitted human turn receives its own Intent, Task, and request_user Persona decisions')
     assert.equal(saved.events.filter(event => event.kind === 'user_steering').length, 1)
     assert.deepEqual((saved.events.find(event => event.kind === 'user_steering')!.payload as any).userMessageEntry, userMessageEntry)
   })

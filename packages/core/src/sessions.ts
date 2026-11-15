@@ -22,8 +22,8 @@ const LOG_PREFIX = '[sessions]';
  * ╔═══════════════════════════════════════════════════════════════════════════╗
  * ║  NO ANONYMOUS SESSIONS - ALL USERS MUST AUTHENTICATE                      ║
  * ╠═══════════════════════════════════════════════════════════════════════════╣
- * ║  owner    - Full access, 24-hour sessions                                 ║
- * ║  standard - Read/write access, 24-hour sessions                           ║
+ * ║  owner    - Full access, persistent until explicit logout                 ║
+ * ║  standard - Read/write access, persistent until explicit logout           ║
  * ║  guest    - Read-only access, 1-hour sessions (passwordless auth gate)    ║
  * ╚═══════════════════════════════════════════════════════════════════════════╝
  */
@@ -32,7 +32,7 @@ export interface Session {
   userId: string; // User ID
   role: 'owner' | 'standard' | 'guest';
   createdAt: string;
-  expiresAt: string;
+  expiresAt?: string;
   lastActivity: string;
   metadata?: {
     userAgent?: string;
@@ -91,8 +91,9 @@ export function selectAuthenticatedSession(sessionId: string | null): void {
       return;
     }
     const session = store.sessions.find(candidate => candidate.id === sessionId);
-    if (!session || !(Date.parse(session.expiresAt) > Date.now()) || isSessionTooOld(session)
-      || !getUser(session.userId)) throw new Error('An active authenticated session is required');
+    if (!session || !isSessionActive(session) || !getUser(session.userId)) {
+      throw new Error('An active authenticated session is required');
+    }
     if (store.runtime.sessionId === sessionId) return;
     store.runtime.sessionId = sessionId;
     store.runtime.selectionRevision = (store.runtime.selectionRevision ?? 0) + 1;
@@ -110,8 +111,7 @@ export async function restoreAuthenticatedSession(sessionId: string, userId: str
     || runtime.sessionId || (runtime.selectionRevision ?? 0) !== 0) return;
   const candidate = snapshot.sessions.find(session => session.id === sessionId);
   if (!candidate || candidate.userId !== userId || candidate.role === 'guest'
-    || !(Date.parse(candidate.expiresAt) > Date.now()) || isSessionTooOld(candidate)
-    || !getUser(userId)) return;
+    || !isSessionActive(candidate) || !getUser(userId)) return;
 
   const { getEncryptionStatus } = await import('./encryption-manager.js');
   const storage = await getEncryptionStatus(userId);
@@ -125,8 +125,7 @@ export async function restoreAuthenticatedSession(sessionId: string, userId: str
       || (store.runtime.selectionRevision ?? 0) !== 0) return;
     const session = store.sessions.find(entry => entry.id === sessionId);
     if (!session || session.userId !== userId || session.role === 'guest'
-      || !(Date.parse(session.expiresAt) > Date.now()) || isSessionTooOld(session)
-      || !getUser(userId)) return;
+      || !isSessionActive(session) || !getUser(userId)) return;
     store.runtime.sessionId = sessionId;
     store.runtime.selectionRevision = 1;
   });
@@ -156,17 +155,10 @@ export function clearAuthenticatedUser(userId: string): void {
   });
 }
 
-// Session expiration times
-const OWNER_SESSION_DURATION = 24 * 60 * 60 * 1000; // 24 hours
 const GUEST_SESSION_DURATION = 60 * 60 * 1000; // 1 hour
 
-// Maximum session age (absolute limit regardless of activity)
-// After this time from creation, session MUST be re-authenticated
-const MAX_SESSION_AGE = 7 * 24 * 60 * 60 * 1000; // 7 days
-
 // Request bursts should not rewrite the complete session store for every API
-// call. Expiry is absolute, so coalescing this informational timestamp does not
-// extend session lifetime or weaken validation.
+// call; coalesce informational activity timestamps.
 export const SESSION_ACTIVITY_WRITE_INTERVAL_MS = 60 * 1000;
 
 export function shouldPersistSessionActivity(
@@ -179,12 +171,13 @@ export function shouldPersistSessionActivity(
 }
 
 /**
- * Check if session has exceeded maximum age
+ * Authenticated owner/standard sessions persist until explicit logout or deletion;
+ * only temporary passwordless guest sessions expire by time.
  */
-function isSessionTooOld(session: Session): boolean {
-  const createdAt = new Date(session.createdAt);
-  const now = new Date();
-  return !Number.isFinite(createdAt.getTime()) || (now.getTime() - createdAt.getTime()) > MAX_SESSION_AGE;
+function isSessionActive(session: Session, nowMs = Date.now()): boolean {
+  if (session.role !== 'guest') return true;
+  const expiresAtMs = session.expiresAt ? Date.parse(session.expiresAt) : NaN;
+  return Number.isFinite(expiresAtMs) && expiresAtMs > nowMs;
 }
 
 let sessionDatabase: Database.Database | undefined;
@@ -236,7 +229,7 @@ function mutateSessions<T>(mutate: (store: SessionStore) => T): T {
     const selectedBefore = store.runtime?.sessionId;
     const result = mutate(store);
     if (store.runtime?.sessionId && !store.sessions.some(session => session.id === store.runtime!.sessionId
-      && Date.parse(session.expiresAt) > Date.now() && !isSessionTooOld(session))) {
+      && isSessionActive(session))) {
       delete store.runtime.sessionId;
       store.runtime.selectionRevision = (store.runtime.selectionRevision ?? 0) + 1;
     }
@@ -275,27 +268,17 @@ export function createSession(
     throw new Error('createSession: role must be owner, standard, or guest');
   }
   
-  // Determine expiration based on role
-  let duration: number;
-  switch (role) {
-    case 'owner':
-    case 'standard':
-      duration = OWNER_SESSION_DURATION; // Standard users get same 24h session as owners
-      break;
-    case 'guest':
-      duration = GUEST_SESSION_DURATION;
-      break;
-  }
-
   const now = new Date();
-  const expiresAt = new Date(now.getTime() + duration);
+  const expiresAt = role === 'guest'
+    ? new Date(now.getTime() + GUEST_SESSION_DURATION).toISOString()
+    : undefined;
 
   const session: Session = {
     id: generateUUID(),
     userId,
     role,
     createdAt: now.toISOString(),
-    expiresAt: expiresAt.toISOString(),
+    ...(expiresAt ? { expiresAt } : {}),
     lastActivity: now.toISOString(),
     metadata,
   };
@@ -310,7 +293,7 @@ export function createSession(
       sessionId: session.id,
       userId,
       role,
-      expiresAt: session.expiresAt,
+      ...(session.expiresAt ? { expiresAt: session.expiresAt } : {}),
     },
     actor: userId,
   });
@@ -335,17 +318,15 @@ export function getSession(sessionId: string): Session | null {
 }
 
 /**
- * Validate session (check expiration and max age, update activity)
+ * Validate session and coalesce activity persistence
  */
 export function validateSession(sessionId: string): Session | null {
-
-  
   // Input validation
   if (!sessionId || typeof sessionId !== 'string') {
     console.error(`${LOG_PREFIX} Invalid sessionId provided for validation: ${sessionId}`);
     return null;
   }
-  
+
   return mutateSessions(store => {
     const session = store.sessions.find((s) => s.id === sessionId);
 
@@ -353,12 +334,8 @@ export function validateSession(sessionId: string): Session | null {
       return null;
     }
 
-    // Check if expired
     const now = new Date();
-    const expiresAt = new Date(session.expiresAt);
-
-    if (!Number.isFinite(expiresAt.getTime()) || now >= expiresAt) {
-      // Session expired, delete it
+    if (!isSessionActive(session, now.getTime())) {
       store.sessions = store.sessions.filter((s) => s.id !== sessionId);
 
       audit({
@@ -372,23 +349,6 @@ export function validateSession(sessionId: string): Session | null {
       return null;
     }
 
-    // Check if session exceeded maximum age (must re-authenticate after 7 days)
-    if (isSessionTooOld(session)) {
-      store.sessions = store.sessions.filter((s) => s.id !== sessionId);
-
-      audit({
-        level: 'info',
-        category: 'security',
-        event: 'session_max_age_exceeded',
-        details: { sessionId, userId: session.userId, createdAt: session.createdAt },
-        actor: session.userId,
-      });
-
-      return null;
-    }
-
-    // Coalesce activity persistence. Expiry and max-age removals above remain
-    // immediate; this timestamp is used only for activity display/selection.
     if (shouldPersistSessionActivity(session, now.getTime())) {
       session.lastActivity = now.toISOString();
     }
@@ -470,93 +430,6 @@ export function deleteUserSessions(userId: string): number {
 }
 
 /**
- * List all active sessions
- */
-export function listActiveSessions(): Session[] {
-  const store = loadSessions();
-  const now = new Date();
-
-  // Filter out expired sessions
-  return store.sessions.filter((s) => {
-    const expiresAt = new Date(s.expiresAt);
-    return now <= expiresAt;
-  });
-}
-
-/**
- * List sessions for a specific user
- */
-export function listUserSessions(userId: string): Session[] {
-  return listActiveSessions().filter((s) => s.userId === userId);
-}
-
-/**
- * Cleanup expired sessions
- *
- * Should be run periodically (e.g., every hour)
- */
-export function cleanupExpiredSessions(): number {
-  return mutateSessions(store => {
-    const now = new Date();
-    const before = store.sessions.length;
-
-    store.sessions = store.sessions.filter((s) => {
-      const expiresAt = new Date(s.expiresAt);
-      return now <= expiresAt;
-    });
-
-    const removed = before - store.sessions.length;
-
-    if (removed > 0) {
-
-      audit({
-        level: 'info',
-        category: 'system',
-        event: 'sessions_cleaned_up',
-        details: { removed, remaining: store.sessions.length },
-        actor: 'system',
-      });
-    }
-
-    return removed;
-  });
-}
-
-/**
- * Get session statistics
- */
-export function getSessionStats(): {
-  total: number;
-  byRole: Record<string, number>;
-  oldest: string | null;
-  newest: string | null;
-} {
-  const sessions = listActiveSessions();
-
-  const byRole: Record<string, number> = {
-    owner: 0,
-    standard: 0,
-    guest: 0,
-  };
-
-  sessions.forEach((s) => {
-    byRole[s.role] = (byRole[s.role] || 0) + 1;
-  });
-
-  const sorted = sessions.sort(
-    (a, b) =>
-      new Date(a.createdAt).getTime() - new Date(b.createdAt).getTime()
-  );
-
-  return {
-    total: sessions.length,
-    byRole,
-    oldest: sorted.length > 0 ? sorted[0].createdAt : null,
-    newest: sorted.length > 0 ? sorted[sorted.length - 1].createdAt : null,
-  };
-}
-
-/**
  * Update session (save changes to metadata, etc.)
  */
 export function updateSession(session: Session): void {
@@ -570,103 +443,6 @@ export function updateSession(session: Session): void {
 }
 
 /**
- * Extend session expiration (refresh)
- */
-export function refreshSession(sessionId: string): Session | null {
-
-  
-  // Input validation
-  if (!sessionId || typeof sessionId !== 'string') {
-    console.error(`${LOG_PREFIX} Invalid sessionId provided for refresh: ${sessionId}`);
-    return null;
-  }
-  
-  return mutateSessions(store => {
-    const session = store.sessions.find((s) => s.id === sessionId);
-
-    if (!session) {
-      return null;
-    }
-
-    // Check if already expired
-    const now = new Date();
-    const expiresAt = new Date(session.expiresAt);
-
-    if (!Number.isFinite(expiresAt.getTime()) || now >= expiresAt) {
-      return null;
-    }
-
-    // Check if session exceeded maximum age (don't refresh, force re-auth)
-    if (isSessionTooOld(session)) {
-      return null;
-    }
-
-    // Extend expiration based on role
-    let duration: number;
-    switch (session.role) {
-      case 'owner':
-      case 'standard':
-        duration = OWNER_SESSION_DURATION; // Standard users get same 24h session as owners
-        break;
-      case 'guest':
-        duration = GUEST_SESSION_DURATION;
-        break;
-    }
-
-    session.expiresAt = new Date(now.getTime() + duration).toISOString();
-    session.lastActivity = now.toISOString();
-
-    audit({
-      level: 'info',
-      category: 'security',
-      event: 'session_refreshed',
-      details: { sessionId, userId: session.userId, expiresAt: session.expiresAt },
-      actor: session.userId,
-    });
-
-    return session;
-  });
-}
-
-/**
- * Get all logged-in users (active, non-anonymous sessions)
- *
- * Returns users who have active sessions that haven't expired.
- * Excludes anonymous sessions and sessions exceeding max age.
- *
- * @returns Array of logged-in users with userId, username, and role
- */
-export function getLoggedInUsers(): Array<{ userId: string; username: string; role: string }> {
-  const store = loadSessions();
-  const now = new Date();
-  const activeUsers = new Map<string, { userId: string; username: string; role: string }>();
-
-  // Find all active, non-expired sessions (no anonymous sessions exist)
-  for (const session of store.sessions) {
-    const expiresAt = new Date(session.expiresAt);
-
-    // Check both expiration and max age
-    if (expiresAt > now && !isSessionTooOld(session)) {
-      // Use userId as key to deduplicate (same user can have multiple sessions)
-      if (!activeUsers.has(session.userId)) {
-        // Get username from user database
-        const user = getUser(session.userId);
-
-        if (user) {
-          activeUsers.set(session.userId, {
-            userId: session.userId,
-            username: user.username,
-            role: session.role
-          });
-        }
-      }
-    }
-  }
-
-  return Array.from(activeUsers.values());
-}
-
-/**
  * Resolve the profile authenticated and storage-ready in this server lifetime.
  * Stored cookies and activity history alone do not activate background recovery.
  */
@@ -674,7 +450,7 @@ export function getCurrentlyActiveUser(): { userId: string; username: string; ro
   const store = loadSessions();
   const runtime = liveRuntime(store);
   const session = runtime?.sessionId && store.sessions.find(candidate => candidate.id === runtime.sessionId);
-  if (!session || !(Date.parse(session.expiresAt) > Date.now()) || isSessionTooOld(session)) return null;
+  if (!session || !isSessionActive(session)) return null;
   const user = getUser(session.userId);
   return user ? { userId: user.id, username: user.username, role: user.role } : null;
 }

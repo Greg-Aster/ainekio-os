@@ -1756,3 +1756,125 @@ for (const selectedLateral of [undefined, 35]) test(`locomotion Finish clears ${
   assert.equal(state.stepIndex, 1)
   recordEnvironmentObservation(observation)
 })
+
+test('short-horizon multi-step distance navigation retains warm depthDemand across steps and releases only on objectiveComplete', async () => {
+  const shortStep = { ...motion, locomotionGoal: { kind: 'distance' as const, direction: 'forward' as const, metres: 0.45, tolerance: 0.08 } }
+  const multiStep: EnvironmentTaskProgram = {
+    steps: [
+      { kind: 'action', action: shortStep },
+      { kind: 'action', action: { type: 'captureImage' } },
+      { kind: 'action', action: shortStep },
+    ],
+  }
+  const f = fixture(multiStep)
+  ;(f.context as any).activeTaskDecision = { ...decision, objectiveComplete: true }
+  const nowMs = Date.now()
+  const posAt = (xMetres: number, counter: number) => ({
+    position: {
+      available: true, source: 'moge2-imu-landmark-odometry', robotId: 'p4', referenceId: 'room-ref',
+      frameCounter: counter, frameId: `f-${counter}`, observedAt: new Date(nowMs).toISOString(),
+      xMetres, yMetres: 0, headingDegrees: 0, uncertaintyMetres: null,
+    } as any,
+  })
+  recordEnvironmentObservation({ ...observation, state: { ...observation.state, body: { authenticated: true, cameraReady: true, robotId: 'p4' }, locomotionMeasurement: posAt(0, 1) } })
+  setEnvironmentBridgeEnabled(true)
+  const disconnect = subscribeEnvironmentActions(observation.sessionId, () => {})
+  try {
+    let state = await f.advance({ stepIndex: 0, updateRevision: 0, evidence: [] })
+    assert.equal(f.dispatches.filter(d => d.payload.input?.vision?.operation === 'depthDemand' && d.payload.input.vision.enabled === true).length, 1)
+    state = (await wait.execute({ state: { ...state, pendingEvents: [{ kind: 'work_result', payload: {
+      effectId: state.depthDemand!.effectId, result: { state: 'completed', result: { vision: { enabled: true, locomotionMeasurement: posAt(0, 1) } } },
+    } }] } }, f.context, {})).state
+    state = await f.advance(state)
+    const firstMoveId = state.motionId!
+    assert.ok(firstMoveId)
+    state = (await wait.execute({ state: { ...state, pendingEvents: [{ kind: 'action_accepted', actionId: firstMoveId, payload: {} }] } }, f.context, {})).state
+
+    // Reach 0.45m endpoint on Step 0
+    recordEnvironmentObservation({ ...observation, state: { ...observation.state, body: { authenticated: true, cameraReady: true, robotId: 'p4' }, locomotionMeasurement: posAt(0.45, 2) } })
+    state = await f.advance(state)
+    if (state.pendingControls) state = await f.receive(state, state.pendingControls.commandId, 'completed')
+    state = await f.receive(state, firstMoveId, 'completed')
+    assert.equal(state.stepIndex, 1)
+    assert.equal(state.depthDemand?.ready, true, 'settleAction must keep depthDemand warm for subsequent steps')
+    assert.equal(f.dispatches.some(d => d.payload.input?.vision?.operation === 'depthDemand' && d.payload.input.vision.enabled === false), false)
+
+    // Step 1: captureImage
+    state = await f.advance(state)
+    const snapId = state.motionId!
+    state = (await wait.execute({ state: { ...state, pendingEvents: [
+      { kind: 'observation_received', actionId: snapId, payload: { environmentObservation: { ...observation, visual: { id: 'snap-1', timestamp: new Date(Date.now() + 5).toISOString(), mimeType: 'image/jpeg', dataUrl: 'data:image/jpeg;base64,/9j/2Q==', metadata: { actionId: snapId } } } } },
+    ] } }, f.context, {})).state
+    state = await f.receive(state, snapId, 'completed')
+    assert.equal(state.stepIndex, 2)
+    assert.equal(state.depthDemand?.ready, true)
+
+    // Step 2: second 0.45m step from x=0.45 -> x=0.90 WITHOUT re-acquiring depthDemand
+    state = await f.advance(state)
+    assert.equal(f.dispatches.filter(d => d.payload.input?.vision?.operation === 'depthDemand' && d.payload.input.vision.enabled === true).length, 1, 'Second step must reuse warm depthDemand')
+    const secondMoveId = state.motionId!
+    assert.ok(secondMoveId && secondMoveId !== firstMoveId)
+    recordEnvironmentObservation({ ...observation, state: { ...observation.state, body: { authenticated: true, cameraReady: true, robotId: 'p4' }, locomotionMeasurement: posAt(0.90, 3) } })
+    state = (await wait.execute({ state: { ...state, pendingEvents: [{ kind: 'action_accepted', actionId: secondMoveId, payload: {} }] } }, f.context, {})).state
+    state = await f.advance(state)
+    if (state.pendingControls) state = await f.receive(state, state.pendingControls.commandId, 'completed')
+    state = await f.receive(state, secondMoveId, 'completed')
+    state = await f.advance(state)
+    assert.equal(state.done, true)
+    assert.equal(state.objectiveComplete, true)
+    assert.equal(state.depthDemand, undefined)
+    assert.equal(f.dispatches.filter(d => d.payload.input?.vision?.operation === 'depthDemand' && d.payload.input.vision.enabled === false).length, 1)
+  } finally {
+    disconnect()
+    setEnvironmentBridgeEnabled(false)
+    recordEnvironmentObservation(observation)
+  }
+})
+
+test('stalled Active Task distance step sends speed=0 Finish, records recovery evidence, and retains warm depthDemand for turn recovery', async t => {
+  const baseMs = Date.now()
+  t.mock.timers.enable({ apis: ['Date'], now: baseMs })
+  const shortStep = { ...motion, locomotionGoal: { kind: 'distance' as const, direction: 'forward' as const, metres: 0.45, tolerance: 0.08 } }
+  const f = fixture({ steps: [{ kind: 'action', action: shortStep }] })
+  const mkObs = (fc: number, dtMs: number, xMetres: number) => ({
+    ...observation,
+    timestamp: new Date(baseMs + dtMs).toISOString(),
+    state: {
+      ...observation.state,
+      body: { authenticated: true, robotId: 'p4' },
+      locomotionMeasurement: {
+        position: {
+          available: true, source: 'moge2-imu-landmark-odometry', robotId: 'p4', referenceId: 'room-ref',
+          frameCounter: fc, frameId: `f-${fc}`, observedAt: new Date(baseMs + dtMs).toISOString(),
+          expiresAt: new Date(baseMs + dtMs + 5000).toISOString(),
+          xMetres, yMetres: 0, headingDegrees: 0, uncertaintyMetres: null,
+        } as any,
+      },
+    },
+  })
+  recordEnvironmentObservation(mkObs(10, 0, 0))
+  try {
+    let state = await f.advance({ ...f.state, action: shortStep, locomotion: undefined })
+    if (state.pendingControls) state = await f.receive(state, state.pendingControls.commandId, 'completed')
+
+    for (const [fc, dt] of [[11, 900], [12, 1800], [13, 2700], [14, 3600]] as const) {
+      t.mock.timers.setTime(baseMs + dt)
+      recordEnvironmentObservation(mkObs(fc, dt, 0.01))
+      state = await f.advance(state)
+      if (state.pendingControls && !state.finishRequestedAt) {
+        state = await f.receive(state, state.pendingControls.commandId, 'completed')
+      }
+    }
+    assert.ok(state.finishRequestedAt, 'Stalled forward step must request speed=0 Finish')
+    assert.equal(JSON.parse(state.pendingControls!.controls).speed, 0)
+    assert.match(state.locomotion?.incomplete ?? '', /Locomotion progress stalled/)
+    state = await f.receive(state, state.pendingControls!.commandId, 'completed')
+    state = await f.receive(state, 'motion', 'completed')
+    assert.equal(state.done, true)
+    assert.equal(state.objectiveComplete, false)
+    assert.equal(state.depthDemand?.ready, true, 'Incomplete stalled step retains warm depthDemand for turn recovery')
+  } finally {
+    t.mock.timers.reset()
+    recordEnvironmentObservation(observation)
+  }
+})

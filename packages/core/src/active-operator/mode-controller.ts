@@ -60,10 +60,14 @@ export class ModeController extends EventEmitter {
       system.setAutonomyMode(mode);
       const config = loadConfig();
       if (mode === 'reactive') {
-        for (const task of getQueueManager().getAllTasks()) {
+        const manager = getQueueManager();
+        for (const task of manager.getAllTasks()) {
           const robotAutonomyWork = isRobotAutonomyWorkItem(task)
+            || task.metadata?.producer === 'robot-autonomy-controller'
+            || task.metadata?.requestedBy === 'robot-autonomy-controller'
+            || task.input?.triggeredBy === 'robot-autonomy-controller';
           if (task.source === 'autonomy' && robotAutonomyWork) {
-            getQueueManager().cancel(task.id, 'Robot Operator disabled by Active Operator reactive mode')
+            manager.cancel(task.id, 'Robot Operator disabled by Active Operator reactive mode');
           }
         }
       }
@@ -92,15 +96,26 @@ export class ModeController extends EventEmitter {
     await this.setMode('reactive', username);
   }
 
-  async emergencyStop(username = 'system'): Promise<void> {
+  async emergencyStop(username = 'system', options?: { detach?: boolean }): Promise<void> {
     const manager = getQueueManager();
     for (const task of manager.getAllTasks()) {
       if (task.source === 'autonomy') manager.cancel(task.id, 'Active Operator emergency stop');
     }
     const { enqueueConnectedEnvironmentStops } = await import('../environment-interface/store.js');
-    enqueueConnectedEnvironmentStops(username);
+    enqueueConnectedEnvironmentStops(
+      username,
+      options?.detach === true ? 'Active Operator servo PWM release' : 'Active Operator emergency stop',
+      Date.now(),
+      options,
+    );
     await this.setMode('reactive', username);
-    audit({ category: 'system', level: 'warn', event: 'active_operator_emergency_stop', actor: username });
+    audit({
+      category: 'system',
+      level: 'warn',
+      event: 'active_operator_emergency_stop',
+      actor: username,
+      ...(options?.detach === true ? { details: { detach: true } } : {}),
+    });
   }
 
   getStatus() {

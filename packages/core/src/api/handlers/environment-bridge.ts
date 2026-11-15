@@ -44,10 +44,12 @@ import {
   resolveBodyEventGraph,
 } from '../../environment-interface/index.js';
 import { submitRobotBridgeRecord } from '../../buffer-admission.js';
+import { audit } from '../../audit.js';
 import { getCurrentlyActiveUser } from '../../sessions.js';
 import { openExecutionStore } from '../../durable-execution/storage.js';
 import { relayExecutionOutbox } from '../../durable-execution/coordinator-outbox.js';
 import { beginTTSUserTurn, getTTSQueueState } from '../../tts/delivery-queue.js';
+import { getQueueManager } from '../../queue/index.js';
 import { getQueueSystem } from '../../queue/queue-system.js';
 
 const STREAM_HEARTBEAT_MS = 15_000;
@@ -108,8 +110,90 @@ function isObservation(value: Record<string, unknown>): boolean {
 export function isBodyTriggerObservation(observation: EnvironmentObservation): boolean {
   const event = observation.state?.bodyEvent as Record<string, unknown> | undefined;
   return observation.metadata?.perceptionEvent === 'body_event'
-    && event?.name === 'body_event' && typeof event.event_id === 'string'
+    && event?.name === 'body_event' && typeof event.event_id === 'string' && event.event_id.trim().length > 0
     && !environmentObservationStartsUserTurn(observation);
+}
+
+interface BodyTriggerEventIdentity {
+  eventId: string;
+  robotId: string;
+}
+
+function extractBodyEventIdentityFromParts(
+  bodyEvent: unknown,
+  bodyState: unknown,
+): BodyTriggerEventIdentity | null {
+  if (!bodyEvent || typeof bodyEvent !== 'object') return null;
+  const record = bodyEvent as Record<string, unknown>;
+  if (record.name !== 'body_event' || typeof record.event_id !== 'string') return null;
+  const eventId = record.event_id.trim();
+  if (!eventId) return null;
+  const eventRobotId = typeof record.robot_id === 'string' ? record.robot_id.trim() : '';
+  const bodyRecord = bodyState && typeof bodyState === 'object' ? bodyState as Record<string, unknown> : null;
+  const bodyRobotId = bodyRecord && typeof bodyRecord.robotId === 'string' ? bodyRecord.robotId.trim() : '';
+  return { eventId, robotId: eventRobotId || bodyRobotId };
+}
+
+function bodyTriggerEventIdentity(observation: EnvironmentObservation): BodyTriggerEventIdentity | null {
+  if (!isBodyTriggerObservation(observation)) return null;
+  return extractBodyEventIdentityFromParts(observation.state?.bodyEvent, observation.state?.body);
+}
+
+function sameBodyTriggerIdentity(a: BodyTriggerEventIdentity, b: BodyTriggerEventIdentity): boolean {
+  if (a.eventId !== b.eventId) return false;
+  if (a.robotId && b.robotId && a.robotId !== b.robotId) return false;
+  return true;
+}
+
+function findQueuedBodyEventWorkId(
+  username: string,
+  sessionId: string,
+  identity: BodyTriggerEventIdentity,
+): string | null {
+  for (const task of getQueueManager().getAllTasks()) {
+    if (task.username !== username || task.type !== 'environment_observation') continue;
+    const input = task.input && typeof task.input === 'object' ? task.input as Record<string, unknown> : null;
+    const existingObs = input?.observation && typeof input.observation === 'object'
+      ? input.observation as EnvironmentObservation
+      : null;
+    if (!existingObs || existingObs.sessionId !== sessionId) continue;
+    const existingIdentity = bodyTriggerEventIdentity(existingObs);
+    if (existingIdentity && sameBodyTriggerIdentity(identity, existingIdentity)) {
+      return task.id;
+    }
+  }
+  return null;
+}
+
+function findAdmittedBodyEventExecutionId(
+  username: string,
+  sessionId: string,
+  identity: BodyTriggerEventIdentity,
+): string | null {
+  const store = openExecutionStore(username);
+  try {
+    return store.withDocumentReadScope(() => {
+      for (const record of store.iterate(username, true)) {
+        const admittedSessionId = store.entryOrNull(record.executionId, ['context', 'sessionId'])
+          ?? store.entryOrNull(record.executionId, ['context', 'environmentObservation', 'sessionId']);
+        if (admittedSessionId !== sessionId) continue;
+        const metadata = store.entryOrNull(record.executionId, ['context', 'environmentObservation', 'metadata']);
+        if (!metadata || typeof metadata !== 'object' || (metadata as Record<string, unknown>).perceptionEvent !== 'body_event') {
+          continue;
+        }
+        const existingIdentity = extractBodyEventIdentityFromParts(
+          store.entryOrNull(record.executionId, ['context', 'environmentObservation', 'state', 'bodyEvent']),
+          store.entryOrNull(record.executionId, ['context', 'environmentObservation', 'state', 'body']),
+        );
+        if (existingIdentity && sameBodyTriggerIdentity(identity, existingIdentity)) {
+          return record.executionId;
+        }
+      }
+      return null;
+    });
+  } finally {
+    store.close();
+  }
 }
 
 export function environmentObservationNeedsCognition(
@@ -267,21 +351,63 @@ export async function handleEnvironmentBridgeObservation(
       && /^[a-zA-Z0-9_-]{1,80}$/.test(graph)
       && !stateOnly;
     if (!graphQueued) {
+      const reason = !username
+        ? 'no_active_authorized_user'
+        : stateOnly
+          ? 'state_only_observation'
+          : 'invalid_graph';
       const bridge = recordEnvironmentObservation(observation);
       if (observation.state?.locomotionMeasurement !== undefined) {
         await recordEnvironmentLocomotionMeasurement(observation.sessionId,
           observation.state.locomotionMeasurement, undefined, username);
       }
+      if (!stateOnly) {
+        audit({
+          level: 'warn',
+          category: 'action',
+          event: 'environment_observation_not_admitted',
+          details: {
+            sessionId: observation.sessionId,
+            environmentId: observation.environmentId,
+            graph,
+            reason,
+          },
+          actor: username || 'system',
+        });
+      }
       return successResponse({
         success: true,
         bridge,
         graphQueued: false,
-        reason: !username
-          ? 'no_active_authorized_user'
-          : stateOnly
-            ? 'state_only_observation'
-            : 'invalid_graph',
+        reason,
       });
+    }
+    const bodyIdentity = bodyTriggerEventIdentity(observation);
+    if (bodyIdentity) {
+      const existingWorkId = findQueuedBodyEventWorkId(username, observation.sessionId, bodyIdentity);
+      if (existingWorkId) {
+        const bridge = recordEnvironmentObservation(observation);
+        if (observation.state?.locomotionMeasurement !== undefined) {
+          await recordEnvironmentLocomotionMeasurement(observation.sessionId,
+            observation.state.locomotionMeasurement, undefined, username);
+        }
+        return successResponse({ success: true, bridge, graphQueued: true, workId: existingWorkId });
+      }
+      const existingExecutionId = findAdmittedBodyEventExecutionId(username, observation.sessionId, bodyIdentity);
+      if (existingExecutionId) {
+        const bridge = recordEnvironmentObservation(observation);
+        if (observation.state?.locomotionMeasurement !== undefined) {
+          await recordEnvironmentLocomotionMeasurement(observation.sessionId,
+            observation.state.locomotionMeasurement, undefined, username);
+        }
+        return successResponse({
+          success: true,
+          bridge,
+          graphQueued: false,
+          executionId: existingExecutionId,
+          reason: 'duplicate_body_event',
+        });
+      }
     }
     const hasUserInput = environmentObservationStartsUserTurn(observation);
     const ttsGeneration = hasUserInput

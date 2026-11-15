@@ -182,7 +182,7 @@ test('planning model tool access is scoped to read-only without changing other n
 
 test('gemini invocation builds stream-json agy flags, low effort, and parses NDJSON events', async () => {
   const invocation = buildBigBrotherCLIInvocation('gemini', 'Hello Gemini', {
-    model: 'gemini-3.8-flash-low',
+    model: 'gemini-4-hydrogen-low',
     reasoningEffort: 'none',
   })
   try {
@@ -191,7 +191,7 @@ test('gemini invocation builds stream-json agy flags, low effort, and parses NDJ
     assert.ok(invocation.args.includes('--output-format'))
     assert.ok(invocation.args.includes('--disable-slash-commands'))
     assert.deepEqual(invocation.args.slice(invocation.args.indexOf('--model'), invocation.args.indexOf('--model') + 2), [
-      '--model', 'gemini-3.8-flash-low',
+      '--model', 'gemini-4-hydrogen-low',
     ])
     assert.deepEqual(invocation.args.slice(invocation.args.indexOf('--effort'), invocation.args.indexOf('--effort') + 2), [
       '--effort', 'low',
@@ -206,7 +206,7 @@ test('gemini invocation builds stream-json agy flags, low effort, and parses NDJ
     const init = parseBigBrotherTerminalEvent('gemini', JSON.stringify({
       event: 'init',
       conversation_id: 'conv-123',
-      init: { model: 'gemini-3.8-flash-low' },
+      init: { model: 'gemini-4-hydrogen-low' },
     }))
     assert.equal(init.threadId, 'conv-123')
     assert.match(init.displayLines[0], /\[Gemini\] Session conv-123/)
@@ -236,7 +236,7 @@ test('gpt-6.1-sol coerces none reasoning effort to low while gemini materializes
     modelRequest: { messages: [{ role: 'user', content: 'Hi' }] },
   })
   const geminiWithImage = buildBigBrotherCLIInvocation('gemini', 'What do you see?', {
-    model: 'gemini-3.8-flash-low',
+    model: 'gemini-4-hydrogen-low',
     images: [{ mimeType: 'image/jpeg', base64: '/9j/2Q==' }],
   })
   try {
