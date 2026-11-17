@@ -44,8 +44,8 @@ after(() => { eventBus.disconnect(); mock.restoreAll(); fs.rmSync(root, { recurs
 test('wake-up reuses existing nodes and functional colors without a startup node type', async () => {
   const { graph } = await loadGraphForMode('robot-wake-up', username)
   const schemas = getAllSchemas()
-  assert.equal(graph.nodes.length, 10)
-  for (const type of ['robot_status', 'conversation_buffer', 'tts', 'stream_writer']) {
+  assert.equal(graph.nodes.length, 11)
+  for (const type of ['robot_status', 'conversation_buffer', 'tts', 'environment_send_text', 'stream_writer']) {
     assert.equal(graph.nodes.filter(node => node.data.nodeType === type).length, 1)
   }
   assert.ok(!graph.nodes.some(node => node.data.nodeType === 'memory_capture'))
@@ -55,7 +55,7 @@ test('wake-up reuses existing nodes and functional colors without a startup node
   for (const id of ['environment_bridge_input', 'environment_image_input', 'environment_result_wait', 'persona_loader', 'robot_status', 'environment_conversation_result']) assert.equal(colors[id], '#60a5fa')
   assert.equal(colors.environment_context_builder, '#22d3ee')
   assert.equal(colors.environment_conversation, '#ef4444')
-  for (const id of ['environment_send_action', 'environment_conversation_delivery']) assert.equal(colors[id], '#4ade80')
+  for (const id of ['environment_send_action', 'environment_send_text', 'environment_conversation_delivery']) assert.equal(colors[id], '#4ade80')
   assert.ok(!graph.nodes.some(node => ['workflow_call', 'orchestrator_llm', 'execution_context', 'environment_send_action', 'environment_result_wait'].includes(node.data.nodeType)))
 })
 

@@ -1316,7 +1316,7 @@ export class ExecutionStore {
       // Coordinator intents: a pending receipt may conceal enqueue-before-ack,
       // and accepted/unknown effects still need their external outcome.
       this.db.prepare(`UPDATE execution_outbox SET status = 'cancelled' WHERE execution_id = ?
-        AND status = 'pending' AND kind IN ('buffer_entry', 'conversation_feed', 'robot_status', 'local_tts', 'execution_event')`)
+        AND status = 'pending' AND kind IN ('buffer_entry', 'conversation_feed', 'environment_text_stream', 'robot_status', 'local_tts', 'execution_event')`)
         .run(executionId)
     }
     const rows = this.db.prepare(`SELECT effect_id FROM execution_outbox WHERE execution_id = ?
@@ -1449,7 +1449,7 @@ export class ExecutionStore {
   completeProjection(effectId: string): void {
     this.db.transaction(() => {
       const effect = this.dispatch(effectId)
-      if (!['robot_status', 'local_tts', 'buffer_entry', 'conversation_feed'].includes(effect.kind)) throw new ExecutionConflictError('Not a local output delivery')
+      if (!['robot_status', 'local_tts', 'buffer_entry', 'conversation_feed', 'environment_text_stream'].includes(effect.kind)) throw new ExecutionConflictError('Not a local output delivery')
       this.db.prepare("UPDATE execution_outbox SET status = 'completed' WHERE effect_id = ? AND status != 'cancelled'").run(effectId)
       this.settleEffectDelivery(effect.executionId)
     }).immediate()

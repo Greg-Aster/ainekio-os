@@ -9,6 +9,7 @@ import { queueTTS, getTTSQueueState, TTS_DELIVERY_MAX_AGE_MS } from '../tts/deli
 import { writeBufferEntry, type CanonicalBufferMode, type ConversationMessage } from '../conversation-buffer.js'
 import { getAuthenticatedRuntimeId, getCurrentlyActiveUser } from '../sessions.js'
 import { eventBus } from '../infrastructure/event-bus/client.js'
+import { queueEnvironmentBridgeText } from '../environment-interface/store.js'
 
 /** The same admission contract is used by relay and by an early accepting worker. */
 export function executionWorkInput(store: ExecutionStore, effect: DispatchRecord): TaskInput {
@@ -119,6 +120,23 @@ export async function relayExecutionOutbox(
       }, { requestId: executionId })
       // This is admission to the existing live event transport, not a browser
       // acknowledgement. Conversation history and memory are deliberately untouched.
+      store.completeProjection(effect.effectId)
+      continue
+    }
+    if (effect.kind === 'environment_text_stream') {
+      const request = effect.payload as {
+        sessionId?: string
+        text: string
+        role?: 'assistant' | 'user' | 'system'
+        source?: string
+        cognitiveMode?: string
+        timestamp?: string
+      }
+      queueEnvironmentBridgeText({
+        ...request,
+        id: effect.effectId,
+        executionId,
+      })
       store.completeProjection(effect.effectId)
       continue
     }

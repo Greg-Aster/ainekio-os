@@ -380,7 +380,7 @@ export function getNodeFunctionalCategory(node: { id: string; category: NodeCate
     environment_bridge_input: 'input', environment_image_input: 'input', environment_result_wait: 'input',
     robot_status: 'input', environment_conversation_result: 'input',
     persona_loader: 'input', body_event_context: 'context', environment_context_builder: 'context',
-    environment_send_action: 'output', environment_conversation_delivery: 'output',
+    environment_send_action: 'output', environment_send_text: 'output', environment_conversation_delivery: 'output',
     environment_conversation: 'model', workflow_call: 'control_flow',
   };
   return node.execution?.modelOutput ? 'model' : functionalCategories[node.id] ?? node.category;

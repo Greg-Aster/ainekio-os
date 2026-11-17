@@ -235,6 +235,7 @@ export async function consumeActionStream(
   cancelAction?: (cancellation: Record<string, unknown>) => void,
   readVisual?: (request: Record<string, unknown>) => void,
   ready?: () => void,
+  sendTextStream?: (message: Record<string, unknown>) => void,
 ): Promise<void> {
   const url = new URL('/api/environment-bridge/stream', config.coreUrl);
   url.searchParams.set('sessionId', sessionId);
@@ -279,6 +280,14 @@ export async function consumeActionStream(
         if (!readVisual) throw new Error('Bridge stream requires its camera read transport');
         const data = JSON.parse(rawData) as { reads: Record<string, unknown>[] };
         for (const request of data.reads) readVisual(request);
+        continue;
+      }
+      if (event === 'messages') {
+        const data = JSON.parse(rawData) as { messages?: unknown[] };
+        for (const item of data.messages ?? []) {
+          if (!item || typeof item !== 'object') continue;
+          sendTextStream?.(item as Record<string, unknown>);
+        }
         continue;
       }
       if (event !== 'actions') continue;
@@ -609,6 +618,7 @@ async function connectOnce(config: BridgeConfig, signal: AbortSignal, ready?: ()
       metadata: Pick<AudioUtteranceMetadata, 'utteranceId'>,
       status: 'completed' | 'ignored' | 'failed',
       message: string,
+      transcript?: string,
     ) => {
       sendMessage({
         type: 'audio.utterance.result',
@@ -616,6 +626,7 @@ async function connectOnce(config: BridgeConfig, signal: AbortSignal, ready?: ()
         utteranceId: metadata.utteranceId,
         status,
         message: message.slice(0, 256),
+        ...(typeof transcript === 'string' && transcript.trim() ? { transcript: transcript.trim() } : {}),
         timestamp: new Date().toISOString(),
       });
     };
@@ -644,8 +655,8 @@ async function connectOnce(config: BridgeConfig, signal: AbortSignal, ready?: ()
       // Display admission and transcription proceed in parallel. Only this
       // utterance's terminal indication follows its own start admission.
       const displayStarted = displayUpdate('processing');
-      const finishAudio = (status: 'completed' | 'ignored' | 'failed', message: string) => {
-        sendAudioResult(utterance.metadata, status, message);
+      const finishAudio = (status: 'completed' | 'ignored' | 'failed', message: string, transcript?: string) => {
+        sendAudioResult(utterance.metadata, status, message, transcript);
         if (status !== 'completed') void displayStarted.then(() => displayUpdate(status));
       };
       diagnostics.robotId = utterance.metadata.robotId;
@@ -715,7 +726,7 @@ async function connectOnce(config: BridgeConfig, signal: AbortSignal, ready?: ()
             status: 'completed',
             message: diagnostics.transcript,
           });
-          finishAudio('completed', 'Utterance transcribed');
+          finishAudio('completed', 'Utterance transcribed', diagnostics.transcript);
           console.log(
             `${LOG_PREFIX} transcribed utterance=${utterance.metadata.utteranceId}`
             + ` durationMs=${utterance.metadata.durationMs}`,
@@ -843,9 +854,16 @@ async function connectOnce(config: BridgeConfig, signal: AbortSignal, ready?: ()
               );
             }
             if (!actionStream) {
-              actionStream = consumeActionStream(config, sessionId, sendAction, localAbort.signal,
+              actionStream = consumeActionStream(
+                config,
+                sessionId,
+                sendAction,
+                localAbort.signal,
                 cancellation => sendMessage({ type: 'environment.cancel', version: PROTOCOL_VERSION, ...cancellation }),
-                request => sendMessage(request), ready)
+                request => sendMessage(request),
+                ready,
+                item => sendMessage({ type: 'environment.text_stream', version: PROTOCOL_VERSION, sessionId, message: item }),
+              )
                 .catch((error) => {
                   if (!localAbort.signal.aborted) reject(error);
                 });

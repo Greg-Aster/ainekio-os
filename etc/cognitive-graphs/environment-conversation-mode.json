@@ -54,6 +54,23 @@
       }
     },
     {
+      "id": "body-control-text-out",
+      "type": "outputNode",
+      "position": {
+        "x": 6140,
+        "y": 480
+      },
+      "width": 240,
+      "data": {
+        "label": "Body Control Text Out",
+        "nodeType": "environment_send_text",
+        "properties": {
+          "role": "assistant",
+          "source": "environment-mode"
+        }
+      }
+    },
+    {
       "id": "tts-out",
       "type": "outputNode",
       "position": {
@@ -110,6 +127,32 @@
       "type": "default",
       "data": {
         "type": "array"
+      }
+    },
+    {
+      "id": "e-conversation-body-control-text",
+      "source": "memory-capture",
+      "target": "body-control-text-out",
+      "sourceHandle": "passthrough",
+      "targetHandle": "text",
+      "type": "default",
+      "data": {
+        "type": "string",
+        "when": {
+          "output": "passthrough",
+          "notEquals": ""
+        }
+      }
+    },
+    {
+      "id": "e-response-metadata-body-control-text",
+      "source": "response",
+      "sourceHandle": "metadata",
+      "target": "body-control-text-out",
+      "targetHandle": "metadata",
+      "type": "default",
+      "data": {
+        "type": "object"
       }
     },
     {

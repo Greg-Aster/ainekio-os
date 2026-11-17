@@ -44,7 +44,7 @@ const { getProfilePaths } = await import('../path-builder.js')
 const { withUserContext } = await import('../context.js')
 const { createDefaultPersonaFacetConfig } = await import('../persona-facets.js')
 const { validateEnvironmentSelectorOutput } = await import('./task-selection.js')
-const { identifyActiveTaskImage } = await import('./active-task.js')
+const { identifyActiveTaskImage, normalizeLocomotionGoal, evaluateLocomotionGoal, trackLocomotionProgress } = await import('./active-task.js')
 const manager = getQueueManager()
 const engine = new ExecutionEngine({}, manager)
 const username = 'active-task-fixture'
@@ -1173,4 +1173,72 @@ test('acquisition evidence re-enters the existing task workflow and selects its 
       assert.equal(turns.length, 1, 'The original user turn must not be admitted a second time')
     } finally { f.unsubscribe() }
   })
+})
+
+test('trackLocomotionProgress preserves autonomous 4.5s unsnag window and flags stalls at 5.5s', () => {
+  const goal = normalizeLocomotionGoal({ kind: 'distance', direction: 'forward', metres: 0.5, tolerance: 0.08 })
+  const baseMs = Date.parse('2026-11-16T18:00:00.000Z')
+  const makeStep = (frameCounter: number, offsetMs: number, xMetres: number, stalledJoints = 0) => {
+    const observedAt = new Date(baseMs + offsetMs).toISOString()
+    const expiresAt = new Date(baseMs + offsetMs + 4_000).toISOString()
+    const measurement = {
+      position: {
+        available: true,
+        source: 'depth-odometry',
+        robotId: 'p4',
+        referenceId: 'odom-1',
+        xMetres,
+        yMetres: 0,
+        headingDegrees: 0,
+        frameCounter,
+        frameId: `f-${frameCounter}`,
+        observedAt,
+        expiresAt,
+      },
+      yaw: {
+        available: true,
+        source: 'body-imu',
+        robotId: 'p4',
+        referenceId: 'yaw-1',
+        degrees: 0,
+        uncertaintyDegrees: null,
+        observedAt,
+        expiresAt,
+        imu: { joint_feedback: { stalled_joints: stalledJoints } },
+      },
+    } as any
+    const evalRes = evaluateLocomotionGoal(goal, measurement, startMeasurement, baseMs + offsetMs)
+    return { measurement, evalRes, nowMs: baseMs + offsetMs }
+  }
+  const startMeasurement = {
+    position: {
+      available: true,
+      source: 'depth-odometry',
+      robotId: 'p4',
+      referenceId: 'odom-1',
+      xMetres: 0,
+      yMetres: 0,
+      headingDegrees: 0,
+      frameCounter: 0,
+      frameId: 'f-0',
+      observedAt: new Date(baseMs).toISOString(),
+      expiresAt: new Date(baseMs + 4_000).toISOString(),
+    },
+  } as any
+
+  const s0 = makeStep(1, 0, 0.05)
+  let tracked = trackLocomotionProgress(goal, s0.evalRes.progress, s0.measurement, undefined, s0.nowMs)
+  assert.equal(tracked.stalledReason, undefined)
+
+  // During 1.8s high-step + 1.8s reverse-unsnag + re-attempt (~4.5s), active-task must not cancel early at 3.0s-5.0s
+  for (const [fc, dt] of [[2, 1200], [3, 2400], [4, 3600], [5, 4800]] as const) {
+    const s = makeStep(fc, dt, 0.055, 4)
+    tracked = trackLocomotionProgress(goal, s.evalRes.progress, s.measurement, tracked.tracker, s.nowMs)
+    assert.equal(tracked.stalledReason, undefined, `must not cancel early at ${dt}ms`)
+  }
+
+  // At >= 5500ms without metric progress, stall is reported cleanly
+  const sFinal = makeStep(6, 5600, 0.055, 4)
+  tracked = trackLocomotionProgress(goal, sFinal.evalRes.progress, sFinal.measurement, tracked.tracker, sFinal.nowMs)
+  assert.match(tracked.stalledReason!, /Locomotion progress stalled \(5 consecutive measurements over 5\.6s without progress.*stalledJointsMask=4/)
 })

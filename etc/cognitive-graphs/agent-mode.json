@@ -323,6 +323,24 @@
       "height": 80
     },
     {
+      "id": "body-control-text-out",
+      "type": "outputNode",
+      "position": {
+        "x": 2000,
+        "y": 500
+      },
+      "data": {
+        "label": "Body Control Text Out",
+        "nodeType": "environment_send_text",
+        "properties": {
+          "role": "assistant",
+          "source": "agent-mode"
+        }
+      },
+      "width": 200,
+      "height": 80
+    },
+    {
       "id": "input-conversation-buffer",
       "type": "outputNode",
       "position": {
@@ -622,6 +640,17 @@
       "sourceHandle": "response",
       "target": "12",
       "targetHandle": "passthrough",
+      "type": "default",
+      "data": {
+        "type": "string"
+      }
+    },
+    {
+      "id": "e-12-passthrough-body-control-text",
+      "source": "12",
+      "sourceHandle": "passthrough",
+      "target": "body-control-text-out",
+      "targetHandle": "text",
       "type": "default",
       "data": {
         "type": "string"

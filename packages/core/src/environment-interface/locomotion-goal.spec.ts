@@ -127,7 +127,7 @@ test('MoGe depthSpatial corridor range permits open 0.45m step and halts forward
   assert.match(blockedEval.reason!, /Forward path blocked at 0\.22m.*suggestedTurn=left/)
 })
 
-test('trackLocomotionProgress ignores duplicate frames, resets on metric progress, and flags stalled progress after 4 fresh samples over 3s', () => {
+test('trackLocomotionProgress ignores duplicate frames, resets on metric progress, and flags stalled progress after 4 fresh samples over 5.5s', () => {
   const goal = normalizeLocomotionGoal({ kind: 'distance', direction: 'forward', metres: 0.45, tolerance: 0.08 })
   const baseMs = Date.parse('2026-11-12T19:00:00.000Z')
   const stepSample = (frameCounter: number, offsetMs: number, yMetres: number, stalledJoints = 0) => {
@@ -152,10 +152,13 @@ test('trackLocomotionProgress ignores duplicate frames, resets on metric progres
   tracked = trackLocomotionProgress(goal, s1.evalRes.progress, s1.measurement, tracked.tracker, s1.nowMs)
   assert.equal(tracked.tracker?.stalledSamples, 0)
 
-  // Four consecutive fresh frames over >3s stuck at y=3.06m with stalled_joints=4
-  for (const [fc, dt] of [[3, 1800], [4, 2600], [5, 3400], [6, 4200]] as const) {
+  // Stays open through the 3.2s autonomous-unsnag window (< 5.5s), then flags stalled progress once >= 5.5s
+  for (const [fc, dt] of [[3, 2400], [4, 3800], [5, 5200]] as const) {
     const stuck = stepSample(fc, dt, 3.065, 4)
     tracked = trackLocomotionProgress(goal, stuck.evalRes.progress, stuck.measurement, tracked.tracker, stuck.nowMs)
+    assert.equal(tracked.stalledReason, undefined)
   }
+  const finalStuck = stepSample(6, 6600, 3.065, 4)
+  tracked = trackLocomotionProgress(goal, finalStuck.evalRes.progress, finalStuck.measurement, tracked.tracker, finalStuck.nowMs)
   assert.match(tracked.stalledReason!, /Locomotion progress stalled \(4 consecutive measurements.*stalledJointsMask=4/)
 })

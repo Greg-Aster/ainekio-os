@@ -84,6 +84,22 @@
       }
     },
     {
+      "id": "body-control-text-out",
+      "type": "outputNode",
+      "position": {
+        "x": 990,
+        "y": 340
+      },
+      "data": {
+        "nodeType": "environment_send_text",
+        "label": "Body Control Text Out",
+        "properties": {
+          "role": "assistant",
+          "source": "big-brother"
+        }
+      }
+    },
+    {
       "id": "output",
       "type": "outputNode",
       "position": {
@@ -128,6 +144,14 @@
       "sourceHandle": "response",
       "target": "speech",
       "targetHandle": "conversation",
+      "type": "default"
+    },
+    {
+      "id": "buffer-body-control-text",
+      "source": "buffer",
+      "sourceHandle": "response",
+      "target": "body-control-text-out",
+      "targetHandle": "text",
       "type": "default"
     },
     {

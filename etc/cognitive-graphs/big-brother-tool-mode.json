@@ -106,6 +106,23 @@
       }
     },
     {
+      "id": "body-control-text-out",
+      "type": "outputNode",
+      "position": {
+        "x": 1980,
+        "y": 360
+      },
+      "width": 220,
+      "data": {
+        "label": "Body Control Text Out",
+        "nodeType": "environment_send_text",
+        "properties": {
+          "role": "assistant",
+          "source": "big-brother"
+        }
+      }
+    },
+    {
       "id": "12",
       "type": "outputNode",
       "position": {
@@ -138,6 +155,21 @@
       "target": "tts-out",
       "sourceHandle": "passthrough",
       "targetHandle": "conversation",
+      "type": "default",
+      "data": {
+        "type": "string",
+        "when": {
+          "output": "passthrough",
+          "notEquals": ""
+        }
+      }
+    },
+    {
+      "id": "e-conversation-body-control-text",
+      "source": "memory-capture",
+      "target": "body-control-text-out",
+      "sourceHandle": "passthrough",
+      "targetHandle": "text",
       "type": "default",
       "data": {
         "type": "string",

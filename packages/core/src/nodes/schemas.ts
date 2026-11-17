@@ -1612,17 +1612,22 @@ export const nodeSchemas: NodeSchema[] = [
   }),
   defineSchema({
     id: 'environment_send_text',
-    name: 'Environment Send Text',
+    name: 'Body Control Text Out',
     category: 'environment',
     inputs: [
-      { name: 'text', type: 'string', description: 'Text to send into the environment' },
-      { name: 'sessionId', type: 'string', optional: true, description: 'Target environment session' },
+      { name: 'text', type: 'any', description: 'Workflow response or message text to stream to Body Control' },
+      { name: 'entry', type: 'message', optional: true, description: 'Single conversation entry with role and timestamp' },
+      { name: 'entries', type: 'array', optional: true, description: 'Conversation entries to forward in order' },
+      { name: 'metadata', type: 'object', optional: true, description: 'Optional provenance metadata for the message' },
+      { name: 'sessionId', type: 'string', optional: true, description: 'Target Environment Bridge session ID' },
     ],
     outputs: [
-      { name: 'action', type: 'object', description: 'Queued sendText action' },
-      { name: 'queued', type: 'boolean', description: 'Whether text was queued' },
+      { name: 'sent', type: 'boolean', description: 'Whether text was queued for Environment Bridge delivery' },
+      { name: 'text', type: 'string', description: 'Forwarded text content' },
+      { name: 'targetSessionId', type: 'string', description: 'Connected Environment Bridge session ID, when available' },
+      { name: 'status', type: 'string', description: 'Delivery status: queued, empty, bridge_disabled, or no_session' },
     ],
-    description: 'Queues chat/speech text for the active environment adapter.',
+    description: 'Streams workflow text outputs through the Environment Bridge to the Body Control Ainekio Cockpit.',
   }),
 
   // CONTEXT NODES

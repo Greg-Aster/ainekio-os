@@ -10,6 +10,7 @@ import { openExecutionStore } from '../durable-execution/storage.js';
 import { ExecutionStore, contentHash } from '../durable-execution/store.js';
 import { ExecutionConflictError, type NewExecutionEvent } from '../durable-execution/types.js';
 import { executionWorkInput, relayExecutionOutbox, reconcileTerminatedExecutionWork } from '../durable-execution/coordinator-outbox.js';
+import { eventBus } from '../infrastructure/event-bus/client.js';
 import type {
   EnvironmentAction,
   EnvironmentActionQueueOptions,
@@ -17,6 +18,7 @@ import type {
   EnvironmentActionType,
   EnvironmentBridgeState,
   EnvironmentBridgeSummary,
+  EnvironmentBridgeTextStreamItem,
   EnvironmentCommandWork,
   EnvironmentFeedback,
   EnvironmentObservation,
@@ -43,6 +45,8 @@ const STALE_AFTER_MS = 45_000;
 const FUTURE_CLOCK_SKEW_MS = 5_000;
 const MAX_FEEDBACK = 200;
 const MAX_PROCESSED_TEXT_EVENTS = 1_000;
+const MAX_QUEUED_TEXT_STREAM_ITEMS = 64;
+const MAX_DELIVERED_TEXT_STREAM_IDS = 128;
 const DEFAULT_MAX_ACTION_DURATION_MS = 1_500;
 const ACTION_TYPES = new Set<EnvironmentActionType>([
   'move', 'look', 'jump', 'interact', 'stop', 'captureImage', 'requestMotion', 'faceExpression', 'inspect', 'visualApproach', 'speak', 'sendText',
@@ -849,6 +853,86 @@ export function getEnvironmentFeedback(options: { actionId?: string; limit?: num
     (options.actionId ? state.feedback.filter(item => item.actionId === options.actionId) : state.feedback)
       .slice(-limit),
   );
+}
+
+export function queueEnvironmentBridgeText(input: {
+  id?: string;
+  sessionId?: string;
+  text: string;
+  role?: 'assistant' | 'user' | 'system';
+  source?: string;
+  cognitiveMode?: string;
+  executionId?: string;
+  timestamp?: string;
+}): { queued: boolean; reason?: string; item?: EnvironmentBridgeTextStreamItem; targetSessionId: string } {
+  const trimmed = typeof input.text === 'string' ? input.text.trim() : '';
+  if (!trimmed) {
+    return { queued: false, reason: 'empty', targetSessionId: '' };
+  }
+  const state = readEnvironmentBridgeState();
+  if (!state.enabled) {
+    return { queued: false, reason: 'bridge_disabled', targetSessionId: '' };
+  }
+  const now = Date.now();
+  const requestedSession = typeof input.sessionId === 'string' ? input.sessionId.trim() : '';
+  const connectedSessions = Object.values(state.sessions)
+    .filter(session => sessionStatus(session, now) === 'connected')
+    .sort((a, b) => sessionLastSeenMs(b) - sessionLastSeenMs(a));
+  const targetSession = requestedSession
+    ? connectedSessions.find(session => session.sessionId === requestedSession)
+    : connectedSessions[0];
+  if (!targetSession) {
+    return { queued: false, reason: 'no_session', targetSessionId: requestedSession };
+  }
+  const targetSessionId = targetSession.sessionId;
+  const sessionRecord = state.sessions[targetSessionId]!;
+  const id = typeof input.id === 'string' && input.id.trim() ? input.id.trim() : `bridge-text-${randomUUID()}`;
+  const deliveredIds = new Set(sessionRecord.deliveredTextStreamIds ?? []);
+  const pending = [...(sessionRecord.pendingTextStream ?? [])];
+  if (deliveredIds.has(id) || pending.some(existing => existing.id === id)) {
+    return {
+      queued: true,
+      item: pending.find(existing => existing.id === id),
+      targetSessionId,
+    };
+  }
+  const role: 'assistant' | 'user' | 'system' = input.role === 'user' || input.role === 'system' ? input.role : 'assistant';
+  const item: EnvironmentBridgeTextStreamItem = {
+    id,
+    sessionId: targetSessionId,
+    text: trimmed,
+    role,
+    ...(typeof input.source === 'string' && input.source.trim() ? { source: input.source.trim() } : {}),
+    ...(typeof input.cognitiveMode === 'string' && input.cognitiveMode.trim() ? { cognitiveMode: input.cognitiveMode.trim() } : {}),
+    ...(typeof input.executionId === 'string' && input.executionId.trim() ? { executionId: input.executionId.trim() } : {}),
+    timestamp: typeof input.timestamp === 'string' && input.timestamp.trim() ? input.timestamp.trim() : nowIso(),
+  };
+  pending.push(item);
+  sessionRecord.pendingTextStream = pending.slice(-MAX_QUEUED_TEXT_STREAM_ITEMS);
+  writeEnvironmentBridgeState(state);
+  notifyEnvironmentActionSubscribers(targetSessionId);
+  try {
+    eventBus.emit('graph', 'environment.text_stream', { sessionId: targetSessionId, messageId: item.id });
+  } catch {}
+  return { queued: true, item, targetSessionId };
+}
+
+export function drainEnvironmentBridgeText(sessionId: string, limit = 32): EnvironmentBridgeTextStreamItem[] {
+  if (!sessionId) return [];
+  const state = peekEnvironmentBridgeState();
+  if (!state.enabled) return [];
+  const cachedSession = state.sessions[sessionId];
+  if (!cachedSession?.pendingTextStream?.length) return [];
+  const writable = readEnvironmentBridgeState();
+  const session = writable.sessions[sessionId];
+  if (!session?.pendingTextStream?.length) return [];
+  const batchCount = Math.max(1, Math.floor(limit));
+  const drained = session.pendingTextStream.slice(0, batchCount);
+  session.pendingTextStream = session.pendingTextStream.slice(batchCount);
+  const delivered = [...(session.deliveredTextStreamIds ?? []), ...drained.map(item => item.id)];
+  session.deliveredTextStreamIds = delivered.slice(-MAX_DELIVERED_TEXT_STREAM_IDS);
+  writeEnvironmentBridgeState(writable);
+  return drained;
 }
 
 function normalizeAction(

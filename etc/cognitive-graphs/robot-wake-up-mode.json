@@ -169,6 +169,24 @@
       }
     },
     {
+      "id": "body-control-text",
+      "type": "outputNode",
+      "position": {
+        "x": 3000,
+        "y": 360
+      },
+      "width": 340,
+      "data": {
+        "label": "Body Control Text Out",
+        "nodeType": "environment_send_text",
+        "properties": {
+          "role": "assistant",
+          "source": "robot-wake-up"
+        },
+        "comment": "Streams the wake-up greeting to the Body Control Ainekio Cockpit."
+      }
+    },
+    {
       "id": "feed",
       "type": "default",
       "position": {
@@ -341,6 +359,17 @@
       "sourceHandle": "response",
       "target": "tts",
       "targetHandle": "conversation",
+      "type": "default",
+      "data": {
+        "kind": "data"
+      }
+    },
+    {
+      "id": "buffer-response-body-control-text",
+      "source": "buffer",
+      "sourceHandle": "response",
+      "target": "body-control-text",
+      "targetHandle": "text",
       "type": "default",
       "data": {
         "kind": "data"

@@ -148,7 +148,7 @@ export function trackLocomotionProgress(
     startedAtMs: previous.startedAtMs,
   }
   const elapsedMs = Math.max(nowMs, sampleMs) - previous.startedAtMs
-  if (stalledSamples >= 4 && elapsedMs >= 3_000) {
+  if (stalledSamples >= 4 && elapsedMs >= 5_500) {
     const stalledJoints = (measurement.yaw as Record<string, any> | undefined)?.imu?.joint_feedback?.stalled_joints
     const jointNote = typeof stalledJoints === 'number' && stalledJoints !== 0 ? `; stalledJointsMask=${stalledJoints}` : ''
     const clearance = progress.clearance as DepthSpatialClearance | undefined

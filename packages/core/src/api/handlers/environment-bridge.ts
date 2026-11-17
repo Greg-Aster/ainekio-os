@@ -12,6 +12,7 @@ import {
 import {
   dispatchEnvironmentActions,
   dispatchEnvironmentVisualReads,
+  drainEnvironmentBridgeText,
   recordEnvironmentVisualReadResult,
   releaseEnvironmentStreamWork,
   pendingEnvironmentCancellations,
@@ -51,6 +52,7 @@ import { relayExecutionOutbox } from '../../durable-execution/coordinator-outbox
 import { beginTTSUserTurn, getTTSQueueState } from '../../tts/delivery-queue.js';
 import { getQueueManager } from '../../queue/index.js';
 import { getQueueSystem } from '../../queue/queue-system.js';
+import { eventBus } from '../../infrastructure/event-bus/client.js';
 
 const STREAM_HEARTBEAT_MS = 15_000;
 const BRIDGE_TOKEN_ENV = 'MH_ENVIRONMENT_BRIDGE_TOKEN';
@@ -709,6 +711,7 @@ async function* streamEnvironmentActions(
   let wake: (() => void) | undefined;
   let closed = false;
   let unsubscribe: (() => void) | undefined;
+  let unsubscribeBus: (() => void) | undefined;
 
   const push = (event: string, data: Record<string, unknown>) => {
     if (closed) {
@@ -726,6 +729,8 @@ async function* streamEnvironmentActions(
     wake = undefined;
     unsubscribe?.();
     unsubscribe = undefined;
+    unsubscribeBus?.();
+    unsubscribeBus = undefined;
     releaseEnvironmentStreamWork(sessionId, readOwner);
   };
 
@@ -742,6 +747,10 @@ async function* streamEnvironmentActions(
       return;
     }
 
+    const messages = drainEnvironmentBridgeText(sessionId);
+    if (messages.length > 0) {
+      push('messages', { messages });
+    }
     const reads = dispatchEnvironmentVisualReads(sessionId, readOwner);
     if (reads.length) push('visual-reads', { reads });
     const actions = dispatchEnvironmentActions(sessionId, limit, readOwner);
@@ -751,6 +760,11 @@ async function* streamEnvironmentActions(
   };
 
   unsubscribe = subscribeEnvironmentActions(sessionId, dispatch);
+  unsubscribeBus = eventBus.subscribe((ev) => {
+    if (ev.event === 'environment.text_stream' && (!ev.data?.sessionId || ev.data.sessionId === sessionId)) {
+      dispatch();
+    }
+  });
   try {
     signal?.addEventListener('abort', close, { once: true });
     if (signal?.aborted) { close(); return; }

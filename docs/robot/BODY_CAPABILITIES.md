@@ -42,8 +42,8 @@ traction or real-world distance.
 
 ### Motion and posture
 
-Body Control's Freestyle owner handles Ainekio OS `requestMotion.description`,
-startup/wake and stall correction requests. The manual **Poses and emotes →
+Body Control's Freestyle owner handles Ainekio OS `requestMotion.description`
+and startup/wake requests. The manual **Poses and emotes →
 Default motion system** selector affects explicit manual controls; it does not
 redirect these semantic requests to the legacy Motion Library. Freestyle uses
 the configured generator (shared `llama.cpp` LoRA or Big Brother over SSH) and
@@ -60,20 +60,30 @@ library's Stand examples use the same operation directly.
 Inactivity rest/release is body-local: the existing configurable timer defaults
 to three minutes, plays the built-in Lay Down and releases outputs after it
 finishes. The custom-movement curriculum does not teach servo-output release.
-A stall goes to Freestyle for correction. If that correction stalls, the new
-evidence returns to the same model owner for another assessment while outputs
-remain powered. There is no second-stall release or code-selected retry limit.
-Explicit Stop and Release retain their existing contracts. A stall notification
-does not itself trigger a help reply. Installed firmware, gateway and adapter
-versions determine which recorded contract is active.
+Explicit Stop and Release retain their existing contracts. Installed firmware,
+gateway and adapter versions determine which recorded contract is active.
 
-The Freestyle contract executes a complete generated program once;
-normal completion does not request another model assessment. Event recovery
-retains the original interrupted request and its unfinished phases across
-successive corrections. Training labels adapt the approach and then complete
-that requested movement, preserving its holds and terminal pose; standing is
-not the default recovery goal. Measured arrival remains owned by P4; actual
-body-fault events retain the existing recovery path.
+The Freestyle contract translates initial `requestMotion` descriptions once and
+executes the generated program without recursive LLM stall-recovery loops.
+Closed-loop stall handling is recovery-first across the body and host
+controllers:
+- **`NeuralPose` 50 Hz recoil and return-to-Ready:** When a usable 4th-wire
+  joint lags its segment target by `>= 10°` at `< 6°/s` toward the target for
+  `0.28 s` (`14` ticks), the host policy immediately recoils that joint target
+  by `2°` away from the obstruction, settles against the achievable recoiled
+  target so remaining motion segments complete, and appends a `0.85 s`
+  transition back to `Stand` (Ready) before holding if the final posture
+  recoiled.
+- **Walking unsnag escalation:** Forward gaits escalate from high-step
+  clearance to autonomous `1.8 s` reverse unsnag (`[-0.45, 0.0, 0.0]`, with a
+  `2.5 s` post-backup cooldown) after `1.8 s` of sustained joint lag or
+  zero-progress locomotion before resuming the requested twist. Goal-directed
+  locomotion tracks a `5.5 s` no-progress window so autonomous unsnagging can
+  complete before Core Active Task stops the gait.
+- **Last-ditch thermal fuse:** Sustained `8–10 s` `I²t` stall overload on P4
+  cuts per-servo PWM, emits a single `servo_stall` notification with
+  `outputs_released: true`, and fails any active `move` or `requestMotion`
+  action cleanly. A stall notification does not itself trigger a help reply.
 
 The native library and low-level controls retain their explicit manual contracts.
 Ainekio OS's Task model coordinates actions and observations while Body Control
@@ -110,7 +120,7 @@ The body display presents expressions used by motions and standalone face select
 
 ### Body sensing, events, and balance
 
-P4 acquires IMU data, estimates attitude, publishes timestamped telemetry, and runs V2 balance corrections. Servo-feedback fault/restoration reports serve telemetry and Freestyle recovery without directly invoking a conversational workflow.
+P4 acquires IMU data, estimates attitude, publishes timestamped telemetry, and runs V2 balance corrections. Servo-feedback fault/restoration reports serve telemetry and closed-loop posture fallback without directly invoking a conversational workflow.
 
 Body Control detects configured event episodes (tilt, rapid movement, motor stall, boot/wake) and forwards measurements to Core's event router:
 - **Robot Wake-Up ([`robot-wake-up-mode.json`](../../etc/cognitive-graphs/robot-wake-up-mode.json)):** Reported `wake` events combine a wake event and fresh camera image from Body Control while Body Control dispatches local stretch (including return to standing). The wake-up graph supplies the event, active persona, image and dated body status to one Persona greeting concurrently with stretching, publishing directly through Conversation Work Result, Conversation Buffer, Save Conversation Memory, Stream Writer and TTS Output without creating a goal or invoking Environment Mode.

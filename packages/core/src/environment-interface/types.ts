@@ -167,6 +167,18 @@ export interface EnvironmentTextEvent {
   metadata?: Record<string, unknown>;
 }
 
+/** Outbound workflow message streamed through Environment Bridge to Body Control. */
+export interface EnvironmentBridgeTextStreamItem {
+  id: string;
+  sessionId: string;
+  text: string;
+  role: 'assistant' | 'user' | 'system';
+  source?: string;
+  cognitiveMode?: string;
+  executionId?: string;
+  timestamp: string;
+}
+
 export interface EnvironmentVisualFrame {
   id: string;
   timestamp: string;
@@ -458,6 +470,9 @@ export interface EnvironmentSessionState {
   /** Latest received camera evidence; retains its capture time across text/status updates. */
   latestVisual?: EnvironmentVisualFrame;
   processedTextEventIds?: string[];
+  /** Outbound workflow text outputs queued for live delivery to Body Control. */
+  pendingTextStream?: EnvironmentBridgeTextStreamItem[];
+  deliveredTextStreamIds?: string[];
   /** Active bridge resource registrations; execution remains the lifetime owner. */
   depthDemands?: Record<string, { executionId: string; username: string; readOwner: string; requestId: string }>;
 }
