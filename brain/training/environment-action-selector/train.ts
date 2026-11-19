@@ -449,23 +449,33 @@ async function trainWithSelectedSettings(
     readJson<TrainingConfig>(resolve(sourceRoot, 'training-config.json')),
     readJson<{
       owner: string; mode: string; specialist: Specialist; baseModel: string;
-      epochs: number; archivedDatasetDigest: string; priorHeldOutUsed: boolean;
-      selectionEvidence: { path: string; digest: string };
+      epochs: number; archivedDatasetDigest?: string; developmentDatasetDigest?: string; priorHeldOutUsed: boolean;
+      selectionEvidence?: { path: string; digest: string; checkpointPolicy?: DevelopmentSelectionReport['checkpointPolicy']; [key: string]: unknown };
+      settingsSource?: { path: string; baseModel: string; configDigest: string; provenanceDigest: string; datasetDigest: string;
+        selectionEvidence: { path: string; digest: string; checkpointPolicy?: DevelopmentSelectionReport['checkpointPolicy']; [key: string]: unknown } };
     }>(resolve(sourceRoot, 'run-provenance.json')),
   ])
-  if (provenance.owner !== config.owner || provenance.mode !== 'final-development-training'
+  const isFinal = provenance.mode === 'final-development-training'
+  const isReused = provenance.mode === 'reused-development-settings-training'
+  const selectionEvidence = isFinal ? provenance.selectionEvidence : provenance.settingsSource?.selectionEvidence
+  if (provenance.owner !== config.owner || (!isFinal && !isReused) || !selectionEvidence?.digest
     || provenance.specialist !== options.specialist || !['unsloth/Qwen3.5-0.8B', 'unsloth/Qwen3.5-2B', 'unsloth/Qwen3.5-9B'].includes(provenance.baseModel)
     || provenance.priorHeldOutUsed !== false || previousConfig.base_model !== provenance.baseModel
     || previousConfig.specialist !== options.specialist || previousConfig.require_exact_messages !== true
     || previousConfig.train_on_responses_only !== true || previousConfig.num_train_epochs !== provenance.epochs) {
     throw new Error('Selected settings require a matching development-selected final training run')
   }
-  const report = await readJson<DevelopmentSelectionReport>(resolve(REPOSITORY_ROOT, provenance.selectionEvidence.path))
-  if (sha256(report) !== provenance.selectionEvidence.digest || report.owner !== config.owner
-    || report.specialist !== options.specialist || report.split !== 'development-cross-validation'
-    || report.priorHeldOutUsed !== false || selectedEpochCount(report.checkpointPolicy) !== provenance.epochs) {
+  if (isFinal) {
+    const report = await readJson<DevelopmentSelectionReport>(resolve(REPOSITORY_ROOT, selectionEvidence.path))
+    if (sha256(report) !== selectionEvidence.digest || report.owner !== config.owner
+      || report.specialist !== options.specialist || report.split !== 'development-cross-validation'
+      || report.priorHeldOutUsed !== false || selectedEpochCount(report.checkpointPolicy) !== provenance.epochs) {
+      throw new Error('Archived settings selection evidence does not match its development report')
+    }
+  } else if (selectedEpochCount(selectionEvidence.checkpointPolicy) !== provenance.epochs) {
     throw new Error('Archived settings selection evidence does not match its development report')
   }
+  const sourceDatasetDigest = provenance.archivedDatasetDigest ?? provenance.developmentDatasetDigest
   // Sequence capacity belongs to the current complete messages, never to an earlier run.
   const recipe: TrainingConfig = { ...previousConfig, base_model: config.base_model }
   delete recipe.max_seq_length
@@ -473,7 +483,7 @@ async function trainWithSelectedSettings(
   const finalRoot = resolve(options.outputPath, 'final')
   console.log(`Reused settings: ${sourceRoot}; ${provenance.epochs} epochs on ${records.length} current development records`)
   console.log(`Recipe source base: ${provenance.baseModel}; fit target base: ${config.base_model}. Source selection evidence does not qualify a different target base.`)
-  console.log(`Settings-selection dataset: ${provenance.archivedDatasetDigest}; current dataset: ${sha256(records)}`)
+  console.log(`Settings-selection dataset: ${sourceDatasetDigest}; current dataset: ${sha256(records)}`)
   if (options.dryRun) return
   await mkdir(finalRoot, { recursive: true })
   const trainingPath = resolve(finalRoot, 'training.jsonl')
@@ -486,7 +496,7 @@ async function trainWithSelectedSettings(
       specialist: options.specialist, baseModel: config.base_model, epochs: provenance.epochs,
       trainingRecords: records.length, validationRecords: 0,
       developmentDatasetDigest: sha256(records), priorHeldOutDigest, priorHeldOutUsed: false,
-      settingsSource: { path: sourceRoot, baseModel: provenance.baseModel, configDigest: sha256(previousConfig), provenanceDigest: sha256(provenance),
+      settingsSource: provenance.settingsSource ?? { path: sourceRoot, baseModel: provenance.baseModel, configDigest: sha256(previousConfig), provenanceDigest: sha256(provenance),
         datasetDigest: provenance.archivedDatasetDigest, selectionEvidence: provenance.selectionEvidence },
     }, null, 2)}\n`),
   ])

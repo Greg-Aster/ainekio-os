@@ -24,6 +24,7 @@ import './locomotion-cases.js'
 import './intent-memory-cases.js'
 import './intent-autonomy-context-cases.js'
 import './intent-perception-cases.js'
+import './embodied-enactment-cases.js'
 import { migrateLocomotionReference, refreshLocomotionFixture } from './locomotion-contract.js'
 
 export const DEVELOPMENT_CASES = cases.filter(item => item.split === 'development')
@@ -75,6 +76,24 @@ function visualTaskReference(source: SpecialistCase, expected: Record<string, an
     || (expected.program?.steps ?? []).some((step: any) => step.kind === 'vision'
       || step.action?.type === 'captureImage' || step.action?.type === 'visualApproach')
 }
+function variationsForInstruction(source: SpecialistCase, instructionIndex: number): string[] {
+  if (source.specialist === 'intent') {
+    return source.responseOptional && source.split === 'development' ? ['with-response'] : ['clean']
+  }
+  const baseObs = (source.inputs as any)?.observation ?? observation()
+  const originalExpected = structuredClone(source.targets?.[instructionIndex] ?? source.expected)
+  const migrated = migrateLocomotionReference(originalExpected).output
+  const isVisualDelegate = visualTaskReference(source, migrated)
+  const isNullOrDelegated = isVisualDelegate || Boolean(migrated.delegatePlanning)
+    || (migrated.program === null && !migrated.executionDisposition)
+  if (isNullOrDelegated) return ['clean']
+  const hasExpressions = Array.isArray(baseObs?.capabilities?.expressionLibrary) && baseObs.capabilities.expressionLibrary.length > 0
+  const usesExpression = (migrated.program?.steps ?? []).some((step: any) => step.action?.type === 'faceExpression')
+  return hasExpressions && usesExpression
+    ? ['clean', 'reordered', 'opaque-identifiers']
+    : ['clean', 'reordered']
+}
+
 export async function buildDevelopmentRecords(selected: SpecialistCase[] = DEVELOPMENT_CASES): Promise<ActionSelectorTrainingRecord[]> {
   const properties = await loadGraphProperties()
   const autonomyProperties = await loadGraphProperties('autonomy')
@@ -84,10 +103,9 @@ export async function buildDevelopmentRecords(selected: SpecialistCase[] = DEVEL
   const builder = getNode('environment_context_builder')!
   for (const source of selected) {
     const graphProperties = source.inputSource === 'autonomy' ? autonomyProperties : properties
-    const variations = source.specialist === 'intent'
-      ? source.responseOptional && source.split === 'development' ? ['with-response'] : ['clean']
-      : ['clean', 'reordered', 'opaque-identifiers']
-    for (const [instructionIndex, instruction] of source.instructions.entries()) for (const variation of variations) {
+    for (const [instructionIndex, instruction] of source.instructions.entries()) {
+      const variations = variationsForInstruction(source, instructionIndex)
+      for (const variation of variations) {
       const inputs = { observation: observation(), ...structuredClone(source.inputs ?? {}) } as any
       const originalExpected = structuredClone(source.targets?.[instructionIndex] ?? source.expected)
       const expected = source.specialist === 'task' ? migrateLocomotionReference(originalExpected).output : originalExpected
@@ -153,6 +171,7 @@ export async function buildDevelopmentRecords(selected: SpecialistCase[] = DEVEL
         ...(source.inputSource ? { inputSource: source.inputSource } : {}),
         ...(source.outputContract ? { outputContract: source.outputContract } : {}),
       } })
+      }
     }
   }
   return records
@@ -184,7 +203,7 @@ export function validateDevelopmentRecords(records: ActionSelectorTrainingRecord
     counts.set(source.id, (counts.get(source.id) ?? 0) + 1)
   }
   for (const source of selected) {
-    const expected = source.instructions.length * (source.specialist === 'intent' ? 1 : 3)
+    const expected = source.instructions.reduce((sum, _, i) => sum + variationsForInstruction(source, i).length, 0)
     if (counts.get(source.id) !== expected) errors.push(`${source.id}: expected ${expected} records`)
     if (source.fold < 0 || source.fold >= DEVELOPMENT_FOLD_COUNT) errors.push(`${source.id}: invalid fold`)
   }
@@ -195,7 +214,7 @@ export async function buildDevelopmentManifest(records: ActionSelectorTrainingRe
   const evaluation = await buildDevelopmentRecords(EVALUATION_CASES)
   const regression = await buildDevelopmentRecords(REGRESSION_CASES)
   return {
-    version: 24, owner: 'environment-action-selector', sourceCaseCount: DEVELOPMENT_CASES.length,
+    version: 26, owner: 'environment-action-selector', sourceCaseCount: DEVELOPMENT_CASES.length,
     recordCount: records.length, foldCount: DEVELOPMENT_FOLD_COUNT,
     specialists: Object.fromEntries(['intent', 'task'].map(specialist => [specialist, {
       records: records.filter(item => item.metadata.specialist === specialist).length,

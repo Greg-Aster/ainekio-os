@@ -31,14 +31,12 @@ function plan(objective: string, completionCriteria: string, steps: unknown[], v
 let familyIndex = 0
 function addFamily(suite: string, variants: Variant[], split: CaseSplit = 'development',
   inputs: Record<string, unknown> = {}, fold = familyIndex++ % 4) {
-  for (const inputSource of ['user', 'autonomy'] as const) {
-    const source = addCase('task', suite, variants.map(variant => variant.instruction),
-      ['needsAction', 'needsEnvironment', ...(inputs.robotStatus ? ['needsRobotStatus'] : [])],
-      variants[0]!.output, { observation: body, observationHistory: history, ...inputs }, split)
-    source.targets = Object.fromEntries(variants.map((variant, index) => [index, variant.output]))
-    source.inputSource = inputSource
-    source.fold = fold
-  }
+  const source = addCase('task', suite, variants.map(variant => variant.instruction),
+    ['needsAction', 'needsEnvironment', ...(inputs.robotStatus ? ['needsRobotStatus'] : [])],
+    variants[0]!.output, { observation: body, observationHistory: history, ...inputs }, split)
+  source.targets = Object.fromEntries(variants.map((variant, index) => [index, variant.output]))
+  source.inputSource = 'user'
+  source.fold = fold
   return fold
 }
 
@@ -73,23 +71,24 @@ addFamily('contrast-language-quotation', [
 
 // The same visual target appears in capture-only and compound requests. The
 // movement-only sibling has no implicit camera or visual-success requirement.
-for (const [name, direction, target, finding] of [
-  ['latch', 'left', 'the latch on the red case', 'whether the latch is fastened'],
-  ['indicator', 'right', 'the indicator on the charger', 'which indicator light is illuminated'],
-  ['handle', 'left', 'the handle on the kettle', 'whether the handle is raised or folded'],
+for (const [name, direction, cycles, target, finding] of [
+  ['latch', 'left', 1, 'the latch on the red case', 'whether the latch is fastened'],
+  ['indicator', 'right', 1, 'the indicator on the charger', 'which indicator light is illuminated'],
+  ['handle', 'left', 2, 'the handle on the kettle', 'whether the handle is raised or folded'],
 ] as const) {
+  const cycleText = cycles === 1 ? 'one cycle' : `${cycles} cycles`
   const criteria = `A new image of ${target} establishes ${finding}.`
   addFamily(`contrast-sequence-${name}`, [
-    { instruction: `Turn ${direction} for one cycle.`,
-      output: plan(`Turn ${direction} for one cycle.`, 'The requested turn has a correlated completion receipt.', [command(direction, 1)]) },
+    { instruction: `Turn ${direction} for ${cycleText}.`,
+      output: plan(`Turn ${direction} for ${cycleText}.`, 'The requested turn has a correlated completion receipt.', [command(direction, cycles)]) },
     { instruction: `Take a new photograph of ${target} and establish ${finding}.`,
       output: plan(`Obtain a new photograph of ${target} and establish ${finding}.`, criteria, [capture()], true) },
-    { instruction: `Turn ${direction} for one cycle, then photograph ${target} to establish ${finding}.`,
-      output: plan(`Turn ${direction} for one cycle and obtain a new photograph of ${target} establishing ${finding}.`,
-        criteria, [command(direction, 1), capture()], true) },
-    { instruction: `After one cycle turning ${direction}, get a new view of ${target} that establishes ${finding}.`,
-      output: plan(`Turn ${direction} for one cycle and obtain a new photograph of ${target} establishing ${finding}.`,
-        criteria, [command(direction, 1), capture()], true) },
+    { instruction: `Turn ${direction} for ${cycleText}, then photograph ${target} to establish ${finding}.`,
+      output: plan(`Turn ${direction} for ${cycleText} and obtain a new photograph of ${target} establishing ${finding}.`,
+        criteria, [command(direction, cycles), capture()], true) },
+    { instruction: `After ${cycleText} turning ${direction}, get a new view of ${target} that establishes ${finding}.`,
+      output: plan(`Turn ${direction} for ${cycleText} and obtain a new photograph of ${target} establishing ${finding}.`,
+        criteria, [command(direction, cycles), capture()], true) },
   ])
 }
 
@@ -103,7 +102,6 @@ function conditions(suite: string, threshold: number, low: string, high: string,
       body: { sessionId: body.sessionId, battery: { voltage, observedAt: TIME } } } }
     addFamily(suite, [
       { instruction: `If the reported voltage is below ${threshold}, ${low}; otherwise ${high}.`, output: choice },
-      { instruction: `Choose ${low} for a reported voltage less than ${threshold}, or ${high} for a voltage at or above ${threshold}.`, output: choice },
       { instruction: `Only if the reported voltage is below ${threshold}, ${low}.`,
         output: voltage < threshold ? choice : noTask() },
       { instruction: `Perform ${low} followed by ${high}.`,
@@ -113,7 +111,6 @@ function conditions(suite: string, threshold: number, low: string, high: string,
   }
 }
 conditions('contrast-condition-wave-sit', 7.2, 'wave', 'sit', 'development')
-conditions('contrast-condition-nod-stand', 7.6, 'nod', 'stand', 'development')
 
 // Fresh qualification: not the wording, subjects or conditional combinations
 // already inspected in task-goals-20261011. No fit or epoch selection uses these.

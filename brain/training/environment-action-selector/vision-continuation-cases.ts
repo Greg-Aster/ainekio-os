@@ -1,14 +1,9 @@
 import { addCase, intentOutput, observation, task, TIME, type CaseSplit } from './development-cases.js'
 
-// Synthetic episodes keep the original objective unchanged across acquisition.
-// The live chair failure is held out; no recorded image or private input is fitted.
+// Synthetic episodes keep the original objective unchanged across acquisition,
+// using source-appropriate phrasing for user vs autonomous intentions.
 function episode(target: string, index: number, split: CaseSplit) {
   const fold = index % 4
-  const instructions = [
-    `Find the ${target} and maintain visual tracking while staying stationary. Report the result.`,
-    `Investigate the ${target} by tracking it in the video from this position. Tell me what happens.`,
-    `Locate and keep tracking the ${target}; leave the body still and explain the outcome.`,
-  ]
   const frameId = `synthetic-${split}-camera-8b27-${index}-epoch-12-frame-${731 + index * 23}`
   const box = { x: .12 + (index % 4) * .1, y: .18, width: .21, height: .32 }
   const candidate = { box, description: target, evidence: `One visible object matches the ${target} description.` }
@@ -17,9 +12,19 @@ function episode(target: string, index: number, split: CaseSplit) {
     candidates: [candidate] } }
   const body = observation()
   body.state = { ...body.state, recognition: { enabled: true, visionOperations: ['search', 'select', 'release'], visionTarget: null } }
+
   for (const inputSource of ['user', 'autonomy'] as const) {
+    const instructions = inputSource === 'user'
+      ? [
+          `Find the ${target} and maintain visual tracking while staying stationary. Report the result.`,
+          `Locate and keep tracking the ${target} from where you are, then tell me what happens.`,
+        ]
+      : [
+          `Establish and maintain stationary visual tracking of the ${target}.`,
+          `Acquire the ${target} in the camera feed and hold stationary visual tracking.`,
+        ]
     const routing = addCase('intent', `vision-continuation-route-${index}`, instructions, [],
-      { ...intentOutput(['environment', 'vision'], ['environment', 'robotStatus'], true, true), taskPlanner: 'vision' }, {}, split)
+      { ...intentOutput(['environment', 'vision'], inputSource === 'user' ? ['environment', 'robotStatus'] : [], inputSource === 'user', true), taskPlanner: 'vision' }, {}, split)
     routing.inputSource = inputSource
     routing.fold = fold
     for (const stage of ['initial', 'acquired'] as const) {
@@ -34,11 +39,10 @@ function episode(target: string, index: number, split: CaseSplit) {
       source.fold = fold
       source.taskEvidence = stage === 'acquired' ? evidence : undefined
     }
-    // Returned candidates alone do not authorize selection when the objective
-    // only requested localization. Contrast under the same evidence and fold.
-    const locate = addCase('task', `vision-continuation-locate-only-${index}`, [
-      `Locate the ${target} in the image and report its location without configuring tracking.`,
-    ], ['needsEnvironment', 'needsVision'], {
+    const locateText = inputSource === 'user'
+      ? `Locate the ${target} in the image and report its location without configuring tracking.`
+      : `Confirm the visible image location of the ${target} without starting tracking.`
+    const locate = addCase('task', `vision-continuation-locate-only-${index}`, [locateText], ['needsEnvironment', 'needsVision'], {
       taskDecision: { objective: `Locate the ${target} in the image.`,
         completionCriteria: `The acquired image identifies the ${target} location.`, outcome: 'complete',
         reason: 'The returned acquisition establishes the requested image location; tracking was not requested.',
@@ -50,6 +54,5 @@ function episode(target: string, index: number, split: CaseSplit) {
   }
 }
 
-for (const [index, target] of ['purple watering can', 'striped oven mitt', 'yellow tape dispenser', 'wooden pepper mill',
-  'folded plaid blanket', 'silver desk lamp', 'red pencil tin', 'blue watering jug'].entries()) episode(target, index, 'development')
-for (const [index, target] of ['orange bicycle pump', 'white ceramic teapot'].entries()) episode(target, index + 8, 'evaluation')
+for (const [index, target] of ['purple watering can', 'striped oven mitt', 'yellow tape dispenser', 'wooden pepper mill'].entries()) episode(target, index, 'development')
+for (const [index, target] of ['orange bicycle pump', 'white ceramic teapot'].entries()) episode(target, index + 4, 'evaluation')

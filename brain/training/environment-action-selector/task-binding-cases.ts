@@ -25,14 +25,12 @@ function plan(objective: string, completionCriteria: string, steps: unknown[], v
 let familyIndex = 0
 function family(suite: string, variants: Variant[], split: CaseSplit,
   inputs: Record<string, unknown> = {}, fold = familyIndex++ % 4) {
-  for (const inputSource of ['user', 'autonomy'] as const) {
-    const source = addCase('task', suite, variants.map(value => value.instruction),
-      ['needsAction', 'needsEnvironment', ...(inputs.robotStatus ? ['needsRobotStatus'] : [])], variants[0]!.output,
-      { observation: body, observationHistory, ...inputs }, split)
-    source.targets = Object.fromEntries(variants.map((value, index) => [index, value.output]))
-    source.inputSource = inputSource
-    source.fold = fold
-  }
+  const source = addCase('task', suite, variants.map(value => value.instruction),
+    ['needsAction', 'needsEnvironment', ...(inputs.robotStatus ? ['needsRobotStatus'] : [])], variants[0]!.output,
+    { observation: body, observationHistory, ...inputs }, split)
+  source.targets = Object.fromEntries(variants.map((value, index) => [index, value.output]))
+  source.inputSource = 'user'
+  source.fold = fold
 }
 
 function demonstration(name: string, split: CaseSplit) {
@@ -62,7 +60,6 @@ function condition(low: string, high: string, threshold: number, split: CaseSpli
       `The selected ${chosen} has a correlated completion receipt.`, [command(chosen)])
     family(`binding-${split === 'evaluation' ? 'eval-' : ''}condition-${low}-${high}`, [
       { instruction: `If the reported battery voltage is at most ${threshold} volts, perform ${low}; otherwise perform ${high}.`, output: selected },
-      { instruction: `Perform ${high} if the reported battery voltage is above ${threshold} volts; otherwise perform ${low}.`, output: selected },
       { instruction: `Only perform ${low} if the reported battery voltage is at most ${threshold} volts.`,
         output: voltage <= threshold ? selected : noTask() },
       { instruction: `Perform both ${low} and ${high}, in that order, regardless of the reported voltage.`,
@@ -73,7 +70,6 @@ function condition(low: string, high: string, threshold: number, split: CaseSpli
   }
 }
 condition('bow', 'pushup', 6.8, 'development')
-condition('wave', 'bow', 8.1, 'development')
 
 function visual(target: string, finding: string, direction: 'left' | 'right', cycles: number, split: CaseSplit) {
   const objective = `Determine from a new photograph ${finding}.`

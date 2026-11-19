@@ -1,0 +1,61 @@
+{
+  "schema": "ainekio-os-third-party-inventory-v1",
+  "repository": "Greg-Aster/ainekio-os",
+  "updated": "2026-11-19",
+  "owner_copyright": "Copyright (c) 2025-2026 Gregory Aster",
+  "components": [
+    {
+      "id": "llama-cpp",
+      "name": "llama.cpp GGUF Inference Engine",
+      "path": "vendor/llama.cpp",
+      "upstream_url": "https://github.com/ggml-org/llama.cpp",
+      "copyright": "Georgi Gerganov and contributors",
+      "spdx_license": "MIT",
+      "license_file": "vendor/llama.cpp/LICENSE",
+      "commercial_use": "permitted_with_notice"
+    },
+    {
+      "id": "whisper-cpp",
+      "name": "whisper.cpp Speech-to-Text Engine",
+      "path": "vendor/whisper.cpp",
+      "upstream_url": "https://github.com/ggml-org/whisper.cpp",
+      "copyright": "Georgi Gerganov and contributors",
+      "spdx_license": "MIT",
+      "license_file": "vendor/whisper.cpp/LICENSE",
+      "commercial_use": "permitted_with_notice"
+    },
+    {
+      "id": "qwen3.5-models",
+      "name": "Qwen3.5 Language & Vision-Language Models (0.8B / 2B / 4B / 9B)",
+      "upstream_url": "https://huggingface.co/Qwen",
+      "copyright": "Alibaba Cloud / Qwen Team",
+      "spdx_license": "Apache-2.0",
+      "commercial_use": "permitted_with_notice"
+    },
+    {
+      "id": "kokoro-82m-tts",
+      "name": "Kokoro-82M Text-to-Speech Model",
+      "upstream_url": "https://huggingface.co/hexgrad/Kokoro-82M",
+      "copyright": "hexgrad",
+      "spdx_license": "Apache-2.0",
+      "commercial_use": "permitted_with_notice"
+    },
+    {
+      "id": "openai-whisper-weights",
+      "name": "OpenAI Whisper / faster-whisper ASR",
+      "upstream_url": "https://github.com/SYSTRAN/faster-whisper",
+      "copyright": "OpenAI / SYSTRAN",
+      "spdx_license": "MIT",
+      "commercial_use": "permitted_with_notice"
+    },
+    {
+      "id": "node-workspace-dependencies",
+      "name": "Node/TypeScript Workspace Dependencies (Astro, Svelte, React, React Native, LangGraph, ws, better-sqlite3, AWS S3 SDK, xterm)",
+      "path": "package.json",
+      "copyright": "Respective open-source authors",
+      "spdx_license": "MIT AND Apache-2.0 AND BSD-2-Clause AND BSD-3-Clause AND ISC",
+      "commercial_use": "permitted_with_notice",
+      "notes": "Excluded local-only dev venvs (e.g. gitignored venv/ site-packages) are never packaged or distributed."
+    }
+  ]
+}

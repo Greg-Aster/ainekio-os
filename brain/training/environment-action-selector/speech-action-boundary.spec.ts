@@ -14,22 +14,15 @@ test('speech/action contrasts preserve quoted words, body intent, provenance and
     assert.ok(!input.currentInstruction.includes('Whoa, quick movement!'), 'Live failure must remain held out')
     const peers = rows.filter(r => r.metadata.suite === row.metadata.suite)
     assert.equal(new Set(peers.map(r => r.metadata.developmentFold)).size, 1)
-    assert.deepEqual([...new Set(peers.map(r => r.metadata.inputSource))].sort(), ['autonomy', 'user'])
-    if (input.inputSource === 'autonomy') assert.equal(input.plannerDecision.instruction, input.currentInstruction)
+    assert.equal(row.metadata.inputSource, 'user')
     if (row.metadata.sourceSplit === 'evaluation') assert.ok(!fitInstructions.has(input.currentInstruction))
     if ([0, 4, 7].includes(i)) { assert.equal(output.program, null); continue }
-    if ([5, 6].includes(i)) {
-      assert.deepEqual(output, { delegatePlanning: true }, 'Retired bare gait starts require endpoint planning')
-      continue
-    }
+    assert.ok(!output.taskDecision.objective.includes('"'), 'Objectives must not echo raw nested quotes')
     assert.equal(steps.length, [0, 1, 1, 2, 0, 1, 1][i])
     for (const step of steps) {
       assert.equal(step.kind, 'action')
-      if (step.kind === 'action') {
-        assert.equal(step.action.type, 'requestMotion')
-        assert.ok(step.action.description.length > 0)
-      }
+      assert.equal(step.action.type, 'requestMotion')
+      assert.ok(step.action.description.length > 0)
     }
-    if (i === 5) assert.equal(steps[0].kind, 'action')
   }
 })

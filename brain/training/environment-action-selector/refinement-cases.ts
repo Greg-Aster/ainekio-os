@@ -73,18 +73,15 @@ route('detector-config', [
 type Variant = { text: string; output: Record<string, any> }
 let foldIndex = 0
 function family(name: string, variants: Variant[], inputs: Record<string, unknown> = {}, evidence?: Record<string, unknown>, fold = foldIndex++ % 4) {
-  for (const inputSource of ['user', 'autonomy'] as const) {
-    const source = addCase('task', `refinement-${name}`, variants.map(v => v.text),
-      ['needsAction', 'needsEnvironment', ...(inputs.robotStatus ? ['needsRobotStatus'] : [])], variants[0]!.output, inputs)
-    source.targets = Object.fromEntries(variants.map((v, index) => [index, v.output]))
-    source.inputSource = inputSource
-    source.fold = fold
-    source.taskEvidence = evidence
-  }
+  const source = addCase('task', `refinement-${name}`, variants.map(v => v.text),
+    ['needsAction', 'needsEnvironment', ...(inputs.robotStatus ? ['needsRobotStatus'] : [])], variants[0]!.output, inputs)
+  source.targets = Object.fromEntries(variants.map((v, index) => [index, v.output]))
+  source.inputSource = 'user'
+  source.fold = fold
+  source.taskEvidence = evidence
 }
-for (const command of ['nod', 'sit', 'wave', 'pushup']) family(`quoted-${command}`, [
+for (const command of ['nod', 'wave']) family(`quoted-${command}`, [
   { text: `Write a dictionary definition for the robot gesture ${command}; do not demonstrate it.`, output: noTask() },
-  { text: `Change the instruction "perform ${command}" to reported speech.`, output: noTask() },
   { text: `I am describing a possible ${command}, not requesting a physical performance. Explain that distinction.`, output: noTask() },
   { text: `Actually perform one ${command} now.`, output: task(`Perform one ${command}.`, [action(command)]) },
 ])
@@ -99,8 +96,6 @@ for (const [threshold, low, high] of [[6.4, 'nod', 'sit'], [7.9, 'wave', 'nod'],
     family(`exclusive-${threshold}-${voltage}`, [
       { text: `If battery voltage is less than ${threshold} volts, choose ${low}; otherwise choose ${high}. Execute only the selected gesture.`,
         output: choose(voltage < threshold ? low : high) },
-      { text: `Perform ${high} when battery voltage is at least ${threshold} volts; perform ${low} otherwise. Do not combine the branches.`,
-        output: choose(voltage >= threshold ? high : low) },
       { text: `Only perform ${low} when battery voltage is greater than ${threshold} volts; otherwise perform no gesture.`,
         output: voltage > threshold ? choose(low) : noTask() },
     ], { robotStatus: { updatedAt: TIME, body: { sessionId: 'training-body', battery: { voltage, observedAt: TIME } } } }, undefined, fold)

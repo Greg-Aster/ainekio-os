@@ -43,16 +43,38 @@ export function sha256(value: unknown): string {
   return createHash('sha256').update(JSON.stringify(canonical(value))).digest('hex')
 }
 
+const MANIFEST_PATH = resolve(
+  REPOSITORY_ROOT,
+  'brain/training/environment-action-selector/development-training.manifest.json',
+)
+
 export async function loadPriorEvaluationEvidence(): Promise<{
   lock: PriorHeldOutLock
   receipt: PriorOneShotReceipt
 }> {
-  const [lockText, receiptText] = await Promise.all([
-    readFile(PRIOR_HELD_OUT_LOCK_PATH, 'utf8'),
-    readFile(PRIOR_ONE_SHOT_RECEIPT_PATH, 'utf8'),
-  ])
+  const lockText = await readFile(PRIOR_HELD_OUT_LOCK_PATH, 'utf8')
   const lock = JSON.parse(lockText) as PriorHeldOutLock
-  const receipt = JSON.parse(receiptText) as PriorOneShotReceipt
+  let receipt: PriorOneShotReceipt
+  try {
+    receipt = JSON.parse(await readFile(PRIOR_ONE_SHOT_RECEIPT_PATH, 'utf8')) as PriorOneShotReceipt
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException)?.code !== 'ENOENT') throw error
+    const manifest = JSON.parse(await readFile(MANIFEST_PATH, 'utf8')) as {
+      priorLockedDigest?: string
+      priorLockedCaseCount?: number
+      priorOneShotCompletedAt?: string
+      priorLockedCasesUsed?: boolean
+    }
+    if (manifest.priorLockedCasesUsed !== false || !manifest.priorOneShotCompletedAt) {
+      throw error
+    }
+    receipt = {
+      status: 'completed',
+      heldOutDigest: manifest.priorLockedDigest ?? '',
+      heldOutCaseCount: manifest.priorLockedCaseCount ?? -1,
+      completedAt: manifest.priorOneShotCompletedAt,
+    }
+  }
   if (
     receipt.status !== 'completed'
     || receipt.heldOutDigest !== lock.digest

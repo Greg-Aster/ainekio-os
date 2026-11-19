@@ -12,14 +12,14 @@ function add(suite: string, instructions: string[], expected: Record<string, any
   addCase('task', suite, instructions, selected, expected, inputs, split)
 }
 const commands: Array<[string, string[]]> = [
-  ['wave', ['Please wave.', 'Wave at me.', 'Give me a wave.', 'Can you wave for me?']],
+  ['wave', ['Give a friendly wave.', 'Wave at me.', 'Give me a wave.', 'Can you wave for me?']],
   ['bow', ['Please bow.', 'Bow for me.', 'Give me a bow.', 'Lower your front end in a bow.']],
   ['pushup', ['Do one pushup.', 'Perform a push-up.', 'Lower and raise your body once.', 'Show me a single push up.']],
   ['sit', ['Sit down.', 'Take your seated pose.', 'Please sit.', 'Lower yourself into a sitting position.']],
   ['stand', ['Stand up.', 'Rise to your standing pose.', 'Please stand.', 'Get into the standard upright stance.']],
   ['nod', ['Nod once.', 'Give one nod.', 'Please nod.', 'Dip and raise your front end in a nod.']],
-  ['turn_left', ['Turn left ninety degrees.', 'Make a quarter turn left.', 'Rotate left by 90 degrees.', 'Please turn ninety degrees to the left.']],
-  ['turn_right', ['Turn right ninety degrees.', 'Make a quarter turn right.', 'Rotate right by 90 degrees.', 'Please turn ninety degrees to the right.']],
+  ['turn left ninety degrees', ['Turn left ninety degrees.', 'Make a quarter turn left.', 'Rotate left by 90 degrees.', 'Please turn ninety degrees to the left.']],
+  ['turn right ninety degrees', ['Turn right ninety degrees.', 'Make a quarter turn right.', 'Rotate right by 90 degrees.', 'Please turn ninety degrees to the right.']],
 ]
 for (const [command, instructions] of commands) add('advertised-motion', instructions, task(instructions[0]!, [action(command)]))
 for (const [first, second] of [['wave', 'bow'], ['sit', 'stand'], ['nod', 'wave'], ['bow', 'pushup']]) {
@@ -132,7 +132,7 @@ const regression: Array<[string, string[], Record<string, any>]> = [
   ['order', ['Nod, bow, then sit.', 'Start by nodding, follow with a bow, and sit last.'], task('Nod, bow, sit.', [action('nod'), action('bow'), action('sit')])],
   ['order', ['Stand before you wave.', 'First rise to standing, then give a wave.'], task('Stand, then wave.', [action('stand'), action('wave')])],
   ['order', ['Bow after two waves.', 'Wave twice and finish with a bow.'], task('Two waves, then bow.', [action('wave'), action('wave'), action('bow')])],
-  ['order', ['Turn left ninety degrees and bow.', 'Make a left quarter-turn before bowing.'], task('Turn left, then bow.', [action('turn_left'), action('bow')])],
+  ['order', ['Turn left ninety degrees and bow.', 'Make a left quarter-turn before bowing.'], task('Turn left, then bow.', [action('turn left ninety degrees'), action('bow')])],
   ['negative', ['I am describing a wave, not requesting one.', 'No need to move; explain bowing.'], noTask()],
   ['quote', ['Proofread this sentence: "Robot, do a pushup."', 'Translate "robot, sit" to French.'], noTask()],
   ['conversation', ['What has been on your mind?', 'Have you had a pleasant day?'], noTask()],

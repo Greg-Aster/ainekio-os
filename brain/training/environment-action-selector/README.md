@@ -20,6 +20,27 @@ right-hand and Hamlet requests remain held-out regression cases. Scoring counts
 graph/schema before a new training run; existing JSONL snapshots, frozen runs and
 LoRA weights have not been migrated or qualified by these source changes.
 
+**Version 26 — corpus deduplication, local finite-turn repair, and bloat removal.**
+Removes byte-identical `opaque-identifiers` duplicates and redundant 3× `noTask` /
+`delegatePlanning` copies in `generate-training-data.ts`, replaces accidental
+retired-gait `delegatePlanning` overwrites on finite turns (`task-cases.ts`,
+`task-expanded-cases.ts`) with local `requestMotion` descriptions, removes nested
+escaped-quote `"Carry out: ..."` objective echoes and fake `autonomy` clones of
+human dialogue across boundary/contrast/binding/refinement modules, fixes the
+`surprised` expression/gesture mismatch and `"Please wave."` split conflict, and
+downsamples Cartesian `composition-*` and duplicate battery-voltage grids. Current
+totals are 2,941 development records (1,372 Intent / 1,569 Task), 814 evaluation
+records (421 Intent / 393 Task), and 134 regression records (49 Intent / 85 Task).
+
+**Version 25 — embodied roleplay, expressive motion, and lookup contrasts.**
+`embodied-enactment-cases.ts` adds nine paired families across Intent and Task
+separating situated and persona roleplay/enactment and open-ended expressive
+motions (`taskContext: ["environment"]`) from verbal-only roleplay, purely
+descriptive imagination, delegated fact lookup, and direct factual questions.
+Runtime prompts and schemas are unchanged; observed restaurant-tea, happy-dance,
+and fact-lookup failures remain regression-only outside fitting and checkpoint
+selection.
+
 **Version 24 — conversational visual questions.** Eight paired families add 32
 development and 16 evaluation examples distinguishing a current camera read,
 camera readiness, an earlier spoken description, a fresh photograph and social

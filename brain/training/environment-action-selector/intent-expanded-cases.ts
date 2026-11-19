@@ -162,24 +162,21 @@ const responses: Array<[string[], string[]]> = [
  [['describe your personal values','tell me what your principles are','explain the values in your persona','state the beliefs recorded among your values'], ['persona.values']],
  [['tell me your persona goals','describe your personal ambitions','state the aspirations in your profile','explain your recorded long-term goals'], ['persona.goals']],
  [['list the available body commands','describe the advertised action interface','tell me what commands the bridge exposes','read the capability catalog aloud'], [E]],
- [['say exactly ready','repeat only the word ready','speak the literal word ready','give the spoken response ready'], []],
 ]
 let trainingPairs = 0, evaluationPairs = 0
 for (let a = 0; a < actions.length; a++) for (let b = 0; b < responses.length; b++) {
-  // A fixed permutation distributes held-out combinations across all context kinds.
-  const rank = (a * responses.length + b) * 37 % 160
-  if (rank >= 155) continue
-  const split: CaseSplit = rank < 125 ? 'development' : 'evaluation'
+  // Compact compositional sample across action and conversation context kinds
+  // without flooding Intent with 500 mechanical template combinations.
+  const rank = (a * responses.length + b) * 37 % 144
+  if (rank >= 64) continue
+  const split: CaseSplit = rank < 48 ? 'development' : 'evaluation'
   split === 'development' ? trainingPairs++ : evaluationPairs++
   const [moves, taskContext] = actions[a]!, [speech, conversationContext] = responses[b]!
   const item = family(`composition-${a}-${b}`, [
-    `Please ${moves[0]} and ${speech[0]}.`,
-    `${speech[1]!.charAt(0).toUpperCase()}${speech[1]!.slice(1)}; also ${moves[1]}.`,
-    `I want you to ${moves[2]}. In your reply, ${speech[2]}.`,
-    `Could you ${speech[3]}, and ${moves[3]} as well?`,
+    `Please ${moves[0]}, and ${speech[0]}.`,
+    `Could you ${speech[1]} while you ${moves[1]}?`,
   ], taskContext, conversationContext, true, true, split)
-  // The photo clause is a visual operation, not a request to read an old image.
   if (a === 4) item.expected.taskPlanner = 'vision'
   if (a === 9 || a === 14) item.expected.needsGoalReview = true
 }
-if (trainingPairs !== 125 || evaluationPairs !== 30) throw new Error('Compositional partition changed')
+if (trainingPairs !== 48 || evaluationPairs !== 16) throw new Error('Compositional partition changed')

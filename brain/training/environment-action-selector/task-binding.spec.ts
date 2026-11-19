@@ -92,11 +92,9 @@ test('binding families preserve attribution, fold isolation, contracts and held-
       && other.metadata.instructionIndex === row.metadata.instructionIndex
       && other.metadata.contextVariation === row.metadata.contextVariation
       && JSON.stringify(JSON.parse(other.user).robotStatus) === JSON.stringify(envelope.robotStatus))
-    assert.equal(peers.length, 2)
-    assert.equal(new Set(peers.map(peer => peer.metadata.developmentFold)).size, 1)
-    assert.equal(peers[0]!.output, peers[1]!.output)
+    assert.equal(peers.length, 1)
     assert.equal(envelope.inputSource, source.inputSource)
-    if (source.inputSource === 'autonomy') assert.equal(envelope.plannerDecision.instruction, envelope.currentInstruction)
+    assert.equal(source.inputSource, 'user')
   }
   const fit = new Set((await buildDevelopmentRecords()).filter(row => row.metadata.specialist === 'task').map(row => JSON.parse(row.user).currentInstruction.toLowerCase().replace(/[^a-z0-9]+/g, ' ').trim()))
   const evaluation = await buildDevelopmentRecords(EVALUATION_CASES)

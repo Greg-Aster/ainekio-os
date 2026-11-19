@@ -5,8 +5,8 @@ import { migrateLocomotionReference } from './locomotion-contract.js'
 
 test('locomotion references preserve endpoint units, sensor evidence, source and held-out separation', async () => {
   const rows = await buildDevelopmentRecords([...DEVELOPMENT_CASES, ...EVALUATION_CASES].filter(c => c.suite.startsWith('locomotion-')))
-  assert.equal(rows.filter(r => r.metadata.sourceSplit === 'development').length, 408)
-  assert.equal(rows.filter(r => r.metadata.sourceSplit === 'evaluation').length, 72)
+  assert.equal(rows.filter(r => r.metadata.sourceSplit === 'development').length, 200)
+  assert.equal(rows.filter(r => r.metadata.sourceSplit === 'evaluation').length, 40)
   const fit = new Set(rows.filter(r => r.metadata.sourceSplit === 'development').map(r => r.user))
   for (const row of rows) {
     assert.deepEqual(validateRecordOutput(row), [], row.metadata.recordId)

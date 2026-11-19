@@ -8,9 +8,11 @@ commercial license from Gregory Aster.
 
 1. Software, Packages, Cognitive Workflows, Agents & Scripts
    SPDX-License-Identifier: PolyForm-Noncommercial-1.0.0
-   All source code, packages, web and mobile applications, cognitive workflow
-   graphs, autonomous agents, and build/runtime scripts in this repository are
-   licensed under the PolyForm Noncommercial License 1.0.0 (see `LICENSE`).
+   All original source code, packages, web and mobile applications, cognitive
+   workflow graphs, autonomous agents, and build/runtime scripts in this
+   repository are licensed under the PolyForm Noncommercial License 1.0.0
+   (see `LICENSE`), except third-party components listed in Section 3 and
+   `THIRD_PARTY_INVENTORY.json`.
 
    Under the Notices section of the PolyForm Noncommercial License 1.0.0, any
    distribution of any part of the software must retain a copy of `LICENSE` (or
@@ -18,14 +20,18 @@ commercial license from Gregory Aster.
 
 2. Documentation, Architecture Diagrams & Media Assets
    SPDX-License-Identifier: CC-BY-NC-SA-4.0
-   All documentation, specifications, diagrams, and visual/media assets in this
-   repository are licensed under the Creative Commons
+   All original documentation, specifications, diagrams, and visual/media assets
+   in this repository are licensed under the Creative Commons
    Attribution-NonCommercial-ShareAlike 4.0 International Public License
    (see `LICENSE-DOCS`).
 
-3. Third-Party Components
-   External and third-party dependencies retain their respective upstream
-   open-source licenses.
+3. Third-Party Components (Excluded from Sections 1 & 2)
+   Vendored runtimes and external open-source dependencies retain their
+   respective upstream licenses (see `THIRD_PARTY_INVENTORY.json`), including:
+   - `vendor/llama.cpp/` (`MIT` License, Georgi Gerganov and contributors)
+   - `vendor/whisper.cpp/` (`MIT` License, Georgi Gerganov and contributors)
+   - Runtime npm and Python packages (`MIT`, `Apache-2.0`, `BSD-2-Clause`,
+     `BSD-3-Clause`, `ISC`)
 
 4. Trademarks & Commercial Licensing
    "Ainekio", "Ainekio OS", and `ainek.io` are project identifiers of

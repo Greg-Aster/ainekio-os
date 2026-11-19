@@ -11,19 +11,20 @@ import { fixture, route, decision, replies, core, manager, username, withUserCon
   openExecutionStore, queuedInterpretation, executeWork, instruction } from './active-task.spec.js'
 
 const endings = ['loss-confirmed', 'loss-unknown', 'explicit-cancel'] as const
-for (const ending of endings) test(`recorded YOLO frames: ${ending}`, { timeout: 90000 }, async () => {
+for (const ending of endings) test(`recorded detector frames: ${ending}`, { timeout: 90000 }, async () => {
   assert.ok(process.env.AINEKIO_SOFTWARE_TEST_GATEWAY)
   assert.ok(process.env.AINEKIO_SOFTWARE_TEST_PYTHON)
-  assert.ok(process.env.AINEKIO_YOLO_WEIGHTS && process.env.AINEKIO_RECORDED_IMAGE,
+  const detectorWeights = process.env.AINEKIO_DETECTOR_WEIGHTS || process.env.AINEKIO_YOLO_WEIGHTS
+  assert.ok(detectorWeights && process.env.AINEKIO_RECORDED_IMAGE,
     'This opt-in qualification requires explicitly selected local weights and a public/approved recording')
   await withUserContext({ username, userId: username, role: 'owner' }, async () => {
     const artifacts = path.join(process.env.AINEKIO_PERCEPTION_ARTIFACTS!, ending)
     fs.mkdirSync(artifacts, { recursive: true })
-    const child = spawn(process.env.AINEKIO_SOFTWARE_TEST_PYTHON!, ['-u', '-m', 'Emulator.tests.perception_harness'], {
+    const child = spawn(process.env.AINEKIO_SOFTWARE_TEST_PYTHON!, ['-u', '-m', 'tests.perception_harness'], {
       cwd: process.env.AINEKIO_SOFTWARE_TEST_GATEWAY, stdio: ['pipe', 'pipe', 'pipe'],
-      env: { ...process.env, PYTHONDONTWRITEBYTECODE: '1', PYTHONPATH: '.:Master:Slave/software:Emulator:Emulator/tests',
+      env: { ...process.env, PYTHONDONTWRITEBYTECODE: '1', PYTHONPATH: '.:Master:Slave/software:tests',
         AINEKIO_TEST_SESSION: `recorded-perception-${randomUUID()}`, CUDA_VISIBLE_DEVICES: '',
-        YOLO_OFFLINE: 'true', YOLO_AUTOINSTALL: 'false', ULTRALYTICS_AUTOINSTALL: 'false', OMP_NUM_THREADS: '4', AINEKIO_PERCEPTION_ARTIFACTS: artifacts },
+        OMP_NUM_THREADS: '4', AINEKIO_PERCEPTION_ARTIFACTS: artifacts },
     })
     let stderr = ''
     child.stderr.on('data', value => { stderr += value })
@@ -36,9 +37,9 @@ for (const ending of endings) test(`recorded YOLO frames: ${ending}`, { timeout:
       } finally { clearTimeout(timer) }
     }
     const ready = await read()
-    assert.deepEqual(ready.classes, { 0: 'person' }, 'Report the evaluated checkpoint class set honestly')
+    assert.equal(ready.classes['0'] ?? ready.classes[0], 'person', 'Report the evaluated checkpoint class set honestly')
     const f = fixture(ready.ready.observation.sessionId, false, ready.ready.observation)
-    const evidence: any = { ending, recognition: { ...ready, ready: undefined }, startedAt: Date.now(), source: 'recorded public image; offline CPU YOLO; simulated body and scripted instruction selection', frames: [], commands: [] }
+    const evidence: any = { ending, recognition: { ...ready, ready: undefined }, startedAt: Date.now(), source: 'recorded public image; offline CPU RT-DETRv2; simulated body and scripted instruction selection', frames: [], commands: [] }
     let id: string | undefined, release: (() => void) | undefined, worker: Promise<void> | undefined
     let speechRelease: (() => void) | undefined, speechWorker: Promise<void> | undefined, speechJob: any, interpretation: any, conversationId: string | undefined
     const progress = (label: string) => {

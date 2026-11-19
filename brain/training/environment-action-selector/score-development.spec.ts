@@ -31,7 +31,7 @@ test('qualification failure shapes cannot pass the paired task references', () =
 
   const condition = DEVELOPMENT_CASES.find(source => source.suite === 'contrast-condition-wave-sit')!
   const both = structuredClone(condition.targets![0]!)
-  both.program.steps = condition.targets![3]!.program.steps
+  both.program.steps = condition.targets![2]!.program.steps
   const bothBranches = score([prediction(condition.targets![0]!, both)])
   assert.equal(bothBranches.coreValid.count, 1)
   assert.equal(bothBranches.wrongPhysicalActions, 1)

@@ -44,7 +44,7 @@ function plannerReference(row: Awaited<ReturnType<typeof buildDevelopmentRecords
 test('vision continuation selects returned coordinates for the unchanged objective with source and stage siblings in one fold', async () => {
   const rows = (await recordsPromise).filter(row => row.metadata.suite.startsWith('vision-continuation-'))
   const taskRows = rows.filter(row => row.metadata.specialist === 'task')
-  assert.equal(taskRows.length, 336)
+  assert.equal(taskRows.length, 40)
   for (const row of taskRows) {
     const input = JSON.parse(row.user)
     const output = plannerReference(row)
@@ -62,8 +62,10 @@ test('vision continuation selects returned coordinates for the unchanged objecti
     assert.equal(step.operation, acquired ? 'select' : 'acquire')
     const peers = taskRows.filter(other => JSON.parse(other.user).currentInstruction === input.currentInstruction)
     assert.equal(new Set(peers.map(peer => peer.metadata.developmentFold)).size, 1)
-    assert.deepEqual([...new Set(peers.map(peer => peer.metadata.inputSource))].sort(), ['autonomy', 'user'])
     assert.equal(new Set(peers.map(peer => plannerReference(peer).program.steps[0].operation)).size, 2)
+    const indexSuffix = row.metadata.suite.split('-').at(-1)!
+    const episodePeers = taskRows.filter(other => other.metadata.suite.endsWith(`-${indexSuffix}`))
+    assert.deepEqual([...new Set(episodePeers.map(peer => peer.metadata.inputSource))].sort(), ['autonomy', 'user'])
     if (acquired) {
       assert.equal(step.frameId, input.taskResultEvidence.acquisition.frame.id)
       assert.deepEqual(step.box, input.taskResultEvidence.acquisition.candidates[0].box)
@@ -139,7 +141,7 @@ test('retired cycle sequence contrasts preserve requests for planning and captur
       const instruction = JSON.parse(family[index]!.user).currentInstruction
       assert.match(instruction, /latch|indicator|handle/)
       assert.match(instruction, /photograph|new view/)
-      assert.match(instruction, /one cycle/)
+      assert.match(instruction, /(one|2) cycles?/)
     }
     const capture = outputs[1]!
     assert.equal(capture.program.steps.length, 1)
@@ -183,14 +185,9 @@ test('fresh contrast evaluation requests stay outside the fit and source variant
   const fitting = new Set((await recordsPromise).filter(row => row.metadata.specialist === 'task').map(row => JSON.parse(row.user).currentInstruction))
   for (const row of evaluation) assert.ok(!fitting.has(JSON.parse(row.user).currentInstruction))
   for (const row of development) {
-    const peer = development.find(other => other.metadata.inputSource !== row.metadata.inputSource
-      && other.metadata.suite === row.metadata.suite && other.metadata.instructionIndex === row.metadata.instructionIndex
-      && other.metadata.contextVariation === row.metadata.contextVariation
-      && JSON.parse(other.user).currentInstruction === JSON.parse(row.user).currentInstruction
-      && JSON.stringify(JSON.parse(other.user).robotStatus) === JSON.stringify(JSON.parse(row.user).robotStatus))
-    assert.ok(peer)
-    assert.equal(peer.metadata.developmentFold, row.metadata.developmentFold)
-    assert.equal(peer.output, row.output)
+    assert.equal(row.metadata.inputSource, 'user')
+    const suitePeers = development.filter(other => other.metadata.suite === row.metadata.suite)
+    assert.equal(new Set(suitePeers.map(p => p.metadata.developmentFold)).size, 1)
   }
 })
 
@@ -300,7 +297,7 @@ test('tool routing separates computer work from local language, memory, status, 
   }
   assert.ok(records.every(record => typeof JSON.parse(record.output).needsToolUse === 'boolean'))
   const corpusTools = records.filter(record => JSON.parse(record.output).needsToolUse)
-  assert.equal(corpusTools.length, 88)
+  assert.equal(corpusTools.length, 92)
   const memory = records.find(record => record.user.startsWith('Current user message: Retrieve our saved workshop'))!
   assert.deepEqual(JSON.parse(memory.output).taskContext, ['memory'])
   assert.deepEqual(JSON.parse(memory.output).conversationContext, ['persona.personality'])
@@ -383,13 +380,14 @@ test('fresh intent evaluation is separate from development and the old regressio
   const previousIntent = (records: typeof development) => intent(records).filter(record =>
     !/^intent-(development|evaluation)-memory-/.test(record.metadata.sourceCaseId)
       && !record.metadata.suite.startsWith('perception-')
+      && !record.metadata.suite.startsWith('embodied-')
       && !record.metadata.suite.startsWith('goal-routing-'))
-  assert.equal(previousIntent(development).length, 1280, 'Previous Intent development families remain intact')
-  assert.equal(previousIntent(evaluation).length, 253, 'Previous Intent evaluation families remain intact')
-  assert.equal(intent(development).length, 1464)
-  assert.equal(new Set(intent(development).map(record => record.user)).size, 1464)
-  assert.equal(intent(evaluation).length, 349)
-  assert.equal(intent(regression).length, 47)
+  assert.equal(previousIntent(development).length, 844, 'Core Intent development families after composition deduplication')
+  assert.equal(previousIntent(evaluation).length, 161, 'Core Intent evaluation families after composition deduplication')
+  assert.equal(intent(development).length, 1084)
+  assert.equal(new Set(intent(development).map(record => record.user)).size, 1084)
+  assert.equal(intent(evaluation).length, 275)
+  assert.equal(intent(regression).length, 49)
   const liveVisionFailure = intent(regression).find(record => record.user === 'Current user message: What can you see in front of you right now?')!
   assert.ok(liveVisionFailure)
   assert.ok(JSON.parse(liveVisionFailure.output).conversationContext.includes('vision'))
@@ -414,7 +412,7 @@ test('fresh intent evaluation is separate from development and the old regressio
 
 test('conditional task cases expose the status value that determines the requested branch', async () => {
   const rows = (await recordsPromise).filter(record => record.metadata.suite === 'expanded-status-condition')
-  assert.equal(rows.length, 48)
+  assert.equal(rows.length, 32)
   const pairs = new Map<string, Set<string>>()
   const folds = new Map<string, Set<number>>()
   for (const record of rows.filter(record => record.metadata.contextVariation === 'clean')) {
@@ -516,7 +514,7 @@ test('posture training covers real body meanings, prior activity, and long obser
     assert.ok(JSON.parse(clean.user).currentEnvironment.capabilities.actions.includes('requestMotion'))
   }
   const long = posture.filter(record => record.metadata.suite === 'body-posture-observation-history')
-  assert.equal(long.length, 48)
+  assert.equal(long.length, 32)
   assert.ok(long.some(record => JSON.parse(record.user).observationHistory.length === 8))
   for (const message of ['Please lie down.', 'Please rest.', 'I would like you to do the rest position.']) {
     assert.ok(!records.some(record => record.metadata.specialist === 'task' && JSON.parse(record.user).currentInstruction === message))
@@ -614,7 +612,7 @@ test('vision evaluation stays outside fitting and the observed chair failure rem
     ? JSON.parse(row.user).currentInstruction : row.user.slice('Current user message: '.length)
   const fit = new Set(development.map(message))
   for (const row of [...evaluation, ...regression]) assert.ok(!fit.has(message(row)), row.metadata.recordId)
-  assert.equal(regression.length, 4)
+  assert.equal(regression.length, 2)
   assert.ok(regression.every(row => message(row) === LIVE_TRACKING_REGRESSION))
   for (const specialist of ['intent', 'task']) {
     const rows = development.filter(row => row.metadata.specialist === specialist && row.metadata.suite.startsWith('vision-tracking-'))
@@ -669,5 +667,44 @@ test('equivalent Semi and Full context requests do not teach mode alone to exclu
     assert.equal(pair.length, 2, 'Both modes share the same evidence, catalog and fold')
     assert.equal(pair[0]!.metadata.developmentFold, pair[1]!.metadata.developmentFold)
     assert.deepEqual(JSON.parse(pair[0]!.output).taskContext, JSON.parse(pair[1]!.output).taskContext)
+  }
+})
+
+test('embodied enactment separates physical roleplay and expressive motion from verbal imagination and fact lookup without fitting live regressions', async () => {
+  const { LIVE_RESTAURANT_TEA_REGRESSION, LIVE_HAPPY_DANCE_REGRESSION, LIVE_FACT_LOOKUP_REGRESSION } = await import('./embodied-enactment-cases.js')
+  const development = (await recordsPromise).filter(row => row.metadata.suite.startsWith('embodied-'))
+  const evaluation = (await buildDevelopmentRecords(EVALUATION_CASES)).filter(row => row.metadata.suite.startsWith('embodied-'))
+  const regression = (await buildDevelopmentRecords(REGRESSION_CASES)).filter(row => row.metadata.suite.startsWith('embodied-'))
+  assert.equal(development.filter(r => r.metadata.specialist === 'intent').length, 56)
+  assert.equal(evaluation.filter(r => r.metadata.specialist === 'intent').length, 18)
+  assert.equal(regression.length, 6)
+  const extractText = (row: typeof development[number]) => row.metadata.specialist === 'task'
+    ? JSON.parse(row.user).currentInstruction : row.user.slice('Current user message: '.length)
+  const fittedTexts = new Set((await recordsPromise).map(extractText))
+  for (const live of [LIVE_RESTAURANT_TEA_REGRESSION, LIVE_HAPPY_DANCE_REGRESSION, LIVE_FACT_LOOKUP_REGRESSION]) {
+    assert.ok(!fittedTexts.has(live), `Live failure must stay outside training: ${live}`)
+  }
+  for (const row of [...evaluation, ...regression]) {
+    assert.ok(!fittedTexts.has(extractText(row)), row.metadata.recordId)
+  }
+  for (const row of [...development, ...evaluation, ...regression].filter(r => r.metadata.specialist === 'intent')) {
+    const out = JSON.parse(row.output)
+    const isEnactment = /embodied-(roleplay-situated-scene|roleplay-hospitality|roleplay-creature|expressive-celebration-dance|expressive-reaction-pantomime|live-restaurant-tea)$/.test(row.metadata.suite)
+    const isLookup = /embodied-(fact-lookup-delegation|live-fact-lookup)$/.test(row.metadata.suite)
+    assert.equal(out.needsAction, isEnactment, row.metadata.recordId)
+    assert.equal(out.needsToolUse, isLookup, row.metadata.recordId)
+    assert.ok(!out.taskContext.includes('persona.personality'), row.metadata.recordId)
+    if (isEnactment) assert.deepEqual(out.taskContext, ['environment'], row.metadata.recordId)
+  }
+  for (const row of [...development, ...evaluation, ...regression].filter(r => r.metadata.specialist === 'task')) {
+    const out = JSON.parse(row.output)
+    const isEnactment = /embodied-(roleplay-situated-scene|roleplay-hospitality|roleplay-creature|expressive-celebration-dance|expressive-reaction-pantomime|live-restaurant-tea|live-happy-dance)$/.test(row.metadata.suite)
+    if (isEnactment) {
+      assert.equal(out.taskDecision.outcome, 'act', row.metadata.recordId)
+      assert.equal(out.program.steps[0].action.type, 'requestMotion', row.metadata.recordId)
+      assert.equal(out.program.steps[0].action.description, extractText(row), row.metadata.recordId)
+    } else {
+      assert.equal(out.program, null, row.metadata.recordId)
+    }
   }
 })

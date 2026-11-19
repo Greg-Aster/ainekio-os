@@ -19,13 +19,17 @@ test('ordered speech examples use the live contract, keep sibling folds together
     const input = JSON.parse(row.user), output = JSON.parse(row.output)
     const peers = taskRows.filter(peer => peer.metadata.suite === row.metadata.suite)
     assert.equal(new Set(peers.map(peer => peer.metadata.developmentFold)).size, 1)
-    assert.deepEqual([...new Set(peers.map(peer => peer.metadata.inputSource))].sort(), ['autonomy', 'user'])
-    if (input.inputSource === 'autonomy') assert.equal(input.plannerDecision.instruction, input.currentInstruction)
+    if (row.metadata.suite.includes('voice-only')) {
+      assert.equal(row.metadata.inputSource, 'autonomy')
+      assert.equal(input.plannerDecision.instruction, input.currentInstruction)
+      assert.equal(output.program, null)
+    } else {
+      assert.equal(row.metadata.inputSource, 'user')
+    }
     for (const step of output.program?.steps ?? []) {
       assert.notEqual(step.kind, 'speech')
       if (step.kind === 'action') assert.equal(step.action.type, 'requestMotion')
     }
-    if (row.metadata.suite.includes('voice-only')) assert.equal(output.program, null)
   }
 })
 
@@ -46,7 +50,6 @@ test('camera capture and selected visual task evidence have vision planner train
   }
   assert.ok(captures > 0 && visual > 0)
 })
-
 
 test('small Task training delegates visual objectives and preserves nonvisual program targets', async () => {
   const cases = [...DEVELOPMENT_CASES, ...EVALUATION_CASES, ...REGRESSION_CASES]
@@ -79,9 +82,8 @@ test('small Task training delegates visual objectives and preserves nonvisual pr
     assert.notEqual(output.taskDecision?.requiredCompletionBasis, 'visual_observation')
     if (source.suite.startsWith('vision-continuation-')) assert.deepEqual(output, { delegatePlanning: true })
   }
-  assert.ok(delegated > 500 && nonvisual > 500)
+  assert.ok(delegated > 80 && nonvisual > 400)
 })
-
 
 test('planner boundaries distinguish excluded sensing, requested mixed sensing and quoted discussion', async () => {
   const selected = [...DEVELOPMENT_CASES, ...EVALUATION_CASES].filter(source => source.suite.startsWith('planner-boundary-'))
@@ -90,16 +92,16 @@ test('planner boundaries distinguish excluded sensing, requested mixed sensing a
   const fit = new Set(rows.filter(row => row.metadata.sourceSplit === 'development').map(row => row.user))
   for (const row of rows) {
     const i = row.metadata.instructionIndex, output = JSON.parse(row.output)
-    const visual = i === 5 || i === 6
+    const visual = i === 3 || i === 4
     if (row.metadata.specialist === 'intent') {
       assert.equal(output.taskPlanner, visual ? 'vision' : 'specialist')
-      assert.equal(output.needsAction, i < 7)
-      if (i >= 4) assert.equal(output.needsResponse, true)
+      assert.equal(output.needsAction, i < 5)
+      if (i >= 2) assert.equal(output.needsResponse, true)
     } else if (visual) assert.deepEqual(output, { delegatePlanning: true })
-    else if (i === 7 || i === 8) assert.deepEqual(output, { taskDecision: null, program: null })
+    else if (i === 5 || i === 6) assert.deepEqual(output, { taskDecision: null, program: null })
     else {
       assert.equal(output.delegatePlanning, undefined)
-      assert.equal(output.program.steps.length, i === 4 ? 2 : 1)
+      assert.equal(output.program.steps.length, i === 2 ? 2 : 1)
     }
     if (row.metadata.sourceSplit === 'evaluation') assert.ok(!fit.has(row.user))
     const peers = rows.filter(peer => peer.metadata.suite === row.metadata.suite)

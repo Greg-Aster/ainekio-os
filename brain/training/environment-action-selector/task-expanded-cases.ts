@@ -11,10 +11,8 @@ const commands: Array<[string, string[]]> = [
  ['bow', ['Would you bend into a bow for us?', 'I would like you to make a bowing gesture.', 'A bow from you, please.', 'Go ahead and lower into a bow.']],
  ['nod', ['Let us see one nod.', 'Please make a nodding gesture.', 'Dip and lift your front in a nod.', 'Could you acknowledge me with a nod?']],
  ['pushup', ['Perform a single press-up.', 'Please lower and lift the body in one pushup.', 'One push-up exercise now.', 'I would like to see you do a pushup.']],
- ['walk_forward', ['Walk forward using your built-in gait.', 'Advance with the standard forward walking motion.', 'Please do your forward walk.', 'Move ahead with the advertised walking command.']],
- ['walk_backward', ['Use the built-in reverse walking gait.', 'Walk backward for me.', 'Please do your backward walk.', 'Move back using the reverse gait.']],
- ['turn_left', ['Rotate one quarter-circle left.', 'Please face ninety degrees to your left.', 'Make the standard left quarter-turn.', 'Turn left through a right angle.']],
- ['turn_right', ['Rotate one quarter-circle right.', 'Please face ninety degrees to your right.', 'Make the standard right quarter-turn.', 'Turn right through a right angle.']],
+ ['turn left ninety degrees', ['Rotate one quarter-circle left.', 'Please face ninety degrees to your left.', 'Make a ninety-degree turn to the left.', 'Turn left through a right angle.']],
+ ['turn right ninety degrees', ['Rotate one quarter-circle right.', 'Please face ninety degrees to your right.', 'Make a ninety-degree turn to the right.', 'Turn right through a right angle.']],
 ]
 for (const [command, texts] of commands) add('expanded-indirect-command', texts, task(texts[0]!, [action(command)]))
 for (const [command, texts] of commands.slice(0, 6)) add('expanded-mixed-response', texts.map((text, i) => [
@@ -22,11 +20,11 @@ for (const [command, texts] of commands.slice(0, 6)) add('expanded-mixed-respons
  `${text} In your response, report the battery level.`, `${text} And say hello to me.`,
 ][i]!), task(texts[0]!, [action(command)]), [...movement,'needsResponse'])
 const sequences = [
- ['stand','bow','wave'], ['sit','stand','nod'], ['wave','nod','bow'], ['turn_right','wave','sit'],
- ['pushup','pushup','stand'], ['bow','bow','wave'], ['nod','stand','sit'], ['walk_backward','stand','bow'],
+ ['stand','bow','wave'], ['sit','stand','nod'], ['wave','nod','bow'], ['turn right ninety degrees','wave','sit'],
+ ['pushup','pushup','stand'], ['bow','bow','wave'], ['nod','stand','sit'], ['sit','stand','bow'],
 ]
 const phrase: Record<string,string> = { stand:'stand',sit:'sit',wave:'wave',bow:'bow',nod:'nod',pushup:'do a pushup',
- turn_right:'turn right ninety degrees',walk_backward:'walk backward' }
+ 'turn right ninety degrees':'turn right ninety degrees' }
 for (const steps of sequences) {
  const [a,b,c] = steps.map(step => phrase[step]!)
  add('expanded-ordered-sequence', [
@@ -87,7 +85,7 @@ const evaluation: Array<[string,string[],Record<string,any>]> = [
  ['indirect-pushup',['Demonstrate one body-lowering push-up.','A single press-up exercise for the audience.'],task('Pushup.',[action('pushup')])],
  ['sequence',['Wave, sit, then give a nod.','Begin with waving; sit next and nod last.'],task('Wave, sit, nod.',[action('wave'),action('sit'),action('nod')])],
  ['sequence',['After two nods, take your standing pose.','Nod twice before rising to stand.'],task('Nod twice, stand.',[action('nod'),action('nod'),action('stand')])],
- ['sequence',['Bow, turn right ninety degrees, then wave.','Start with bowing, rotate a quarter-turn right, and wave at the end.'],task('Bow, right turn, wave.',[action('bow'),action('turn_right'),action('wave')])],
+ ['sequence',['Bow, turn right ninety degrees, then wave.','Start with bowing, rotate a quarter-turn right, and wave at the end.'],task('Bow, right turn, wave.',[action('bow'),action('turn right ninety degrees'),action('wave')])],
  ['sequence',['Sit after a pushup and a nod, in that order.','First do a pushup; next nod; finally sit.'],task('Pushup, nod, sit.',[action('pushup'),action('nod'),action('sit')])],
  ['correction',['I almost said sit; what I want is a wave.','Instead of the sit I was about to request, please wave.'],task('Wave.',[action('wave')])],
  ['correction',['Not a bow this time, give a nod.','Change the requested bow into a nod.'],task('Nod.',[action('nod')])],

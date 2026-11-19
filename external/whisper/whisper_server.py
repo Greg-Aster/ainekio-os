@@ -68,7 +68,28 @@ async def startup():
         model_loading = True
         print(f"⏳ Loading Whisper model '{args.model}' on {device} with {compute_type}...")
         try:
-            model = WhisperModel(args.model, device=device, compute_type=compute_type)
+            try:
+                model = WhisperModel(
+                    args.model,
+                    device=device,
+                    compute_type=compute_type,
+                    local_files_only=True,
+                )
+            except Exception:
+                try:
+                    model = WhisperModel(args.model, device=device, compute_type=compute_type)
+                except Exception as hub_err:
+                    err_text = str(hub_err).lower()
+                    if any(tok in err_text for tok in ("401", "unauthorized", "expired", "oauth", "token")):
+                        print("⚠ Stored HuggingFace token rejected; retrying anonymous download (use_auth_token=False)...")
+                        model = WhisperModel(
+                            args.model,
+                            device=device,
+                            compute_type=compute_type,
+                            use_auth_token=False,
+                        )
+                    else:
+                        raise
             model_ready = True
             print(f"✓ Whisper model initialized (model={args.model}, device={device}, compute_type={compute_type})")
         except Exception as e:
