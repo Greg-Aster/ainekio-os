@@ -87,7 +87,6 @@ export interface BridgeConfig {
   transport?: 'local' | 'ssh' | 'cloudflare';
   followRobot?: boolean;
   remoteAdapterUrl?: string;
-  robotId?: string;
   adapterToken: string;
   coreUrl: string;
   serviceToken: string;
@@ -136,7 +135,6 @@ export function readConfig(): BridgeConfig {
     followRobot: service.followRobot === true,
     transport: (configValue(service, 'transport') || 'local') as BridgeConfig['transport'],
     remoteAdapterUrl: configValue(service, 'remoteAdapterUrl') || undefined,
-    robotId: configValue(service, 'robotId') || undefined,
     adapterToken,
     coreUrl: new URL(coreUrl).toString().replace(/\/$/, ''),
     serviceToken,
@@ -1098,7 +1096,6 @@ export async function runEnvironmentBridgeAgent(
           ? [{ url: config.remoteAdapterUrl, remote: true }] : [])]
         : [{ url: remote ? config.remoteAdapterUrl! : config.adapterUrl, remote }],
       token: config.adapterToken,
-      robotId: config.robotId,
       connect: (adapterUrl, connectionSignal, ready) => connectOnce({ ...config, adapterUrl }, connectionSignal, ready),
       changed: connections => postJson(config, '/api/environment-bridge/telemetry', { connections }).then(() => undefined),
     }, signal);

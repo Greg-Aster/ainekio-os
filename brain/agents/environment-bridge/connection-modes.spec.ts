@@ -227,7 +227,6 @@ exec '${process.execPath}' -e 'setInterval(() => {}, 1000)'
       { url: `ws://127.0.0.1:${remotePort}/environment`, remote: true },
     ],
     token: 'fixture',
-    robotId: 'ainekio-p4-e6ebe5',
     reconnectBaseMs: 40,
     reconnectMaxMs: 320,
     async connect(url, connSignal, ready) {

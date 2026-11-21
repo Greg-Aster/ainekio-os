@@ -207,7 +207,7 @@ flowchart LR
 
 ### Body Control and movement
 
-Body Control runs on the desktop or robot-local host. Freestyle's generator and the host neural gait simulator run as separate HTTP services. Firmware executes physical commands (including analytic gaits and the embedded Microduck neural policy); returned feedback establishes what happened.
+Body Control runs on the desktop or robot-local host. Freestyle's generator runs as a separate HTTP service (`8794`) that produces one compact motion program per semantic request; `NeuralPose` (`experiments/freestyle/neural_pose/`) executes that program at 50 Hz over `walk_nominal_v1` with continuous sensorimotor adaptation. Firmware executes physical commands (including `walk_target` foot offsets, analytic gaits and the embedded Microduck neural policy) and independently enforces last-ditch `I²t` servo thermal cutoff (`jam_enabled`); returned feedback establishes what happened.
 
 ```mermaid
 %%{init: {"theme":"base","themeVariables":{"darkMode":true,"background":"#0f172a","primaryColor":"#29233e","primaryTextColor":"#ede9fe","primaryBorderColor":"#b39aef","lineColor":"#94a3b8","edgeLabelBackground":"#17202d","clusterBkg":"#151e2c","clusterBorder":"#526176","titleColor":"#e2e8f0","fontSize":"16px"},"flowchart":{"nodeSpacing":20,"rankSpacing":35,"useMaxWidth":true}}}%%
@@ -216,18 +216,18 @@ flowchart TB
   DASH["Body Control dashboard<br/>Browser · port 8791"]:::ui
   ADAPTER["Environment adapter<br/>/environment · port 8790"]:::software
   GW["GatewayService<br/>Robot sessions and command transport"]:::software
-  EXEC["Freestyle executor<br/>Compile and execute a program"]:::software
+  EXEC["Freestyle Bridge + 50 Hz NeuralPose<br/>One-shot program + closed-loop adaptation"]:::software
   GEN["Freestyle generator<br/>HTTP · port 8794"]:::service
   MODEL["Shared llama.cpp or Big Brother SSH<br/>0.8B LoRA or remote provider"]:::service
   NEURAL["Neural gait service<br/>MuJoCo/MJX · port 8796"]:::service
-  P4["P4 firmware + onboard Microduck<br/>/robot connection · port 8790"]:::hardware
+  P4["P4 firmware + Microduck + I²t fuse<br/>/robot connection · port 8790"]:::hardware
   OUT["PCA9685 and servos<br/>LCD and speaker"]:::hardware
   SENSORS["Camera, IMU and joint feedback"]:::hardware
   BR <-->|"Actions, observations and receipts"| ADAPTER
   DASH <-->|"Manual controls and status"| GW
   ADAPTER <-->|"Translated commands and results"| GW
-  GW <-->|"Movement request / compiled commands and results"| EXEC
-  EXEC <-->|"Movement description and program"| GEN
+  GW <-->|"50 Hz walk_target stream and results"| EXEC
+  EXEC <-->|"One-shot description and program"| GEN
   GEN <-->|"Prompt and generated program"| MODEL
   GW <-->|"Nominal foot targets and sim state"| NEURAL
   GW <-->|"Commands, receipts and telemetry"| P4
@@ -476,13 +476,16 @@ changes.
    The adapter translates the semantic request (including direct `stop` with `detach: true` when requested) and correlates its result.
 4. For `requestMotion.description`,
    [`GatewayService.request_motion`](https://github.com/Greg-Aster/Ainekio-bot/blob/dev/Master/gateway/server/service.py)
-   calls the [Freestyle executor](https://github.com/Greg-Aster/Ainekio-bot/blob/dev/experiments/freestyle/bridge.py).
-   Its [generator](https://github.com/Greg-Aster/Ainekio-bot/blob/dev/experiments/freestyle/generator.py) produces a
-   motion program from the request and observations. The executor compiles and
-   submits targets through the same gateway connection.
+   calls the [Freestyle coordinator](https://github.com/Greg-Aster/Ainekio-bot/blob/dev/experiments/freestyle/bridge.py).
+   Its [generator](https://github.com/Greg-Aster/Ainekio-bot/blob/dev/experiments/freestyle/generator.py) produces one
+   motion program from the request and observations; [`NeuralPose`](https://github.com/Greg-Aster/Ainekio-bot/blob/dev/experiments/freestyle/neural_pose/executor.py)
+   projects those goals onto the closed 4-bar manifold and streams 50 Hz `walk_target`
+   foot offsets through the gateway connection, adapting continuously to measured 4th-wire
+   positions, floor friction and attitude without re-invoking the generator.
 5. P4's [controller](https://github.com/Greg-Aster/Ainekio-bot/blob/dev/Slave/firmware/esp32p4-wifi6/main/controller.c)
    receives the wire command. Its [body executor](https://github.com/Greg-Aster/Ainekio-bot/blob/dev/Slave/firmware/esp32p4-wifi6/main/body.c)
-   owns motion progress, calibrated output and measured target tracking; the
+   owns calibrated output, 4th-wire shaft telemetry and independent `I²t` thermal
+   cutoff (`jam_enabled`); the
    [PCA9685 driver](https://github.com/Greg-Aster/Ainekio-bot/blob/dev/Slave/firmware/esp32p4-wifi6/components/ainekio_pca9685/pca9685.c)
    writes servo signals. LLM token generation does not clock servo frames.
 6. Firmware receipts and telemetry return through GatewayService, adapter and
@@ -491,15 +494,21 @@ changes.
    assesses an eligible unfinished objective. Submission, execution completion
    and achievement of a physical goal are different results.
 
-**Motion ownership:** Freestyle owns description-based motion, startup/wake and
-stall correction requests. Inactivity rest/release is body-local, as defined in
+**Motion ownership:** Freestyle owns one-shot semantic program generation (including
+startup/wake stretch); `NeuralPose` owns 50 Hz closed-loop posture and gesture
+execution with C-side `stand_enabled` disabled so firmware never runs a competing
+posture replanner; and P4's `jam_enabled` thermal fuse is strictly separate from
+Freestyle, releasing servo outputs (`outputs_released: true`) and forwarding a
+`servo_stall` `body_event` to `fast-body-event-mode.json` only on genuine mechanical
+binds. Freestyle never runs event-triggered movement recalculation. Inactivity
+rest/release is body-local, as defined in
 [the motion contract](BODY_CAPABILITIES.md#motion-and-posture). The manual Motion
 Library selector affects explicit manual controls without redirecting Ainekio OS
 requests. Native motion, onboard Microduck neural walking, and low-level manual
 controls remain available through the same P4 owners. An unavailable generator
 is reported rather than silently substituting a library movement. See the
 [Freestyle contract](https://github.com/Greg-Aster/Ainekio-bot/blob/dev/experiments/freestyle/README.md) for model,
-compiler, training and deployment details.
+policy, training and deployment details.
 
 ### Contracts at the handoffs
 

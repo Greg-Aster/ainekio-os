@@ -28,13 +28,13 @@ async function host(robotId?: string) {
   };
 }
 
-async function fixture(robotId?: string, availableRobot?: string) {
+async function fixture(availableRobot?: string) {
   const local = await host(availableRobot);
   const controller = new AbortController();
   let snapshot: BodyConnection[] = [];
   let observed: (() => void) | undefined;
   const active = new Set<string>(); const admitted: string[] = [];
-  const run = runBodyConnection({ endpoints: [{ url: local.url }], token: 'fixture', robotId,
+  const run = runBodyConnection({ endpoints: [{ url: local.url }], token: 'fixture',
     async connect(url, signal, ready) {
       assert.equal(active.size, 0, 'Only one action stream may own the body session');
       active.add(url); admitted.push(url); ready();
@@ -70,23 +70,23 @@ test('Body Control stays connected without a robot and retains one stream across
   } finally { await f.close(); }
 });
 
-test('explicit robot selection does not activate a different body on the selected host', { timeout: 10000 }, async () => {
-  const selected = await fixture('robot-b', 'robot-a');
+test('Body Control automatically switches active robots on the same stream without bridge restart', { timeout: 10000 }, async () => {
+  const f = await fixture('robot-a');
   try {
-    await selected.until(states => states[0].connected && states[0].robotId === 'robot-a');
-    assert.equal(selected.admitted.length, 0);
-    selected.local.update('robot-b');
-    await selected.until(states => states[0].active);
-    selected.local.update();
-    await selected.until(states => !states[0].connected && states[0].ready);
-    selected.local.update('robot-a');
-    await selected.until(states => states.every(state => !state.active));
-    assert.deepEqual(selected.admitted, [selected.local.url]);
-  } finally { await selected.close(); }
+    await f.until(states => states[0].ready && states[0].connected && states[0].robotId === 'robot-a');
+    assert.deepEqual(f.admitted, [f.local.url]);
+    f.local.update('robot-b');
+    await f.until(states => states[0].ready && states[0].connected && states[0].robotId === 'robot-b');
+    f.local.update();
+    await f.until(states => !states[0].connected && states[0].ready);
+    f.local.update('robot-c');
+    await f.until(states => states[0].ready && states[0].connected && states[0].robotId === 'robot-c');
+    assert.deepEqual(f.admitted, [f.local.url], 'Switching robots in Body Control retains one stream');
+  } finally { await f.close(); }
 });
 
 test('stopping a connection releases its active control stream', { timeout: 10000 }, async () => {
-  const f = await fixture(undefined, 'robot-a');
+  const f = await fixture('robot-a');
   try {
     await f.until(states => states[0].active);
     assert.deepEqual([...f.active], [f.local.url]);
@@ -107,7 +107,7 @@ test('Body Control socket loss clears host readiness and reconnects without dupl
   } finally { await f.close(); }
 });
 
-async function roamingFixture(localRobot?: string, remoteRobot?: string, robotId = 'robot-a') {
+async function roamingFixture(localRobot?: string, remoteRobot?: string) {
   const local = await host(localRobot);
   const remote = await host(remoteRobot);
   const controller = new AbortController();
@@ -116,7 +116,7 @@ async function roamingFixture(localRobot?: string, remoteRobot?: string, robotId
   const active = new Set<string>();
   const admissions: string[] = [];
   let controlError: string | undefined;
-  const run = runBodyConnection({ endpoints: [{ url: local.url }, { url: remote.url }], robotId, token: 'fixture',
+  const run = runBodyConnection({ endpoints: [{ url: local.url }, { url: remote.url }], token: 'fixture',
     async connect(url, signal, ready) {
       if (controlError) throw new Error(controlError);
       assert.equal(active.size, 0, 'The old stream must be released before the next host starts');
@@ -157,16 +157,18 @@ test('automatic following moves remote to local and back without restarting the 
   } finally { await f.close(); }
 });
 
-test('automatic following excludes a different robot and reports loss instead of changing bodies', { timeout: 10000 }, async () => {
+test('automatic following switches to whichever host currently has an active Body Control robot', { timeout: 10000 }, async () => {
   const f = await roamingFixture('robot-a', 'robot-b');
   try {
     await f.until(states => states[0].ready && states[1].connected);
     f.local.update();
-    await f.until(states => states[0].ready && !states[0].connected && !states[1].active);
-    assert.deepEqual(f.admissions, [f.local.url]);
-    f.remote.update('robot-a');
-    await f.until(states => states[1].ready);
+    await f.until(states => states[1].ready && states[1].robotId === 'robot-b' && !states[0].active);
     assert.deepEqual(f.admissions, [f.local.url, f.remote.url]);
+    f.remote.update();
+    await f.until(states => states[1].ready && !states[1].connected);
+    f.local.update('robot-v2-sim');
+    await f.until(states => states[0].ready && states[0].robotId === 'robot-v2-sim' && !states[1].active);
+    assert.deepEqual(f.admissions, [f.local.url, f.remote.url, f.local.url]);
   } finally { await f.close(); }
 });
 
@@ -203,7 +205,6 @@ test('unreachable secondary host backs off and deduplicates availability failure
       { url: local.url },
       { url: `ws://127.0.0.1:${deadPort}/environment` },
     ],
-    robotId: 'robot-a',
     token: 'fixture',
     reconnectBaseMs: 30,
     reconnectMaxMs: 240,
@@ -234,5 +235,67 @@ test('unreachable secondary host backs off and deduplicates availability failure
     await run;
     await new Promise<void>(resolve => failingServer.close(() => resolve()));
     await local.close();
+  }
+});
+
+test('local Body Control restart reconnects within bounded local ceiling after prolonged downtime', { timeout: 10000 }, async () => {
+  const probe = new WebSocketServer({ port: 0 });
+  await new Promise<void>(resolve => probe.once('listening', resolve));
+  const port = (probe.address() as { port: number }).port;
+  await new Promise<void>(resolve => probe.close(() => resolve()));
+
+  const controller = new AbortController();
+  let snapshot: BodyConnection[] = [];
+  let observed: (() => void) | undefined;
+  const run = runBodyConnection({
+    endpoints: [{ url: `ws://127.0.0.1:${port}/environment` }],
+    token: 'fixture',
+    reconnectBaseMs: 25,
+    reconnectLocalMaxMs: 60,
+    reconnectMaxMs: 5000,
+    async connect(_url, connSignal, ready) {
+      ready();
+      await new Promise<void>(resolve => {
+        if (connSignal.aborted) resolve();
+        else connSignal.addEventListener('abort', () => resolve(), { once: true });
+      });
+    },
+    async changed(value) { snapshot = value; observed?.(); },
+  }, controller.signal);
+
+  let restarted: WebSocketServer | undefined;
+  try {
+    // Accumulate >= 5 failed localhost attempts (which would sleep 400..5000 ms without local cap)
+    await new Promise(resolve => setTimeout(resolve, 260));
+    const startedAt = Date.now();
+    restarted = new WebSocketServer({ port });
+    restarted.on('connection', socket => {
+      socket.on('message', () => {
+        socket.send(JSON.stringify({
+          type: 'bridge.availability',
+          version: 1,
+          sessionId: 'restarted-session',
+          gatewayInstance: `${port}:2`,
+          robotId: 'robot-a',
+          connected: true,
+        }));
+      });
+    });
+    if (!snapshot[0]?.ready) {
+      await new Promise<void>(resolve => {
+        observed = () => {
+          if (snapshot[0]?.ready) {
+            observed = undefined;
+            resolve();
+          }
+        };
+      });
+    }
+    assert.ok(Date.now() - startedAt < 250, 'Local Body Control must reconnect promptly after gateway restart');
+    assert.equal(snapshot[0]?.connected, true);
+  } finally {
+    controller.abort();
+    await run;
+    if (restarted) await new Promise<void>(resolve => restarted!.close(() => resolve()));
   }
 });

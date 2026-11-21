@@ -17,7 +17,8 @@ export interface BodyConnection {
 
 export interface BridgeEndpoint { url: string; remote?: boolean }
 
-const DEFAULT_RECONNECT_BASE_MS = 2000;
+const DEFAULT_RECONNECT_BASE_MS = 1000;
+const DEFAULT_LOCAL_UNCONNECTED_MAX_MS = 2500;
 const DEFAULT_RECONNECT_MAX_MS = 60_000;
 
 function backoffDelayMs(failures: number, baseMs: number, maxMs: number): number {
@@ -46,14 +47,14 @@ function reconnect(
   });
 }
 
-/** One Body Control stream remains usable when its physical robot is absent. */
+/** One Body Control stream remains usable when its robot disconnects or switches. */
 export async function runBodyConnection(options: {
   endpoints: BridgeEndpoint[];
   token: string;
-  robotId?: string;
   connect: (url: string, signal: AbortSignal, ready: () => void) => Promise<void>;
   changed: (connections: BodyConnection[]) => Promise<void>;
   reconnectBaseMs?: number;
+  reconnectLocalMaxMs?: number;
   reconnectMaxMs?: number;
 }, signal: AbortSignal): Promise<void> {
   const reconnectBaseMs = options.reconnectBaseMs ?? DEFAULT_RECONNECT_BASE_MS;
@@ -61,7 +62,6 @@ export async function runBodyConnection(options: {
   const states: BodyConnection[] = options.endpoints.map(endpoint => ({
     endpoint: endpoint.url, adapterConnected: false, connected: false, active: false, ready: false,
   }));
-  let followedRobot = options.robotId;
   let active: { identity: string; controller: AbortController; done: Promise<void> } | undefined;
   let selection = Promise.resolve();
   let publication = Promise.resolve();
@@ -92,8 +92,9 @@ export async function runBodyConnection(options: {
   };
   const choose = () => {
     if (signal.aborted) return undefined;
-    const available = states.filter(state => state.adapterConnected
-      && (!state.connected || !followedRobot || state.robotId === followedRobot));
+    // Body Control owns robot attachment and selection. Connect to any reachable
+    // Body Control host, preferring one that currently has a connected robot.
+    const available = states.filter(state => state.adapterConnected);
     const bodies = available.filter(state => state.connected && state.robotId);
     return bodies.find(state => state.active) ?? bodies[0]
       ?? available.find(state => state.active) ?? available[0];
@@ -102,16 +103,12 @@ export async function runBodyConnection(options: {
     // Body Control owns robot changes within its stream. Host changes retire it.
     selection = selection.then(async () => {
       const selected = choose();
-      if (states.length > 1 && selected?.connected) followedRobot ??= selected.robotId;
       const identity = selected && `${selected.endpoint}\n${selected.gatewayInstance}`;
       if (active?.identity === identity) { notifyRobotAvailability(); return; }
       if (active) { active.controller.abort(); await active.done; active = undefined; }
       for (const state of states) { state.active = false; state.ready = false; }
       const next = choose();
       if (next) {
-        // Automatic following keeps the same body even when another gateway
-        // advertises a different robot. Single-host manual selection is unchanged.
-        if (states.length > 1 && next.connected) followedRobot ??= next.robotId;
         next.active = true;
         const controller = new AbortController();
         let lastConnectionError: string | undefined;
@@ -217,7 +214,10 @@ export async function runBodyConnection(options: {
           };
           watchedForwarder?.signal.addEventListener('abort', onForwarderAbort, { once: true });
           try {
-            const delayMs = backoffDelayMs(Math.max(1, consecutiveFailures), reconnectBaseMs, reconnectMaxMs);
+            const effectiveMaxMs = (!endpoint.remote && !states.some(s => s.adapterConnected))
+              ? Math.min(reconnectMaxMs, Math.max(reconnectBaseMs, options.reconnectLocalMaxMs ?? DEFAULT_LOCAL_UNCONNECTED_MAX_MS))
+              : reconnectMaxMs;
+            const delayMs = backoffDelayMs(Math.max(1, consecutiveFailures), reconnectBaseMs, effectiveMaxMs);
             await reconnect(signal, delayMs, wakeWatchers, () => { consecutiveFailures = 0; });
           } finally {
             watchedForwarder?.signal.removeEventListener('abort', onForwarderAbort);

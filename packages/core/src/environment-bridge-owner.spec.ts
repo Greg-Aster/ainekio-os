@@ -39,11 +39,9 @@ test('connection settings use the existing service owner and retain both remote 
   setAgentVariable(ids[0], 'transport', 'ssh');
   setAgentVariable(ids[0], 'adapterUrl', 'ws://127.0.0.1:8790/environment');
   setAgentVariable(ids[0], 'remoteAdapterUrl', 'ws://127.0.0.1:18790/environment');
-  setAgentVariable(ids[0], 'robotId', 'robot-two');
   setAgentVariable(ids[0], 'followRobot', true);
   let config = JSON.parse(fs.readFileSync(path.join(fixture, 'etc/services.json'), 'utf8'));
   assert.equal(config.services[ids[0]].remoteAdapterUrl, 'ws://127.0.0.1:18790/environment');
-  assert.equal(config.services[ids[0]].robotId, 'robot-two');
   assert.equal(config.services[ids[0]].followRobot, true);
   assert.equal(config.services[ids[0]].transport, 'ssh');
   assert.equal(config.services[ids[0]].sshTarget, 'operator@workshop-host');

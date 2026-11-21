@@ -77,6 +77,13 @@ function has been demonstrated on the current installation.
 - Each responsibility has one implementation owner. Repairs correct that owner and
   affected consumers, including removal of superseded paths. Repository instructions
   govern changes to prompts, contracts, runtime restrictions and physical behavior.
+- Physical motion separates three distinct responsibilities: Freestyle generates a
+  motion program once from the request, the 50 Hz `NeuralPose` policy executes that
+  program with closed-loop sensorimotor plasticity across starting angles, floor
+  friction and disturbances, and the body's hardware thermal fuse independently cuts
+  power and notifies Ainekio OS only on genuine mechanical binds. Movement defects
+  are repaired in the neural policy or kinematics—never by adding recursive LLM
+  movement-recalculation loops or host-side target clamps.
 - Responsiveness and useful learning require measured outcomes. Local Body Control,
   Q6A and remote compute placement depend on actual capacity and latency. The owner
   can inspect and steer the system through its existing interfaces and diagnostics.

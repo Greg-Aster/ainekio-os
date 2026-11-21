@@ -63,27 +63,36 @@ finishes. The custom-movement curriculum does not teach servo-output release.
 Explicit Stop and Release retain their existing contracts. Installed firmware,
 gateway and adapter versions determine which recorded contract is active.
 
-The Freestyle contract translates initial `requestMotion` descriptions once and
-executes the generated program without recursive LLM stall-recovery loops.
-Closed-loop stall handling is recovery-first across the body and host
-controllers:
-- **`NeuralPose` 50 Hz recoil and return-to-Ready:** When a usable 4th-wire
-  joint lags its segment target by `>= 10°` at `< 6°/s` toward the target for
-  `0.28 s` (`14` ticks), the host policy immediately recoils that joint target
-  by `2°` away from the obstruction, settles against the achievable recoiled
-  target so remaining motion segments complete, and appends a `0.85 s`
-  transition back to `Stand` (Ready) before holding if the final posture
-  recoiled.
+The Freestyle motion stack enforces a strict three-part separation without
+event-triggered LLM recalculation loops or host-side post-motion target clamps:
+- **One-shot semantic choreography (`Freestyle`, `:8794`):** Translates each
+  `requestMotion` description once into a compact 12-joint program and hands it
+  to `NeuralPose`. Body events (`servo_stall`, `tipped`, `rapid_movement`, `slip`)
+  never re-invoke the `0.8B` Freestyle generator.
+- **50 Hz closed-loop neural execution (`NeuralPose`, `experiments/freestyle/neural_pose/`):**
+  Projects Freestyle targets onto the closed 4-bar manifold and streams 50 Hz
+  `walk_target` foot offsets (`walk_nominal_v1`) from a trained equivariant
+  residual policy (`policy.onnx`). Reading live 4th-wire shaft angles, velocities,
+  usability flags and IMU attitude, `NeuralPose` adapts on the fly—unloading and
+  stepping splayed stance paws clear of carpet pile (`<= 5.0°` settle band,
+  inside firmware's `6.5°` zero-heat zone), stabilizing on slippery floors,
+  rising from folded boot postures, and yielding compliantly on obstructed
+  gesture limbs. When `NeuralPose` is active, Body Control disables C-side
+  `stand_enabled` (`stand_hold_recover`) on connect so firmware never runs a
+  competing posture replanner.
 - **Walking unsnag escalation:** Forward gaits escalate from high-step
   clearance to autonomous `1.8 s` reverse unsnag (`[-0.45, 0.0, 0.0]`, with a
   `2.5 s` post-backup cooldown) after `1.8 s` of sustained joint lag or
   zero-progress locomotion before resuming the requested twist. Goal-directed
   locomotion tracks a `5.5 s` no-progress window so autonomous unsnagging can
   complete before Core Active Task stops the gait.
-- **Last-ditch thermal fuse:** Sustained `8–10 s` `I²t` stall overload on P4
-  cuts per-servo PWM, emits a single `servo_stall` notification with
-  `outputs_released: true`, and fails any active `move` or `requestMotion`
-  action cleanly. A stall notification does not itself trigger a help reply.
+- **Independent last-ditch hardware thermal fuse (`ESP32-P4 jam_enabled`):**
+  Completely separate from Freestyle, firmware's `I²t` thermal integrator
+  (`ainekio_p4_feedback_thermal_step`) remains armed (`jam_enabled: true`).
+  Only when a genuinely stuck or broken servo sustains locked-rotor error with
+  no position progress for `~9–11 s` does P4 cut PWM (`outputs_released: true`),
+  abort any active `move` or `requestMotion` action cleanly, and forward one
+  `servo_stall` `body_event` to `fast-body-event-mode.json` for user notification.
 
 The native library and low-level controls retain their explicit manual contracts.
 Ainekio OS's Task model coordinates actions and observations while Body Control
@@ -126,7 +135,7 @@ Body Control detects configured event episodes (tilt, rapid movement, motor stal
 - **Robot Wake-Up ([`robot-wake-up-mode.json`](../../etc/cognitive-graphs/robot-wake-up-mode.json)):** Reported `wake` events combine a wake event and fresh camera image from Body Control while Body Control dispatches local stretch (including return to standing). The wake-up graph supplies the event, active persona, image and dated body status to one Persona greeting concurrently with stretching, publishing directly through Conversation Work Result, Conversation Buffer, Save Conversation Memory, Stream Writer and TTS Output without creating a goal or invoking Environment Mode.
 - **Fast Body Event ([`fast-body-event-mode.json`](../../etc/cognitive-graphs/fast-body-event-mode.json)):** Handles `tipped`, `rapid_movement` and `servo_stall` events without Intent, Task, Planner, persona or memory context:
   - Sends an attributed `be_` foreground display token (`confused` for tipping, `surprised` for rapid movement; P4 foreground and background expression slots remain separate, and Body Control suppresses repeat shake/tip episodes while the `be_` token or configured cooldown is active).
-  - Selects the editable **Tipping Prompt**, **Rapid Movement Prompt**, or **Motor Stall Prompt**, passing `eventKind` and up to `recentReactionLimit` (default `6`, clamped `0..20`) non-cancelled prior Fast Body Event remarks from `ExecutionStore` in `recentReactions` to the `lightweight` model role (`temperature: 0.8`, `repeatPenalty: 1.2`, `enableThinking: false`, `format: "json"`). `servo_stall` additionally forwards gateway-reported `joints`, `reason`, `outputs_released`, `correction_failed`, and `release_error`.
+  - Selects the editable **Tipping Prompt**, **Rapid Movement Prompt**, or **Motor Stall Prompt**, passing `eventKind` and up to `recentReactionLimit` (default `6`, clamped `0..20`) non-cancelled prior Fast Body Event remarks from `ExecutionStore` in `recentReactions` to the `lightweight` model role (`temperature: 0.8`, `repeatPenalty: 1.2`, `enableThinking: false`, `format: "json"`). `servo_stall` additionally forwards gateway-reported `joints`, `reason`, `outputs_released`, and `release_error`.
   - Publishes the remark to the live conversation stream only (not saved to conversation buffers, memory or training data) and speaks it through the originating robot session.
   - **Reset Event Expression** releases the `be_` display token after feed publication and correlated robot speech playback receipts complete (or after admission for local computer audio / 60-second robot-local expiry).
 - **Other Body Events ([`body-event-trigger-mode.json`](../../etc/cognitive-graphs/body-event-trigger-mode.json)):** Interprets remaining events and may choose `decision: none` (`instruction: null`) or delegate a nonempty instruction to Environment Mode. Plain telemetry updates status without starting a cognitive request. See [body events](https://github.com/Greg-Aster/Ainekio-bot/blob/dev/Master/gateway/README.md#v2-body-events-and-imu-status) and [P4 body owner](https://github.com/Greg-Aster/Ainekio-bot/blob/dev/Slave/firmware/esp32p4-wifi6/main/body.c).
